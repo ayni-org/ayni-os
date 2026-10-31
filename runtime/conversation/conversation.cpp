@@ -14,13 +14,27 @@ bool Session::matches(const strategies::ConversationRecord &r,
            r.generation == c.revision && r.revision == c.generation &&
            r.last_round == c.last_turn_id;
 }
-bool Session::ready() const {
-    if (phase_ != Phase::ready) {
-        return false;
+ayni_status_t Session::intake(ayni_context_info_v1 &anchor) const {
+    if (phase_ == Phase::empty) {
+        return AYNI_INVALID_STATE;
     }
+    if (phase_ == Phase::failed) {
+        return failure_;
+    }
+    if (phase_ != Phase::ready) {
+        return AYNI_BUSY;
+    }
+    const auto status = context(anchor);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    return anchor.usable && anchor.pending_action == AYNI_CONTEXT_IDLE && matches(current_, anchor)
+               ? AYNI_OK
+               : AYNI_BUSY;
+}
+bool Session::ready() const {
     auto anchor = initialized<ayni_context_info_v1>();
-    return context(anchor) == AYNI_OK && anchor.usable &&
-           anchor.pending_action == AYNI_CONTEXT_IDLE && matches(current_, anchor);
+    return intake(anchor) == AYNI_OK;
 }
 ayni_status_t Session::configure(Config config) {
     if (phase_ != Phase::empty) {
@@ -246,11 +260,8 @@ ayni_status_t Session::publish(const ayni_context_info_v1 &anchor) {
     return AYNI_OK;
 }
 ayni_status_t Session::forget(ayni_context_action_t action, uint64_t turn_id) {
-    if (!ready()) {
-        return AYNI_BUSY;
-    }
     auto anchor = initialized<ayni_context_info_v1>();
-    const auto queried = context(anchor);
+    const auto queried = intake(anchor);
     if (queried != AYNI_OK) {
         return queried;
     }

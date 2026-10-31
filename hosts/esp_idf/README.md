@@ -6,7 +6,7 @@
 
 ## 所有权和线程
 
-Host在Kernel owner任务中构造，必须放在内部RAM，生命周期覆盖Kernel及所有Producer；拥有一个内部静态互斥量，非ISR任务可投递完成、唤醒和进入ingress。owner任务的通知index0专用于Host唤醒，`wait_for_wake`按微秒超时向上取整到tick，多次唤醒合并。单调时钟为`esp_timer`；此Host未提供可信UTC，日历部署须通过公开时钟端口提供经过确认的时间来源。
+Host在Kernel owner任务中构造，必须放在内部RAM，生命周期覆盖Kernel及所有Producer；拥有一个内部静态互斥量，非ISR任务可投递完成、唤醒和进入ingress。owner任务的通知index0专用于Host唤醒，`wait_for_wake`按微秒超时向上取整到tick，多次唤醒合并。单调时钟为`esp_timer`；默认未提供UTC；构造时可注入公开`UtcSource`，由实际校时服务明确报告trust，回调只在owner调用且不得阻塞。独立程序注入固定可信fixture时间，不作为设备校时服务的证据。
 
 `open_storage(label, capacity, initialize_blank=false)`在create之前调用，会阻塞扫描介质；成功后table提供完整八存储端口。容量为1～16个排队请求，不含当前worker处理的一项；满时不保留请求，accepted恰好完成一次。借用的Kernel缓冲在完成投递后不再访问。文件I/O只在配置期或单个worker任务执行，`step`只入队，free_bytes只读缓存。
 

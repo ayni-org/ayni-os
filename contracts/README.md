@@ -58,7 +58,7 @@
 | `C-HVAL` | [host/file_values.md](host/file_values.md) | HostStorage、Native/ESP Host |
 | `C-HOST` | [host/host_ports.md](host/host_ports.md) | `kernel` 与各 Host |
 | `C-NATIVE` | [host/native_runtime.md](host/native_runtime.md) | `runtime/` |
-| `C-SDK` | [host/cpp_sdk.md](host/cpp_sdk.md) | 公开 C++ facade、`runtime/examples`、`examples/` |
+| `C-SDK` | [host/cpp_sdk.md](host/cpp_sdk.md) | 公开 C++ facade、`runtime/examples`、`runtime/conversation`、`runtime/portable`、独立消费者 |
 | `C-FIX` | [fixtures/normal/README.md](fixtures/normal/README.md) | 正常夹具应用、SimNode 组合与生成器 |
 | `C-EXP` | [fixtures/experiments/README.md](fixtures/experiments/README.md) | 完整实验运行器、模拟故障与证据 |
 | `C-PROV` | [host/provider.md](host/provider.md) | `work`、`catalog` 与各 Provider |

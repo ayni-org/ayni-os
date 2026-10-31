@@ -148,3 +148,4 @@
 | [0091](0091-shared-host-file-storage.md) | 共用Host文件存储与平台文件端口 | 已接受；实现与验证见 #120 | 独立接入、C-HOST-009～019 |
 | [0092](0092-esp-idf-littlefs-host.md) | FreeRTOS异步Host与专用LittleFS卷 | 已接受；实现与验证见 #121 | 独立接入、C-HOST |
 | [0093](0093-host-outer-file-values.md) | 外层文件值与共同Host队列 | 已接受；实现与验证见 #122 | C-HVAL、独立接入 |
+| [0094](0094-portable-runtime-and-independent-normal-program.md) | 共同会话运行时与独立正常程序 | 已接受范围；验证见 #123 | 独立SDK/平台接入 |

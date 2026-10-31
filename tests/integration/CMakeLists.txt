@@ -44,9 +44,9 @@ execute_process(COMMAND git -C "${AYNI_ROOT}" rev-parse HEAD
 if(NOT portable_revision)
     set(portable_revision "unversioned")
 endif()
-add_test(NAME Portability.full_normal_consumer
+add_test(NAME portable_independent_normal
     COMMAND "${Python3_EXECUTABLE}" "${AYNI_ROOT}/tests/portability/run_native.py"
         --source "${AYNI_ROOT}" --sanitize "${AYNI_SANITIZE}"
         --build-type "${CMAKE_BUILD_TYPE}" --generator "${CMAKE_GENERATOR}"
         --source-revision "${portable_revision}")
-set_tests_properties(Portability.full_normal_consumer PROPERTIES RUN_SERIAL TRUE TIMEOUT 600)
+set_tests_properties(portable_independent_normal PROPERTIES RUN_SERIAL TRUE TIMEOUT 600)

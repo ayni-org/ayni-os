@@ -627,6 +627,21 @@ static ayni_status_t compression(Profile &p, Clock c) {
 }
 // C-RUN-003: reaching the soft model ceiling is an owner-recoverable Core hold.
 // Raising it must finish the same Task and retain exactly the original eight tool executions.
+static void describe_turn(Profile &p, uint32_t index) {
+    auto goal = initialized<ayni_goal_info_v1>();
+    auto task = initialized<ayni_task_info_v1>();
+    const auto found = ayni_get_goal(p.kernel(), p.conversation(index)->latest_goal(), &goal);
+    const auto status =
+        found == AYNI_OK ? ayni_get_task(p.kernel(), goal.last_task_id, &task) : found;
+    std::printf("turn %u query=%ld goal_state=%u task_state=%u hold=%ld reason=%u models=%u/%u "
+                "file_pending=%d\n",
+                static_cast<unsigned>(index), static_cast<long>(status),
+                static_cast<unsigned>(goal.lifecycle), static_cast<unsigned>(task.lifecycle),
+                static_cast<long>(task.hold_status), static_cast<unsigned>(task.hold_reason),
+                static_cast<unsigned>(task.model_calls_used),
+                static_cast<unsigned>(task.model_call_limit),
+                p.conversation(index)->file_pending());
+}
 static ayni_status_t resume_model_limit(Profile &p, Clock c) {
     constexpr uint32_t raised_limit = 12, expected_sums = 8;
     const auto accepted = p.conversation(0)->begin(text("many sums"));
@@ -655,6 +670,7 @@ static ayni_status_t resume_model_limit(Profile &p, Clock c) {
         }
         c.yield(c.context);
     }
+    std::puts("model soft limit reached");
     const uint64_t task_id = task.task_id;
     const ayni_status_t expected_hold = task.hold_status;
     // The other Agent must complete its own ToolLoop/file ACK while A is held.
@@ -669,6 +685,8 @@ static ayni_status_t resume_model_limit(Profile &p, Clock c) {
             return status;
         }
         if (c.now_us(c.context) - started >= wait_us) {
+            describe_turn(p, 0);
+            describe_turn(p, 1);
             return AYNI_EXPIRED;
         }
         c.yield(c.context);
@@ -676,6 +694,7 @@ static ayni_status_t resume_model_limit(Profile &p, Clock c) {
     if (ayni_get_task(p.kernel(), task_id, &task) != AYNI_OK || !task.model_call_limit_reached) {
         return AYNI_INVALID_STATE;
     }
+    std::puts("B completed while A held");
     const ayni_task_raise_model_limit_v1 raise{sizeof(raise), raised_limit, task_id};
     const auto raised = p.submit(AYNI_INTENT_TASK_RAISE_MODEL_LIMIT, &raise, task.revision);
     if (raised.status != AYNI_OK) {
@@ -688,6 +707,8 @@ static ayni_status_t resume_model_limit(Profile &p, Clock c) {
             return status;
         }
         if (c.now_us(c.context) - started >= wait_us) {
+            describe_turn(p, 0);
+            describe_turn(p, 1);
             return AYNI_EXPIRED;
         }
         c.yield(c.context);

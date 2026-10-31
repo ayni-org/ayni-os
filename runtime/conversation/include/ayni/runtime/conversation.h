@@ -69,6 +69,7 @@ class Session {
     enum class Save { initialize, draft, publication, erasure };
     static void complete(void *, const hosts::storage::FileValueResult &) noexcept;
     ayni_status_t context(ayni_context_info_v1 &) const;
+    ayni_status_t intake(ayni_context_info_v1 &) const;
     Submission command(ayni_intent_kind_t, const ayni_context_info_v1 &, uint64_t task = 0,
                        ayni_context_action_t action = AYNI_CONTEXT_IDLE, uint64_t turn = 0);
     bool matches(const strategies::ConversationRecord &, const ayni_context_info_v1 &) const;

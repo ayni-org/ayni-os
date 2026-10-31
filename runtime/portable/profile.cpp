@@ -17,9 +17,15 @@ namespace {
 constexpr uint32_t version = 1;
 constexpr uint32_t step_units = 64, step_us = 5000;
 constexpr uint32_t extra_goal_types = 6, extra_strategies = 4;
-constexpr uint32_t retained_calls = 24, retained_steps = 64;
+constexpr uint32_t retained_calls = 32, retained_steps = 64;
 constexpr uint32_t source_capacity = 4, resource_capacity = 8, catalog_capacity = 8;
 constexpr uint32_t kernel_command_capacity = 4;
+constexpr uint32_t ingress_capacity = 8, authority_scope_bytes = 256, retained_goals = 8;
+constexpr uint32_t model_hard_limit = 16, call_result_bytes = 1024, memory_capacity = 8;
+constexpr uint32_t write_interval_us = 1000, journal_bytes = 512 * 1024;
+constexpr uint64_t model_window_tokens = 12288, model_output_tokens = 3072;
+constexpr int64_t execution_minimum = -100, execution_maximum = 100;
+constexpr uint32_t execution_lease_us = 200000, command_age_us = 100000;
 constexpr uint64_t command_range = UINT64_C(1) << 32;
 constexpr uint64_t event_interval_us = 10000;
 constexpr uint32_t value_envelope_bytes = 128;
@@ -48,10 +54,11 @@ struct Regions {
 } // namespace
 ayni_config_v1 configuration() {
     auto c = default_config();
-    c.ingress_capacity = 8;
-    c.authority_scope_max_bytes = 256;
+    c.ingress_capacity = ingress_capacity;
+    c.authority_scope_max_bytes = authority_scope_bytes;
     c.agent_capacity = agent_count;
-    c.goal_capacity = 8; // Retains normal terminal evidence separately from the four Task slots.
+    c.goal_capacity =
+        retained_goals; // Retains normal terminal evidence separately from the four Task slots.
     c.task_capacity = live_task_limit;
     c.goal_type_capacity = agent_count + extra_goal_types;
     c.strategy_capacity = agent_count + extra_strategies;
@@ -59,9 +66,9 @@ ayni_config_v1 configuration() {
     c.task_checkpoint_max_bytes = strategies::state_bytes_max;
     c.task_step_capacity = retained_steps;
     c.call_capacity = retained_calls;
-    c.task_model_call_hard_limit = 16;
+    c.task_model_call_hard_limit = model_hard_limit;
     c.call_input_max_bytes = model_input_bytes + value_envelope_bytes;
-    c.call_result_max_bytes = 1024;
+    c.call_result_max_bytes = call_result_bytes;
     c.capability_capacity = catalog_capacity;
     c.call_capability_capacity = catalog_capacity;
     c.provider_capacity = catalog_capacity;
@@ -72,10 +79,10 @@ ayni_config_v1 configuration() {
     c.scene_capacity = 1;
     c.executor_capacity = 1;
     c.execution_binding_capacity = 1;
-    c.memory_capacity = 8;
+    c.memory_capacity = memory_capacity;
     c.command_capacity = kernel_command_capacity;
-    c.storage_write_interval_us = 1000;
-    c.storage_buffer_bytes = 512 * 1024;
+    c.storage_write_interval_us = write_interval_us;
+    c.storage_buffer_bytes = journal_bytes;
     return c;
 }
 struct Profile::Impl {
@@ -278,15 +285,17 @@ struct Profile::Impl {
         limit.field_id.size = sizeof("yaw") - 1;
         std::memcpy(limit.unit.data, "mrad", sizeof("mrad") - 1);
         limit.unit.size = sizeof("mrad") - 1;
-        limit.minimum = -100;
-        limit.maximum = 100;
+        limit.minimum = execution_minimum;
+        limit.maximum = execution_maximum;
         auto status = executor.configure(config);
         ayni_provider_v1 provider{};
         if (status == AYNI_OK) {
             status = executor.describe_provider(provider);
         }
-        const ayni_authority_value_set_v1 domain{
-            sizeof(domain), AYNI_AUTHORITY_I64, text("mrad"), {{-100, 100}}};
+        const ayni_authority_value_set_v1 domain{sizeof(domain),
+                                                 AYNI_AUTHORITY_I64,
+                                                 text("mrad"),
+                                                 {{execution_minimum, execution_maximum}}};
         const ayni_authority_field_desc_v1 field{sizeof(field), 1, AYNI_AUTHORITY_PARAMETER, 0,
                                                  domain};
         const ayni_capability_desc_v1 cap{sizeof(cap), version, text("mock.turn"), 1, 0, &field};
@@ -339,8 +348,8 @@ struct Profile::Impl {
                                                   version,
                                                   scene.scene_id,
                                                   AYNI_FORM_PROCEDURE,
-                                                  200000,
-                                                  100000,
+                                                  execution_lease_us,
+                                                  command_age_us,
                                                   1,
                                                   &mapping};
         if (status == AYNI_OK) {
@@ -370,8 +379,8 @@ struct Profile::Impl {
         for (uint32_t at = 0; at < agent_count; ++at) {
             strategies::ToolLoopConfig c;
             c.identity.id = text(chat_types[at]);
-            c.context_window_tokens = 12288;
-            c.output_reserve_tokens = 3072;
+            c.context_window_tokens = model_window_tokens;
+            c.output_reserve_tokens = model_output_tokens;
             c.model.kind = c.summary.kind = AYNI_POLICY_REQUEST_MODEL;
             c.model.binding_id = text(model_bindings[at]);
             c.summary.binding_id = text("portable.summary");
