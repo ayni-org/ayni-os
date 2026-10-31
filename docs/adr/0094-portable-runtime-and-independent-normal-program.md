@@ -34,4 +34,4 @@ Task的暂停/授权/模型限额由Core解释。会话报告hold状态并保持
 
 ## 验证
 
-实际Native、隔离导入、ESP编译与独立复查结果集中在 [#123](https://github.com/RobotSe7en/ayni/pull/123)。实机、实际栈/Flash、掉电、耐久及其他新增故障/变异专项仍未验证。
+只读源码SDK隔离导入、Native共同正常程序和完整CI通过，ESP独立编译及链接通过；已独立复查并合并，证据集中在 [#123](https://github.com/RobotSe7en/ayni/pull/123)。实机、实际栈/Flash、掉电、耐久及其他新增故障/变异专项仍未验证。

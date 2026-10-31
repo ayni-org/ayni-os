@@ -30,7 +30,9 @@
 
 这些数字只说明空 Kernel 与 Hello 流程的静态占用，不代表 M1 以后的 Kernel、Wi-Fi、摄像头与音频同时运行时的内存是否足够；PSRAM 是否被识别、运行时堆余量要看实机日志。计划 §1.3 的“摄像头 DMA/PSRAM 并发”在 M3 测量。
 
-Hello 固件启动后打印：芯片型号与版本、ESP-IDF 版本、复位原因、实测 Flash 与 PSRAM 容量、内部 RAM / DMA / PSRAM 堆基线、任务栈水位，然后在内部 RAM 中创建并销毁一个空 Kernel。它不驱动任何电机或 GPIO（`docs/development.md`）。
+当时的 Hello 固件启动后打印：芯片型号与版本、ESP-IDF 版本、复位原因、实测 Flash 与 PSRAM 容量、内部 RAM / DMA / PSRAM 堆基线、任务栈水位，然后在内部 RAM 中创建并销毁一个空 Kernel。它不驱动任何电机或 GPIO。
+
+当前入口已随[#123](https://github.com/RobotSe7en/ayni/pull/123)改为平台、ABI和默认arena需求查询，不再尝试把后续版本的默认Kernel放入内部RAM。以上M0静态测量保留为历史结果；当前完整消费者使用PSRAM区域，见[独立程序说明](../../../tests/portability/README.md)，尚无实机运行结果。
 
 ## 板型核对（照片，2026-10-20）
 
