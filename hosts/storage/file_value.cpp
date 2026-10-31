@@ -9,6 +9,7 @@
 #include <cstring>
 namespace ayni::hosts::storage {
 namespace {
+// AYFV v1 layout is owned by contracts/host/file_values.md, independent of Core records.
 constexpr uint32_t format_version = 1;
 constexpr std::size_t format_at = 4, owner_at = 8, object_at = 16, generation_at = 24;
 constexpr std::size_t size_at = 32, payload_crc_at = 36, header_crc_at = 40, reserved_at = 44;

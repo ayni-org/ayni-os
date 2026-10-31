@@ -7,9 +7,9 @@
 
 | ID | 规则 | 违反例 | 验证 |
 |---|---|---|---|
-| C-HVAL-001 | owner提交仅复制有界请求元数据；文件值和Core请求共用单一后台队列、空间预留及关闭屏障。缓冲在完成前存活且不变；完成在worker恰好一次，回调不阻塞、不重入、不抛出，context保持至Host join。关闭排空后释放，旧端口拒绝且不保留 | 读写发生于step；回调设置标记后立即销毁仍被worker使用的context；关闭丢掉已接受写入 | `FileValues.close_answers_an_accepted_value_and_old_ports_refuse_new_borrows`、既有HostStorage/NativeHost回归 |
-| C-HVAL-002 | key为正owner/object，文件名内部生成，payload至多65536字节。写入CAS按generation；新generation大于previous，0 previous只接受文件不存在。已写相同generation只接受完全相同字节，并重写/同步候选确认持久；不同字节/版本冲突返回STALE。只在文件同步、原子替换和目录确认后返回OK，歧义替换返回RESULT_UNKNOWN，不能据此ACK Core上下文 | 读取到旧缓存就当作持久确认；同版本不同内容覆盖；仅队列接受便确认文件发布 | `FileValues.durable_generation_write_retry_and_normal_reopen_preserve_exact_bytes`、`esp_files_emulated_normal_medium`（RAM介质） |
-| C-HVAL-003 | 读检查名称身份、版本、长度及CRC。BUFFER_TOO_SMALL只给所需大小/版本，payload只在OK时可用；未知格式、损坏、I/O及容量失败明确保留分类，拒绝覆盖无法确认的旧文件 | 错误伪装为空对话，读失败后使用部分输出，未知版本自动覆盖 | `FileValues.owner_object_keys_and_required_read_capacity_remain_explicit`；未知/损坏与介质故障拒绝路径已实现但未新增专项执行 |
+| C-HVAL-001 | owner提交仅复制有界请求元数据；文件值和Core请求共用单一后台队列、空间预留及关闭屏障。缓冲在完成前存活且不变；完成在worker恰好一次，回调不阻塞、不重入、不抛出，context保持至Host join。关闭排空后释放，旧端口拒绝且不保留 | 读写发生于step；回调设置标记后立即销毁仍被worker使用的context；关闭丢掉已接受写入 | M1 已实现（正常生命周期）；`FileValues.close_answers_an_accepted_value_and_old_ports_refuse_new_borrows`、既有HostStorage/NativeHost回归 |
+| C-HVAL-002 | key为正owner/object，文件名内部生成，payload至多65536字节。写入CAS按generation；新generation大于previous，0 previous只接受文件不存在。已写相同generation只接受完全相同字节，并重写/同步候选确认持久；不同字节/版本冲突返回STALE。只在文件同步、原子替换和目录确认后返回OK，歧义替换返回RESULT_UNKNOWN，不能据此ACK Core上下文 | 读取到旧缓存就当作持久确认；同版本不同内容覆盖；仅队列接受便确认文件发布 | M1 已实现（正常CAS与重开）；`FileValues.durable_generation_write_retry_and_normal_reopen_preserve_exact_bytes`、`esp_files_emulated_normal_medium`（RAM介质） |
+| C-HVAL-003 | 读检查名称身份、版本、长度及CRC。BUFFER_TOO_SMALL只给所需大小/版本，payload只在OK时可用；未知格式、损坏、I/O及容量失败明确保留分类，拒绝覆盖无法确认的旧文件 | 错误伪装为空对话，读失败后使用部分输出，未知版本自动覆盖 | M1 已实现（正常key与容量）；`FileValues.owner_object_keys_and_required_read_capacity_remain_explicit`；未知/损坏与介质故障拒绝路径已实现但未新增专项执行 |
 
 ## AYFV 格式1
 
