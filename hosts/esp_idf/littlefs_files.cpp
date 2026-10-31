@@ -69,6 +69,7 @@ int LittleFiles::begin(const char *label) {
     if (partition_) {
         return EBUSY;
     }
+    mount_error_ = 0;
     const auto *partition = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
                                                      ESP_PARTITION_SUBTYPE_DATA_LITTLEFS, label);
     if (!partition) {
@@ -108,6 +109,7 @@ int LittleFiles::begin(const char *label) {
         bool blank = false;
         const int checked = check_blank(blank);
         if (checked != 0) {
+            mount_error_ = 0; // Preserve the actual errno cause, not the preceding mount refusal.
             end();
             return checked;
         }
@@ -123,16 +125,16 @@ int LittleFiles::begin(const char *label) {
         end();
         return EIO;
     }
-    mounted_ = true;
+    volume_state_ = VolumeState::mounted;
     return 0;
 }
 void LittleFiles::end() {
-    if (mounted_) {
+    if (volume_state_ != VolumeState::closed) {
         for (std::size_t index = 0; index < slots_.size(); ++index) {
             close(static_cast<int>(index));
         }
         static_cast<void>(lfs_unmount(&filesystem_));
-        mounted_ = false;
+        volume_state_ = VolumeState::closed;
     }
     if (partition_) {
         release(partition_);
@@ -140,14 +142,18 @@ void LittleFiles::end() {
     }
 }
 LittleFiles::Slot *LittleFiles::slot(int handle) const {
-    return mounted_ && handle >= 0 && static_cast<std::size_t>(handle) < slots_.size() &&
-                   slots_[static_cast<std::size_t>(handle)].state == State::open
+    return volume_state_ != VolumeState::closed && handle >= 0 &&
+                   static_cast<std::size_t>(handle) < slots_.size() &&
+                   slots_[static_cast<std::size_t>(handle)].state != State::free
                ? &slots_[static_cast<std::size_t>(handle)]
                : nullptr;
 }
 int LittleFiles::open(const char *name, Mode mode, int &handle) {
-    if (!mounted_) {
-        return EBADF;
+    if (volume_state_ != VolumeState::mounted) {
+        return unavailable();
+    }
+    if (!name || std::strlen(name) >= slots_[0].name.size()) {
+        return ENAMETOOLONG;
     }
     int flags = 0;
     switch (mode) {
@@ -175,6 +181,11 @@ int LittleFiles::open(const char *name, Mode mode, int &handle) {
                 return cause(status);
             }
             entry.state = State::open;
+            entry.access_flags = flags & LFS_O_RDWR;
+            if (entry.access_flags == 0) {
+                entry.access_flags = LFS_O_RDONLY;
+            }
+            std::memcpy(entry.name.data(), name, std::strlen(name) + 1);
             handle = static_cast<int>(index);
             return 0;
         }
@@ -190,11 +201,14 @@ void LittleFiles::close(int handle) {
     }
 }
 int LittleFiles::lock(int handle) {
-    return slot(handle) ? 0 : EBADF;
+    return volume_state_ != VolumeState::mounted ? unavailable() : slot(handle) ? 0 : EBADF;
 }
 int LittleFiles::read(int handle, uint64_t offset, uint8_t *data, std::size_t bytes,
                       std::size_t &count) const {
     count = 0;
+    if (volume_state_ != VolumeState::mounted) {
+        return unavailable();
+    }
     auto *entry = slot(handle);
     if (!entry) {
         return EBADF;
@@ -215,6 +229,9 @@ int LittleFiles::read(int handle, uint64_t offset, uint8_t *data, std::size_t by
     return 0;
 }
 int LittleFiles::write(int handle, uint64_t offset, const uint8_t *data, std::size_t bytes) {
+    if (volume_state_ != VolumeState::mounted) {
+        return unavailable();
+    }
     auto *entry = slot(handle);
     if (!entry) {
         return EBADF;
@@ -231,6 +248,9 @@ int LittleFiles::write(int handle, uint64_t offset, const uint8_t *data, std::si
     return status < 0 ? cause(status) : static_cast<std::size_t>(status) == bytes ? 0 : EIO;
 }
 int LittleFiles::size(int handle, uint64_t &bytes) const {
+    if (volume_state_ != VolumeState::mounted) {
+        return unavailable();
+    }
     auto *entry = slot(handle);
     if (!entry) {
         return EBADF;
@@ -243,6 +263,9 @@ int LittleFiles::size(int handle, uint64_t &bytes) const {
     return 0;
 }
 int LittleFiles::truncate(int handle, uint64_t bytes) {
+    if (volume_state_ != VolumeState::mounted) {
+        return unavailable();
+    }
     auto *entry = slot(handle);
     if (!entry) {
         return EBADF;
@@ -252,23 +275,86 @@ int LittleFiles::truncate(int handle, uint64_t bytes) {
                                                         static_cast<lfs_off_t>(bytes)));
 }
 int LittleFiles::sync_file(int handle) {
+    if (volume_state_ != VolumeState::mounted) {
+        return unavailable();
+    }
     auto *entry = slot(handle);
     return entry ? cause(lfs_file_sync(&filesystem_, &entry->file)) : EBADF;
 }
 int LittleFiles::sync_namespace() {
     // lfs_rename/remove commit directory metadata and call cfg.sync before success;
     // esp_partition write/erase are synchronous. There is no deferred VFS directory cache.
-    return mounted_ ? 0 : EBADF;
+    return volume_state_ == VolumeState::mounted ? 0 : unavailable();
 }
+// Raw LittleFS detaches an opened source during rename. Rebind the same outward
+// token to the new directory entry before acknowledging replacement (C-HOST-010).
 int LittleFiles::rename(const char *from, const char *to) {
-    return mounted_ ? cause(lfs_rename(&filesystem_, from, to)) : EBADF;
+    if (volume_state_ != VolumeState::mounted) {
+        return unavailable();
+    }
+    if (std::strlen(to) >= slots_[0].name.size()) {
+        return ENAMETOOLONG;
+    }
+    if (std::strcmp(from, to) == 0) {
+        return cause(lfs_rename(&filesystem_, from, to));
+    }
+    for (auto &entry : slots_) {
+        if (entry.state == State::open && std::strcmp(entry.name.data(), from) == 0) {
+            const int synced = lfs_file_sync(&filesystem_, &entry.file);
+            if (synced != 0) {
+                return cause(synced);
+            }
+        }
+    }
+    const int renamed = lfs_rename(&filesystem_, from, to);
+    if (renamed != 0) {
+        return cause(renamed);
+    }
+    detach_name(to);
+    for (auto &entry : slots_) {
+        if (entry.state != State::open) {
+            continue;
+        }
+        if (std::strcmp(entry.name.data(), from) == 0) {
+            const int closed = lfs_file_close(&filesystem_, &entry.file);
+            entry.state = State::free;
+            const int opened =
+                lfs_file_opencfg(&filesystem_, &entry.file, to, entry.access_flags, &entry.config);
+            if (opened == 0) {
+                entry.state = State::open;
+                std::memcpy(entry.name.data(), to, std::strlen(to) + 1);
+            }
+            if (closed != 0 || opened != 0) {
+                // The namespace replacement already committed. Refuse all future I/O
+                // rather than acknowledge appends through a detached inode. Close is
+                // still allowed; an orderly Host reopen establishes the actual namespace.
+                volume_state_ = VolumeState::poisoned;
+                return cause(closed != 0 ? closed : opened);
+            }
+        }
+    }
+    return 0;
+}
+void LittleFiles::detach_name(const char *name) {
+    for (auto &entry : slots_) {
+        if (entry.state == State::open && std::strcmp(entry.name.data(), name) == 0) {
+            entry.state = State::detached;
+        }
+    }
 }
 int LittleFiles::remove(const char *name) {
-    return mounted_ ? cause(lfs_remove(&filesystem_, name)) : EBADF;
+    if (volume_state_ != VolumeState::mounted) {
+        return unavailable();
+    }
+    const int removed = lfs_remove(&filesystem_, name);
+    if (removed == 0) {
+        detach_name(name);
+    }
+    return cause(removed);
 }
 int LittleFiles::free_bytes(uint64_t &bytes) const {
-    if (!mounted_) {
-        return EBADF;
+    if (volume_state_ != VolumeState::mounted) {
+        return unavailable();
     }
     const auto used = lfs_fs_size(&filesystem_);
     if (used < 0) {

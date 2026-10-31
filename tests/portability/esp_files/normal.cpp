@@ -4,6 +4,7 @@
 #include <array>
 #include <ayni/ayni.h>
 #include <ayni/hosts/storage/file_log.h>
+#include <ayni/storage_format.h>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
@@ -91,10 +92,15 @@ int main() {
         std::size_t count = 0;
         CHECK(files.read(next, 0, out.data(), out.size(), count) == 0 && count == out.size());
         CHECK(out == fresh);
+        CHECK(files.write(next, fresh.size(), old.data(), old.size()) == 0);
+        CHECK(files.sync_file(next) == 0);
         files.close(first);
         files.close(next);
         CHECK(files.open("first", Files::Mode::read_existing, first) == 0);
         CHECK(files.read(first, 0, out.data(), out.size(), count) == 0 && out == fresh);
+        uint64_t length = 0;
+        CHECK(files.size(first, length) == 0 && length == fresh.size() + old.size());
+        CHECK(files.read(first, fresh.size(), out.data(), out.size(), count) == 0 && out == old);
         files.close(first);
         CHECK(files.remove("first") == 0);
         uint64_t available = 0;
@@ -115,6 +121,36 @@ int main() {
         std::array<uint8_t, 4> out{};
         CHECK(log.read_log(0, out.data(), out.size()).value == out.size());
         CHECK(out == payload);
+    }
+    // Host framing treats domain records as opaque. This identity-only prefix is
+    // sufficient for Host trim matching; it is deliberately not a valid Core batch.
+    // Offsets are the fixed identity prefix in contracts/storage/records.md.
+    constexpr std::size_t schema_at = 4, writer_at = 8, sequence_at = 16, transition_at = 24;
+    std::array<uint8_t, AYNI_STORAGE_BATCH_IDENTITY_PREFIX_BYTES> activation{};
+    std::memcpy(activation.data(), "AYJB", 4);
+    activation[schema_at] = AYNI_STORAGE_SCHEMA_CURRENT;
+    activation[writer_at] = 1;
+    activation[sequence_at] = 2;
+    activation[transition_at] = 2;
+    ayni_storage_batch_identity_v1 identity{};
+    CHECK(ayni_storage_read_batch_identity(activation.data(), activation.size(), &identity));
+    CHECK(identity.writer_epoch == 1 && identity.commit_seq == 2 && identity.transition_id == 2);
+    {
+        LittleFiles files(false);
+        FileLog log(files);
+        CHECK(log.open("ayni_test", "commit_log").status == FileLog::OpenStatus::ok);
+        CHECK(log.append(2, activation.data(), activation.size()).outcome == AYNI_WRITE_OK);
+        CHECK(log.trim_prefix(1, 2, 2).outcome == AYNI_WRITE_OK);
+        CHECK(log.append(3, payload.data(), payload.size()).outcome == AYNI_WRITE_OK);
+    }
+    {
+        LittleFiles files(false);
+        FileLog log(files);
+        CHECK(log.open("ayni_test", "commit_log").status == FileLog::OpenStatus::ok);
+        std::array<uint8_t, activation.size() + payload.size()> out{};
+        CHECK(log.read_log(0, out.data(), out.size()).value == out.size());
+        CHECK(std::memcmp(out.data(), activation.data(), activation.size()) == 0);
+        CHECK(std::memcmp(out.data() + activation.size(), payload.data(), payload.size()) == 0);
     }
     std::puts("ESP Files normal emulated medium passed; not ESP hardware evidence");
     return 0;

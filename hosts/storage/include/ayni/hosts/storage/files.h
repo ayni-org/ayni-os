@@ -38,6 +38,8 @@ class Files {
     // synchronous durable namespace operations; it must document that guarantee.
     virtual int sync_namespace() = 0;
     // Atomic name replacement within this namespace; durability is confirmed separately.
+    // Success keeps source tokens associated with the new name for subsequent write/sync.
+    // Tokens for the replaced destination may retain the old, now unlinked file.
     virtual int rename(const char *from, const char *to) = 0;
     virtual int remove(const char *name) = 0;
     // Actual currently usable bytes, before the asynchronous Host's pending reservations.
