@@ -5,6 +5,11 @@
 include_guard(GLOBAL)
 include(FetchContent)
 
+# Discover test lists after all builds finish. POST_BUILD otherwise runs ASan
+# startup concurrently with several large links under the shared memory budget.
+# Keep the existing discovery and runtime timeouts; CTest enumerates every suite.
+set(CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE PRE_TEST)
+
 set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)
 
