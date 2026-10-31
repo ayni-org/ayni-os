@@ -144,4 +144,4 @@
 | [0086](0086-task-owned-managed-operation-controls.md) | Task 所有长操作与订阅的模型控制 | 已接受产品选择；实施设计 | §2、§3、§9、§14、AP-05 |
 | [0087](0087-binding-resource-mapping-and-foundation-acceptance.md) | Binding 资源映射与基础验收边界 | 已接受；验证与交付见 #117 | AP-04/AP-06、基础验收 |
 | [0088](0088-safety-branch-coverage-target.md) | 安全关键分支覆盖目标统一为 80% | 已接受 | 仓库规则、工作流、基础及发布验收 |
-| [0090](0090-bounded-portable-workspaces.md) | 通用有界工作区与低栈接口 | 已接受设计；实施中 | ABI0.53、独立接入 |
+| [0090](0090-bounded-portable-workspaces.md) | 通用有界工作区与低栈接口 | 已接受；实现与验证见 #119 | ABI0.53、独立接入 |
