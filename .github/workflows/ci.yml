@@ -156,6 +156,14 @@ jobs:
           idf.py --ccache build
           ccache --show-stats
           idf.py size
+      - name: Check LittleFS file adapter on an emulated normal medium
+        shell: bash
+        run: |
+          cmake -S tests/portability/esp_files -B build/esp-files \
+            -DAYNI_SOURCE_DIR="$GITHUB_WORKSPACE" \
+            -DLITTLEFS_COMPONENT_DIR="$GITHUB_WORKSPACE/targets/esp32_assistant/managed_components/joltwallet__littlefs"
+          cmake --build build/esp-files
+          ctest --test-dir build/esp-files --output-on-failure
       - name: Return files to the runner's user
         if: always()
         run: chown -R "$(stat -c %u:%g "$RUNNER_TEMP/..")" "$GITHUB_WORKSPACE" "$RUNNER_TEMP" "$HOME"

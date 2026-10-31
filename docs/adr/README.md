@@ -146,3 +146,4 @@
 | [0088](0088-safety-branch-coverage-target.md) | 安全关键分支覆盖目标统一为 80% | 已接受 | 仓库规则、工作流、基础及发布验收 |
 | [0090](0090-bounded-portable-workspaces.md) | 通用有界工作区与低栈接口 | 已接受；实现与验证见 #119 | ABI0.53、独立接入 |
 | [0091](0091-shared-host-file-storage.md) | 共用Host文件存储与平台文件端口 | 已接受；实现与验证见 #120 | 独立接入、C-HOST-009～019 |
+| [0092](0092-esp-idf-littlefs-host.md) | FreeRTOS异步Host与专用LittleFS卷 | 已接受；实现与验证见 #121 | 独立接入、C-HOST |

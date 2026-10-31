@@ -71,6 +71,7 @@ Host::Host()
       owner_(xTaskGetCurrentTaskHandle()) {}
 
 Host::~Host() {
+    close_storage();
     vSemaphoreDelete(ingress_);
 }
 
@@ -82,7 +83,25 @@ ayni_host_v1 Host::table() {
     host.wake = &Host::wake;
     host.ingress_lock = &Host::ingress_lock;
     host.ingress_unlock = &Host::ingress_unlock;
+    if (storage_) {
+        host.storage_append = &Host::storage_append;
+        host.storage_read_prefix = &Host::storage_read_prefix;
+        host.storage_read_log = &Host::storage_read_log;
+        host.storage_fence_writers = &Host::storage_fence_writers;
+        host.storage_write_snapshot = &Host::storage_write_snapshot;
+        host.storage_read_snapshot = &Host::storage_read_snapshot;
+        host.storage_trim_prefix = &Host::storage_trim_prefix;
+        host.storage_free_bytes = &Host::storage_free_bytes;
+    }
     return host;
+}
+
+bool Host::wait_for_wake(uint64_t timeout_us) {
+    constexpr uint64_t tick_us = static_cast<uint64_t>(portTICK_PERIOD_MS) * 1000;
+    const uint64_t rounded = timeout_us / tick_us + (timeout_us % tick_us != 0);
+    const TickType_t ticks =
+        rounded >= portMAX_DELAY ? portMAX_DELAY - 1 : static_cast<TickType_t>(rounded);
+    return ulTaskNotifyTake(pdTRUE, ticks) != 0;
 }
 
 void Host::wake(void *ctx) {

@@ -6,18 +6,35 @@
 #define AYNI_HOSTS_ESP_IDF_H
 
 #include <ayni/ayni.h>
+#include <cstddef>
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
 namespace ayni::hosts::esp_idf {
+// Source-level ESP Host status. file_error uses errno, not_a_volume reports raw lfs status.
+enum class StorageStatus {
+    ok,
+    invalid_argument,
+    already_open,
+    no_memory,
+    in_use,
+    not_a_volume,
+    not_a_log,
+    file_error,
+    task_error
+};
+struct StorageOpen {
+    StorageStatus status;
+    int error;
+};
 
 // Serves one Kernel. Construct it on the task that owns the Kernel: wake
 // gives that task's default notification (index 0), which the owner's wait
 // loop takes, so nothing else on that task may use index 0. The table's ctx
 // points at this object, so it is neither copyable nor movable and must
-// outlive the Kernel (C-HOST-001).
+// outlive the Kernel (C-HOST-001). The Host itself must be placed in internal RAM.
 class Host {
   public:
     Host();
@@ -31,7 +48,54 @@ class Host {
     // bounds how long a low-priority poster can delay the owner task.
     ayni_host_v1 table();
 
+    // Owner task before create. Dedicated LittleFS partition only; another Ayni Host
+    // or existing VFS mount is refused. No external writer/mount may access the partition
+    // during this lease. initialize_blank permits formatting entirely erased media only.
+    // capacity is 1..16 queued requests; each accepted request completes exactly once.
+    StorageOpen open_storage(const char *partition_label, uint32_t capacity,
+                             bool initialize_blank = false);
+    // Owner after STOPPED/before destroy. Drains accepted work, joins/deletes the parked
+    // worker, then unmounts. May block on flash I/O. Captured old ports reject after close.
+    void close_storage();
+    // Owner wake uses notification index0; timeout is microseconds, rounded up to ticks.
+    bool wait_for_wake(uint64_t timeout_us);
+    // Last completed worker or current worker high-water free bytes; 0 before a worker ran.
+    uint32_t worker_stack_free_bytes() const;
+    // Startup accounting for one internal-RAM Storage including queue, caches and worker stack.
+    static void storage_memory_requirements(std::size_t &bytes, std::size_t &alignment);
+    static constexpr uint32_t worker_stack_bytes = 24 * 1024;
+    static constexpr uint32_t request_capacity_limit = 16;
+
   private:
+    class Storage;
+    static ayni_submit_result_t storage_append(void *ctx, const ayni_storage_batch_v1 *batch,
+                                               ayni_attempt_ref_v1 attempt,
+                                               ayni_completion_t *completion);
+    static ayni_submit_result_t storage_read_prefix(void *ctx, uint64_t from_commit_seq,
+                                                    uint8_t *buffer, uint32_t buffer_size,
+                                                    ayni_attempt_ref_v1 attempt,
+                                                    ayni_completion_t *completion);
+    static ayni_submit_result_t storage_read_log(void *ctx, uint64_t cursor, uint8_t *buffer,
+                                                 uint32_t buffer_size, ayni_attempt_ref_v1 attempt,
+                                                 ayni_completion_t *completion);
+    static ayni_submit_result_t storage_fence_writers(void *ctx, uint32_t minimum_epoch,
+                                                      ayni_attempt_ref_v1 attempt,
+                                                      ayni_completion_t *completion);
+    static ayni_submit_result_t storage_write_snapshot(void *ctx, uint32_t writer_epoch,
+                                                       uint32_t slot, uint64_t offset,
+                                                       ayni_bytes_v1 bytes,
+                                                       ayni_attempt_ref_v1 attempt,
+                                                       ayni_completion_t *completion);
+    static ayni_submit_result_t storage_read_snapshot(void *ctx, uint32_t slot, uint64_t offset,
+                                                      uint8_t *buffer, uint32_t buffer_size,
+                                                      ayni_attempt_ref_v1 attempt,
+                                                      ayni_completion_t *completion);
+    static ayni_submit_result_t storage_trim_prefix(void *ctx, uint32_t writer_epoch,
+                                                    uint64_t transition_id, uint64_t commit_seq,
+                                                    ayni_attempt_ref_v1 attempt,
+                                                    ayni_completion_t *completion);
+    static ayni_status_t storage_free_bytes(void *ctx, uint64_t *out_free_bytes);
+
     static void wake(void *ctx);
     static void ingress_lock(void *ctx);
     static void ingress_unlock(void *ctx);
@@ -39,6 +103,8 @@ class Host {
     StaticSemaphore_t ingress_storage_;
     SemaphoreHandle_t ingress_;
     TaskHandle_t owner_;
+    uint32_t last_worker_stack_free_ = 0; // Retains joined worker evidence across close.
+    Storage *storage_ = nullptr;          // Internal-RAM owner, destroyed after its worker joins.
 };
 
 // Logs chip model and revision, ESP-IDF version, reset reason, detected flash
