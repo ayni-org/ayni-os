@@ -1043,6 +1043,10 @@ ayni_status_t reopened(Profile &p, Clock c, const Evidence &e) {
             return status;
         }
     }
+    const auto executor = p.execution_evidence();
+    if (p.model_submissions() || executor.submissions || executor.samples || executor.call) {
+        return AYNI_INVALID_STATE;
+    }
     std::puts("portable orderly reopen passed");
     return AYNI_OK;
 }

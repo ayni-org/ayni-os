@@ -703,4 +703,9 @@ ExecutionEvidence Profile::execution_evidence() const {
                                      impl_->executor.submissions()}
                  : ExecutionEvidence{};
 }
+uint64_t Profile::model_submissions() const {
+    return impl_ ? impl_->model_a.submissions() + impl_->model_b.submissions() +
+                       impl_->summary.submissions()
+                 : 0;
+}
 } // namespace ayni::runtime::portable

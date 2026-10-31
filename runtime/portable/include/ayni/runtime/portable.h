@@ -54,6 +54,7 @@ class Profile {
     ayni_status_t destroy();
     uint64_t model_executions(uint32_t index) const;
     ExecutionEvidence execution_evidence() const;
+    uint64_t model_submissions() const; // Accepted A/B/summary requests this profile lifetime.
 
   private:
     struct Impl;

@@ -24,6 +24,9 @@ class Provider {
     // command.
     ayni_status_t advance();
     bool pending() const { return pending_.has_value(); }
+    uint64_t submissions() const {
+        return submissions_;
+    } // Accepted borrows, including later cancellation.
     uint64_t executions() const { return executions_; } // Successful noncancelled model outputs.
 
   private:
@@ -50,6 +53,8 @@ class Provider {
     ayni_provider_v1 descriptor_{};
     std::optional<Pending> pending_; // One accepted borrow, empty is quiescent.
     uint64_t executions_ = 0;
+    uint64_t submissions_ =
+        0; // Owner-only acceptance count since construction, zero before submit.
 };
 } // namespace ayni::providers::fixture_model
 #endif

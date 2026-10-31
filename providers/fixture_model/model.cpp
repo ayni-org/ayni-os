@@ -116,6 +116,7 @@ ayni_submit_result_t Provider::submit(void *context, const ayni_provider_request
             return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
         }
     }
+    ++self.submissions_;
     self.pending_ = Pending{answer, request->attempt, request->logical_call_id,
                             request->deadline_us, completion};
     return AYNI_SUBMIT_ACCEPTED;
