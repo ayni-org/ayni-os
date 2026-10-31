@@ -208,7 +208,9 @@ ayni_add_sdk(COMPONENTS core strategies)
 target_link_libraries(my_application PRIVATE Ayni::Core Ayni::Strategies)
 ```
 
-不传组件时默认Core/Strategies。可选组件为`api`、`software_provider`、`permit_gate`、`assistant`、`software_workflow`、`mock_provider`、`mock_execution`，公开目标分别为`Ayni::Api`、`SoftwareProvider`、`PermitGate`、`Assistant`、`SoftwareWorkflow`、`MockProvider`、`MockExecution`（后六项同样带`Ayni::`）。Api仅提供头文件。平台Host及runtime由部署另行组装；基础SDK不查找SQLite、CURL或Threads，Mock显式选择后才引入yyjson。
+不传组件时默认Core/Strategies。可选组件为`api`、`software_provider`、`permit_gate`、`assistant`、`software_workflow`、`mock_provider`、`mock_execution`、`host_storage`、`native_host`，公开目标分别为`Ayni::Api`、`SoftwareProvider`、`PermitGate`、`Assistant`、`SoftwareWorkflow`、`MockProvider`、`MockExecution`、`HostStorage`、`NativeHost`（均带`Ayni::`）。Api仅提供头文件。`host_storage`提供共用文件日志机制并链接Core的公开格式读取实现；`native_host`同时选择该机制及Linux文件/线程端口，单独查询Threads。runtime由部署组装；默认SDK不查找SQLite、CURL或Threads，Mock显式选择后才引入yyjson。
+
+共用Host存储机制位于`hosts/storage/`，其`Files`接口隔离阻塞文件操作；Linux适配位于`hosts/native/`。日志、快照及轮转共用同一实现和AYNL v1格式，C ABI与Core schema不变；ESP端口与介质保证仍待验证。独立导入测试分别检查默认无Host、共用存储及Linux Host三个组件组合（ADR-0091）。
 
 ABI0.53的临时内存按显式查询预分配；C调用方提供 `ayni_workspace_v1`，C++ 可使用 `ayni::Workspace`（`ayni/workspace.hpp`）。例如策略启动前：
 
@@ -225,7 +227,7 @@ if (status == AYNI_OK) {
 
 同源可重复导入和增补组件；同一构建不能混用不同源码来源。源码、平台上下文和arena的生命周期仍按公开契约处理。独立隔离验证位于`tests/portability/`，完整接入阶段见[实施计划](architecture/independent-consumption-plan.md)，编译结果不代表ESP实机通过。
 
-P5 提供源码级 `include/ayni/ayni.hpp` 和 [五个公开接入示例](../examples/README.md)（ADR-0067）。`ayni_cpp_sdk_smoke` 与示例客户端按 C++17、`-fno-exceptions -fno-rtti` 编译；当前 C ABI minor 为 0.52、Core schema 8；各阶段版本及兼容决定见对应 ADR。ESP-IDF 组合根包含同一 header，完整 CI 编译不能替代板级执行。
+P5 提供源码级 `include/ayni/ayni.hpp` 和 [五个公开接入示例](../examples/README.md)（ADR-0067）。`ayni_cpp_sdk_smoke` 与示例客户端按 C++17、`-fno-exceptions -fno-rtti` 编译；当前 C ABI minor 为 0.53、Core schema 8；各阶段版本及兼容决定见对应 ADR。ESP-IDF 组合根包含同一 header，完整 CI 编译不能替代板级执行。
 
 普通测试套件通过 CTest 运行 `CppSdk.*`、`cpp_sdk_without_exceptions_or_rtti`、`Examples.*`；`Examples.assistant_demo` 运行 Mock CLI 脚本。第二模型用本地 HTTP fixture，不使用真实服务或密钥。具体操作见示例 README；构建前仍按本页资源预算设置显式并行度。
 
