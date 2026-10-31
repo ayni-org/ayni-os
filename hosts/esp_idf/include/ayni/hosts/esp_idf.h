@@ -17,19 +17,19 @@
 namespace ayni::hosts::esp_idf {
 // Source-level ESP Host status. file_error uses errno, not_a_volume reports raw lfs status.
 enum class StorageStatus {
-    ok,
-    invalid_argument,
-    already_open,
-    no_memory,
-    in_use,
-    not_a_volume,
-    not_a_log,
-    file_error,
-    task_error
+    ok,               // Complete storage ports and worker are available.
+    invalid_argument, // Missing label or queue capacity outside 1..request_capacity_limit.
+    already_open,     // This Host already owns its storage.
+    no_memory,        // Internal-RAM Storage allocation failed.
+    in_use,           // Another Ayni Host or existing VFS mount owns the partition.
+    not_a_volume,     // Final raw LittleFS mount/format failed; error is that negative status.
+    not_a_log,        // Existing Host log has an unsupported file/schema format.
+    file_error,       // File/partition operation failed; error is an errno-compatible cause.
+    task_error        // FreeRTOS did not create the statically backed worker.
 };
 struct StorageOpen {
-    StorageStatus status;
-    int error;
+    StorageStatus status; // Startup outcome; no partially opened storage is published.
+    int error; // 0 without a cause; errno for file_error, raw lfs status for not_a_volume.
 };
 
 // Serves one Kernel. Construct it on the task that owns the Kernel: wake

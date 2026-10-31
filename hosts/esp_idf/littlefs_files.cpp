@@ -344,7 +344,9 @@ int LittleFiles::rename(const char *from, const char *to) {
 // A raw metadata error can follow a committed directory change (e.g. readback
 // or orphan cleanup). No continued token association is proven after that error.
 int LittleFiles::namespace_result(int status) {
-    if (status != 0) { volume_state_ = VolumeState::poisoned; }
+    if (status != 0) {
+        volume_state_ = VolumeState::poisoned;
+    }
     return cause(status);
 }
 void LittleFiles::detach_name(const char *name) {
