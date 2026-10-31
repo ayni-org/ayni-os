@@ -9,14 +9,15 @@ set_property(GLOBAL PROPERTY AYNI_SDK_SOURCE_ROOT "${_ayni_sdk_root}")
 include_guard(GLOBAL)
 
 # Components are a closed list, not a plugin registry. Dependencies below name
-# implementations needed by static-library consumers, not deployment selections.
+# implementations needed by static-library consumers. Optional platform libraries
+# define targets only; the runtime/consumer still composes each deployment.
 function(ayni_add_sdk)
     cmake_parse_arguments(PARSE_ARGV 0 sdk "" "" "COMPONENTS")
     if(sdk_UNPARSED_ARGUMENTS OR sdk_KEYWORDS_MISSING_VALUES)
         message(FATAL_ERROR "ayni_add_sdk expects COMPONENTS followed by component names")
     endif()
     set(known api core strategies software_provider permit_gate assistant
-        software_workflow mock_provider mock_execution)
+        software_workflow mock_provider mock_execution host_storage native_host)
     if(NOT sdk_COMPONENTS)
         set(sdk_COMPONENTS core strategies)
     endif()
@@ -33,6 +34,9 @@ function(ayni_add_sdk)
         if(NOT component STREQUAL api AND NOT component STREQUAL permit_gate)
             list(APPEND selected core)
         endif()
+        if(component STREQUAL native_host)
+            list(APPEND selected host_storage)
+        endif()
         if(component STREQUAL mock_execution)
             list(APPEND selected permit_gate)
         endif()
@@ -40,11 +44,13 @@ function(ayni_add_sdk)
 
     # Fixed topological order also permits repeated calls that add components.
     set(paths "" core strategies/builtin providers/software control/permit_gate
-        applications/assistant applications/software_workflow providers/mock providers/mock_execution)
+        applications/assistant applications/software_workflow providers/mock providers/mock_execution
+        hosts/storage hosts/native)
     set(targets ayni_api ayni_core ayni_strategies ayni_provider_software ayni_control_gate
-        ayni_assistant_application ayni_software_workflow ayni_provider_mock ayni_provider_mock_execution)
+        ayni_assistant_application ayni_software_workflow ayni_provider_mock ayni_provider_mock_execution
+        ayni_host_storage ayni_host_native)
     set(aliases Api Core Strategies SoftwareProvider PermitGate Assistant
-        SoftwareWorkflow MockProvider MockExecution)
+        SoftwareWorkflow MockProvider MockExecution HostStorage NativeHost)
     foreach(component IN LISTS known)
         if(NOT component IN_LIST selected)
             continue()

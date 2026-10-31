@@ -15,8 +15,11 @@ endif()
 if(PROBE_SECOND_SOURCE)
     include("${PROBE_SECOND_SOURCE}/cmake/AyniSDK.cmake")
 endif()
-foreach(forbidden IN ITEMS SQLite3::SQLite3 CURL::libcurl Threads::Threads
-        ayni_runtime_examples ayni_runtime_native_node ayni_host_native)
+set(forbidden_targets SQLite3::SQLite3 CURL::libcurl ayni_runtime_examples ayni_runtime_native_node)
+if(NOT native_host IN_LIST PROBE_COMPONENTS)
+    list(APPEND forbidden_targets Threads::Threads ayni_host_native)
+endif()
+foreach(forbidden IN LISTS forbidden_targets)
     if(TARGET ${forbidden})
         message(FATAL_ERROR "The portable SDK imported deployment target ${forbidden}")
     endif()
@@ -35,7 +38,8 @@ target_compile_options(consumer_cpp PRIVATE -fno-exceptions -fno-rtti)
 foreach(pair IN ITEMS "software_provider;SoftwareProvider;SOFTWARE"
         "permit_gate;PermitGate;GATE" "assistant;Assistant;ASSISTANT"
         "software_workflow;SoftwareWorkflow;WORKFLOW" "mock_provider;MockProvider;MOCK"
-        "mock_execution;MockExecution;EXECUTION")
+        "mock_execution;MockExecution;EXECUTION" "host_storage;HostStorage;STORAGE"
+        "native_host;NativeHost;NATIVE_HOST")
     list(GET pair 0 component)
     list(GET pair 1 alias)
     list(GET pair 2 definition)

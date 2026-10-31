@@ -1,4 +1,4 @@
-// Native Host for Linux and macOS builds: the platform services the Kernel
+// Native Host for validated Linux builds: the platform services the Kernel
 // uses to maintain its own invariants (ADR-0006): clock, wake and the ingress
 // lock (ADR-0015), and the persistent log (C-HOST-009) in a file of a state
 // directory once open_storage() succeeds.
@@ -8,7 +8,7 @@
 // then posts the result with ayni_completion_post, after which it touches
 // neither the buffer nor the completion (C-HOST-019). An append is OK only
 // once the file is synced to the device (C-HOST-010). The file's framing
-// and what a power cut leaves are described in hosts/native/file_log.h.
+// and what a power cut leaves are described in ayni/hosts/storage/file_log.h.
 // The same worker refreshes cached free space after requests and after one
 // idle second (ADR-0039); changed idle observations wake the owner. Filesystem
 // and scheduling delays are not bounded by this sampling interval. The cached

@@ -59,7 +59,7 @@ struct Request {
 };
 
 uint64_t request_reservation(const Request &request) {
-    return request.port == Request::Port::append           ? request.size + uint64_t{24}
+    return request.port == Request::Port::append ? storage::FileLog::append_bytes(request.size)
            : request.port == Request::Port::write_snapshot ? request.size
                                                            : 0U;
 }

@@ -234,7 +234,8 @@
     "hosts": [
       "api",
       "own",
-      "external"
+      "external",
+      "hosts:storage"
     ],
     "runtime": [
       "api",
