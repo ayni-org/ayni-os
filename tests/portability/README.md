@@ -11,7 +11,7 @@ export CMAKE_BUILD_PARALLEL_LEVEL=4 CTEST_PARALLEL_LEVEL=4
 python3 tests/portability/run_native.py --source . --source-revision "$(git rev-parse HEAD)"
 ```
 
-运行器复制声明的SDK闭包并设为只读，在独立目录构建/运行，禁用SQLite/CURL，并检查消费者没有Core私有include。原始探针仍可用`python3 tests/portability/sdk_import_test.py --source . --optional`。生成器用`--generator`明确选择，sanitizer通过`--sanitize`传递；CTest继承父配置工具链。版本标签为调用者提供的源码修订；`working-tree/unversioned`不构成冻结版本证据。
+运行器复制声明的SDK闭包并设为只读，在独立目录构建/运行，禁用SQLite/CURL，并检查消费者没有Core私有include。原始探针仍可用`python3 tests/portability/sdk_import_test.py --source . --optional`。生成器用`--generator`明确选择，sanitizer通过`--sanitize`传递；CTest继承构建类型、sanitizer、生成器和环境CC/CXX；仅在父CMake显式选择编译器时，也应相应设置CC/CXX。版本标签为调用者提供的源码修订；`working-tree/unversioned`不构成冻结版本证据。
 
 完整程序正常关闭并重开同一真实文件目录，核对Agent/Goal/Call身份、结构结果、正文及摘要/历史，并确认没有模型/执行器重派。文本指纹仅为内存中的正常用例比较，不是安全证明或持久hash清单。两槽快照由实际来源删除/隐私压缩产生。不是掉电或故障恢复专项。
 
