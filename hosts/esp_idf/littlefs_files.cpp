@@ -194,9 +194,15 @@ int LittleFiles::open(const char *name, Mode mode, int &handle) {
 }
 void LittleFiles::close(int handle) {
     if (auto *entry = slot(handle)) {
-        // Mutations were explicitly synced before a successful completion. Closing
-        // never promotes an uncertain write to success, and lfs_close releases its slot.
-        static_cast<void>(lfs_file_close(&filesystem_, &entry->file));
+        if (volume_state_ == VolumeState::mounted) {
+            // Every acknowledged mutation was explicitly synced. A close never
+            // promotes an uncertain write to a successful Host completion.
+            static_cast<void>(lfs_file_close(&filesystem_, &entry->file));
+        }
+        // Poisoned cleanup must not invoke lfs_close's implicit sync through an
+        // unproven directory association. All file/cache buffers are supplied here;
+        // discard their state, then lfs_unmount only deinitializes volume buffers.
+        // The raw mlist points into these still-live slots until that unmount.
         entry->state = State::free;
     }
 }
