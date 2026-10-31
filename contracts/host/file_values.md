@@ -15,4 +15,6 @@
 
 固定48字节头，小端：magic `AYFV`（0），格式u32（4），owner u64（8），object u64（16），generation u64（24），payload字节u32（32），payload CRC32（36），前40字节的CRC32（40），零保留u32（44）；随后恰好payload字节。CRC为CRC-32/ISO-HDLC。头部、业务Conversation编码和Core journal是三个独立边界。
 
+文件值generation是自身CAS版本，独立于Core上下文generation；调用者还须核对payload携带的上下文、轮次及隐私版本。
+
 文件名按完整64位十六进制owner/object生成，候选以`.candidate`结束；命名空间由Host独占，FileLog拒绝使用保留的`value-`前缀，避免主日志与外层候选文件别名。替换前验证已存header和payload；一旦写请求成功受理，调用者必须等完成后再修改缓冲。Host不代替Core上下文版本准入，也不自动发出上下文ACK。真实Flash旧块擦除、掉电与耐久仍需各自证据。

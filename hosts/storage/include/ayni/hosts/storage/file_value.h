@@ -20,7 +20,9 @@ struct FileValueResult {
     uint64_t generation = 0;
     uint32_t size = 0;
 };
-// Owner-thread submission. Metadata is copied; buffers stay immutable/alive until completion.
+// Owner-thread submission. Metadata is copied; write input stays immutable/alive and
+// read output stays exclusively worker-owned until completion. Value generation is
+// its own CAS version, independent of Core context generation/turn identity.
 // Callback runs once on the storage worker, must not block/reenter Host or owner-only Core APIs; it
 // cannot throw. Completion context lives through Host close/join. No cancellation; close drains
 // accepted work.
