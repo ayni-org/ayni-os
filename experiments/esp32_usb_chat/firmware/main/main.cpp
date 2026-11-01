@@ -53,7 +53,7 @@ void owner(void *) {
     int64_t hello_at = 0;
     for (;;) {
         if (!configured && esp_timer_get_time() - hello_at > 1000000) {
-            const char hello[] = "AYNI USB CHAT/2; configure required";
+            const char hello[] = "AYNI USB CHAT/3; configure required";
             transport->send(usbchat::Kind::hello, 0, hello, sizeof(hello) - 1);
             hello_at = esp_timer_get_time();
         }
@@ -79,6 +79,7 @@ void owner(void *) {
                 char s[64];
                 std::snprintf(s, sizeof(s), "kernel stopped/held=%ld", long(rc));
                 transport->send(usbchat::Kind::status, 0, s, std::strlen(s));
+                chat->stop_outputs();
                 failed = true;
             }
         }

@@ -13,10 +13,16 @@ namespace usbchat {
 // All state changes and the completion checkpoint belong to the unchanged Ayni Core.
 class Chat {
   public:
-    explicit Chat(Transport &transport) : transport_(transport), speaker_(transport) {}
+    explicit Chat(Transport &transport)
+        : transport_(transport), speaker_(transport), motor_(transport) {}
     ayni_status_t initialize(const char *route);
     ayni_status_t tick();
     void incoming(const Packet &);
+    void stop_outputs() {
+        motor_.execution().set_accepting(false);
+        motor_.execution().request_stop();
+        motor_.execution().advance();
+    }
 
   private:
     static ayni_status_t decide(void *, const ayni_task_snapshot_v1 *, ayni_policy_output_v1 *);

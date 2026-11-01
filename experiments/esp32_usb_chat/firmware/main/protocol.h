@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 namespace usbchat {
-constexpr uint32_t wire_version = 2;
+constexpr uint32_t wire_version = 3;
 constexpr size_t header_bytes = 24;
 constexpr size_t screen_width = 240, screen_height = 320;
 constexpr size_t screen_bytes = screen_width * screen_height * sizeof(uint16_t);
@@ -34,7 +34,16 @@ enum class Kind : uint8_t {
     audio_end = 19,
     audio_ack = 20,
     audio_error = 21,
-    audio_cancel = 22
+    audio_cancel = 22,
+    motor_review = 23,
+    motor_decision = 24,
+    motor_observe = 25,
+    motor_observed = 26,
+    motor_settings = 27,
+    motor_stop = 28,
+    motor_power_off = 29,
+    motor_heartbeat = 30,
+    motor_state = 31
 };
 inline uint32_t get32(const uint8_t *p) {
     return uint32_t(p[0]) | (uint32_t(p[1]) << 8U) | (uint32_t(p[2]) << 16U) |

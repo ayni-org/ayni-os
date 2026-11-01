@@ -1,8 +1,10 @@
 #include "chat.h"
 #include "configuration.h"
+#include "motor_contract.h"
 #include <ayni/host_authority.h>
 #include <ayni/model_messages.hpp>
 #include <ayni/resources.h>
+#include <ayni/scenes.h>
 #include <ayni/values.hpp>
 #include <cstdio>
 #include <cstring>
@@ -13,6 +15,9 @@ namespace usbchat {
 namespace {
 constexpr uint32_t version = 1, step_units = 32, step_us = 4000, model_timeout_ms = 90000;
 constexpr uint64_t principal = 1, command_range = UINT64_C(1) << 32;
+// Boot-local motion authority also expires after one day; no silent renewal.
+constexpr uint32_t motor_run_grant_index = 6;
+constexpr uint64_t motor_grant_us = UINT64_C(24) * 60 * 60 * 1000000;
 constexpr char capability_id[] = "usb.model.text", binding_id[] = "usb.model",
                strategy_id[] = "usb.chat";
 template <class T> T sized() {
@@ -223,7 +228,9 @@ ayni_status_t Chat::configure() {
         {text("speaker.play_tone"), version, AYNI_TOOL_ROLE_CAPABILITY},
         {text("speaker.speak_text"), version, AYNI_TOOL_ROLE_CAPABILITY},
         {text("motor.status"), version, AYNI_TOOL_ROLE_CAPABILITY},
-        {text("motor.plan"), version, AYNI_TOOL_ROLE_CAPABILITY}};
+        {text("motor.plan"), version, AYNI_TOOL_ROLE_CAPABILITY},
+        {text("motor.run"), version, AYNI_TOOL_ROLE_CAPABILITY},
+        {text("motor.stop"), version, AYNI_TOOL_ROLE_CAPABILITY}};
     type.tool_count = sizeof(tools) / sizeof(tools[0]);
     type.tools = tools;
     type.tool_authorization = AYNI_TOOLS_ON_DEMAND;
@@ -237,7 +244,7 @@ ayni_status_t Chat::configure() {
         rc = check("speaker", speaker_.configure(kernel_));
     }
     if (rc == AYNI_OK) {
-        rc = check("motor software", motor_.configure(kernel_));
+        rc = check("motor", motor_.configure(kernel_));
     }
     if (rc == AYNI_OK) {
         transport_.attach_speaker(&speaker_);
@@ -365,6 +372,10 @@ ayni_status_t Chat::command(ayni_intent_kind_t kind, const void *body, uint64_t 
     return rc;
 }
 void Chat::incoming(const Packet &p) {
+    if (p.kind >= Kind::motor_decision && p.kind <= Kind::motor_heartbeat) {
+        motor_.execution().receive(p.kind, p.id, p.body.data(), p.size);
+        return;
+    }
     if ((p.kind == Kind::model_text || p.kind == Kind::model_error ||
          p.kind == Kind::model_tools) &&
         model_ == ModelState::waiting && p.id == call_) {
@@ -421,6 +432,8 @@ void Chat::incoming(const Packet &p) {
     } else if (p.kind == Kind::shutdown && closing_ == Closing::open) {
         closing_ = Closing::cancel_work;
         speaker_.set_accepting(false);
+        motor_.execution().set_accepting(false);
+        motor_.execution().request_local_stop();
     }
 }
 // User-selected session policy: preserve history, cancel unfinished chat Goals,
@@ -488,6 +501,10 @@ ayni_status_t Chat::settle_session(uint64_t durable_seq, bool &settled) {
     return AYNI_OK;
 }
 ayni_status_t Chat::tick() {
+    auto motor = motor_.execution().advance();
+    if (motor != AYNI_OK && motor != AYNI_BUSY) {
+        return motor;
+    }
     publish_model();
     publish_screen();
     auto audio = speaker_.advance();
@@ -504,7 +521,7 @@ ayni_status_t Chat::tick() {
     }
     if (info.lifecycle == AYNI_LIFECYCLE_STOPPED) {
         transport_.allow_display(0);
-        if (!speaker_.close()) {
+        if (!motor_.execution().close() || !speaker_.close()) {
             return AYNI_BUSY;
         }
         host_->close_storage();
@@ -576,7 +593,8 @@ ayni_status_t Chat::tick() {
         return rc;
     }
     constexpr const char *grant_capabilities[] = {capability_id,    "screen.text",  "speaker.tone",
-                                                  "speaker.speech", "motor.status", "motor.plan"};
+                                                  "speaker.speech", "motor.status", "motor.plan",
+                                                  "motor.run",      "motor.stop"};
     if (grant_ < sizeof(grant_capabilities) / sizeof(grant_capabilities[0])) {
         if (pending_command_) {
             return AYNI_OK;
@@ -605,20 +623,33 @@ ayni_status_t Chat::tick() {
                 return AYNI_OK;
             }
         }
+        const bool motion = grant_ == motor_run_grant_index;
         const ayni_grant_create_v1 grant{sizeof(grant),
                                          version,
                                          text(grant_capabilities[grant_]),
                                          instance_,
                                          0,
-                                         AYNI_GRANT_PERMANENT,
+                                         motion ? AYNI_GRANT_CURRENT_BOOT : AYNI_GRANT_PERMANENT,
                                          0,
-                                         0,
+                                         motion ? motor_grant_us : 0,
                                          scope()};
         const auto accepted = command(AYNI_INTENT_GRANT_CREATE, &grant);
         if (accepted == AYNI_OK) {
             ++grant_;
         }
         return accepted;
+    }
+    if (!announced_ && !pending_command_) {
+        auto scene = sized<ayni_scene_info_v1>();
+        rc = ayni_get_scene(kernel_, text(motor_scene), &scene);
+        if (rc != AYNI_OK) {
+            return rc;
+        }
+        if (!scene.consumable) {
+            const ayni_scene_set_enabled_v1 enabled{sizeof(enabled), 1, text(motor_scene), version,
+                                                    0};
+            return command(AYNI_INTENT_SCENE_SET_ENABLED, &enabled, nullptr, scene.revision);
+        }
     }
     if (!announced_ && !pending_command_) {
         bool settled = false;
@@ -628,6 +659,7 @@ ayni_status_t Chat::tick() {
         }
         announced_ = true;
         speaker_.set_accepting(true);
+        motor_.execution().set_accepting(true);
         status(0, "ready");
     }
     if (goal_) {

@@ -12,6 +12,7 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--speaker', action='store_true')
     parser.add_argument('--batch', action='store_true', help='Group three inspections, then tone/speech/screen in one model reply')
+    parser.add_argument('--driver-power-off', action='store_true', required=True, help='Operator confirms independent 10V driver power stays OFF throughout this screen/audio check')
     args=parser.parse_args()
     if args.batch and not args.speaker:
         parser.error('--batch requires --speaker')
@@ -20,7 +21,7 @@ def main():
         events.append({'type':kind,'value':value})
         print(json.dumps(events[-1],ensure_ascii=False),flush=True)
     config = {'port':'/dev/cu.usbmodem5D013686941','url':'https://api.deepseek.com',
-              'model':'deepseek-flash','key':''}
+              'model':'deepseek-flash','key':'','driver_power_off':True}
     bridge = Bridge(config,emit,str(ROOT/'build/AyniUSBChat'),offline=True,speaker_check=args.speaker,batch_check=args.batch)
     bridge.connect()
     deadline = time.monotonic()+120
@@ -51,7 +52,7 @@ def main():
     if args.speaker:
         success = success and sum(e['type']=='status' and e['value']=='speaker playback completed' for e in events)==2
         success = success and sum(e['type']=='speaker_verified' for e in events)==2
-    bridge.close(timeout=10)
+    bridge.close(timeout=10, driver_power_off=True)
     output=ROOT/'artifacts'/('batch-speaker-device-events.json' if args.batch else 'speaker-device-events.json' if args.speaker else 'offline-device-events.json')
     output.write_text(json.dumps({'passed':success,'normal_stop':bridge.closed,'events':events},ensure_ascii=False,indent=2))
     if not success or not bridge.closed:

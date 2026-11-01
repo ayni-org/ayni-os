@@ -13,6 +13,7 @@ import urllib.parse
 import urllib.request
 from protocol import *
 from audio import AudioTransfer, synthesize
+from motor import MotorReview
 
 DEFAULT_URL = 'https://api.deepseek.com'
 DEFAULT_MODEL = 'deepseek-flash'
@@ -27,7 +28,13 @@ SYSTEM = ('你是运行在 ESP32-S3 上的 Ayni 助手。你必须调用系统�
           '每轮最多提议 8 个工具调用，系统按提议顺序执行并返回真实工具结果；成功后用简短文字确认。'
           '只有用户要求声音时，才发现并调用 speaker.play_tone 提示音或 speaker.speak_text 中文朗读。'
           '扬声器默认音量 80%，可按用户要求指定 volume_percent；朗读内容应简短、最多 30 秒。'
-          '电机如已注册，仅 motor.status 查询和 motor.plan 软件计划可用；未启用运动，计划成功不代表电机转动。'
+          '电机能力 motor.status 查询、motor.plan 仅计划；用户要求转动时发现并调用 motor.run。'
+          'motor.run 的两个百分比为 PWM 占空比 -90..90，零表示对应电机不动，时长 50..5000ms 且为5的倍数；'
+          '每次实际调用都必须等待 Mac 人工批准和结束后的观察确认；不要把 plan 当作已转动。'
+          '只能人工架空台架实验；不支持无人运动，停止链尚未完成硬件验证。'
+          '只有用户明确要求才可转动；速度与时间不得超出用户要求。两只分别测试应逐次调用，另一只设零。'
+          '拒绝、超时、取消或结果未知的动作不得自动重试。不要宣称达到实测转速、距离或角度。'
+          '如需停止可调用 motor.stop；该工具成功只代表停止请求已提交。'
           '没有 shell，不要调用。屏幕中文正文 UTF-8 总长最多 4096 字节，不超过 1200 个汉字。')
 
 class Number(str):
@@ -168,6 +175,11 @@ class Bridge:
         self.ready = False
         self.closed = False
         self.configured = False
+        self.motor = MotorReview(emit)
+        self.motor_heartbeat_at = 0.0
+        self.motor_settings_sent = False
+        self.driver_power_off_confirmed = False
+        self.shutting_down = False
         self.page = 0
         self.pages = []
         self.display_id = 0
@@ -184,6 +196,8 @@ class Bridge:
         self.audio_deadline = 0.0
 
     def connect(self):
+        if self.config.get("driver_power_off") is not True:
+            raise ValueError("串口打开可能复位 ESP32；请先确认驱动 10V 电源关闭、两轮静止")
         import serial
         from serial.tools.list_ports import comports
         parsed = urllib.parse.urlsplit(self.config['url'])
@@ -205,6 +219,7 @@ class Bridge:
         port.port = self.config['port']
         port.open()
         self.port = port
+        self.driver_power_off_confirmed = False
         self.emit('status', '已打开 USB；等待设备握手')
         self.send(CONFIGURE, 0, self.route())
 
@@ -222,18 +237,46 @@ class Bridge:
             if written != len(frame):
                 raise ValueError('串口写入不完整；不会自动重发模型请求')
 
-    def close(self, timeout=5):
+    def stop_motor(self):
+        self.motor.stop()
+        self.send(MOTOR_STOP, 0)
+
+    def motor_settings(self, limit):
+        if type(limit) is not int or not 1 <= limit <= 90:
+            raise ValueError('PWM 上限必须为 1..90 的整数')
+        if self.motor.active is not None or self.motor.latched:
+            raise ValueError('电机忙或停止已锁定；不能更改上限')
+        self.config['motor_max_percent'] = limit
+        self.send(MOTOR_SETTINGS, 0, struct.pack('<I', limit))
+
+    def motor_answer(self, command, phase):
+        identity, packet = self.motor.answer(command, phase)
+        self.send(MOTOR_DECISION if phase == 1 else MOTOR_OBSERVED, identity, packet)
+
+    def close(self, timeout=5, driver_power_off=False):
+        if driver_power_off is not True:
+            self.stop_motor()
+            raise ValueError('请先关闭驱动 10V 电源并确认两轮静止，再关闭 USB 会话')
+        self.driver_power_off_confirmed = True
+        self.shutting_down = True
+        self.motor.stop()
         self.speech_cancel.set()
         try:
+            self.send(MOTOR_POWER_OFF, 0)
             self.send(SHUTDOWN, 0)
             self.port.flush()
             deadline = time.monotonic() + timeout
             while not self.closed and time.monotonic() < deadline:
                 self.poll()
+            if not self.closed:
+                self.emit('error', '驱动已由人工断电；未收到 Ayni 完整关闭回执，保留日志，不自动重放')
         finally:
+            # Only the explicit physical-power-off statement authorizes a reset-prone close.
             self.port.close()
             if self.speech_thread is not None:
                 self.speech_thread.join()
+            self.config['key'] = ''
+            self.emit('closed', True)
 
     def user(self, text):
         if not self.ready or self.pending_user is not None or self.current is not None:
@@ -253,7 +296,12 @@ class Bridge:
 
     def handle(self, kind, identity, payload):
         if kind == HELLO:
-            if not self.configured:
+            if self.configured and self.ready:
+                self.ready = False
+                self.stop_motor()
+                self.emit('ready', False)
+                self.emit('error', '会话中检测到 ESP32 重新握手；已锁定电机，不重放动作。请关闭驱动电源后重新连接。')
+            elif not self.configured:
                 self.send(CONFIGURE, 0, self.route())
                 self.configured = True
         elif kind == STATUS:
@@ -266,6 +314,9 @@ class Bridge:
             if status == 'ready':
                 self.ready = True
                 self.emit('ready', True)
+                if not self.motor_settings_sent:
+                    self.motor_settings(self.config.get('motor_max_percent', 90))
+                    self.motor_settings_sent = True
 
             elif status.startswith('task held '):
                 # Held is still the same live Goal; the owner may cancel it.
@@ -283,6 +334,17 @@ class Bridge:
             elif any(s in status for s in ('failed', 'error=')):
                 # A Provider diagnostic precedes the Core Task's terminal result.
                 self.emit('error', status)
+        elif kind in (MOTOR_REVIEW, MOTOR_OBSERVE):
+            try:
+                self.motor.receive(identity, payload, 1 if kind == MOTOR_REVIEW else 2)
+            except ValueError:
+                self.stop_motor()
+                raise
+        elif kind == MOTOR_STATE:
+            state = json.loads(payload)
+            if state.get('busy') is False:
+                self.motor.finished(identity)
+            self.emit('motor_state', state)
         elif kind == MODEL_REQUEST:
             if self.current is not None:
                 self.send(MODEL_ERROR, identity, b'busy')
@@ -414,6 +476,10 @@ class Bridge:
                 self.emit('display', {'page': self.page + 1, 'count': len(self.pages), 'ok': payload == b'\x01'})
 
     def poll(self):
+        self.motor.expire()
+        if self.ready and self.motor_settings_sent and not self.shutting_down and time.monotonic() >= self.motor_heartbeat_at:
+            self.send(MOTOR_HEARTBEAT, 0)
+            self.motor_heartbeat_at = time.monotonic() + 0.5
         data = self.port.read(min(self.port.in_waiting or 1, 8192))
         for packet in self.decoder.feed(data):
             self.handle(*packet)
@@ -492,7 +558,10 @@ def main():
     output_lock = threading.Lock()
     def emit(kind, value):
         with output_lock:
-            print(json.dumps({'type': kind, 'value': value}, ensure_ascii=False), flush=True)
+            try:
+                print(json.dumps({'type': kind, 'value': value}, ensure_ascii=False), flush=True)
+            except BrokenPipeError:
+                pass # Keep the port open after a UI crash until physical power is cut.
     commands = queue.Queue()
     def read_commands():
         for line in sys.stdin:
@@ -500,7 +569,7 @@ def main():
                 commands.put(json.loads(line))
             except ValueError:
                 emit('error', '本地命令格式错误')
-        commands.put({'action': 'exit'})
+        commands.put({'action': 'stdin_closed'})
     threading.Thread(target=read_commands, daemon=True).start()
     bridge = None
     while True:
@@ -530,17 +599,41 @@ def main():
                     emit('status', '已清空电脑端后续请求的会话上下文；设备持久日志保留')
                 elif action == 'cancel' and bridge:
                     bridge.send(CANCEL, bridge.turn)
+                elif action == 'motor_settings' and bridge:
+                    bridge.motor_settings(command['limit'])
+                elif action == 'motor_decision' and bridge:
+                    bridge.motor_answer(command, 1)
+                elif action == 'motor_observed' and bridge:
+                    bridge.motor_answer(command, 2)
+                elif action == 'motor_stop' and bridge:
+                    bridge.stop_motor()
+                elif action == 'stdin_closed':
+                    if bridge and not bridge.driver_power_off_confirmed:
+                        bridge.stop_motor()
+                        emit('error', '窗口输入已断开；串口保留以避免复位，请关闭驱动电源。')
+                    else:
+                        return
                 elif action == 'exit':
                     if bridge:
                         try:
-                            bridge.close()
-                        except Exception:
-                            emit('error', 'USB 已断开，无法确认设备停止；不会自动重放')
+                            bridge.close(driver_power_off=command.get('driver_power_off', False))
+                        except Exception as error:
+                            if not bridge.driver_power_off_confirmed:
+                                raise
+                            emit('error', '驱动已由人工断电；USB/关闭回执不可确认，不会自动重放')
                     return
             if bridge:
                 bridge.poll()
         except Exception as error:
-            emit('error', str(error) if isinstance(error, ValueError) else 'USB/显示操作失败；请核对设备状态')
+            if bridge and not isinstance(error, ValueError):
+                try:
+                    bridge.stop_motor()
+                except Exception:
+                    pass # The finite waveform may end, but disconnected USB proves no stop.
+                bridge.ready = False
+                emit('ready', False)
+            emit('error', str(error) if isinstance(error, ValueError) else 'USB/显示操作失败；请切断驱动电源，当前停止状态未知')
+            time.sleep(0.1)
 
 
 if __name__ == '__main__':

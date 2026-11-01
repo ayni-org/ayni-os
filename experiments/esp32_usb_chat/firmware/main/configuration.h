@@ -26,7 +26,7 @@ inline ayni_config_v1 chat_config() {
     c.task_step_capacity = 48;
     c.task_checkpoint_max_bytes = prompt_bytes + 16;
     c.command_capacity = 4;
-    c.capability_capacity = 6;
+    c.capability_capacity = 8;
     c.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_DEFAULT;
     c.grant_capacity = grant_slots;
     c.grant_delegation_depth_max = AYNI_GRANT_DELEGATION_DEPTH_MAX_DEFAULT;
@@ -36,10 +36,13 @@ inline ayni_config_v1 chat_config() {
     c.call_capacity = 32;
     c.call_input_max_bytes = prompt_bytes + 256;
     c.call_result_max_bytes = 8192;
-    c.call_capability_capacity = 6;
+    c.call_capability_capacity = 8;
     c.provider_capacity = 4;
-    c.binding_capacity = 6;
-    c.resource_capacity = 3;
+    c.binding_capacity = 8;
+    c.resource_capacity = 4;
+    c.scene_capacity = 1;
+    c.executor_capacity = 1;
+    c.execution_binding_capacity = 1;
     c.resource_request_capacity = 2;
     c.storage_write_interval_us = 1000;
     return c;

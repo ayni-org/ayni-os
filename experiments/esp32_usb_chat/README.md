@@ -1,4 +1,4 @@
-# ESP32 USB 屏幕与扬声器能力独立实验
+# ESP32 USB 屏幕、扬声器与电机能力独立实验
 
 本工程通过 Ayni 公开源码 SDK 接入，基础为 main `d58613c`，C ABI 0.53 / Core schema 8。Core、公开 C ABI、存储格式、原有策略及 runtime 保持原样；用户 2026-11-01 另行授权修复共用 HostStorage 与 ESP 文件适配的日志重开性能，保留设备数据。实验代码、构建和恢复资料留在本目录。
 
@@ -6,7 +6,8 @@
 
 随后加入 MAX98357A 提示音及中文朗读，用户指定默认软件音量 80%。扬声器同样由模型发现、查看和调用；最终回复不会自动播放。
 
-当前源码另含 TA6586 的软件查询/计划能力，候选构建位于 `build/motor-firmware/`。设备当前临时运行独立人工验线入口 `motor_probe/`，默认停止、单次短脉冲且未开放模型运动；该入口及状态见其 README。屏幕/朗读修复已由用户实测确认，旧固件恢复资料保留。
+当前增加人工台架的真实 `motor.run` / `motor.stop` 能力，候选构建位于 `build/motor-firmware/`。用户明确选择每次模型提议由 Mac 人工批准，PWM 可调、硬上限90%，单次最多5秒；这不是无人运动配置或独立硬件停止链验收。原人工验线入口 `motor_probe/` 继续保留；旧固件恢复资料完整保留。
+
 
 ## 调用链
 
@@ -31,35 +32,45 @@ MAX98357A：VIN→3V3、GND→GND、BCLK→GPIO4、LRC/WS→GPIO5、DIN→GPIO6�
 
 ESP32 沿用旧固件验证过的 48 kHz、16 位、双声道 I²S 格式，把每个 16 kHz 单声道采样重复三次并复制到左右声道，按音量百分比缩放振幅。这里的 80% 是软件采样幅度，不代表声压或功放增益。固定 PCM 缓冲区最多 960,000 字节，位于 PSRAM；音频 worker 的栈和 DMA 输出缓冲在内部 RAM，Core owner 不等待合成、串口或播放。
 
-`MODEL_TOOLS` 保留 USB v2 的单提议格式，并新增 batch-v1 包装：8 字节 `<HHHH>` 为 `(0, 0, count, 1)`，随后每个成员由 `<I>` 字节长度及原单提议包组成。原单包的 ID 长度必须非零，因此两种格式无歧义；整组最多 8192 字节、每成员最多 32 个参数节点，超限或重复 ID 整组拒绝。设备复用 `ayni_tool_calls_measure` 校验完整组和持久编码容量。旧 Mac 单提议仍可接入新固件；新 Mac 多提议需本次固件，旧固件会拒绝，不会执行前半组。Ayni ABI、存储格式及实验 checkpoint 格式不变。
+`MODEL_TOOLS` 保留 USB v2 的单提议格式，并新增 batch-v1 包装：8 字节 `<HHHH>` 为 `(0, 0, count, 1)`，随后每个成员由 `<I>` 字节长度及原单提议包组成。原单包的 ID 长度必须非零，因此两种格式无歧义；整组最多 8192 字节、每成员最多 32 个参数节点，超限或重复 ID 整组拒绝。设备复用 `ayni_tool_calls_measure` 校验完整组和持久编码容量。这段工具负载编码保持不变；当前帧协议已升级为 v3，旧 Mac/固件必须成对使用，不会跨版本接收。Ayni ABI、存储格式及实验 checkpoint 格式不变。
 
-仅在实际 PCM 排空 I²S 并停止通道后返回 `played:true`；回执包含采样数、16 kHz 源采样率和实际音量。软件回执不能证明人听到了声音。两个调用都声明非幂等，取消/失败后的部分输出按未知处理，不自动重放。USB 协议升级为 v2，需同时更新固件和 Mac 桥接并重启窗口。
+仅在实际 PCM 排空 I²S 并停止通道后返回 `played:true`；回执包含采样数、16 kHz 源采样率和实际音量。软件回执不能证明人听到了声音。两个调用都声明非幂等，取消/失败后的部分输出按未知处理，不自动重放。当前 USB 帧协议为 v3，需同时更新固件和 Mac 桥接并重启窗口。
 
 ## 运行
 
 1. 根据主机实际资源设置正数并行度。此 Mac 检查到 16 GiB RAM、10 CPU、无 swap 使用、无其他构建，选择构建/测试并行度 2，给桌面留余量。
-2. `bash build.sh`：激活原任务已验证的 ESP-IDF 6.0.3；LittleFS 1.23.1 锁版；构建固件和原生 Mac 窗口。旧 SDK 的精确 XMC Flash ID 兼容补丁保留，Ayni Core 没有补丁。
-3. 完成下面的设备预检，再执行显式部署。禁止使用生成的通用 `idf.py flash`，它会加入 bootloader 写入。
-4. 运行 `./launch.command`，填写 API Key，连接后输入文本。默认 API 根地址 `https://api.deepseek.com`，模型 `deepseek-flash`，Chat Completions 非流式、关闭思考模式。模型配置在一个连接期间冻结；更改服务或模型需关闭窗口并重启设备。用户 2026-11-01 选择每次重开取消旧的未完成实验任务、保留日志并开始新会话；公开取消命令及任务终态持久确认后才发送 ready。策略在此之前不提出新调用。窗口关闭同样先取消实验任务，再请求 Kernel/Host 正常停机；下次打开前先按开发板 RST，让设备重新等待配置。
+2. `bash build.sh`（当前构建目录 `build/motor-firmware/`）：激活原任务已验证的 ESP-IDF 6.0.3；LittleFS 1.23.1 锁版；构建固件和原生 Mac 窗口。旧 SDK 的精确 XMC Flash ID 兼容补丁保留，Ayni Core 没有补丁。
+3. 完成下面的设备预检，再执行显式 `device.py deploy --variant motor` 部署。禁止使用生成的通用 `idf.py flash`，它会加入 bootloader 写入。
+4. 运行 `./launch.command`，先确认驱动10V电源关闭、两轮静止，再填写 API Key并连接。串口实测开关会复位ESP32，因此带电期间保持同一连接；窗口 ready 后才由在场用户打开驱动电源。默认 API 根地址 `https://api.deepseek.com`，模型 `deepseek-flash`，Chat Completions 非流式、关闭思考模式。模型配置在一个连接期间冻结；更改服务或模型需关闭窗口并重启设备。用户 2026-11-01 选择每次重开取消旧的未完成实验任务、保留日志并开始新会话；公开取消命令及任务终态持久确认后才发送 ready。策略在此之前不提出新调用。窗口关闭同样先取消实验任务，再请求 Kernel/Host 正常停机；下次打开前先按开发板 RST，让设备重新等待配置。
 
 输入和屏幕正文分别最多 4096 UTF-8 字节。累计发送给模型的上下文最多 16 KiB；达到上限时明确拒绝，使用“清空上下文”开始后续新上下文。该按钮只清空电脑内存，不宣称删除设备持久日志。API 和模型公开配置的 route ID 纳入 Provider/目的地身份；密钥不参与指纹。
 
 LCD 在显示关闭时用原有 16 行 DMA 缓冲逐条清成黑色，全部完成后才点亮；等待模型配置和首条屏幕能力调用时保持黑屏，避免上电显存杂色。启动清屏属于驱动初始化，不伪造屏幕工具调用或模型回复。
 
-## 电机软件阶段
+## 电机人工台架能力
 
-用户确认芯片丝印 TA6586；当前映射为D0→GPIO38、D1→GPIO39、D2→GPIO40、D3→GPIO41（用户2026-11-01要求并在断电时改线确认；原映射42/41/40/39的诊断历史见motor_probe/README.md）；已经共地，先选择关闭驱动电源做软件接入，随后澄清驱动 VIN 来自独立 10 V 电源，板上 3V3 是向外供电输出。用户已核对 3V3 留空、只接共地及四根控制线，电机额定 12 V；车轮已架空、有独立断电开关。商品名称“超 L298N 5A 双 H 桥”不作为芯片身份或额定参数证据。依据[无锡睿智 TA6586 数据表，第 1 页](https://components101.com/sites/default/files/component_datasheet/ta6586-datasheet.pdf)：两输入低为高阻滑行，两输入高为制动。用户模块图片中 Motor1 的停止行重复反转行，软件不采用该行。
+芯片丝印为用户确认的 TA6586；D0→GPIO38、D1→GPIO39、D2→GPIO40、D3→GPIO41，共地，驱动板3V3辅助输出留空。驱动 VIN 为独立10V，两电机额定12V；车轮架空，有独立断电开关。[TA6586 数据表](https://components101.com/sites/default/files/component_datasheet/ta6586-datasheet.pdf) 中两输入低为高阻滑行、两输入高为制动。正百分比选择D0/D2，负百分比选择D1/D3；另一输入保持低，以1kHz PWM驱动/滑行。正负不是已标定的车辆前后方向。
 
-独立 `Motor` Provider 注册以下普通软件能力，不声明物理执行，不调用 GPIO、PWM 或电机电源接口：
-
-| Binding / Capability | 输入 | 结果 |
+| Binding / Capability | 输入 | 执行意义 |
 |---|---|---|
-| `motor.status` | `{}` | 用户确认的芯片、配置接线、用户报告电压及来源；`power_state:"not-measured"` |
-| `motor.plan` | `motor1_percent`、`motor2_percent`：-100..100 整数；`duration_ms`：1..5000 | 双路 D0..D3 的计划占空比与时长，全部为纯计算 |
+| `motor.status` | `{}` | 配置接线、限值、台架使能；电源/机械状态未测量 |
+| `motor.plan` | 两个百分比 -90..90，`duration_ms` 1..5000 | 纯计算，`executed:false`，不会转动 |
+| `motor.run` | `motor1_percent`、`motor2_percent`：-90..90整数；`duration_ms`：50..5000且为5的倍数 | 每次人工批准后输出；0使该路滑行，两路均0拒绝（请用stop） |
+| `motor.stop` | `{}` | 提交锁定停止请求；工具返回不冒充停止确认 |
 
-两项均明确返回 `motion_enabled:false`、`executed:false`。正百分比选择 D0/D2，负百分比选择 D1/D3；这不是车轮前进方向或角度标定。0 生成两输入低，计划结束状态也是全低滑行；没有制动计划。范围是软件计划的容量边界，不是已测电机限值。没有注册可转动的 `motor.drive`，没有硬件停止确认或电压测量；计划完成不能报告电机已执行。
+`motor.run` 是非幂等 PHYSICAL action，复用 Core Grant、规范参数投影、独占 actuator、Scene、ExecutionBinding及现有独立 `Ayni::PermitGate`。能力说明、规范参数和许可约束来自同一字段定义。启动内授权最长24小时，到期不自动续权；须驱动断电后关闭并重新连接。旧未完成任务仍由原会话清理规则取消，不恢复重放物理动作。
 
-模型实际运动后续须按 `contracts/domain/permits_and_stop.md` 接入 PHYSICAL action、ExecutionBinding/Scene、执行许可、本地控制及独立停止链。TA6586 现有四根控制线本身不能证明这些条件满足。用户后来另行授权人工架空短脉冲验线，使用独立 `motor_probe/`；不把人工诊断认作 Ayni 正式运动能力或停止链验收。
+执行端在受理时复制 Core 的真实 call/operation/attempt/permit身份并启动门控，但没有第一份采样、没有PWM。Mac逐次展示两个占空比和时长，只有准确身份及一次性nonce匹配、30秒内人工批准，执行端才能产生采样并启动RMT。拒绝或超时不输出。门控procedure总预算60秒，含人工等待；实际波形最多5秒，不续租。RMT使用有限硬件循环、低电平结束；四个PCNT覆盖准备、输出及释放，要求选中脚边沿数等于duration_ms、其余脚为零。PCNT不是编码器反馈，不能证明轮子达到目标。
+
+每次输出结束先停RMT、解除GPIO矩阵并本机读回四脚低，才向PermitGate确认**控制器输出已停止**；target始终UNVERIFIED。Mac再要求人眼确认两轮静止，这份人工事实单独记录，不能当作传感器观测。确认前不允许下一次动作；观察否定/超时、取消、心跳丢失或停止按钮会锁定，需驱动断电后重连。窗口按钮通过独立串口种类及原子停止标志绕过模型和普通owner数据队列；完整帧仍须经过同一USB链路。
+
+当前没有外部看门狗或复位默认失能硬件，C-STOP-003/004尚未验证。用户明确授权的例外仅限架空、在场、逐次审批台架；电脑/进程/ESP故障或USB失联仍须人工直接切断独立驱动电源。GPIO低读回不是轮子静止或独立停止链的证明，不宣称轮速、距离或角度已达到。
+
+连接与退出均先确认驱动物理断电；没有断电声明，桥接拒绝关闭串口。窗口输入丢失时请求停止并保留串口；强杀进程无法由软件保证。密钥仍只在Mac进程内存。90%是PWM占空比，不是实测速度；可以在窗口把本次连接上限调为1..90，超过当前上限明确拒绝，不自动裁剪。
+
+### 私有 USB v3 电机帧
+
+23..31依次为review、decision、observe、observed、settings、stop、power_off、heartbeat、state。原1..22编号不变，帧版本升为3，旧端拒收；Ayni ABI/schema不变。review/observe帧头id为permit，64字节负载 `<5Q2i4I>`：nonce、call、operation、attempt boot、attempt request、两路有符号PWM、duration_ms、当前cap、phase(1/2)、reserved0。decision/observed 48字节 `<5Q2I>`回送五个身份、approved(0/1)、reserved0。审批仅内存有效、不得存盘重用。settings为4字节cap；stop/power_off/heartbeat为空；state为有界JSON。Mac向Swift传递64位身份时使用十进制字符串及原始ticket十六进制，避免JSON浮点精度丢失。
 
 HTTPS 保留证书验证，不跟随重定向，不读取环境代理，不自动重试。网络中断、取消或不完整响应不能证明远端未计费，结果按未知处理。超过正文上限或 token 截断明确失败，不静默截断。HTTP 状态可显示，原始 vendor 错误正文不输出。
 
@@ -71,13 +82,13 @@ HTTPS 保留证书验证，不跟随重定向，不读取环境代理，不自�
 
 使用原 IDF Python 执行 `device.py preflight`：保存旧 bootloader、分区表和整个 2 MiB 应用，确认当前应用与提供的旧固件一致，检查 `0x800000..0x1000000` 全部为 FF。它会重启板子，但不修改 Flash。不会读取 `demo_cfg` 凭据区。
 
-`device.py deploy` 只写分区表 sector `0x8000` 和应用 `0x410000`；保留原应用地址/容量，以及 audio 和 demo_cfg 分区。只在已确认空白的高 8 MiB 新增 Ayni LittleFS。Host 显式允许首次初始化完全空白卷，未知非空白介质仍拒绝并保留。
+`device.py deploy --variant motor` 只写分区表 sector `0x8000` 和应用 `0x410000`；保留原应用地址/容量，以及 audio 和 demo_cfg 分区。只在已确认空白的高 8 MiB 新增 Ayni LittleFS。Host 显式允许首次初始化完全空白卷，未知非空白介质仍拒绝并保留。
 
 `device.py restore` 恢复保存的原分区表及原 2 MiB 应用，不写 bootloader、eFuse、demo_cfg、audio 或 Ayni 数据卷。恢复脚本不会自动运行。恢复资料位于被忽略的 `artifacts/recovery/`，不要清理该目录。
 
 ## 验证边界
 
-编译、Mac 排版/语音合成、桥接单测、ESP 实际运行、真实联网和用户感官确认分别记录。普通文本及屏幕/扬声器能力检查使用正常路径，不增加掉电、变异、耐久或其他故障专项。复现桥接测试：在 `desktop/` 执行 `python -m unittest -v test_bridge test_audio`。板上正常能力检查运行 `offline_check.py --speaker`，会实际播放 300 ms 提示音及一句中文，两个调用均省略音量参数，以检查默认 80%；加 `--batch` 则将三个 inspect 放在同一模型响应，再将提示音、朗读、屏幕三个 invoke 放在同一响应。不调用真实模型。
+编译、Mac 排版/语音合成、桥接单测、ESP 实际运行、真实联网和用户感官确认分别记录。普通文本及屏幕/扬声器能力检查使用正常路径，不增加掉电、变异、耐久或其他故障专项。复现桥接测试：在 `desktop/` 执行 `python -m unittest -v test_bridge test_audio test_motor`。板上正常能力检查在驱动断电时运行 `offline_check.py --driver-power-off --speaker`，会实际播放 300 ms 提示音及一句中文，两个调用均省略音量参数，以检查默认 80%；加 `--batch` 则将三个 inspect 放在同一模型响应，再将提示音、朗读、屏幕三个 invoke 放在同一响应。不调用真实模型。
 
 ### 屏幕首版历史结果（2026-10-31）
 
@@ -110,6 +121,13 @@ HTTPS 保留证书验证，不跟随重定向，不读取环境代理，不自�
 - 最终屏幕/扬声器固件完整编译、写入并校验通过，应用 744,128 字节。板上正常夹具一次返回三个 inspect，随后一次返回提示音、朗读、屏幕三个 invoke；两个音频完成结果分别为 4,800/69,390 个采样、默认 80%，显示完成回执成功，最终正常停止并 join。用户又在重开的窗口用真实模型确认屏幕和朗读正常。夹具事件留在被忽略的 `artifacts/batch-speaker-device-events.json`，真实私有对话不导出。
 - 电机候选只编译到独立目录，没有刷入、没有电机输出。纯计划真值表检查通过；真实 Core + Sim Host 的本机临时 harness 通过注册、发现、查看、规范调用、两项 `executed:false` 结果及正常停止。该 harness 源码/程序是仓库外本地证据，不等同于设备运动验收或 CI；Native 候选配置 arena 查询为 2,882,736 字节、对齐 8，不是 ESP32 实测。计划测试源码为 `tests/motor_plan_test.cpp`。
 
+### 逐次人工审批电机候选（2026-11-01）
+
+- 当前固件编译/链接通过，应用784,560字节，已仅写入原应用/分区表并校验。启动注册已在真实设备通过；驱动10V始终关闭，未在离线夹具中调用motor.run或发送动作审批。
+- 新版本板上正常组合夹具通过：三个inspect、随后提示音/中文朗读/屏幕，实际I²S完成4,800/69,390采样、默认80%，LCD完成回执、Core持久结果、正常停机及join均完成。新Mac窗口已编译并打开。Kernel arena为2,886,424字节，owner栈余量72,544/98,304B、音频worker10,996/12,288B、存储worker14,056/24,576B；不是独立停止链验收。
+- Python桌面29/29、验线主机16/16及C++限值/真值表/确认身份检查通过；C++检查包含负数下界，防止无符号条件表达式把-90提升为大正数。契约检查、diff空白检查通过；没有重跑Core完整CI或覆盖率。
+- 两次初始化失败明确未算通过；补齐执行资源标记、字段排序/用法、有限授权期限并修复负数下界类型后，最终板上正常链通过。拒批/取消/未知终态按Core公开合同编码。真实模型运动、50%和90%的机械表现仍待当前窗口现场测试；既有20%人工持续串口结果见motor_probe/README.md。
+
 ## 设计自查
 
 - 模块：模型、屏幕、扬声器分别注册 Provider；Core 不依赖实验、Mac UI、串口、LCD 或 I²S。平台 I/O 在外部任务，owner 不等待网络、屏幕或播放。
@@ -123,3 +141,5 @@ HTTPS 保留证书验证，不跟随重定向，不读取环境代理，不自�
 - 后续 Kernel 字段复查：Core 及公开头零修改；`ModelTools` 独占完整组的字节/节点借用，`Closing` 只决定实验会话收敛，Provider 的 readiness 门由同一 owner 在 ready/关闭时更新。
 - 后续重复机制复查：共享 `ayni_tool_calls_measure` 负责完整参数组；黑屏与正文共用 `paint_stripe`；双电机百分比只在 `motor_duties` 计算；验线路由只在 `routes` 读取检查，CRC 复用既有 `protocol.h`。
 - 后续裸值复查：GPIO、占空比/时长界限、接收容量及会话表容量有命名；GPIO matrix 信号编号使用固定 SDK 常量。Python 帧布局保留相邻的 batch-v1/CRC 文本格式说明；没有增加 Core 记录布局或裸偏移。
+
+本次电机设计自查：注册描述归Motor，物理门控/人工票据归MotorExecution，RMT/GPIO/PCNT归MotorOutput，UI及USB在边界；Core/公开头零改动。旧“纯软件无执行端”说明随能力变化替换，历史验证另保留。输出停止与人工观察分别建模，Target不从输出成功推导。字段/单位/限值复用motor_contract及motor_plan，主要时间界限有名称；motor_wire私有偏移与v3布局相邻，未改变公共ABI。主要代码量来自持续串口诊断、设备执行端、确认协议及Mac生命周期，作为同一完整人工台架功能提交；无新通用插件层。独立只读审查曾完成并发现合同接入问题，用户后要求不再追加独立审查；当前按影响自查/正常验证，不开展新审查轮次。

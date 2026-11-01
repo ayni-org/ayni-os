@@ -21,11 +21,13 @@ class Transport {
     bool receive(Packet &);
     void allow_display(uint64_t call) { display_call_.store(call, std::memory_order_release); }
     void attach_speaker(Speaker *speaker) { speaker_.store(speaker, std::memory_order_release); }
+    bool motor_stop_requested() { return motor_stop_.exchange(false, std::memory_order_acq_rel); }
     void run();
 
   private:
     void consume(uint8_t);
     void dispatch();
+    std::atomic<bool> motor_stop_{false}; // Latest-level stop bypasses packet capacity.
     Display display_;
     QueueHandle_t free_ = nullptr, output_ = nullptr, input_ = nullptr;
     std::array<Packet, packet_slots> packets_{};

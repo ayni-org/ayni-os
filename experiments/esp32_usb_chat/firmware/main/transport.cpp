@@ -70,6 +70,14 @@ void Transport::dispatch() {
     // Wire directions are separate contracts. In particular an external ACK
     // must never impersonate the locally generated LCD/DMA completion below.
     switch (kind) {
+    case Kind::motor_stop:
+        motor_stop_.store(true, std::memory_order_release);
+        return;
+    case Kind::motor_decision:
+    case Kind::motor_observed:
+    case Kind::motor_settings:
+    case Kind::motor_power_off:
+    case Kind::motor_heartbeat:
     case Kind::user:
     case Kind::model_text:
     case Kind::model_error:
@@ -86,6 +94,9 @@ void Transport::dispatch() {
         break;
     default:
         return;
+    }
+    if (kind == Kind::cancel || kind == Kind::shutdown || kind == Kind::motor_power_off) {
+        motor_stop_.store(true, std::memory_order_release);
     }
     if (kind == Kind::audio_begin || kind == Kind::audio_chunk || kind == Kind::audio_end ||
         kind == Kind::audio_error) {

@@ -8,8 +8,8 @@ export CTEST_PARALLEL_LEVEL="${CTEST_PARALLEL_LEVEL:-2}"
 export PYTHONDONTWRITEBYTECODE=1
 source "${IDF_PATH:-/Users/danny/Documents/Codex/2026-10-20/task/.tools/esp-idf}/export.sh" >/dev/null
 mkdir -p "$project_dir/build"
-idf.py -C "$project_dir/firmware" -B "$project_dir/build/firmware" reconfigure
-cmake --build "$project_dir/build/firmware" --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
+idf.py -C "$project_dir/firmware" -B "$project_dir/build/motor-firmware" reconfigure
+cmake --build "$project_dir/build/motor-firmware" --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
 xcrun swiftc -module-cache-path "$project_dir/build/swift-cache" \
     -o "$project_dir/build/AyniUSBChat.next" "$project_dir/desktop/App.swift"
 mv "$project_dir/build/AyniUSBChat.next" "$project_dir/build/AyniUSBChat"

@@ -1,14 +1,16 @@
-"""Experiment wire v2: bounded length, per-payload CRC32, unique 64-bit correlation."""
+"""Experiment wire v3: bounded length, per-payload CRC32, unique 64-bit correlation."""
 import struct
 import time
 import zlib
 
 HEADER = struct.Struct('<4sBBHQII')
 MAGIC = b'AYN1'
-VERSION = 2
+VERSION = 3
 MAX_PAYLOAD = 240 * 320 * 2
 HELLO, USER, MODEL_REQUEST, MODEL_TEXT, MODEL_ERROR, ANSWER, STATUS, DISPLAY, DISPLAY_ACK, CANCEL, SHUTDOWN, CONFIGURE, MODEL_TOOLS, RENDER_TEXT, RENDER_INFO = range(1, 16)
 SPEECH_REQUEST, AUDIO_BEGIN, AUDIO_CHUNK, AUDIO_END, AUDIO_ACK, AUDIO_ERROR, AUDIO_CANCEL = range(16, 23)
+
+MOTOR_REVIEW, MOTOR_DECISION, MOTOR_OBSERVE, MOTOR_OBSERVED, MOTOR_SETTINGS, MOTOR_STOP, MOTOR_POWER_OFF, MOTOR_HEARTBEAT, MOTOR_STATE = range(23, 32)
 
 
 def encode(kind, identity, payload=b''):

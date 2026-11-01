@@ -81,12 +81,43 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var sendButton: NSButton!
     var page = 0, pageCount = 0
     var connected = false
+    let motorLimit = NSTextField(string: "90")
+    var motorAlert: NSAlert?
+    var closeAlert = false, closing = false, allowTerminate = false
+    func dismissMotor() {
+        if let alert = motorAlert { window.endSheet(alert.window, returnCode: .abort) }
+        motorAlert = nil
+    }
+    func motorReview(_ value: [String: Any], observe: Bool) {
+        guard motorAlert == nil, !closing else { command(["action": "motor_stop"]); return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = observe ? "请观察两轮是否已经停下" : "批准这一次电机动作？"
+        let first = value["motor1_percent"] as? Int ?? 0
+        let second = value["motor2_percent"] as? Int ?? 0
+        let duration = value["duration_ms"] as? Int ?? 0
+        alert.informativeText = "电机 1：\(first)% PWM；电机 2：\(second)% PWM；\(Double(duration)/1000) 秒。\n" +
+            (observe ? "ESP32 已结束输出并读回四脚为低；这不证明轮子静止。请亲眼确认。若仍在转或有异响，立即切断驱动 10V 电源。" :
+            "仅限车轮架空的人工台架。确认独立断电开关就手后，才批准本次动作。30 秒未确认则失效。")
+        alert.addButton(withTitle: observe ? "两轮已静止" : "不执行")
+        alert.addButton(withTitle: observe ? "异常，停止并断电" : "批准本次")
+        motorAlert = alert
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self = self else { return }
+            self.motorAlert = nil
+            if response == .abort { return }
+            var answer = value
+            answer["action"] = observe ? "motor_observed" : "motor_decision"
+            answer["approved"] = observe ? response == .alertFirstButtonReturn : response == .alertSecondButtonReturn
+            self.command(answer)
+        }
+    }
     func applicationDidFinishLaunching(_ notification: Notification) {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 730),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 820, height: 850),
             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "Ayni · ESP32 USB 屏幕与扬声器实验"
+        window.title = "Ayni · ESP32 屏幕、扬声器与电机台架"
         window.delegate = self
-        window.minSize = NSSize(width: 820, height: 730)
+        window.minSize = NSSize(width: 820, height: 850)
         let root = NSView(frame: window.contentView!.bounds)
         window.contentView = root
         func label(_ text: String, _ y: CGFloat) {
@@ -100,6 +131,19 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             field.frame = NSRect(x: 106, y: y, width: 690, height: 26)
             root.addSubview(field)
         }
+        let bench = NSTextField(wrappingLabelWithString: "人工台架：电机每次由模型提议、Mac 确认后执行。连接和关闭 USB 前必须关闭驱动 10V 电源。")
+        bench.frame = NSRect(x: 22, y: 794, width: 774, height: 38)
+        root.addSubview(bench)
+        label("PWM 上限", 751)
+        motorLimit.frame = NSRect(x: 106, y: 752, width: 60, height: 26)
+        root.addSubview(motorLimit)
+        _ = button("应用 1–90%", #selector(setMotorLimit), x: 176, y: 748, width: 130, root: root)
+        let stop = button("停止电机（锁定）", #selector(stopMotor), x: 328, y: 748, width: 185, root: root)
+        stop.contentTintColor = .systemRed
+        let note = NSTextField(labelWithString: "单次最多 5 秒；需要独立断电开关")
+        note.font = .systemFont(ofSize: 12)
+        note.frame = NSRect(x: 523, y: 753, width: 270, height: 24)
+        root.addSubview(note)
         connectButton = button("连接设备", #selector(connect), x: 22, y: 528, width: 112, root: root)
         _ = button("清空上下文", #selector(clear), x: 145, y: 528, width: 120, root: root)
         status.frame = NSRect(x: 280, y: 520, width: 515, height: 43)
@@ -143,9 +187,18 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         catch { status.stringValue = "本地桥接进程已关闭" }
     }
     @objc func connect() {
+        let alert = NSAlert()
+        alert.messageText = "连接前关闭电机驱动电源"
+        alert.informativeText = "打开 USB 串口可能复位 ESP32。请确认独立 10V 驱动电源已关闭、两轮已静止；USB 保持连接。"
+        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: "驱动已断电，连接")
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        guard let limit = Int(motorLimit.stringValue), (1...90).contains(limit) else {
+            status.stringValue = "PWM 上限必须为 1..90 的整数"; return
+        }
         if process != nil {
             command(["action": "connect", "port": serial.stringValue, "url": url.stringValue,
-                "model": model.stringValue, "key": key.stringValue])
+                "model": model.stringValue, "key": key.stringValue, "driver_power_off": true, "motor_max_percent": limit])
             key.stringValue = ""
             connectButton.isEnabled = false
             serial.isEditable = false; url.isEditable = false; model.isEditable = false; key.isEditable = false
@@ -167,7 +220,7 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
         do {
             try p.run(); process = p; input = stdin.fileHandleForWriting
             command(["action": "connect", "port": serial.stringValue, "url": url.stringValue,
-                "model": model.stringValue, "key": key.stringValue])
+                "model": model.stringValue, "key": key.stringValue, "driver_power_off": true, "motor_max_percent": limit])
             key.stringValue = ""
             connectButton.isEnabled = false
             serial.isEditable = false; url.isEditable = false; model.isEditable = false; key.isEditable = false
@@ -180,6 +233,17 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
                   let type = object["type"] as? String else { continue }
             let value = object["value"]
+            if type == "motor_review", let review = value as? [String: Any] { motorReview(review, observe: false) }
+            if type == "motor_observe", let review = value as? [String: Any] { motorReview(review, observe: true) }
+            if type == "motor_dismiss" { dismissMotor() }
+            if type == "closed", value as? Bool == true {
+                allowTerminate = true; NSApplication.shared.terminate(nil)
+            }
+            if type == "motor_state", let state = value as? [String: Any] {
+                let active = state["motion_enabled"] as? Bool ?? false
+                let limit = state["max_percent"] as? Int ?? 0
+                output.string += "[电机] PWM 上限 \(limit)%，\(active ? "人工逐次批准" : "未使能或已锁定")；电源状态未测量。\n"
+            }
             if type == "ready", let ready = value as? Bool { sendButton.isEnabled = ready; connected = ready }
             if type == "busy", let busy = value as? Bool { sendButton.isEnabled = connected && !busy }
             if type == "display", let display = value as? [String: Any] {
@@ -203,11 +267,39 @@ final class App: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc func cancel() { command(["action": "cancel"]) }
     @objc func previous() { command(["action": "page", "index": max(0, page-1)]) }
     @objc func next() { command(["action": "page", "index": min(max(0,pageCount-1),page+1)]) }
-    func windowWillClose(_ notification: Notification) {
-        command(["action": "exit"])
-        NSApplication.shared.terminate(nil)
+    @objc func setMotorLimit() {
+        guard let limit = Int(motorLimit.stringValue), (1...90).contains(limit) else {
+            status.stringValue = "PWM 上限必须为 1..90 的整数"; return
+        }
+        command(["action": "motor_settings", "limit": limit])
     }
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    @objc func stopMotor() { command(["action": "motor_stop"]); dismissMotor() }
+    func requestClose() {
+        guard !closeAlert && !closing else { return }
+        if process == nil { allowTerminate = true; NSApplication.shared.terminate(nil); return }
+        stopMotor()
+        closeAlert = true
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "关闭前切断驱动 10V 电源"
+        alert.informativeText = "关闭串口可能复位 ESP32。先关闭独立驱动电源并确认两轮静止；确认后再关闭会话。取消则保持 USB 会话和停止锁定。"
+        alert.addButton(withTitle: "保持连接")
+        alert.addButton(withTitle: "已断电且静止，关闭")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard let self = self else { return }
+            self.closeAlert = false
+            if response == .alertSecondButtonReturn {
+                self.closing = true
+                self.command(["action": "exit", "driver_power_off": true])
+            }
+        }
+    }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { requestClose(); return false }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if allowTerminate { return .terminateNow }
+        requestClose(); return .terminateCancel
+    }
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
 let application = NSApplication.shared
