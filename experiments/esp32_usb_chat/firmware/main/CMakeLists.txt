@@ -1,4 +1,4 @@
-idf_component_register(SRCS "main.cpp" "transport.cpp" "display.cpp" "chat.cpp" "screen.cpp" "speaker.cpp" "policy.cpp" "model_tools.cpp" "motor.cpp" "motor_output.cpp" "motor_execution.cpp"
+idf_component_register(SRCS "main.cpp" "transport.cpp" "display.cpp" "chat.cpp" "screen.cpp" "speaker.cpp" "policy.cpp" "model_tools.cpp" "motor.cpp" "motor_output.cpp" "motor_execution.cpp" "motor_worker.cpp"
     INCLUDE_DIRS "."
     PRIV_REQUIRES esp_idf esp_timer heap esp_psram spi_flash log freertos
         esp_lcd esp_driver_spi esp_driver_gpio esp_driver_uart esp_driver_i2s esp_driver_rmt esp_driver_pcnt)

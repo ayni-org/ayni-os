@@ -558,10 +558,14 @@ ayni_status_t Chat::tick() {
     if (audio != AYNI_OK && audio != AYNI_BUSY) {
         return audio;
     }
-    auto rc = ayni_step(kernel_, step_units, step_us, nullptr);
     auto info = sized<ayni_kernel_info_v1>();
-    if (rc == AYNI_OK) {
-        rc = ayni_get_kernel_info(kernel_, &info);
+    auto rc = ayni_get_kernel_info(kernel_, &info);
+    // STOPPED cannot be stepped again while asynchronous device workers are joining.
+    if (rc == AYNI_OK && info.lifecycle != AYNI_LIFECYCLE_STOPPED) {
+        rc = ayni_step(kernel_, step_units, step_us, nullptr);
+        if (rc == AYNI_OK) {
+            rc = ayni_get_kernel_info(kernel_, &info);
+        }
     }
     if (rc != AYNI_OK) {
         return rc;

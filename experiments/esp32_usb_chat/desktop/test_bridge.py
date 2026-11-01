@@ -72,6 +72,16 @@ class ProtocolTests(unittest.TestCase):
             bridge.tool_packets(large)
         self.assertEqual(bridge.tool_packets([call]), bridge.tool_packet(call))
 
+    def test_confirmed_shutdown_is_status_without_error(self):
+        events = Mock()
+        app = bridge.Bridge({}, events)
+        app.ready, app.pending_user = True, 'closing'
+        app.handle(STATUS, 0, b'stopped; reset board before reconnecting')
+        self.assertTrue(app.closed)
+        self.assertFalse(app.ready)
+        self.assertIsNone(app.pending_user)
+        self.assertFalse(any(call.args[0] == 'error' for call in events.call_args_list))
+
     def test_answer_does_not_trigger_screen(self):
         app = bridge.Bridge({}, Mock())
         app.turn, app.pending_user = 1, 'hello'

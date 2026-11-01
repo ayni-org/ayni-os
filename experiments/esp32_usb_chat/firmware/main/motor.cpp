@@ -188,13 +188,14 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
             binding.capability_id,
             text(summaries[at]),
             text(parameters[at]),
-            text(at == 2 ? "Reports actual waveform/output-stop facts and separate human visual "
-                           "confirmation. "
-                           "Target, wheel distance and RPM remain unverified. Manual raised-wheel "
-                           "bench only; "
-                           "external watchdog/reset-disable are not verified."
-                         : "Configured wiring/supply are not electrical measurements. A plan does "
-                           "not move motors."),
+            text(at == 2
+                     ? "Reports actual waveform and locally measured controller output-stop facts. "
+                       "No wheel observation is inferred. "
+                       "Target, wheel distance and RPM remain unverified. Manual raised-wheel "
+                       "bench only; "
+                       "external watchdog/reset-disable are not verified."
+                     : "Configured wiring/supply are not electrical measurements. A plan does "
+                       "not move motors."),
             text(at == 1 || at == 2
                      ? "{\"motor1_percent\":50,\"motor2_percent\":0,\"duration_ms\":5000}"
                      : "{}"),

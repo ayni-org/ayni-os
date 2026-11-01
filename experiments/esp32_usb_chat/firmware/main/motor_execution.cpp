@@ -19,7 +19,7 @@ bool same(const ayni_permit_epochs_v1 &a, const ayni_permit_epochs_v1 &b) {
            a.calibration_version == b.calibration_version && a.reserved == b.reserved;
 }
 } // namespace
-ayni_status_t MotorExecution::initialize() {
+ayni_status_t MotorExecution::initialize_owner() {
     executor_boot_ = (uint64_t(esp_random()) << 32) | esp_random();
     if (!executor_boot_) {
         executor_boot_ = 1;
@@ -66,16 +66,18 @@ void MotorExecution::trace(const char *stage, ayni_status_t status) {
     const auto read = gate_ ? ayni_control_get_info(gate_, &info) : AYNI_NOT_READY;
     std::array<int, 4> edges{};
     const bool counted = output_ && output_->counts(edges);
-    char message[320];
+    char message[384];
     const auto count = std::snprintf(
         message, sizeof(message),
         "motor stage=%s status=%ld mode=%u permit=%llu gate=%lu cause=%lu sample=%llu info=%ld "
-        "sdk=%ld edges38/39/40/41=%d/%d/%d/%d counted=%u",
+        "sdk=%ld edges38/39/40/41=%d/%d/%d/%d counted=%u gap_max_us=%llu sample_age_us=%lld",
         stage, (long)status, unsigned(mode_), (unsigned long long)current_permit_,
         (unsigned long)info.phase, (unsigned long)info.stop_cause,
         (unsigned long long)info.last_sample_sequence, (long)read,
         output_ ? (long)output_->last_error() : -1L, edges[0], edges[1], edges[2], edges[3],
-        unsigned(counted));
+        unsigned(counted), (unsigned long long)cycle_gap_max_us_,
+        pending_ && pending_->last_sample_us ? (long long)(now() - pending_->last_sample_us)
+                                             : -1LL);
     if (count > 0 && size_t(count) < sizeof(message)) {
         transport_.send(Kind::status, current_permit_, message, size_t(count));
     }
@@ -85,12 +87,10 @@ ayni_status_t MotorExecution::queue(const PortRequest &request) {
         request.kind > AYNI_EXECUTOR_STATUS) {
         return AYNI_INVALID_ARGUMENT;
     }
-    auto &slot = requests_[request.kind - 1];
-    if (slot) {
-        return AYNI_BUSY;
-    }
-    slot = request;
-    return AYNI_OK;
+    Message message{};
+    message.kind = MessageKind::port;
+    message.port = request;
+    return send(message) ? AYNI_OK : AYNI_BUSY;
 }
 ayni_status_t MotorExecution::challenge_port(void *ctx, ayni_attempt_ref_v1 id,
                                              const ayni_permit_epochs_v1 *epochs,
@@ -121,13 +121,11 @@ ayni_control_observation_v1 MotorExecution::live() const {
     if (mode_ == Mode::latched) {
         ++epochs.safety_epoch;
     }
+    const auto heartbeat = heartbeat_capture_.load(std::memory_order_acquire);
     return {epochs,
-            uint32_t(accepting_ && mode_ == Mode::armed && heartbeat_us_ &&
-                     now() - heartbeat_us_ < heartbeat_us),
+            uint32_t(accepting_.load(std::memory_order_acquire) && mode_ == Mode::armed &&
+                     heartbeat && now() - heartbeat < heartbeat_us),
             0};
-}
-bool MotorExecution::scene_enabled() const {
-    return mode_ == Mode::armed;
 }
 ayni_status_t MotorExecution::challenge(const ayni_permit_epochs_v1 &expected,
                                         ayni_executor_nonce_v1 &nonce) {
@@ -178,8 +176,7 @@ ayni_status_t MotorExecution::serve(PortRequest &request) {
         response.status = challenge(request.epochs, response.output.nonce);
     } else if (request.kind == AYNI_EXECUTOR_STOP) {
         if (request.permit_id == current_permit_ && current_permit_) {
-            if (pending_ && pending_->phase != Phase::observe &&
-                pending_->phase != Phase::observe_unsent && pending_->phase != Phase::result) {
+            if (pending_ && pending_->phase != Phase::result) {
                 end(AYNI_CALL_CANCELLED, AYNI_DENIED);
             }
             response.status = stop_output();
@@ -197,69 +194,44 @@ ayni_status_t MotorExecution::serve(PortRequest &request) {
     // Core may have abandoned this exact answer after its bounded wait. Never replay it.
     return posted == AYNI_INVALID_STATE ? AYNI_OK : posted;
 }
-ayni_submit_result_t MotorExecution::submit(const ayni_provider_request_v1 *request,
-                                            ayni_provider_completion_t *completion) {
-    if (!request || !completion || pending_ || terminal_notice_ || !gate_ ||
-        !live().interlocks_ok || !request->execution_permit ||
-        request->execution_permit->permit_id <= refused_through_ ||
-        request->execution_permit->operation_id != request->operation_id || !output_->disabled()) {
-        trace("submit-precondition", AYNI_NOT_READY);
-        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+void MotorExecution::reject(const Pending &request, ayni_status_t cause) {
+    ayni_provider_result_v1 result{};
+    result.struct_size = sizeof(result);
+    result.attempt = request.attempt;
+    result.outcome = AYNI_CALL_FAILED;
+    result.status = cause;
+    result.effect = AYNI_CALL_EFFECT_NONE;
+    const auto posted = ayni_provider_post(request.completion, &result);
+    if (posted != AYNI_OK && posted != AYNI_INVALID_STATE) {
+        worker_error_.store(posted, std::memory_order_release);
     }
-    ayni::ValueReader reader;
-    if (reader.read(request->value) != AYNI_OK) {
-        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
-    }
-    int64_t values[3]{};
-    for (uint32_t at = 0; at < 3; ++at) {
-        const auto *field = reader.field(at + 1);
-        if (!field || field->kind != AYNI_VALUE_I64) {
-            return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
-        }
-        values[at] = field->value.integer;
-    }
-    // Validate before narrowing; values also have exact Core-authorized envelope mappings.
-    if (values[0] < -int64_t(limit_) || values[0] > int64_t(limit_) ||
-        values[1] < -int64_t(limit_) || values[1] > int64_t(limit_) ||
-        values[2] < motor_duration_ms_min || values[2] > motor_plan_duration_ms_max) {
-        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
-    }
-    const MotorCommand command{int32_t(values[0]), int32_t(values[1]), uint32_t(values[2])};
-    if (!valid_motor_command(command) || (!command.first_percent && !command.second_percent) ||
-        review_nonce_ == UINT64_MAX) {
-        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    trace("start-refused", cause);
+}
+void MotorExecution::begin(Pending incoming) {
+    if (pending_ || terminal_notice_ || !gate_ || !live().interlocks_ok ||
+        incoming.permit.permit_id <= refused_through_ || !output_->disabled() ||
+        review_nonce_ == UINT64_MAX || incoming.command.first_percent < -int32_t(limit_) ||
+        incoming.command.first_percent > int32_t(limit_) ||
+        incoming.command.second_percent < -int32_t(limit_) ||
+        incoming.command.second_percent > int32_t(limit_)) {
+        reject(incoming, AYNI_DENIED);
+        return;
     }
     const auto observation = live();
-    const auto started = ayni_control_start(gate_, request->execution_permit, now(), &observation);
+    const auto started = ayni_control_start(gate_, &incoming.permit, now(), &observation);
     if (started != AYNI_OK) {
-        trace("permit-start", started);
-        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+        reject(incoming, started);
+        return;
     }
-    pending_.emplace();
-    auto &p = *pending_;
-    p.attempt = request->attempt;
-    p.completion = completion;
-    p.permit = *request->execution_permit;
-    p.identity = {++review_nonce_, request->logical_call_id, request->operation_id,
-                  request->attempt.boot_epoch, request->attempt.request_id};
-    p.command = command;
-    p.review_deadline_us = now() + review_us;
-    current_permit_ = p.permit.permit_id;
+    incoming.identity.nonce = ++review_nonce_;
+    incoming.review_deadline_us = now() + review_us;
+    pending_ = incoming;
+    current_permit_ = incoming.permit.permit_id;
     sequence_ = 0;
     trace("awaiting-approval", AYNI_OK);
-    return AYNI_SUBMIT_ACCEPTED; // No output or blocking UI inside the Core callback.
-}
-ayni_submit_result_t MotorExecution::cancel(ayni_attempt_ref_v1 attempt) {
-    if (!pending_ || attempt.boot_epoch != pending_->attempt.boot_epoch ||
-        attempt.request_id != pending_->attempt.request_id) {
-        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
-    }
-    pending_->outcome = AYNI_CALL_CANCELLED;
-    pending_->status = AYNI_DENIED;
-    return AYNI_SUBMIT_ACCEPTED;
 }
 ayni_status_t MotorExecution::sample() {
-    const auto &p = *pending_;
+    auto &p = *pending_;
     ayni_control_sample_v1 sample{};
     sample.struct_size = sizeof(sample);
     sample.count = p.permit.envelope.count;
@@ -274,7 +246,11 @@ ayni_status_t MotorExecution::sample() {
         sample.fields[at] = {limits.fields[at].field_id, limits.fields[at].unit, values[at]};
     }
     const auto observation = live();
-    return ayni_control_sample(gate_, &sample, now(), &observation);
+    const auto rc = ayni_control_sample(gate_, &sample, now(), &observation);
+    if (rc == AYNI_OK) {
+        p.last_sample_us = sample.sampled_at_us;
+    }
+    return rc;
 }
 ayni_status_t MotorExecution::stop_output() {
     ayni_status_t stopped = AYNI_OK;
@@ -307,20 +283,30 @@ void MotorExecution::end(ayni_call_outcome_t outcome, ayni_status_t status) {
         p.status = AYNI_RESULT_UNKNOWN;
         return; // Keep the permit/resources; retry local disable, never invent STOPPED.
     }
-    if (p.effect == Effect::none) {
-        p.phase = Phase::result;
-    } else {
-        p.phase = Phase::observe_unsent;
-        p.review_deadline_us = now() + review_us;
+    // Exact local edge evidence can establish partial controller output after a known stop.
+    // It does not measure wheel speed/position or repair an earlier UNKNOWN record.
+    if (p.effect == Effect::possible) {
+        std::array<int, 4> edges{};
+        const auto duties = motor_duties(p.command.first_percent, p.command.second_percent);
+        bool valid = output_->counts(edges), positive = false;
+        for (size_t at = 0; at < edges.size(); ++at) {
+            valid = valid && edges[at] >= 0 && uint32_t(edges[at]) <= p.command.duration_ms &&
+                    (duties[at] || edges[at] == 0);
+            positive = positive || edges[at] > 0;
+        }
+        if (valid && positive) {
+            p.effect = Effect::partial;
+        }
     }
+    p.phase = Phase::result; // Local output-stop fact ends a timed PWM procedure; target stays
+                             // unverified.
 }
-void MotorExecution::request_stop() {
+void MotorExecution::stop_owner() {
     if (mode_ == Mode::closed) {
         return;
     }
     mode_ = Mode::latched;
-    if (pending_ && pending_->phase != Phase::observe && pending_->phase != Phase::observe_unsent &&
-        pending_->phase != Phase::result) {
+    if (pending_ && pending_->phase != Phase::result) {
         end(AYNI_CALL_CANCELLED, AYNI_DENIED);
     } else {
         stop_output();
@@ -331,17 +317,15 @@ bool MotorExecution::notify() {
         return true;
     }
     auto &p = *pending_;
-    const bool review = p.phase == Phase::review_unsent;
-    if (!review && p.phase != Phase::observe_unsent) {
+    if (p.phase != Phase::review_unsent) {
         return true;
     }
     uint8_t packet[motor_review_bytes]{};
-    encode_motor_review(packet, p.identity, p.command, limit_, review ? 1 : 2);
-    if (!transport_.send(review ? Kind::motor_review : Kind::motor_observe, current_permit_, packet,
-                         sizeof(packet))) {
+    encode_motor_review(packet, p.identity, p.command, limit_, 1);
+    if (!transport_.send(Kind::motor_review, current_permit_, packet, sizeof(packet))) {
         return false;
     }
-    p.phase = review ? Phase::review : Phase::observe;
+    p.phase = Phase::review;
     return true;
 }
 ayni_status_t MotorExecution::post_result() {
@@ -352,14 +336,14 @@ ayni_status_t MotorExecution::post_result() {
         "{\"permit_id\":%llu,\"motor1_percent\":%ld,\"motor2_percent\":%ld,\"duration_ms\":%lu,"
         "\"output_started\":%s,\"output_waveform_complete\":%s,\"output_stop\":\"gpio-matrix-and-"
         "low-readback\","
-        "\"operator_stopped\":%s,\"operator_source\":\"mac-human\",\"local_status\":%ld,\"target\":"
+        "\"operator_stopped\":null,\"operator_source\":\"not-requested\",\"local_status\":%ld,"
+        "\"target\":"
         "\"unverified\","
         "\"mode\":\"manual-bench-exception\",\"independent_watchdog_verified\":false}",
         (unsigned long long)current_permit_, (long)p.command.first_percent,
         (long)p.command.second_percent, (unsigned long)p.command.duration_ms,
         p.effect == Effect::none ? "false" : "true",
-        p.effect == Effect::complete ? "true" : "false", p.operator_quiet ? "true" : "false",
-        (long)p.status);
+        p.effect == Effect::complete ? "true" : "false", (long)p.status);
     if (length <= 0 || size_t(length) >= sizeof(json)) {
         return AYNI_CAPACITY_EXCEEDED;
     }
@@ -371,6 +355,7 @@ ayni_status_t MotorExecution::post_result() {
     result.status = p.outcome == AYNI_CALL_CANCELLED ? AYNI_OK : p.status;
     result.effect = p.effect == Effect::none       ? AYNI_CALL_EFFECT_NONE
                     : p.effect == Effect::complete ? AYNI_CALL_EFFECT_COMPLETE
+                    : p.effect == Effect::partial  ? AYNI_CALL_EFFECT_PARTIAL
                                                    : AYNI_CALL_EFFECT_UNKNOWN;
     if (p.outcome == AYNI_CALL_ABANDONED) {
         result.status = AYNI_RESULT_UNKNOWN;
@@ -381,6 +366,7 @@ ayni_status_t MotorExecution::post_result() {
     const auto posted = ayni_provider_post(p.completion, &result);
     if (posted == AYNI_OK || posted == AYNI_INVALID_STATE) {
         pending_.reset();
+        publish_snapshot();
         terminal_notice_ = current_permit_;
         publish_terminal();
         return AYNI_OK;
@@ -391,6 +377,7 @@ void MotorExecution::publish_terminal() {
     if (!terminal_notice_) {
         return;
     }
+    publish_snapshot();
     char state[512];
     const auto count = describe(state, sizeof(state));
     if (count > 0 && size_t(count) < sizeof(state) &&
@@ -399,14 +386,14 @@ void MotorExecution::publish_terminal() {
     }
 }
 // All SDK work and port answers run between bounded Core steps on the owner thread.
-ayni_status_t MotorExecution::advance() {
+ayni_status_t MotorExecution::advance_owner() {
     if (mode_ == Mode::closed) {
         return AYNI_OK;
     }
     publish_terminal();
-    if (transport_.motor_stop_requested() || local_stop_) {
-        local_stop_ = false;
-        request_stop();
+    if (transport_.motor_stop_requested() ||
+        local_stop_.exchange(false, std::memory_order_acq_rel)) {
+        stop_owner();
     }
     // A Core STOP queued by the previous step must win before even the first sample.
     auto &stop = requests_[AYNI_EXECUTOR_STOP - 1];
@@ -481,12 +468,6 @@ ayni_status_t MotorExecution::advance_pending() {
                 end(AYNI_CALL_FAILED, AYNI_INTERNAL);
             }
         }
-    } else if ((p.phase == Phase::observe || p.phase == Phase::observe_unsent) &&
-               now() >= p.review_deadline_us) {
-        mode_ = Mode::latched;
-        p.outcome = AYNI_CALL_FAILED;
-        p.status = AYNI_EXPIRED;
-        p.phase = Phase::result;
     }
     notify();
     if (pending_ && pending_->phase == Phase::result) {
@@ -497,11 +478,7 @@ ayni_status_t MotorExecution::advance_pending() {
     }
     return AYNI_OK;
 }
-void MotorExecution::receive(Kind kind, uint64_t id, const uint8_t *data, size_t size) {
-    if (kind == Kind::motor_heartbeat && !size) {
-        heartbeat_us_ = now();
-        return;
-    }
+void MotorExecution::receive_owner(Kind kind, uint64_t id, const uint8_t *data, size_t size) {
     if (kind == Kind::motor_settings && size == 4 && !pending_) {
         const auto limit = get32(data);
         if (limit && limit <= motor_percent_max && mode_ != Mode::latched &&
@@ -510,9 +487,8 @@ void MotorExecution::receive(Kind kind, uint64_t id, const uint8_t *data, size_t
             mode_ = Mode::armed;
         }
     } else if (kind == Kind::motor_power_off && !size) {
-        request_stop(); // Driver-off is an operator statement, never an electrical measurement.
+        stop_owner(); // Driver-off is an operator statement, never an electrical measurement.
         if (pending_ && output_->disabled()) {
-            pending_->operator_quiet = true;
             pending_->phase = Phase::result;
         }
     } else if (pending_ && id == current_permit_) {
@@ -529,17 +505,9 @@ void MotorExecution::receive(Kind kind, uint64_t id, const uint8_t *data, size_t
             } else {
                 end(AYNI_CALL_CANCELLED, AYNI_DENIED);
             }
-        } else if (kind == Kind::motor_observed && p.phase == Phase::observe &&
-                   now() < p.review_deadline_us) {
-            p.operator_quiet = approved;
-            if (!approved) {
-                mode_ = Mode::latched;
-                p.outcome = AYNI_CALL_FAILED;
-                p.status = AYNI_DENIED;
-            }
-            p.phase = Phase::result;
         }
     }
+    publish_snapshot();
     char state[512];
     const auto count = describe(state, sizeof(state));
     if (count > 0 && size_t(count) < sizeof(state)) {
@@ -547,6 +515,9 @@ void MotorExecution::receive(Kind kind, uint64_t id, const uint8_t *data, size_t
     }
 }
 int MotorExecution::describe(char *out, size_t capacity) const {
+    const auto snapshot = snapshot_.load(std::memory_order_acquire);
+    const auto limit = snapshot & snapshot_limit_mask;
+    const auto mode = Mode((snapshot >> snapshot_mode_shift) & snapshot_mode_mask);
     return std::snprintf(
         out, capacity,
         "{\"driver\":\"TA6586\",\"gpio_d0_d1_d2_d3\":[%lu,%lu,%lu,%lu],\"configured_supply_mv\":"
@@ -555,10 +526,10 @@ int MotorExecution::describe(char *out, size_t capacity) const {
         "\"motion_enabled\":%s,\"mode\":\"manual-bench-per-action-approval\",\"stop_chain\":"
         "\"unverified\"}",
         (unsigned long)motor_pins[0], (unsigned long)motor_pins[1], (unsigned long)motor_pins[2],
-        (unsigned long)motor_pins[3], (unsigned long)limit_, (unsigned long)motor_percent_max,
-        pending_ ? "true" : "false", mode_ == Mode::armed ? "true" : "false");
+        (unsigned long)motor_pins[3], (unsigned long)limit, (unsigned long)motor_percent_max,
+        (snapshot & snapshot_busy) ? "true" : "false", mode == Mode::armed ? "true" : "false");
 }
-bool MotorExecution::close() {
+bool MotorExecution::close_owner() {
     if (mode_ == Mode::closed) {
         return true;
     }

@@ -30,7 +30,7 @@ SYSTEM = ('你是运行在 ESP32-S3 上的 Ayni 助手。你必须调用系统�
           '扬声器默认音量 80%，可按用户要求指定 volume_percent；朗读内容应简短、最多 30 秒。'
           '电机能力 motor.status 查询、motor.plan 仅计划；用户要求转动时发现并调用 motor.run。'
           'motor.run 的两个百分比为 PWM 占空比 -90..90，零表示对应电机不动，时长 50..5000ms 且为5的倍数；'
-          '每次实际调用都必须等待 Mac 人工批准和结束后的观察确认；不要把 plan 当作已转动。'
+          '每次实际调用都必须等待 Mac 人工批准；结果只证明控制器输出结束，不证明轮速或距离。不要把 plan 当作已转动。'
           '只能人工架空台架实验；不支持无人运动，停止链尚未完成硬件验证。'
           '只有用户明确要求才可转动；速度与时间不得超出用户要求。两只分别测试应逐次调用，另一只设零。'
           '拒绝、超时、取消或结果未知的动作不得自动重试。不要宣称达到实测转速、距离或角度。'
@@ -314,6 +314,9 @@ class Bridge:
                 self.closed = True
                 self.ready = False
                 self.emit('ready', False)
+                self.pending_user = None
+                self.emit('busy', self.current is not None)
+                return # A confirmed normal shutdown is not a turn/provider error.
             if status == 'ready':
                 self.ready = True
                 self.emit('ready', True)

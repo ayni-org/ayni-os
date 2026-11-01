@@ -72,7 +72,7 @@ esp_err_t MotorOutput::initialize() {
     state_ = State::idle;
     return ESP_OK;
 }
-bool MotorOutput::disabled() const {
+bool MotorOutput::pins_disabled() {
     for (const auto pin : motor_pins) {
         gpio_io_config_t config{};
         if (gpio_get_io_config(static_cast<gpio_num_t>(pin), &config) != ESP_OK ||
@@ -82,6 +82,26 @@ bool MotorOutput::disabled() const {
         }
     }
     return true;
+}
+bool MotorOutput::disabled() const {
+    return pins_disabled();
+}
+esp_err_t MotorOutput::coast_pins() {
+    esp_err_t rc = ESP_OK;
+    gpio_config_t config{};
+    for (auto pin : motor_pins) {
+        retain_error(rc, gpio_set_level(static_cast<gpio_num_t>(pin), 0));
+        esp_rom_gpio_connect_out_signal(static_cast<gpio_num_t>(pin), SIG_GPIO_OUT_IDX, false,
+                                        false);
+        config.pin_bit_mask |= UINT64_C(1) << pin;
+    }
+    config.mode = GPIO_MODE_INPUT_OUTPUT;
+    config.pull_down_en = GPIO_PULLDOWN_ENABLE;
+    retain_error(rc, gpio_config(&config));
+    if (!pins_disabled()) {
+        retain_error(rc, ESP_FAIL);
+    }
+    return rc;
 }
 bool MotorOutput::counts(std::array<int, 4> &out) const {
     for (size_t at = 0; at < counters_.size(); ++at) {
@@ -237,16 +257,7 @@ esp_err_t MotorOutput::stop() {
             }
         }
     }
-    gpio_config_t config{};
-    for (auto pin : motor_pins) {
-        config.pin_bit_mask |= UINT64_C(1) << pin;
-    }
-    config.mode = GPIO_MODE_INPUT_OUTPUT;
-    config.pull_down_en = GPIO_PULLDOWN_ENABLE;
-    retain_error(rc, gpio_config(&config));
-    if (!disabled()) {
-        retain_error(rc, ESP_FAIL);
-    }
+    retain_error(rc, coast_pins());
     if (rc != ESP_OK) {
         last_error_ = rc;
         state_ = State::fault;

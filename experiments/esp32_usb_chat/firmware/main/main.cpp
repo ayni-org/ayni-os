@@ -53,8 +53,14 @@ void owner(void *) {
     int64_t hello_at = 0;
     for (;;) {
         if (!configured && esp_timer_get_time() - hello_at > 1000000) {
-            const char hello[] = "AYNI USB CHAT/3; configure required";
-            transport->send(usbchat::Kind::hello, 0, hello, sizeof(hello) - 1);
+            const bool low = usbchat::MotorOutput::pins_disabled();
+            const char *hello =
+                low ? "AYNI USB CHAT/3; configure required; motor_pins=low"
+                    : "AYNI USB CHAT/3; motor pin readback abnormal; cut driver VIN";
+            if (!low) {
+                usbchat::MotorOutput::coast_pins();
+            }
+            transport->send(usbchat::Kind::hello, 0, hello, std::strlen(hello));
             hello_at = esp_timer_get_time();
         }
         while (transport->receive(*packet)) {
@@ -75,7 +81,8 @@ void owner(void *) {
         }
         if (configured && !failed) {
             const auto rc = chat->tick();
-            if (rc != AYNI_OK) {
+            // A worker join is asynchronous; BUSY keeps the owner alive for the next tick.
+            if (rc != AYNI_OK && rc != AYNI_BUSY) {
                 char s[64];
                 std::snprintf(s, sizeof(s), "kernel stopped/held=%ld", long(rc));
                 transport->send(usbchat::Kind::status, 0, s, std::strlen(s));
@@ -88,5 +95,10 @@ void owner(void *) {
 }
 } // namespace
 extern "C" void app_main() {
+    // Waiting for Mac configuration must already be output-disabled, including failed startup.
+    if (usbchat::MotorOutput::coast_pins() != ESP_OK) {
+        std::puts("motor boot low-state failed; cut independent driver VIN");
+        return;
+    }
     xTaskCreateStatic(owner, "chat-owner", owner_stack_bytes, nullptr, 5, owner_stack, &owner_tcb);
 }

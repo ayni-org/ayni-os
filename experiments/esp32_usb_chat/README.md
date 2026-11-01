@@ -62,7 +62,7 @@ LCD 在显示关闭时用原有 16 行 DMA 缓冲逐条清成黑色，全部完�
 
 执行端在受理时复制 Core 的真实 call/operation/attempt/permit身份并启动门控，但没有第一份采样、没有PWM。Mac逐次展示两个占空比和时长，只有准确身份及一次性nonce匹配、30秒内人工批准，执行端才能产生采样并启动RMT。拒绝或超时不输出。门控procedure总预算60秒，含人工等待；实际波形最多5秒，不续租。RMT使用有限硬件循环、低电平结束；四个PCNT覆盖准备、输出及释放，要求选中脚边沿数等于duration_ms、其余脚为零。PCNT不是编码器反馈，不能证明轮子达到目标。
 
-每次输出结束先停RMT、解除GPIO矩阵并本机读回四脚低，才向PermitGate确认**控制器输出已停止**；target始终UNVERIFIED。Mac再要求人眼确认两轮静止，这份人工事实单独记录，不能当作传感器观测。确认前不允许下一次动作；观察否定/超时、取消、心跳丢失或停止按钮会锁定，需驱动断电后重连。窗口按钮通过独立串口种类及原子停止标志绕过模型和普通owner数据队列；完整帧仍须经过同一USB链路。
+每次输出结束先停RMT、解除GPIO矩阵并本机读回四脚低，才向PermitGate确认**控制器输出已停止**；target始终UNVERIFIED。正常结束直接返回结果，不再额外要求一次“人眼确认后才结束调用”。结果的operator_stopped为null/source为not-requested，不伪造人眼或传感器观测。运行前仍逐次人工批准；取消、心跳丢失或停止按钮锁定，需驱动断电后重连。窗口按钮通过独立串口种类及原子停止标志绕过模型和普通owner数据队列；完整帧仍须经过同一USB链路。
 
 当前没有外部看门狗或复位默认失能硬件，C-STOP-003/004尚未验证。用户明确授权的例外仅限架空、在场、逐次审批台架；电脑/进程/ESP故障或USB失联仍须人工直接切断独立驱动电源。GPIO低读回不是轮子静止或独立停止链的证明，不宣称轮速、距离或角度已达到。
 
@@ -70,7 +70,7 @@ LCD 在显示关闭时用原有 16 行 DMA 缓冲逐条清成黑色，全部完�
 
 ### 私有 USB v3 电机帧
 
-23..31依次为review、decision、observe、observed、settings、stop、power_off、heartbeat、state。原1..22编号不变，帧版本升为3，旧端拒收；Ayni ABI/schema不变。review/observe帧头id为permit，64字节负载 `<5Q2i4I>`：nonce、call、operation、attempt boot、attempt request、两路有符号PWM、duration_ms、当前cap、phase(1/2)、reserved0。decision/observed 48字节 `<5Q2I>`回送五个身份、approved(0/1)、reserved0。审批仅内存有效、不得存盘重用。settings为4字节cap；stop/power_off/heartbeat为空；state为有界JSON。Mac向Swift传递64位身份时使用十进制字符串及原始ticket十六进制，避免JSON浮点精度丢失。
+23..31依次为review、decision、observe、observed、settings、stop、power_off、heartbeat、state。原1..22编号不变，帧版本升为3，旧端拒收；Ayni ABI/schema不变。review/observe帧头id为permit，64字节负载 `<5Q2i4I>`：nonce、call、operation、attempt boot、attempt request、两路有符号PWM、duration_ms、当前cap、phase(1/2)、reserved0。decision/历史observed 48字节 `<5Q2I>`回送五个身份、approved(0/1)、reserved0。审批仅内存有效、不得存盘重用。当前设备不发送旧的observe帧，25/26编号保留给历史v3诊断端。settings为4字节cap；stop/power_off/heartbeat为空；state为有界JSON。Mac向Swift传递64位身份时使用十进制字符串及原始ticket十六进制，避免JSON浮点精度丢失。
 
 HTTPS 保留证书验证，不跟随重定向，不读取环境代理，不自动重试。网络中断、取消或不完整响应不能证明远端未计费，结果按未知处理。超过正文上限或 token 截断明确失败，不静默截断。HTTP 状态可显示，原始 vendor 错误正文不输出。
 
@@ -135,6 +135,25 @@ HTTPS 保留证书验证，不跟随重定向，不读取环境代理，不自�
 新增 `motor_decline_check.py --driver-power-off` 只使用离线提议并自动拒绝，绝不批准PWM。当前板上已通过发现、查看、真实PHYSICAL调用/授权/许可、Mac审批请求、无效果拒绝（Core outcome=CANCELLED/status=OK/effect=NONE）及正常关闭。该结果不验证批准后的PWM，也不等于电机正常。阶段诊断新增Core outcome/reason/effect、Gate原因、SDK错误与四脚硬件计数，不记录密钥或模型消息正文。
 
 Core STOP不再覆盖已结束、等待观察的原Provider结果。人工观察否定/超时属于已知联锁拒绝；如果控制器波形已经完整结束，保留已知效果并锁定，不仅因未获观察而制造新的UNKNOWN。输出跟踪本身不确定仍保留UNKNOWN，不自动重试。批准后的无动力检查尚待本次用户选择；正常窗口逐动作人工审批规则不变。本轮按用户要求没有追加独立审查。
+
+### 独立电机控制循环与启动修复（2026-11-01）
+
+用户进一步授权助手真实架空测试，两路各50%/5秒，并要求减少重复确认。首轮重测捕获到许可已接受、PWM已启动，但采样序号停在1，约448个GPIO38脉冲后Gate以SAMPLE原因停止；SDK错误为0，其他三脚为0。没有将该次短输出写成5秒通过。用户要求重试并确认驱动断电，随后部署独立控制任务版本。
+
+`motor_worker.cpp`为控制执行端的固定收件箱与任务生命周期：Core回调仅复制规范命令、permit和completion，不做GPIO操作；最多8份内部RAM消息，队满明确拒绝或请求停止。优先级7、24KiB内部RAM栈、1ms循环独占Gate/RMT/PCNT，Core owner为5。采样期限仍100ms，波形仍最多5秒。停止使用独立原子level；元数据是单个原子快照；执行端通过公开any-thread completion回传，不调用Core查询或step。Core停止后先停输入并join执行端，确认IDF6任务已挂起、两CPU均不再执行后，再释放队列、TCB、栈及SDK资源。开始运行后测量实际循环间隔及栈水位，不能由编译推定时序已通过。
+
+结束后的二次人工确认取消，依据C-STOP-006记录本地控制器输出停止，与车轮目标事实分开；不是外部看门狗/复位失能验收。中断时若四脚边沿读回建立了部分控制器输出事实，则如实报告PARTIAL，不仅因未跑满就制造UNKNOWN；不能证明时仍保留UNKNOWN，旧记录不改写。
+
+`motor_live_check.py --driver-power-off --operator-authorized-live`用于这次明确授权的真实台架：驱动断电时建立一个串口；现场开电后才接受POWER_ON_READY、RUN 1/2，严格匹配50%/5000ms提议，一路异常就HOLD，不重试、不重开。只有现场再次声明断电的POWER_OFF_QUIT才能关闭。普通窗口的每次运行前人工批准保持不变。主机生命周期检查6项通过；实际结果见下列补充，没有追加独立审查。
+
+最终实际结果：
+
+- 两路在同一持续USB连接中通过真实Ayni授权/Scene/许可/执行端输出，各50%/5000ms。GPIO38为5000、其余0；随后GPIO40为5000、其余0。两次均Core完成并返回结果，控制采样序号5002，实际最大循环间隔2002us，小于保留的100ms期限。用户确认两台分别转约5秒并停。这次提议来自固定离线夹具，不是新一次DeepSeek联网验收；90%是实现的可调硬上限，本轮没有实测90%。
+- 首次收尾发现异步join的BUSY被主循环判故障；该次关闭未算通过，现场事件仍保留normal_stop=false。最终修正主循环BUSY等待，并在Kernel STOPPED后等待设备join、不再调用step。
+- 用户随后报告复位后持续转动并立即切断VIN。明确发现程序只有收到Mac配置才初始化电机GPIO，等待配置期间没有低电平保证。改为app_main首先coast四脚，早于LCD/串口/Host；待配置HELLO包含真实GPIO矩阵/输入低电平检查。无配置、无运动命令的同一串口待机观察中，用户开10V后确认车轮保持不动，设备持续读回motor_pins=low。没有据此宣称ROM复位窗口或硬件失能链通过；刷机/重开串口仍先关VIN。
+- 最终应用789,024字节已写入/校验；屏幕/提示音/中文朗读组和完整正常关闭/join复验通过。提示音/朗读仍为4,800/69,390源采样、80%；控制任务栈余量20,948/24,576B（运动时18,276B），owner72,480/98,304B、音频11,012/12,288B、存储14,056/24,576B；该次内部RAM最小180,644B。Python桌面30项、主机验线/会话22项和C++限值/身份检查通过；未跑完整Core CI/覆盖率或新故障专项。
+
+本次自查：Core/公开头零修改。Gate/RMT/PCNT只由控制任务写；Core回调只复制消息，运行快照以单个原子值发布，停止和心跳使用独立原子输入；没有共享可变Gate或SDK句柄。收件箱容量、线程栈和优先级有命名，completion按公开跨线程规则回传。停止后先join再释放内部RAM及SDK资源；启动默认低电平与停止最终低电平共用驱动函数。协议编号及参数不变，仅取消本实验额外的结束后二次确认，不把人眼或角度目标写成已验证。
 
 ## 设计自查
 

@@ -18,7 +18,7 @@ def check(motor):
     app = Bridge({'port':'/dev/cu.usbmodem5D013686941','url':'https://api.deepseek.com',
         'model':'deepseek-flash','key':'','driver_power_off':True}, emit,
         offline=True, motor_check=f'output{motor}')
-    submitted = approved = observed = False
+    submitted = approved = answered = False
     app.connect()
     try:
         deadline = time.monotonic()+100
@@ -33,9 +33,9 @@ def check(motor):
                     # This command is permitted only by this invocation's explicit operator flag.
                     app.motor_answer({'permit':str(key[0]), 'ticket':key[1].hex(), 'approved':True}, 1)
                     approved = True
-                elif phase == 2:
-                    observed = True
-                    break # Never forge a human observation: close using the declared power-off.
+            if any(e['type']=='answer' for e in events):
+                answered = True
+                break
             if any(e['type']=='status' and str(e['value']).startswith(
                     ('turn failed/cancelled', 'initialize failed', 'kernel stopped/held')) for e in events):
                 break
@@ -50,7 +50,7 @@ def check(motor):
         match = re.search(r'edges38/39/40/41=(\d+)/(\d+)/(\d+)/(\d+) counted=1', message)
         if message.startswith('motor stage=execution-end status=0 ') and match:
             completed = tuple(map(int, match.groups())) == expected
-    passed = approved and observed and completed and app.closed
+    passed = approved and answered and completed and app.closed
     (ROOT/f'artifacts/motor-unpowered-output{motor}.json').write_text(json.dumps(
         {'passed':passed, 'driver_power':'operator-declared-off', 'visual_observation_sent':False,
          'expected_counts':expected, 'events':events}, ensure_ascii=False, indent=2))

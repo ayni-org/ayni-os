@@ -10,6 +10,9 @@ namespace usbchat {
 class MotorOutput {
   public:
     enum class Poll { running, completed, failed };
+    // Boot/standby path: no RMT ownership exists yet. Establish low GPIO before USB/LCD/Host.
+    static esp_err_t coast_pins();
+    static bool pins_disabled();
     esp_err_t initialize();
     esp_err_t start(const MotorCommand &command);
     Poll poll();
