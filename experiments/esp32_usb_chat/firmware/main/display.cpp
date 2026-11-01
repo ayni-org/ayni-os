@@ -51,10 +51,30 @@ bool Display::initialize() {
     config.data_endian = LCD_RGB_DATA_ENDIAN_BIG;
     config.bits_per_pixel = 16;
     config.reset_gpio_num = static_cast<gpio_num_t>(lcd_reset);
-    return esp_lcd_new_panel_st7789(port, &config, &panel_) == ESP_OK &&
-           esp_lcd_panel_reset(panel_) == ESP_OK && esp_lcd_panel_init(panel_) == ESP_OK &&
-           esp_lcd_panel_invert_color(panel_, true) == ESP_OK &&
-           esp_lcd_panel_disp_on_off(panel_, true) == ESP_OK;
+    if (esp_lcd_new_panel_st7789(port, &config, &panel_) != ESP_OK ||
+        esp_lcd_panel_reset(panel_) != ESP_OK || esp_lcd_panel_init(panel_) != ESP_OK ||
+        esp_lcd_panel_invert_color(panel_, true) != ESP_OK ||
+        esp_lcd_panel_disp_on_off(panel_, false) != ESP_OK) {
+        return false;
+    }
+    // Reset does not initialize display RAM. Clear it with the existing DMA lane
+    // before enabling scanout, so waiting for the first tool call shows black.
+    std::memset(stripe_, 0, stripe_bytes);
+    for (size_t row = 0; row < screen_height; row += stripe_rows) {
+        if (!paint_stripe(row)) {
+            return false;
+        }
+    }
+    return esp_lcd_panel_disp_on_off(panel_, true) == ESP_OK;
+}
+bool Display::paint_stripe(size_t row) {
+    if (esp_lcd_panel_draw_bitmap(panel_, 0, row, screen_width, row + stripe_rows, stripe_) !=
+            ESP_OK ||
+        xSemaphoreTake(done_, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        faulted_ = true;
+        return false;
+    }
+    return true;
 }
 bool Display::paint(const uint8_t *pixels, size_t bytes) {
     if (!panel_ || faulted_ || bytes != screen_bytes) {
@@ -62,10 +82,7 @@ bool Display::paint(const uint8_t *pixels, size_t bytes) {
     }
     for (size_t row = 0; row < screen_height; row += stripe_rows) {
         std::memcpy(stripe_, pixels + row * screen_width * sizeof(uint16_t), stripe_bytes);
-        if (esp_lcd_panel_draw_bitmap(panel_, 0, row, screen_width, row + stripe_rows, stripe_) !=
-                ESP_OK ||
-            xSemaphoreTake(done_, pdMS_TO_TICKS(1000)) != pdTRUE) {
-            faulted_ = true;
+        if (!paint_stripe(row)) {
             return false;
         }
     }

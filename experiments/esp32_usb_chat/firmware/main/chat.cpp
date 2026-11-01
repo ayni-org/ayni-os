@@ -1,4 +1,5 @@
 #include "chat.h"
+#include "configuration.h"
 #include <ayni/host_authority.h>
 #include <ayni/model_messages.hpp>
 #include <ayni/resources.h>
@@ -25,46 +26,6 @@ ayni_string_v1 text(const char *s) {
 ayni_scope_v1 scope() {
     return {sizeof(ayni_scope_v1), 0, nullptr};
 }
-// No runtime-private default helper is imported. These are public deployment capacities.
-ayni_config_v1 config() {
-    auto c = sized<ayni_config_v1>();
-    c.abi_major = AYNI_ABI_MAJOR;
-    c.abi_minor = AYNI_ABI_MINOR;
-    c.ingress_capacity = AYNI_INGRESS_CAPACITY_DEFAULT;
-    c.event_body_max_bytes = AYNI_EVENT_BODY_MAX_BYTES_DEFAULT;
-    c.completion_slot_count = AYNI_COMPLETION_SLOT_COUNT_DEFAULT;
-    c.storage_buffer_bytes = 128 * 1024;
-    c.agent_capacity = 1;
-    c.goal_type_capacity = 1;
-    c.goal_capacity = 4;
-    c.goal_parameter_max_bytes = prompt_bytes;
-    c.session_capacity = AYNI_SESSION_CAPACITY_DEFAULT;
-    c.goal_depth_max = AYNI_GOAL_DEPTH_MAX_DEFAULT;
-    c.goal_children_max = AYNI_GOAL_CHILDREN_MAX_DEFAULT;
-    c.task_capacity = 2;
-    c.strategy_capacity = 1;
-    c.policy_intent_capacity = 1;
-    c.task_step_capacity = 48;
-    c.task_checkpoint_max_bytes = prompt_bytes + 16;
-    c.command_capacity = 4;
-    c.capability_capacity = 4;
-    c.authority_scope_max_bytes = AYNI_AUTHORITY_SCOPE_MAX_BYTES_DEFAULT;
-    c.grant_capacity = 8;
-    c.grant_delegation_depth_max = AYNI_GRANT_DELEGATION_DEPTH_MAX_DEFAULT;
-    c.goal_requirement_capacity = 1;
-    c.memory_body_max_bytes = AYNI_MEMORY_BODY_BYTES_DEFAULT;
-    c.memory_dependency_capacity = AYNI_MEMORY_DEPENDENCY_CAPACITY_DEFAULT;
-    c.call_capacity = 32;
-    c.call_input_max_bytes = prompt_bytes + 256;
-    c.call_result_max_bytes = 8192;
-    c.call_capability_capacity = 4;
-    c.provider_capacity = 3;
-    c.binding_capacity = 4;
-    c.resource_capacity = 3;
-    c.resource_request_capacity = 2;
-    c.storage_write_interval_us = 1000;
-    return c;
-}
 } // namespace
 void Chat::status(uint64_t id, const char *message) {
     transport_.send(Kind::status, id, message, std::strlen(message));
@@ -88,7 +49,7 @@ ayni_status_t Chat::initialize(const char *route) {
         status(0, error);
         return AYNI_STORAGE_FAILED;
     }
-    auto c = config();
+    auto c = chat_config();
     size_t bytes = 0, alignment = 0;
     auto rc = ayni_kernel_memory_requirements(&c, &bytes, &alignment);
     if (rc != AYNI_OK) {
@@ -260,8 +221,10 @@ ayni_status_t Chat::configure() {
     const ayni_tool_ref_v1 tools[] = {
         {text("screen.show_text"), version, AYNI_TOOL_ROLE_CAPABILITY},
         {text("speaker.play_tone"), version, AYNI_TOOL_ROLE_CAPABILITY},
-        {text("speaker.speak_text"), version, AYNI_TOOL_ROLE_CAPABILITY}};
-    type.tool_count = 3;
+        {text("speaker.speak_text"), version, AYNI_TOOL_ROLE_CAPABILITY},
+        {text("motor.status"), version, AYNI_TOOL_ROLE_CAPABILITY},
+        {text("motor.plan"), version, AYNI_TOOL_ROLE_CAPABILITY}};
+    type.tool_count = sizeof(tools) / sizeof(tools[0]);
     type.tools = tools;
     type.tool_authorization = AYNI_TOOLS_ON_DEMAND;
     if (rc == AYNI_OK) {
@@ -272,6 +235,9 @@ ayni_status_t Chat::configure() {
     }
     if (rc == AYNI_OK) {
         rc = check("speaker", speaker_.configure(kernel_));
+    }
+    if (rc == AYNI_OK) {
+        rc = check("motor software", motor_.configure(kernel_));
     }
     if (rc == AYNI_OK) {
         transport_.attach_speaker(&speaker_);
@@ -288,7 +254,8 @@ ayni_status_t Chat::requirements(void *, ayni_bytes_v1, const ayni_goal_requirem
 ayni_submit_result_t Chat::submit_model(void *ctx, const ayni_provider_request_v1 *request,
                                         ayni_provider_completion_t *completion) {
     auto &self = *static_cast<Chat *>(ctx);
-    if (self.model_ != ModelState::idle || !request || !completion) {
+    if (!self.announced_ || self.closing_ != Closing::open || self.model_ != ModelState::idle ||
+        !request || !completion) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     ayni::ValueReader reader;
@@ -342,8 +309,8 @@ void Chat::publish_model() {
         result.status = AYNI_OK;
         result.effect = AYNI_CALL_EFFECT_COMPLETE;
         if (model_ == ModelState::tools) {
-            result.tool_call_count = 1;
-            result.tool_calls = &proposal_;
+            result.tool_call_count = model_tools_.count();
+            result.tool_calls = model_tools_.calls();
         } else {
             result.result = {answer_.data(), uint32_t(answer_size_)};
         }
@@ -402,7 +369,11 @@ void Chat::incoming(const Packet &p) {
          p.kind == Kind::model_tools) &&
         model_ == ModelState::waiting && p.id == call_) {
         if (p.kind == Kind::model_tools) {
-            model_ = decode_tool(p) ? ModelState::tools : ModelState::failed;
+            const auto rc = model_tools_.decode({p.body.data(), p.size});
+            model_ = rc == AYNI_OK ? ModelState::tools : ModelState::failed;
+            if (rc != AYNI_OK) {
+                status(turn_, "model tool group invalid or over capacity; no tools dispatched");
+            }
         } else if (p.kind == Kind::model_text && p.size <= answer_bytes) {
             std::memcpy(answer_.data(), p.body.data(), p.size);
             answer_size_ = p.size;
@@ -417,7 +388,7 @@ void Chat::incoming(const Packet &p) {
                p.id == screen_call_) {
         screen_ = p.size == 1 && p.body[0] == 1 ? ScreenState::painted : ScreenState::failed;
     } else if (p.kind == Kind::user) {
-        if (!announced_ || goal_ || pending_command_ || shutdown_ || !p.size ||
+        if (!announced_ || goal_ || pending_command_ || closing_ != Closing::open || !p.size ||
             p.size > prompt_bytes) {
             status(p.id, "input refused: not ready/busy/over limit");
             return;
@@ -447,9 +418,74 @@ void Chat::incoming(const Packet &p) {
                 status(p.id, "cancel not accepted: busy");
             }
         }
-    } else if (p.kind == Kind::shutdown && !shutdown_) {
-        shutdown_ = ayni_begin_shutdown(kernel_) == AYNI_OK;
+    } else if (p.kind == Kind::shutdown && closing_ == Closing::open) {
+        closing_ = Closing::cancel_work;
+        speaker_.set_accepting(false);
     }
+}
+// User-selected session policy: preserve history, cancel unfinished chat Goals,
+// and wait for durable termination instead of replaying old screen/audio work.
+ayni_status_t Chat::settle_session(uint64_t durable_seq, bool &settled) {
+    settled = false;
+    if (pending_command_) {
+        return AYNI_OK;
+    }
+    uint64_t ids[goal_slots]{};
+    uint32_t count = 0;
+    auto rc = ayni_list_objects(kernel_, AYNI_OBJECT_GOAL, ids, goal_slots, &count);
+    if (rc != AYNI_OK) {
+        return rc;
+    }
+    for (uint32_t at = 0; at < count; ++at) {
+        auto goal = sized<ayni_goal_info_v1>();
+        rc = ayni_get_goal(kernel_, ids[at], &goal);
+        if (rc != AYNI_OK) {
+            return rc;
+        }
+        if (goal.owner_instance_id != instance_ || goal.goal_type_version != version ||
+            goal.goal_type_id_size != sizeof(strategy_id) - 1 ||
+            std::memcmp(goal.goal_type_id, strategy_id, sizeof(strategy_id) - 1)) {
+            continue;
+        }
+        if (goal.lifecycle == AYNI_GOAL_PROPOSED || goal.lifecycle == AYNI_GOAL_ACTIVE ||
+            goal.lifecycle == AYNI_GOAL_PAUSED) {
+            const ayni_goal_target_v1 target{sizeof(target), 0, goal.goal_id};
+            rc = command(AYNI_INTENT_GOAL_CANCEL, &target, nullptr, goal.revision);
+            if (rc == AYNI_OK) {
+                char message[128];
+                std::snprintf(message, sizeof(message),
+                              "session cancel goal=%llu state=%lu wait=%lu; history preserved",
+                              static_cast<unsigned long long>(goal.goal_id),
+                              static_cast<unsigned long>(goal.lifecycle),
+                              static_cast<unsigned long>(goal.wait_reason));
+                status(0, message);
+            }
+            return rc == AYNI_BUSY ? AYNI_OK : rc;
+        }
+        if (goal.commit_seq > durable_seq) {
+            return AYNI_OK;
+        }
+    }
+    uint64_t tasks[task_slots]{};
+    rc = ayni_list_objects(kernel_, AYNI_OBJECT_TASK, tasks, task_slots, &count);
+    if (rc != AYNI_OK) {
+        return rc;
+    }
+    for (uint32_t at = 0; at < count; ++at) {
+        auto task = sized<ayni_task_info_v1>();
+        rc = ayni_get_task(kernel_, tasks[at], &task);
+        if (rc != AYNI_OK) {
+            return rc;
+        }
+        if (task.owner_instance_id == instance_ &&
+            (task.commit_seq > durable_seq ||
+             (task.lifecycle != AYNI_TASK_COMPLETED && task.lifecycle != AYNI_TASK_CANCELLED &&
+              task.lifecycle != AYNI_TASK_FAILED && task.lifecycle != AYNI_TASK_EXPIRED))) {
+            return AYNI_OK;
+        }
+    }
+    settled = true;
+    return AYNI_OK;
 }
 ayni_status_t Chat::tick() {
     publish_model();
@@ -527,17 +563,29 @@ ayni_status_t Chat::tick() {
     if (rc != AYNI_OK) {
         return rc;
     }
-    constexpr const char *grant_capabilities[] = {capability_id, "screen.text", "speaker.tone",
-                                                  "speaker.speech"};
-    if (grant_ < 4) {
+    if (closing_ == Closing::cancel_work) {
+        bool settled = false;
+        rc = settle_session(info.durable_seq, settled);
+        if (rc != AYNI_OK || !settled) {
+            return rc;
+        }
+        rc = ayni_begin_shutdown(kernel_);
+        if (rc == AYNI_OK) {
+            closing_ = Closing::kernel;
+        }
+        return rc;
+    }
+    constexpr const char *grant_capabilities[] = {capability_id,    "screen.text",  "speaker.tone",
+                                                  "speaker.speech", "motor.status", "motor.plan"};
+    if (grant_ < sizeof(grant_capabilities) / sizeof(grant_capabilities[0])) {
         if (pending_command_) {
             return AYNI_OK;
         }
         // Reuse an exact, currently usable restored Grant instead of filling the
         // bounded table with a new permanent root after every ordinary reboot.
-        uint64_t ids[8]{};
+        uint64_t ids[grant_slots]{};
         uint32_t count = 0;
-        rc = ayni_list_objects(kernel_, AYNI_OBJECT_GRANT, ids, 8, &count);
+        rc = ayni_list_objects(kernel_, AYNI_OBJECT_GRANT, ids, grant_slots, &count);
         if (rc != AYNI_OK) {
             return rc;
         }
@@ -573,8 +621,14 @@ ayni_status_t Chat::tick() {
         return accepted;
     }
     if (!announced_ && !pending_command_) {
-        status(0, "ready");
+        bool settled = false;
+        rc = settle_session(info.durable_seq, settled);
+        if (rc != AYNI_OK || !settled) {
+            return rc;
+        }
         announced_ = true;
+        speaker_.set_accepting(true);
+        status(0, "ready");
     }
     if (goal_) {
         auto goal = sized<ayni_goal_info_v1>();

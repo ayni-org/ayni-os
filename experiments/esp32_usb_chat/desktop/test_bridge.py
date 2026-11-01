@@ -1,7 +1,7 @@
 import json
 import struct
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 import bridge
 from protocol import *
 
@@ -34,6 +34,43 @@ class ProtocolTests(unittest.TestCase):
     def test_duplicate_tool_keys_are_refused(self):
         with self.assertRaises(ValueError):
             bridge.tool_packet({'id': 'c', 'function': {'name': 'f', 'arguments': '{"a":1,"a":2}'}})
+
+    def test_model_response_keeps_both_inspections_and_original_ids(self):
+        calls = [{'id': identity, 'type': 'function', 'function': {
+            'name': 'ayni_inspect_capability', 'arguments': json.dumps({
+                'binding_id': binding, 'binding_version': 1})}}
+            for identity, binding in [('screen-id', 'screen.show_text'),
+                                      ('speech-id', 'speaker.speak_text')]]
+        response = Mock()
+        response.read.return_value = json.dumps({'choices': [{
+            'finish_reason': 'tool_calls', 'message': {'tool_calls': calls}}]}).encode()
+        opener = Mock()
+        opener.open.return_value.__enter__ = Mock(return_value=response)
+        opener.open.return_value.__exit__ = Mock(return_value=False)
+        with patch.object(bridge.urllib.request, 'build_opener', return_value=opener):
+            kind, packet = bridge.request_model({
+                'url': bridge.DEFAULT_URL, 'model': bridge.DEFAULT_MODEL, 'key': 'test-only'},
+                {'messages': []})
+        self.assertEqual(kind, MODEL_TOOLS)
+        self.assertEqual(struct.unpack_from('<HHHH', packet), (0, 0, 2, 1))
+        offset = 8
+        for call in calls:
+            size, = struct.unpack_from('<I', packet, offset)
+            offset += 4
+            self.assertEqual(packet[offset:offset+size], bridge.tool_packet(call))
+            offset += size
+        self.assertEqual(offset, len(packet))
+
+    def test_tool_batch_rejects_duplicate_ids_and_capacity_without_truncation(self):
+        call = {'id': 'same', 'function': {'name': 'ayni_list_capabilities', 'arguments': '{}'}}
+        for calls in ([], [call, call], [call]*9):
+            with self.subTest(count=len(calls)), self.assertRaises(ValueError):
+                bridge.tool_packets(calls)
+        large = [{'id': str(i), 'function': {'name': 'ayni_call_capability',
+                   'arguments': json.dumps({'text': 'x'*4200})}} for i in range(2)]
+        with self.assertRaises(ValueError):
+            bridge.tool_packets(large)
+        self.assertEqual(bridge.tool_packets([call]), bridge.tool_packet(call))
 
     def test_answer_does_not_trigger_screen(self):
         app = bridge.Bridge({}, Mock())

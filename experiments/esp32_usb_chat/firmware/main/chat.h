@@ -1,4 +1,6 @@
 #pragma once
+#include "model_tools.h"
+#include "motor.h"
 #include "speaker.h"
 #include "transport.h"
 #include <array>
@@ -26,16 +28,21 @@ class Chat {
     ayni_status_t configure();
     ayni_status_t command(ayni_intent_kind_t, const void *, uint64_t * = nullptr, uint32_t = 0);
     ayni_status_t receipt();
+    ayni_status_t settle_session(uint64_t durable_seq, bool &settled);
     void status(uint64_t, const char *);
     void publish_model();
     Transport &transport_;
     Speaker speaker_;
+    Motor motor_;
     ayni::hosts::esp_idf::Host *host_ = nullptr; // Internal RAM, outlives Kernel/producers.
     ayni_kernel_t *kernel_ = nullptr;
     void *arena_ = nullptr;
     uint64_t session_ = 0, instance_ = 0, boot_ = 0, sequence_ = 0, pending_command_ = 0;
     uint64_t grant_ = 0, goal_ = 0, turn_ = 0;
-    bool announced_ = false, shutdown_ = false, hold_reported_ = false;
+    bool announced_ = false, hold_reported_ = false;
+    // Session teardown cancels experiment Goals before Kernel/Host shutdown.
+    enum class Closing { open, cancel_work, kernel };
+    Closing closing_ = Closing::open;
     char route_[32]{};
     ayni_call_resource_v1 resource_{};
     std::array<ayni_schema_node_v1, 3> input_{};
@@ -53,9 +60,7 @@ class Chat {
     std::array<char, answer_bytes> answer_{};
     size_t answer_size_ = 0;
     std::array<char, answer_bytes + 16> checkpoint_{};
-    std::array<uint8_t, 8192> tool_wire_{};
-    ayni_tool_call_v1 proposal_{};
-    std::array<ayni_argument_node_v1, 32> argument_nodes_{};
+    ModelTools model_tools_;
     std::array<char, prompt_bytes> policy_messages_{};
     std::array<char, tx_bytes> json_{};
     std::array<char, 8192> arguments_json_{};
@@ -66,6 +71,9 @@ class Chat {
     std::array<ayni_value_node_v1, AYNI_VALUE_NODE_COUNT_MAX> input_values_{};
     std::array<char, 8192> input_text_{};
     ayni_schema_v1 tool_schema(ayni_string_v1 binding) const;
+    ayni_status_t reply_to_tool(const ayni_task_snapshot_v1 *, ayni_policy_output_v1 *,
+                                const ayni_tool_call_v1 &, ayni_string_v1 step_key,
+                                bool &intent_submitted, ayni_string_v1 &reply);
     ayni_provider_completion_t *screen_completion_ = nullptr;
     ayni_attempt_ref_v1 screen_attempt_{};
     uint64_t screen_call_ = 0, screen_deadline_ = 0;
@@ -78,7 +86,6 @@ class Chat {
     ayni_call_capability_v1 screen_capability_{};
     ayni_provider_v1 screen_provider_{};
     ayni_status_t configure_screen();
-    bool decode_tool(const Packet &);
     static ayni_submit_result_t submit_screen(void *, const ayni_provider_request_v1 *,
                                               ayni_provider_completion_t *);
     static ayni_submit_result_t cancel_screen(void *, ayni_attempt_ref_v1);

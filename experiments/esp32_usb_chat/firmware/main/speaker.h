@@ -15,6 +15,8 @@ class Speaker {
     static constexpr uint32_t default_volume = 80;
     explicit Speaker(Transport &transport) : transport_(transport) {}
     ayni_status_t configure(ayni_kernel_t *);
+    // Owner-only readiness gate; retained Calls still drain/cancel while closed.
+    void set_accepting(bool accepting) { accepting_ = accepting; }
     ayni_status_t advance(); // Owner only; never waits for I2S, synthesis or USB.
     bool receive(Kind, uint64_t, const uint8_t *, size_t); // I/O task; bounded copy and ACK.
     bool close(); // After Core STOPPED: joins the audio worker, retains PCM with the I/O context.
@@ -52,7 +54,8 @@ class Speaker {
     Transfer transfer_ = Transfer::none; // Guarded by mutex_, owner + I/O task only.
     uint64_t transfer_call_ = 0;
     uint32_t expected_ = 0, received_ = 0;
-    bool queued_ = false; // Owner only, exactly one worker submission per accepted Call.
+    bool queued_ = false;    // Owner only, exactly one worker submission per accepted Call.
+    bool accepting_ = false; // Composition opens after session cleanup, closes before teardown.
     uint32_t final_stack_free_ = 0;
     ayni_schema_node_v1 tone_input_[4]{}, speech_input_[3]{}, result_{};
     ayni_value_node_v1 volume_default_node_{};

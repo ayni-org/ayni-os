@@ -63,11 +63,15 @@ def preflight():
     print('Preflight passed. No flash contents were changed.')
 
 
-def deploy():
+def deploy(variant='stable'):
     if not (BACKUP/'preflight-ok.txt').is_file():
         raise RuntimeError('A complete successful preflight is required')
-    app = ROOT/'build/firmware/ayni_usb_chat.bin'
-    table = ROOT/'build/firmware/partition_table/partition-table.bin'
+    directory, binary = {'stable': ('firmware', 'ayni_usb_chat.bin'),
+                         'motor': ('motor-firmware', 'ayni_usb_chat.bin'),
+                         'probe': ('motor-probe', 'ayni_motor_probe.bin')}[variant]
+    build = ROOT/'build'/directory
+    app = build/binary
+    table = build/'partition_table/partition-table.bin'
     if not 0 < app.stat().st_size <= APP_SIZE or table.stat().st_size > TABLE_SIZE:
         raise RuntimeError('Image exceeds the preserved app/table region')
     # No generated idf.py flash list: it would also include a bootloader write.
@@ -85,5 +89,10 @@ def restore():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=['preflight','deploy','restore','reset'])
-    action = parser.parse_args().action
-    {'preflight': preflight, 'deploy': deploy, 'restore': restore, 'reset': lambda: esptool('chip-id')}[action]()
+    parser.add_argument('--variant', choices=['stable', 'motor', 'probe'], default='stable',
+                        help='Explicit build selection for deploy; stable is the validated screen/speaker build')
+    args = parser.parse_args()
+    if args.action != 'deploy' and args.variant != 'stable':
+        parser.error('--variant applies only to deploy')
+    {'preflight': preflight, 'deploy': lambda: deploy(args.variant), 'restore': restore,
+     'reset': lambda: esptool('chip-id')}[args.action]()

@@ -19,12 +19,15 @@ DEFAULT_MODEL = 'deepseek-flash'
 ANSWER_LIMIT = 4096
 PROMPT_LIMIT = 16384
 HTTP_LIMIT = 131072
+TOOL_COUNT_LIMIT = 8
+TOOL_WIRE_LIMIT = 8192
 SYSTEM = ('你是运行在 ESP32-S3 上的 Ayni 助手。你必须调用系统的屏幕能力来显示给用户的完整回复。'
           '先 ayni_list_capabilities，再 ayni_inspect_capability 查看精确绑定与用法，'
           '最后用 ayni_call_capability 调用屏幕能力，arguments 中包含完整回复 text。'
-          '每次只提议一个工具调用，等待真实工具结果；显示成功后用简短文字确认。'
+          '每轮最多提议 8 个工具调用，系统按提议顺序执行并返回真实工具结果；成功后用简短文字确认。'
           '只有用户要求声音时，才发现并调用 speaker.play_tone 提示音或 speaker.speak_text 中文朗读。'
           '扬声器默认音量 80%，可按用户要求指定 volume_percent；朗读内容应简短、最多 30 秒。'
+          '电机如已注册，仅 motor.status 查询和 motor.plan 软件计划可用；未启用运动，计划成功不代表电机转动。'
           '没有 shell，不要调用。屏幕中文正文 UTF-8 总长最多 4096 字节，不超过 1200 个汉字。')
 
 class Number(str):
@@ -86,6 +89,24 @@ def frame_messages(messages):
     return bytes(result)
 
 
+def tool_packets(calls):
+    if not isinstance(calls, list) or not 0 < len(calls) <= TOOL_COUNT_LIMIT:
+        raise ValueError('模型工具提议数量必须为 1..8；不会截断或执行部分提议')
+    identities = [call['id'] for call in calls]
+    if len(set(identities)) != len(identities):
+        raise ValueError('同一模型响应的工具 ID 重复；整组拒绝')
+    packets = [tool_packet(call) for call in calls]
+    if len(packets) == 1:
+        return packets[0]
+    # An impossible single-call ID length (zero) selects the additive batch-v1 form.
+    result = struct.pack('<HHHH', 0, 0, len(packets), 1)
+    for packet in packets:
+        result += struct.pack('<I', len(packet)) + packet
+    if len(result) > TOOL_WIRE_LIMIT:
+        raise ValueError('模型工具组超过 8192 字节；不会截断或执行部分提议')
+    return result
+
+
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
@@ -121,9 +142,7 @@ def request_model(config, context):
         raise ValueError('模型未完整结束回复（可能达到输出上限）；不会把截断内容当成成功')
     message = choice['message']
     if message.get('tool_calls'):
-        if len(message['tool_calls']) != 1:
-            raise ValueError('本实验每轮仅支持一个工具提议')
-        return MODEL_TOOLS, tool_packet(message['tool_calls'][0])
+        return MODEL_TOOLS, tool_packets(message['tool_calls'])
     answer = message.get('content')
     if not isinstance(answer, str) or not answer or len(answer.encode()) > ANSWER_LIMIT:
         raise ValueError('模型回复为空或超过 4096 字节；不会静默截断')
@@ -131,12 +150,13 @@ def request_model(config, context):
 
 
 class Bridge:
-    def __init__(self, config, emit, renderer=None, offline=False, speaker_check=False):
+    def __init__(self, config, emit, renderer=None, offline=False, speaker_check=False, batch_check=False):
         self.config = dict(config)
         self.emit = emit
         self.renderer = renderer
         self.offline = offline
         self.speaker_check = speaker_check
+        self.batch_check = batch_check
         self.port = None
         self.decoder = Decoder()
         self.write_lock = threading.Lock()
@@ -283,8 +303,13 @@ class Bridge:
                             ('ayni_inspect_capability', {'binding_id':'screen.show_text','binding_version':1}),
                             ('ayni_call_capability', {'binding_id':'screen.show_text','binding_version':1,'arguments':{'text':screen_text}})]
                         if self.speaker_check:
-                            if count in (3, 5):
-                                facts = json.loads([m for m in messages if m['role'] == 'tool'][-1]['content'])
+                            verified = []
+                            if self.batch_check and count == 7:
+                                verified = [m['content'] for m in messages if m['role'] == 'tool'][-3:-1]
+                            elif not self.batch_check and count in (3, 5):
+                                verified = [[m for m in messages if m['role'] == 'tool'][-1]['content']]
+                            for content in verified:
+                                facts = json.loads(content)
                                 if not (facts.get('played') is True and facts.get('volume_percent') == 80
                                         and facts.get('confirmed') == 'i2s-drained' and facts.get('samples', 0) > 0):
                                     raise ValueError('扬声器正常检查未收到默认 80% 的实际 I²S 完成结果')
@@ -296,11 +321,25 @@ class Bridge:
                                 ('ayni_call_capability', {'binding_id':'speaker.speak_text','binding_version':1,'arguments':{'text':'你好，我是运行在 ESP32 上的 Ayni 助手。'}}),
                                 ('ayni_inspect_capability', {'binding_id':'screen.show_text','binding_version':1}),
                                 ('ayni_call_capability', {'binding_id':'screen.show_text','binding_version':1,'arguments':{'text':'扬声器能力检查：提示音与中文朗读完成，软件音量默认为百分之八十。'}})]
-                        if count < len(plan):
-                            name, arguments = plan[count]
-                            answer = tool_packet({'id': f'check_{identity}_{count}', 'function': {'name': name, 'arguments': json.dumps(arguments, ensure_ascii=False)}})
+                        groups = [[step] for step in plan]
+                        if self.batch_check and self.speaker_check:
+                            groups = [[plan[0]], [plan[1], plan[3], plan[5]], [plan[2], plan[4], plan[6]]]
+                        completed, next_group = 0, None
+                        for group in groups:
+                            if completed == count:
+                                next_group = group
+                                break
+                            completed += len(group)
+                        if next_group is not None:
+                            calls = [{'id': f'check_{identity}_{count}_{at}', 'function': {
+                                'name': name, 'arguments': json.dumps(arguments, ensure_ascii=False)}}
+                                for at, (name, arguments) in enumerate(next_group)]
+                            answer = tool_packets(calls)
                             kind = MODEL_TOOLS
+                            self.emit('offline_tool_group', {'count': len(calls), 'ids': [c['id'] for c in calls]})
                         else:
+                            if count != len(plan):
+                                raise ValueError('离线检查的工具组/结果数量不一致')
                             kind, answer = MODEL_TEXT, '设备能力已返回实际输出完成回执。'.encode()
                     else:
                         kind, answer = request_model(self.config, value)

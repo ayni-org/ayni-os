@@ -13,6 +13,7 @@ class Display {
 
   private:
     static bool completed(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_event_data_t *, void *);
+    bool paint_stripe(size_t row);
     esp_lcd_panel_handle_t panel_ = nullptr;
     SemaphoreHandle_t done_ = nullptr;
     uint8_t *stripe_ = nullptr;

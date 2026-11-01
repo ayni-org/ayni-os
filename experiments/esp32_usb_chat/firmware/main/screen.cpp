@@ -105,7 +105,8 @@ ayni_status_t Chat::configure_screen() {
 ayni_submit_result_t Chat::submit_screen(void *ctx, const ayni_provider_request_v1 *request,
                                          ayni_provider_completion_t *completion) {
     auto &self = *static_cast<Chat *>(ctx);
-    if (!request || !completion || self.screen_ != ScreenState::idle) {
+    if (!self.announced_ || self.closing_ != Closing::open || !request || !completion ||
+        self.screen_ != ScreenState::idle) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     ayni::ValueReader reader;
@@ -170,61 +171,5 @@ void Chat::publish_screen() {
         status(turn_, result.outcome == AYNI_CALL_COMPLETED ? "screen capability completed"
                                                             : "screen outcome unknown");
     }
-}
-// The Mac preserves JSON numeric lexemes and serializes lossless preorder nodes.
-// Strings borrow this fixed lane only until provider_post has copied the proposal.
-bool Chat::decode_tool(const Packet &p) {
-    if (p.size < 8 || p.size > tool_wire_.size()) {
-        return false;
-    }
-    std::memcpy(tool_wire_.data(), p.body.data(), p.size);
-    auto *data = tool_wire_.data();
-    size_t pos = 8;
-    const auto u16 = [](const uint8_t *v) { return uint32_t(v[0]) | (uint32_t(v[1]) << 8U); };
-    const uint32_t id_bytes = u16(data), name_bytes = u16(data + 2), nodes = u16(data + 4);
-    if (!id_bytes || id_bytes > AYNI_MODEL_TOOL_ID_BYTES_MAX || !name_bytes ||
-        name_bytes > AYNI_CATALOG_ID_MAX_BYTES || !nodes || nodes > argument_nodes_.size() ||
-        data[6] || data[7]) {
-        return false;
-    }
-    auto take = [&](size_t bytes, ayni_string_v1 &out) {
-        if (bytes > p.size - pos) {
-            return false;
-        }
-        out = {reinterpret_cast<char *>(data + pos), uint32_t(bytes)};
-        pos += bytes;
-        return true;
-    };
-    proposal_ = {};
-    proposal_.struct_size = sizeof(proposal_);
-    proposal_.input_kind = AYNI_TOOL_INPUT_ARGUMENTS;
-    if (!take(id_bytes, proposal_.protocol_id) || !take(name_bytes, proposal_.function_name)) {
-        return false;
-    }
-    for (uint32_t at = 0; at < nodes; ++at) {
-        if (p.size - pos < 12) {
-            return false;
-        }
-        auto &node = argument_nodes_[at];
-        node = {};
-        node.kind = get32(data + pos);
-        node.subtree_end = get32(data + pos + 4);
-        const auto name = u16(data + pos + 8), value = u16(data + pos + 10);
-        pos += 12;
-        ayni_string_v1 raw{};
-        if (!take(name, node.name) || !take(value, raw)) {
-            return false;
-        }
-        if (node.kind == AYNI_ARGUMENT_BOOL) {
-            if (raw.size != 1 || (raw.data[0] != '0' && raw.data[0] != '1')) {
-                return false;
-            }
-            node.value.boolean = raw.data[0] == '1';
-        } else {
-            node.value.text = raw;
-        }
-    }
-    proposal_.input.arguments = {argument_nodes_.data(), nodes};
-    return pos == p.size && ayni_arguments_validate(&proposal_.input.arguments) == AYNI_OK;
 }
 } // namespace usbchat

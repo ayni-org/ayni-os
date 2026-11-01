@@ -106,10 +106,16 @@ ayni_schema_v1 Chat::tool_schema(ayni_string_v1 binding) const {
     if (same(binding, "screen.show_text")) {
         return screen_business_.input;
     }
-    return speaker_.schema(binding);
+    const auto motor = motor_.schema(binding);
+    return motor.nodes ? motor : speaker_.schema(binding);
 }
 ayni_status_t Chat::decide(void *ctx, const ayni_task_snapshot_v1 *s, ayni_policy_output_v1 *out) {
     auto &self = *static_cast<Chat *>(ctx);
+    // This interactive deployment starts a fresh session: restored work must
+    // wait for owner cancellation, never propose new model or device calls.
+    if (!self.announced_ || self.closing_ != Closing::open) {
+        return AYNI_NOT_READY;
+    }
     uint32_t round = 0;
     ayni_string_v1 messages{reinterpret_cast<const char *>(s->goal_parameters.data),
                             s->goal_parameters.size};
@@ -165,18 +171,75 @@ ayni_status_t Chat::decide(void *ctx, const ayni_task_snapshot_v1 *s, ayni_polic
         out->checkpoint_size = state_header + model.text.size;
         return report(*s, *out, AYNI_POLICY_REPORT_COMPLETION);
     }
-    if (model.tool_call_count != 1) {
+    if (model.tool_call_count > AYNI_CALL_TOOL_COUNT_MAX) {
         return report(*s, *out, AYNI_POLICY_REPORT_FAILURE);
     }
+    // Keep the assistant's complete group and original IDs. The Call ledger owns
+    // each effect; reconstructing read-only directory replies never replays it.
+    ayni::model::Writer history(self.policy_messages_.data(), self.policy_messages_.size());
+    history.raw(messages);
+    history.calls(model.tool_call_count);
     auto proposal = sized<ayni_task_tool_call_v1>();
-    rc = s->call_tool(s->call_context, text(model_key), 0, &proposal);
-    if (rc != AYNI_OK) {
-        return rc;
+    for (uint32_t at = 0; at < model.tool_call_count; ++at) {
+        rc = s->call_tool(s->call_context, text(model_key), at, &proposal);
+        if (rc != AYNI_OK) {
+            return rc;
+        }
+        const auto &call = proposal.call;
+        if (call.input_kind != AYNI_TOOL_INPUT_ARGUMENTS) {
+            return report(*s, *out, AYNI_POLICY_REPORT_FAILURE);
+        }
+        ayni::json::Writer arguments(self.arguments_json_.data(), self.arguments_json_.size());
+        rc = ayni::json::write_arguments(arguments, call.input.arguments);
+        size_t args_bytes = 0;
+        if (rc != AYNI_OK || !arguments.finish(args_bytes)) {
+            return AYNI_CAPACITY_EXCEEDED;
+        }
+        history.function({call.protocol_id,
+                          call.function_name,
+                          {self.arguments_json_.data(), uint32_t(args_bytes)}});
     }
-    const auto &call = proposal.call;
-    if (call.input_kind != AYNI_TOOL_INPUT_ARGUMENTS) {
-        return report(*s, *out, AYNI_POLICY_REPORT_FAILURE);
+    for (uint32_t at = 0; at < model.tool_call_count; ++at) {
+        rc = s->call_tool(s->call_context, text(model_key), at, &proposal);
+        if (rc != AYNI_OK) {
+            return rc;
+        }
+        // Index zero preserves the prior single-tool step identity on old Tasks.
+        if (at) {
+            std::snprintf(tool_key, sizeof(tool_key), "screen.%lu.%lu",
+                          static_cast<unsigned long>(round), static_cast<unsigned long>(at));
+        }
+        bool requested = false;
+        ayni_string_v1 response{};
+        rc = self.reply_to_tool(s, out, proposal.call, text(tool_key), requested, response);
+        if (rc != AYNI_OK || requested) {
+            return rc;
+        }
+        history.tool(proposal.call.protocol_id, response);
     }
+    ayni_string_v1 framed{};
+    if (!history.finish(framed) || framed.size + state_header > out->checkpoint_capacity) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    put32(out->checkpoint, state_version);
+    put32(out->checkpoint + 4, round + 1);
+    put32(out->checkpoint + 8, 0);
+    std::memcpy(out->checkpoint + state_header, framed.data, framed.size);
+    out->checkpoint_size = framed.size + state_header;
+    rc = report(*s, *out, AYNI_POLICY_REPORT_PROGRESS);
+    if (rc == AYNI_OK) {
+        out->intents[0].step_key_size = std::strlen(progress_key);
+        std::memcpy(out->intents[0].step_key, progress_key, out->intents[0].step_key_size);
+    }
+    return rc;
+}
+ayni_status_t Chat::reply_to_tool(const ayni_task_snapshot_v1 *s, ayni_policy_output_v1 *out,
+                                  const ayni_tool_call_v1 &call, ayni_string_v1 step_key,
+                                  bool &intent_submitted, ayni_string_v1 &response) {
+    auto &self = *this;
+    intent_submitted = false;
+    response = {};
+    auto rc = AYNI_OK;
     const auto args = call.input.arguments;
     ayni::json::Writer reply(self.tool_reply_.data(), self.tool_reply_.size());
     if (same(call.function_name, "ayni_list_capabilities") && only(args, "|cursor||limit|")) {
@@ -266,48 +329,48 @@ ayni_status_t Chat::decide(void *ctx, const ayni_task_snapshot_v1 *s, ayni_polic
         auto result = sized<ayni_task_call_result_v1>();
         auto detail = sized<ayni_capability_detail_v1>();
         auto schema = shape ? self.tool_schema(id->value.text) : ayni_schema_v1{};
-        if (!shape || !schema.nodes ||
-            s->inspect_capability(s->call_context, id->value.text, 1, &detail) != AYNI_OK) {
+        // Existing results keep their original meaning even if current directory
+        // visibility changes while a later member of the same group is running.
+        rc = s->call_result(s->call_context, step_key, &result);
+        if (rc == AYNI_OK) {
+            if (result.outcome != AYNI_CALL_COMPLETED || result.status != AYNI_OK) {
+                intent_submitted = true;
+                return report(*s, *out, AYNI_POLICY_REPORT_FAILURE);
+            }
+            reply.raw(std::string_view(result.text.data, result.text.size));
+        } else if (rc != AYNI_NOT_FOUND) {
+            return rc;
+        } else if (!shape || !schema.nodes ||
+                   s->inspect_capability(s->call_context, id->value.text, 1, &detail) != AYNI_OK) {
             reply.raw("{\"error\":\"invalid, unsupported or unauthorized tool binding\"}");
         } else {
-            rc = s->call_result(s->call_context, text(tool_key), &result);
-            if (rc == AYNI_NOT_FOUND) {
-                const auto root = uint32_t(input - args.nodes), count = input->subtree_end - root;
-                if (count > self.input_arguments_.size()) {
-                    return AYNI_CAPACITY_EXCEEDED;
-                }
-                for (uint32_t i = 0; i < count; ++i) {
-                    self.input_arguments_[i] = args.nodes[root + i];
-                    self.input_arguments_[i].subtree_end -= root;
-                }
-                self.input_arguments_[0].name = {};
-                const ayni_arguments_v1 arguments{self.input_arguments_.data(), count};
-                ayni_value_buffer_v1 buffer{
-                    self.input_values_.data(), uint32_t(self.input_values_.size()), 0,
-                    self.input_text_.data(),   uint32_t(self.input_text_.size()),   0};
-                rc = ayni_arguments_normalize(&self.value_workspace_, &schema, &arguments, &buffer);
-                if (rc == AYNI_OK) {
-                    auto request = sized<ayni_call_request_v1>();
-                    request.kind = AYNI_POLICY_REQUEST_CALL;
-                    request.binding_id = id->value.text;
-                    request.binding_version = 1;
-                    request.step_key = text(tool_key);
-                    request.value = {buffer.nodes, buffer.node_count};
-                    return out->request_call(out->call_context, &request);
-                }
-                reply.raw(
-                    "{\"error\":\"arguments do not match the registered Schema\",\"status\":");
-                reply.number(rc);
-                reply.raw("}");
-            } else {
-                if (rc != AYNI_OK) {
-                    return rc;
-                }
-                if (result.outcome != AYNI_CALL_COMPLETED || result.status != AYNI_OK) {
-                    return report(*s, *out, AYNI_POLICY_REPORT_FAILURE);
-                }
-                reply.raw(std::string_view(result.text.data, result.text.size));
+            const auto root = uint32_t(input - args.nodes), count = input->subtree_end - root;
+            if (count > self.input_arguments_.size()) {
+                return AYNI_CAPACITY_EXCEEDED;
             }
+            for (uint32_t i = 0; i < count; ++i) {
+                self.input_arguments_[i] = args.nodes[root + i];
+                self.input_arguments_[i].subtree_end -= root;
+            }
+            self.input_arguments_[0].name = {};
+            const ayni_arguments_v1 arguments{self.input_arguments_.data(), count};
+            ayni_value_buffer_v1 buffer{
+                self.input_values_.data(), uint32_t(self.input_values_.size()), 0,
+                self.input_text_.data(),   uint32_t(self.input_text_.size()),   0};
+            rc = ayni_arguments_normalize(&self.value_workspace_, &schema, &arguments, &buffer);
+            if (rc == AYNI_OK) {
+                auto request = sized<ayni_call_request_v1>();
+                request.kind = AYNI_POLICY_REQUEST_CALL;
+                request.binding_id = id->value.text;
+                request.binding_version = 1;
+                request.step_key = step_key;
+                request.value = {buffer.nodes, buffer.node_count};
+                intent_submitted = true;
+                return out->request_call(out->call_context, &request);
+            }
+            reply.raw("{\"error\":\"arguments do not match the registered Schema\",\"status\":");
+            reply.number(rc);
+            reply.raw("}");
         }
     } else {
         reply.raw("{\"error\":\"unsupported function; shell is unavailable\"}");
@@ -316,33 +379,7 @@ ayni_status_t Chat::decide(void *ctx, const ayni_task_snapshot_v1 *s, ayni_polic
     if (!reply.finish(reply_bytes)) {
         return AYNI_CAPACITY_EXCEEDED;
     }
-    ayni::json::Writer arguments(self.arguments_json_.data(), self.arguments_json_.size());
-    rc = ayni::json::write_arguments(arguments, args);
-    size_t args_bytes = 0;
-    if (rc != AYNI_OK || !arguments.finish(args_bytes)) {
-        return AYNI_CAPACITY_EXCEEDED;
-    }
-    ayni::model::Writer history(self.policy_messages_.data(), self.policy_messages_.size());
-    history.raw(messages);
-    history.calls(1);
-    history.function({call.protocol_id,
-                      call.function_name,
-                      {self.arguments_json_.data(), uint32_t(args_bytes)}});
-    history.tool(call.protocol_id, {self.tool_reply_.data(), uint32_t(reply_bytes)});
-    ayni_string_v1 framed{};
-    if (!history.finish(framed) || framed.size + state_header > out->checkpoint_capacity) {
-        return AYNI_CAPACITY_EXCEEDED;
-    }
-    put32(out->checkpoint, state_version);
-    put32(out->checkpoint + 4, round + 1);
-    put32(out->checkpoint + 8, 0);
-    std::memcpy(out->checkpoint + state_header, framed.data, framed.size);
-    out->checkpoint_size = framed.size + state_header;
-    rc = report(*s, *out, AYNI_POLICY_REPORT_PROGRESS);
-    if (rc == AYNI_OK) {
-        out->intents[0].step_key_size = std::strlen(progress_key);
-        std::memcpy(out->intents[0].step_key, progress_key, out->intents[0].step_key_size);
-    }
-    return rc;
+    response = {self.tool_reply_.data(), uint32_t(reply_bytes)};
+    return AYNI_OK;
 }
 } // namespace usbchat

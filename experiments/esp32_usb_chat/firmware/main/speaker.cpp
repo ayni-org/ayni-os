@@ -240,7 +240,7 @@ bool Speaker::enqueue(Job job) {
 ayni_submit_result_t Speaker::submit(void *ctx, const ayni_provider_request_v1 *request,
                                      ayni_provider_completion_t *completion) {
     auto &self = *static_cast<Speaker *>(ctx);
-    if (!request || !completion || self.pending_ || !self.worker_) {
+    if (!self.accepting_ || !request || !completion || self.pending_ || !self.worker_) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     ayni::ValueReader value;
