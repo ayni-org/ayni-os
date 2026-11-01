@@ -36,33 +36,33 @@ class ProbeTests(unittest.TestCase):
 
     def test_one_explicit_pulse_then_stop_without_reset(self):
         port, failed = self.run_probe([
-            'AYNI MOTOR PROBE/2;', 'CHECKED all four routes isolated', 'ARMED one pulse only',
-            'ACCEPTED channel=1', 'DONE finite waveform ended; rotation unverified'],
+            'AYNI MOTOR PROBE/4;', 'CHECKED all four routes isolated', 'ARMED one pulse only',
+            'ACCEPTED channel=1', 'EDGES 38=300 39=0 40=0 41=0', 'DONE finite waveform ended; rotation unverified'],
             ['--channel', '1', '--arm-isolated-bench'])
         self.assertFalse(failed)
         self.assertEqual(self.commands(port), [
-            b'CHECK\n', b'ARM 3e8\n', b'PULSE 3e8 1 0 10 200\n', b'STOP\n'])
+            b'CHECK\n', b'ARM 3e8\n', b'PULSE 3e8 1 0 10 300\n', b'STOP\n'])
         self.assertFalse(port.dtr)
         self.assertFalse(port.rts)
         port.close.assert_called_once()
 
     def test_unknown_pulse_result_only_stops_never_rearms_or_retries(self):
         port, failed = self.run_probe([
-            'AYNI MOTOR PROBE/2;', 'CHECKED all four routes isolated', 'ARMED one pulse only',
+            'AYNI MOTOR PROBE/4;', 'CHECKED all four routes isolated', 'ARMED one pulse only',
             'ERROR transmission completion unknown'],
             ['--channel', '2', '--direction', 'negative', '--arm-isolated-bench'])
         self.assertTrue(failed)
         self.assertEqual(self.commands(port), [
-            b'CHECK\n', b'ARM 3e8\n', b'PULSE 3e8 2 1 10 200\n', b'STOP\n'])
+            b'CHECK\n', b'ARM 3e8\n', b'PULSE 3e8 2 1 10 300\n', b'STOP\n'])
         port.close.assert_called_once()
 
     def test_unarmed_observation_never_sends_arm_or_pulse(self):
-        port, failed = self.run_probe(['AYNI MOTOR PROBE/2;', 'CHECKED all four routes isolated'], [])
+        port, failed = self.run_probe(['AYNI MOTOR PROBE/4;', 'CHECKED all four routes isolated'], [])
         self.assertFalse(failed)
         self.assertEqual(self.commands(port), [b'CHECK\n', b'STOP\n'])
 
     def test_failed_route_check_never_arms_or_pulses(self):
-        port, failed = self.run_probe(['AYNI MOTOR PROBE/2;', 'ERROR pin routing check failed'],
+        port, failed = self.run_probe(['AYNI MOTOR PROBE/4;', 'ERROR pin routing check failed'],
                                       ['--channel', '2', '--arm-isolated-bench'])
         self.assertTrue(failed)
         self.assertEqual(self.commands(port), [b'CHECK\n', b'STOP\n'])

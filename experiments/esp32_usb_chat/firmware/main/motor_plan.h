@@ -4,7 +4,8 @@
 namespace usbchat {
 inline constexpr int32_t motor_percent_max = 100;
 inline constexpr uint32_t motor_plan_duration_ms_max = 5000;
-inline constexpr std::array<uint32_t, 4> motor_pins{42, 41, 40, 39};
+// User's 2026-11-01 wiring revision, in driver input order D0, D1, D2, D3.
+inline constexpr std::array<uint32_t, 4> motor_pins{38, 39, 40, 41};
 // A software plan, not an output sample or permit. Inputs are Schema-normalized
 // signed percentages. Positive selects D0/D2; wiring determines shaft direction.
 // TA6586 datasheet p1: both low coasts; both high brakes (never generated here).

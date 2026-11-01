@@ -12,7 +12,7 @@ def wait_line(port, prefix, seconds):
         line = port.readline(256).decode('ascii', 'replace').strip()
         if line.startswith(('ERROR', 'REFUSED')):
             raise RuntimeError(line)
-        if line.startswith('ROUTES '):
+        if line.startswith(('ROUTES ', 'EDGES ')) and not prefix.startswith('AYNI MOTOR PROBE/'):
             print(line, flush=True)
         if line.startswith(prefix):
             print(line, flush=True)
@@ -25,7 +25,7 @@ def main():
     parser.add_argument('--channel', type=int, choices=[1, 2])
     parser.add_argument('--direction', choices=['positive', 'negative'], default='positive')
     parser.add_argument('--percent', type=int, default=10)
-    parser.add_argument('--duration-ms', type=int, default=200)
+    parser.add_argument('--duration-ms', type=int, default=300)
     parser.add_argument('--arm-isolated-bench', action='store_true',
                         help='Explicit one-pulse bench authorization after power/rating/stop checks')
     args = parser.parse_args()
@@ -44,7 +44,7 @@ def main():
         if port.write(body) != len(body):
             raise RuntimeError('Partial serial write; pulse outcome unknown, no retry')
     try:
-        wait_line(port, 'AYNI MOTOR PROBE/2;', 5)
+        wait_line(port, 'AYNI MOTOR PROBE/4;', 5)
         send('CHECK')
         wait_line(port, 'CHECKED ', 5)
         if args.channel is None:

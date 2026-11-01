@@ -3,6 +3,7 @@
 #include "motor_plan.h"
 #include "protocol.h"
 #include <array>
+#include <atomic>
 #include <charconv>
 #include <cstdio>
 #include <cstring>
@@ -10,22 +11,31 @@
 #include <driver/rmt_encoder.h>
 #include <driver/rmt_tx.h>
 #include <driver/uart.h>
+#include <esp_attr.h>
+#include <esp_intr_alloc.h>
 #include <esp_rom_gpio.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <hal/gpio_ll.h>
+#include <sdkconfig.h>
 #include <soc/gpio_sig_map.h>
+#include <soc/io_mux_reg.h>
 #include <soc/soc_caps.h>
 #include <string_view>
 namespace {
 static_assert(SOC_RMT_SUPPORT_TX_LOOP_COUNT && SOC_RMT_SUPPORT_TX_LOOP_AUTO_STOP,
               "Probe requires finite hardware loop auto-stop, not ISR-only stopping");
+static_assert(CONFIG_ESP_MAIN_TASK_AFFINITY_CPU0,
+              "GPIO observer and main task must share the configured owner core");
+static_assert(std::atomic<uint32_t>::is_always_lock_free, "ISR counters require inline atomics");
 constexpr uint32_t resolution_hz = 1000000, pwm_period_ticks = 1000;
 constexpr uint32_t duty_max = 20, duration_min_ms = 50, duration_max_ms = 300;
 constexpr int64_t hello_interval_us = 1000000, arm_window_us = 2000000;
 constexpr int64_t completion_wait_us = 1000000;
 constexpr size_t symbols_per_channel = 48, line_capacity = 128;
 constexpr size_t no_active_pin = usbchat::motor_pins.size();
+constexpr uint32_t gpio_bank_width = 32, edge_tolerance = 1;
 constexpr int uart_baud = 921600;
 constexpr uart_port_t port = UART_NUM_0;
 std::array<rmt_channel_handle_t, usbchat::motor_pins.size()> channels{};
@@ -36,6 +46,69 @@ unsigned long long arm_nonce = 0;
 size_t active_pin = 0;
 int64_t started_at = 0;
 int64_t armed_at = 0;
+uint32_t requested_cycles = 0;
+// Internal static RAM; the IRAM ISR only counts local pad edges, never performs I/O or logging.
+DRAM_ATTR std::atomic<uint32_t> observed_pin{no_active_pin}, unexpected_edges{0};
+DRAM_ATTR std::array<std::atomic<uint32_t>, usbchat::motor_pins.size()> rising_edges{};
+void IRAM_ATTR rising(void *argument) {
+    const auto expected = observed_pin.load(std::memory_order_relaxed);
+    if (expected >= no_active_pin) {
+        return;
+    }
+    const auto at = reinterpret_cast<uintptr_t>(argument);
+    rising_edges[at].fetch_add(1, std::memory_order_relaxed);
+    if (at != expected) {
+        unexpected_edges.fetch_or(uint32_t(1) << at, std::memory_order_relaxed);
+    }
+}
+bool stop_observing() {
+    observed_pin.store(no_active_pin, std::memory_order_relaxed);
+    bool ok = true;
+    for (const auto pin : usbchat::motor_pins) {
+        const auto rc = gpio_intr_disable(static_cast<gpio_num_t>(pin));
+        ok = ok && rc == ESP_OK;
+    }
+    return ok;
+}
+bool start_observing(size_t selected) {
+    if (!stop_observing()) {
+        return false;
+    }
+    uint64_t mask = 0;
+    for (size_t at = 0; at < usbchat::motor_pins.size(); ++at) {
+        mask |= UINT64_C(1) << usbchat::motor_pins[at];
+        rising_edges[at].store(0, std::memory_order_relaxed);
+    }
+    // Disabled pins may retain a prior pending status. It must not enter the new observation.
+    gpio_ll_clear_intr_status(&GPIO, uint32_t(mask));
+    gpio_ll_clear_intr_status_high(&GPIO, uint32_t(mask >> gpio_bank_width));
+    unexpected_edges.store(0, std::memory_order_relaxed);
+    observed_pin.store(selected, std::memory_order_relaxed);
+    for (const auto pin : usbchat::motor_pins) {
+        if (gpio_set_intr_type(static_cast<gpio_num_t>(pin), GPIO_INTR_POSEDGE) != ESP_OK ||
+            gpio_intr_enable(static_cast<gpio_num_t>(pin)) != ESP_OK) {
+            stop_observing();
+            return false;
+        }
+    }
+    return true;
+}
+bool edge_result() {
+    bool ok = unexpected_edges.load(std::memory_order_relaxed) == 0;
+    std::printf("EDGES");
+    for (size_t at = 0; at < usbchat::motor_pins.size(); ++at) {
+        const auto count = rising_edges[at].load(std::memory_order_relaxed);
+        // A one-edge bookend tolerance is for pin identity, not precision pulse timing evidence.
+        const bool expected = at == active_pin ? count + edge_tolerance >= requested_cycles &&
+                                                     count <= requested_cycles + edge_tolerance
+                                               : count == 0;
+        ok = ok && expected;
+        std::printf(" %lu=%lu", static_cast<unsigned long>(usbchat::motor_pins[at]),
+                    static_cast<unsigned long>(count));
+    }
+    std::puts("");
+    return ok;
+}
 
 bool routes(size_t selected = no_active_pin) {
     bool ok = true;
@@ -48,7 +121,8 @@ bool routes(size_t selected = no_active_pin) {
         const bool expected = at == selected ? config.sig_out >= RMT_SIG_OUT0_IDX &&
                                                    config.sig_out <= RMT_SIG_OUT3_IDX
                                              : config.sig_out == SIG_GPIO_OUT_IDX;
-        ok = ok && rc == ESP_OK && config.ie && config.oe && expected && level == 0;
+        ok = ok && rc == ESP_OK && config.fun_sel == PIN_FUNC_GPIO && config.ie && config.oe &&
+             expected && level == 0;
         std::printf(" %lu:%lu:%d", static_cast<unsigned long>(pin),
                     static_cast<unsigned long>(config.sig_out), level);
     }
@@ -57,7 +131,7 @@ bool routes(size_t selected = no_active_pin) {
 }
 
 bool coast() {
-    bool ok = true;
+    bool ok = stop_observing();
     for (size_t at = 0; at < channels.size(); ++at) {
         if (channels[at]) {
             const auto disabled = rmt_disable(channels[at]);
@@ -103,7 +177,11 @@ bool setup_channel(size_t at) {
     return rmt_enable(channels[at]) == ESP_OK;
 }
 void fail(const char *reason) {
+    const bool observed = observed_pin.load(std::memory_order_relaxed) != no_active_pin;
     coast();
+    if (observed) {
+        edge_result();
+    }
     faulted = true;
     std::printf("ERROR %s; cut motor power; reset required\n", reason);
 }
@@ -180,6 +258,11 @@ void command(const char *line) {
     tx.loop_count = duration; // One 1ms symbol per loop; S3 stops loops in hardware.
     tx.flags.eot_level = 0;
     tx.flags.queue_nonblocking = true;
+    requested_cycles = duration;
+    if (!start_observing(active_pin)) {
+        fail("GPIO observer setup failed; no pulse sent");
+        return;
+    }
     started_at = esp_timer_get_time();
     if (rmt_transmit(channels[active_pin], encoder, &pulse, sizeof(pulse), &tx) != ESP_OK) {
         fail("RMT submit failed, outcome unknown");
@@ -230,6 +313,18 @@ extern "C" void app_main() {
         coast();
         return;
     }
+    if (gpio_install_isr_service(ESP_INTR_FLAG_IRAM) != ESP_OK) {
+        fail("GPIO observer allocation failed");
+    } else {
+        for (size_t at = 0; at < usbchat::motor_pins.size(); ++at) {
+            if (gpio_isr_handler_add(static_cast<gpio_num_t>(usbchat::motor_pins[at]), rising,
+                                     reinterpret_cast<void *>(at)) != ESP_OK ||
+                gpio_intr_disable(static_cast<gpio_num_t>(usbchat::motor_pins[at])) != ESP_OK) {
+                fail("GPIO observer registration failed");
+                break;
+            }
+        }
+    }
     char line[line_capacity]{};
     size_t used = 0;
     bool discard = false;
@@ -237,9 +332,9 @@ extern "C" void app_main() {
     for (;;) {
         const auto now = esp_timer_get_time();
         if (!active && now - hello_at >= hello_interval_us) {
-            std::puts(faulted
-                          ? "ERROR output unavailable; cut motor power; reset required"
-                          : "AYNI MOTOR PROBE/2; CRC required; default coast; manual bench only");
+            std::puts(faulted ? "ERROR output unavailable; cut motor power; reset required"
+                              : "AYNI MOTOR PROBE/4; D0..D3=38,39,40,41; CRC and pad-edge checks; "
+                                "manual bench only");
             hello_at = now;
         }
         uint8_t byte = 0;
@@ -260,13 +355,19 @@ extern "C" void app_main() {
             }
         }
         if (active) {
+            if (unexpected_edges.load(std::memory_order_relaxed)) {
+                fail("unexpected edge on another GPIO");
+                continue;
+            }
             const auto done = rmt_tx_wait_all_done(channels[active_pin], 0);
             if (done == ESP_OK) {
-                if (coast()) {
+                const bool stopped = coast();
+                const bool measured = edge_result();
+                if (measured && stopped) {
                     std::puts(
                         "DONE finite waveform ended; outputs commanded low; rotation unverified");
                 } else {
-                    fail("output disable failed");
+                    fail("GPIO edge feedback or output disable failed");
                 }
             } else if (done != ESP_ERR_TIMEOUT || now - started_at > completion_wait_us) {
                 fail("transmission completion unknown");
