@@ -157,13 +157,16 @@ def request_model(config, context):
 
 
 class Bridge:
-    def __init__(self, config, emit, renderer=None, offline=False, speaker_check=False, batch_check=False):
+    def __init__(self, config, emit, renderer=None, offline=False, speaker_check=False, batch_check=False, motor_check=False):
         self.config = dict(config)
         self.emit = emit
         self.renderer = renderer
         self.offline = offline
         self.speaker_check = speaker_check
         self.batch_check = batch_check
+        self.motor_check = motor_check
+        if motor_check and not offline:
+            raise ValueError("motor_check requires an offline model fixture")
         self.port = None
         self.decoder = Decoder()
         self.write_lock = threading.Lock()
@@ -383,6 +386,14 @@ class Bridge:
                                 ('ayni_call_capability', {'binding_id':'speaker.speak_text','binding_version':1,'arguments':{'text':'你好，我是运行在 ESP32 上的 Ayni 助手。'}}),
                                 ('ayni_inspect_capability', {'binding_id':'screen.show_text','binding_version':1}),
                                 ('ayni_call_capability', {'binding_id':'screen.show_text','binding_version':1,'arguments':{'text':'扬声器能力检查：提示音与中文朗读完成，软件音量默认为百分之八十。'}})]
+                        if self.motor_check:
+                            first = 0 if self.motor_check == 'output2' else 50
+                            second = 50 if self.motor_check == 'output2' else 0
+                            duration = 5000 if self.motor_check in ('output1', 'output2') else 50
+                            plan = [('ayni_list_capabilities', {}),
+                                ('ayni_inspect_capability', {'binding_id':'motor.run','binding_version':1}),
+                                ('ayni_call_capability', {'binding_id':'motor.run','binding_version':1,
+                                    'arguments':{'motor1_percent':first,'motor2_percent':second,'duration_ms':duration}})]
                         groups = [[step] for step in plan]
                         if self.batch_check and self.speaker_check:
                             groups = [[plan[0]], [plan[1], plan[3], plan[5]], [plan[2], plan[4], plan[6]]]
@@ -552,7 +563,10 @@ def main():
     parser.add_argument('--renderer')
     parser.add_argument('--offline', action='store_true')
     parser.add_argument('--speaker-check', action='store_true')
+    parser.add_argument('--motor-check', choices=['decline', 'output1', 'output2'])
     args = parser.parse_args()
+    if args.motor_check and not args.offline:
+        parser.error('--motor-check requires --offline and driver power OFF')
     if args.speaker_check and not args.offline:
         parser.error('--speaker-check requires --offline')
     output_lock = threading.Lock()
@@ -583,7 +597,7 @@ def main():
                 if action == 'connect':
                     if bridge:
                         raise ValueError('本次连接的模型配置已经冻结；更改需断开并重启设备')
-                    candidate = Bridge(command, emit, args.renderer, args.offline, args.speaker_check)
+                    candidate = Bridge(command, emit, args.renderer, args.offline, args.speaker_check, motor_check=args.motor_check)
                     candidate.connect()
                     bridge = candidate
                 elif action == 'send':

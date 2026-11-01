@@ -334,6 +334,16 @@ ayni_status_t Chat::reply_to_tool(const ayni_task_snapshot_v1 *s, ayni_policy_ou
         rc = s->call_result(s->call_context, step_key, &result);
         if (rc == AYNI_OK) {
             if (result.outcome != AYNI_CALL_COMPLETED || result.status != AYNI_OK) {
+                char diagnostic[240];
+                std::snprintf(diagnostic, sizeof(diagnostic),
+                              "tool terminal binding=%.*s call=%llu outcome=%lu status=%ld "
+                              "reason=%lu effect=%lu",
+                              id && id->kind == AYNI_ARGUMENT_STRING ? int(id->value.text.size) : 0,
+                              id && id->kind == AYNI_ARGUMENT_STRING ? id->value.text.data : "",
+                              (unsigned long long)result.logical_call_id,
+                              (unsigned long)result.outcome, (long)result.status,
+                              (unsigned long)result.reason, (unsigned long)result.effect);
+                self.status(self.turn_, diagnostic);
                 intent_submitted = true;
                 return report(*s, *out, AYNI_POLICY_REPORT_FAILURE);
             }

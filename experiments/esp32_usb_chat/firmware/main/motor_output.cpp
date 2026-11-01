@@ -118,8 +118,10 @@ esp_err_t MotorOutput::prepare(size_t motor, int32_t percent) {
 }
 esp_err_t MotorOutput::start(const MotorCommand &command) {
     if (state_ != State::idle || !disabled()) {
-        return ESP_ERR_INVALID_STATE;
+        last_error_ = ESP_ERR_INVALID_STATE;
+        return last_error_;
     }
+    last_error_ = ESP_OK;
     if (!valid_motor_command(command) || (!command.first_percent && !command.second_percent)) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -159,6 +161,7 @@ esp_err_t MotorOutput::start(const MotorCommand &command) {
     }
     if (rc != ESP_OK) {
         stop();
+        last_error_ = rc;
         state_ = State::fault;
         return rc;
     }
@@ -184,6 +187,7 @@ MotorOutput::Poll MotorOutput::poll() {
     }
     if (!valid) {
         stop();
+        last_error_ = ESP_FAIL;
         state_ = State::fault;
         return Poll::failed;
     }
@@ -195,6 +199,9 @@ MotorOutput::Poll MotorOutput::poll() {
         valid = valid && uint32_t(observed[at]) == expected_[at];
     }
     if (!valid) {
+        if (last_error_ == ESP_OK) {
+            last_error_ = ESP_FAIL;
+        }
         state_ = State::fault;
     }
     return valid ? Poll::completed : Poll::failed;
@@ -241,6 +248,7 @@ esp_err_t MotorOutput::stop() {
         retain_error(rc, ESP_FAIL);
     }
     if (rc != ESP_OK) {
+        last_error_ = rc;
         state_ = State::fault;
     } else if (state_ != State::fault && state_ != State::closed) {
         state_ = State::idle;

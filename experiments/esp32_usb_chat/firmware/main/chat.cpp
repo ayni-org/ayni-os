@@ -421,14 +421,9 @@ void Chat::incoming(const Packet &p) {
             status(p.id, error);
         }
     } else if (p.kind == Kind::cancel && goal_) {
-        auto goal = sized<ayni_goal_info_v1>();
-        if (ayni_get_goal(kernel_, goal_, &goal) == AYNI_OK) {
-            const ayni_goal_target_v1 target{sizeof(target), 0, goal_};
-            const auto rc = command(AYNI_INTENT_GOAL_CANCEL, &target, nullptr, goal.revision);
-            if (rc != AYNI_OK) {
-                status(p.id, "cancel not accepted: busy");
-            }
-        }
+        // Owner command backpressure must not silently discard a user's cancellation.
+        cancel_requested_ = true;
+        status(p.id, "cancel queued; waiting for current command receipt");
     } else if (p.kind == Kind::shutdown && closing_ == Closing::open) {
         closing_ = Closing::cancel_work;
         speaker_.set_accepting(false);
@@ -499,6 +494,58 @@ ayni_status_t Chat::settle_session(uint64_t durable_seq, bool &settled) {
     }
     settled = true;
     return AYNI_OK;
+}
+void Chat::diagnostics() {
+    size_t used = 0;
+    bool fits = true;
+    auto append = [&](const char *format, auto... args) {
+        if (!fits) {
+            return;
+        }
+        const auto count = std::snprintf(json_.data() + used, json_.size() - used, format, args...);
+        fits = count > 0 && size_t(count) < json_.size() - used;
+        if (fits) {
+            used += size_t(count);
+        }
+    };
+    uint64_t ids[call_slots]{};
+    uint32_t count = 0;
+    append("session metadata (no message bodies):");
+    if (ayni_list_objects(kernel_, AYNI_OBJECT_TASK, ids, call_slots, &count) == AYNI_OK) {
+        for (uint32_t at = 0; at < count; ++at) {
+            auto task = sized<ayni_task_info_v1>();
+            if (ayni_get_task(kernel_, ids[at], &task) == AYNI_OK) {
+                append("\n task=%llu state=%lu hold=%ld/%lu", (unsigned long long)task.task_id,
+                       (unsigned long)task.lifecycle, (long)task.hold_status,
+                       (unsigned long)task.hold_reason);
+            }
+        }
+    }
+    if (ayni_list_objects(kernel_, AYNI_OBJECT_CALL, ids, call_slots, &count) == AYNI_OK) {
+        for (uint32_t at = 0; at < count; ++at) {
+            auto call = sized<ayni_call_info_v1>();
+            if (ayni_get_call(kernel_, ids[at], &call) != AYNI_OK) {
+                continue;
+            }
+            append("\n call=%llu task=%llu phase=%lu outcome=%lu status=%ld reason=%lu effect=%lu "
+                   "wait=%lu",
+                   (unsigned long long)call.logical_call_id, (unsigned long long)call.task_id,
+                   (unsigned long)call.phase, (unsigned long)call.outcome, (long)call.status,
+                   (unsigned long)call.reason, (unsigned long)call.effect,
+                   (unsigned long)call.wait_reason);
+            auto execution = sized<ayni_execution_info_v1>();
+            if (ayni_get_execution(kernel_, ids[at], &execution) == AYNI_OK) {
+                append(" exec=%lu permit=%llu ended=%lu port=%ld", (unsigned long)execution.phase,
+                       (unsigned long long)execution.permit_id,
+                       (unsigned long)execution.execution_ended, (long)execution.executor_status);
+            }
+        }
+    }
+    if (fits) {
+        transport_.send(Kind::status, 0, json_.data(), used);
+    } else {
+        status(0, "session metadata exceeded diagnostic capacity");
+    }
 }
 ayni_status_t Chat::tick() {
     auto motor = motor_.execution().advance();
@@ -660,7 +707,25 @@ ayni_status_t Chat::tick() {
         announced_ = true;
         speaker_.set_accepting(true);
         motor_.execution().set_accepting(true);
+        diagnostics();
         status(0, "ready");
+    }
+    if (cancel_requested_ && goal_ && !pending_command_) {
+        auto goal = sized<ayni_goal_info_v1>();
+        rc = ayni_get_goal(kernel_, goal_, &goal);
+        if (rc != AYNI_OK) {
+            return rc;
+        }
+        if (goal.lifecycle == AYNI_GOAL_ACTIVE || goal.lifecycle == AYNI_GOAL_PAUSED ||
+            goal.lifecycle == AYNI_GOAL_PROPOSED) {
+            const ayni_goal_target_v1 target{sizeof(target), 0, goal_};
+            rc = command(AYNI_INTENT_GOAL_CANCEL, &target, nullptr, goal.revision);
+            if (rc == AYNI_OK) {
+                cancel_requested_ = false;
+            }
+            return rc == AYNI_BUSY ? AYNI_OK : rc;
+        }
+        cancel_requested_ = false;
     }
     if (goal_) {
         auto goal = sized<ayni_goal_info_v1>();
@@ -668,7 +733,19 @@ ayni_status_t Chat::tick() {
         if (rc != AYNI_OK) {
             return rc;
         }
-        if (goal.last_task_id) {
+        if (goal.wait_reason == AYNI_REASON_TASK_CAPACITY && !hold_reported_) {
+            status(turn_, "task capacity full: retained unresolved history; input will be "
+                          "cancelled, no retry");
+            diagnostics();
+            hold_reported_ = true;
+            cancel_requested_ = true;
+        }
+        if (!goal.last_task_id && goal.commit_seq <= info.durable_seq &&
+            (goal.lifecycle == AYNI_GOAL_CANCELLED || goal.lifecycle == AYNI_GOAL_FAILED)) {
+            status(turn_, "turn failed/cancelled before task creation; no automatic retry");
+            goal_ = turn_ = 0;
+            cancel_requested_ = false;
+        } else if (goal.last_task_id) {
             auto task = sized<ayni_task_info_v1>();
             rc = ayni_get_task(kernel_, goal.last_task_id, &task);
             if (rc != AYNI_OK) {
@@ -685,12 +762,14 @@ ayni_status_t Chat::tick() {
                 if (bytes >= 12 &&
                     transport_.send(Kind::answer, turn_, checkpoint_.data() + 12, bytes - 12)) {
                     goal_ = turn_ = 0;
+                    cancel_requested_ = false;
                 }
             } else if (task.lifecycle == AYNI_TASK_FAILED ||
                        task.lifecycle == AYNI_TASK_CANCELLED) {
                 if (task.commit_seq <= info.durable_seq) {
                     status(turn_, "turn failed/cancelled; no automatic retry");
                     goal_ = turn_ = 0;
+                    cancel_requested_ = false;
                 }
             } else if (task.lifecycle == AYNI_TASK_PAUSED && !hold_reported_) {
                 char message[96];

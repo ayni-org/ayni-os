@@ -16,6 +16,7 @@ class MotorOutput {
     esp_err_t stop();
     bool disabled() const; // Actual GPIO input/matrix/output readback, not shaft measurement.
     bool counts(std::array<int, 4> &out) const;
+    esp_err_t last_error() const { return last_error_; }
     esp_err_t close(); // Only after output stop; releases partial initialization too.
 
   private:
@@ -34,6 +35,7 @@ class MotorOutput {
     };
     esp_err_t prepare(size_t motor, int32_t percent);
     State state_ = State::cold;
+    esp_err_t last_error_ = ESP_OK;
     std::array<Counter, 4> counters_{};
     std::array<Output, 2> outputs_{};
     rmt_sync_manager_handle_t sync_ = nullptr;

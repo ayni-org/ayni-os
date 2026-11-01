@@ -60,6 +60,26 @@ ayni_executor_v1 MotorExecution::ports() {
             stop_port,
             status_port};
 }
+void MotorExecution::trace(const char *stage, ayni_status_t status) {
+    ayni_control_info_v1 info{};
+    info.struct_size = sizeof(info);
+    const auto read = gate_ ? ayni_control_get_info(gate_, &info) : AYNI_NOT_READY;
+    std::array<int, 4> edges{};
+    const bool counted = output_ && output_->counts(edges);
+    char message[320];
+    const auto count = std::snprintf(
+        message, sizeof(message),
+        "motor stage=%s status=%ld mode=%u permit=%llu gate=%lu cause=%lu sample=%llu info=%ld "
+        "sdk=%ld edges38/39/40/41=%d/%d/%d/%d counted=%u",
+        stage, (long)status, unsigned(mode_), (unsigned long long)current_permit_,
+        (unsigned long)info.phase, (unsigned long)info.stop_cause,
+        (unsigned long long)info.last_sample_sequence, (long)read,
+        output_ ? (long)output_->last_error() : -1L, edges[0], edges[1], edges[2], edges[3],
+        unsigned(counted));
+    if (count > 0 && size_t(count) < sizeof(message)) {
+        transport_.send(Kind::status, current_permit_, message, size_t(count));
+    }
+}
 ayni_status_t MotorExecution::queue(const PortRequest &request) {
     if (!request.completion || request.kind < AYNI_EXECUTOR_CHALLENGE ||
         request.kind > AYNI_EXECUTOR_STATUS) {
@@ -158,7 +178,8 @@ ayni_status_t MotorExecution::serve(PortRequest &request) {
         response.status = challenge(request.epochs, response.output.nonce);
     } else if (request.kind == AYNI_EXECUTOR_STOP) {
         if (request.permit_id == current_permit_ && current_permit_) {
-            if (pending_ && pending_->phase != Phase::observe && pending_->phase != Phase::result) {
+            if (pending_ && pending_->phase != Phase::observe &&
+                pending_->phase != Phase::observe_unsent && pending_->phase != Phase::result) {
                 end(AYNI_CALL_CANCELLED, AYNI_DENIED);
             }
             response.status = stop_output();
@@ -167,6 +188,10 @@ ayni_status_t MotorExecution::serve(PortRequest &request) {
         }
     } else {
         response.status = status(request.permit_id, response.output.status);
+    }
+    if (request.kind == AYNI_EXECUTOR_CHALLENGE || response.status != AYNI_OK) {
+        trace(request.kind == AYNI_EXECUTOR_CHALLENGE ? "challenge" : "executor-port",
+              response.status);
     }
     const auto posted = ayni_executor_post(request.completion, &response);
     // Core may have abandoned this exact answer after its bounded wait. Never replay it.
@@ -178,6 +203,7 @@ ayni_submit_result_t MotorExecution::submit(const ayni_provider_request_v1 *requ
         !live().interlocks_ok || !request->execution_permit ||
         request->execution_permit->permit_id <= refused_through_ ||
         request->execution_permit->operation_id != request->operation_id || !output_->disabled()) {
+        trace("submit-precondition", AYNI_NOT_READY);
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     ayni::ValueReader reader;
@@ -204,7 +230,9 @@ ayni_submit_result_t MotorExecution::submit(const ayni_provider_request_v1 *requ
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     const auto observation = live();
-    if (ayni_control_start(gate_, request->execution_permit, now(), &observation) != AYNI_OK) {
+    const auto started = ayni_control_start(gate_, request->execution_permit, now(), &observation);
+    if (started != AYNI_OK) {
+        trace("permit-start", started);
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     pending_.emplace();
@@ -218,6 +246,7 @@ ayni_submit_result_t MotorExecution::submit(const ayni_provider_request_v1 *requ
     p.review_deadline_us = now() + review_us;
     current_permit_ = p.permit.permit_id;
     sequence_ = 0;
+    trace("awaiting-approval", AYNI_OK);
     return AYNI_SUBMIT_ACCEPTED; // No output or blocking UI inside the Core callback.
 }
 ayni_submit_result_t MotorExecution::cancel(ayni_attempt_ref_v1 attempt) {
@@ -271,6 +300,7 @@ void MotorExecution::end(ayni_call_outcome_t outcome, ayni_status_t status) {
     auto &p = *pending_;
     p.outcome = outcome;
     p.status = status;
+    trace("execution-end", status);
     if (stop_output() != AYNI_OK) {
         mode_ = Mode::latched;
         p.outcome = AYNI_CALL_ABANDONED;
@@ -435,6 +465,7 @@ ayni_status_t MotorExecution::advance_pending() {
                 end(AYNI_CALL_FAILED, AYNI_INTERNAL);
             } else {
                 p.phase = Phase::running;
+                trace("pwm-started", AYNI_OK);
             }
         }
     } else if (p.phase == Phase::running) {
@@ -453,8 +484,8 @@ ayni_status_t MotorExecution::advance_pending() {
     } else if ((p.phase == Phase::observe || p.phase == Phase::observe_unsent) &&
                now() >= p.review_deadline_us) {
         mode_ = Mode::latched;
-        p.outcome = AYNI_CALL_ABANDONED;
-        p.status = AYNI_RESULT_UNKNOWN;
+        p.outcome = AYNI_CALL_FAILED;
+        p.status = AYNI_EXPIRED;
         p.phase = Phase::result;
     }
     notify();
@@ -494,6 +525,7 @@ void MotorExecution::receive(Kind kind, uint64_t id, const uint8_t *data, size_t
             now() < p.review_deadline_us) {
             if (approved) {
                 p.phase = Phase::approved;
+                trace("approved", AYNI_OK);
             } else {
                 end(AYNI_CALL_CANCELLED, AYNI_DENIED);
             }
@@ -502,8 +534,8 @@ void MotorExecution::receive(Kind kind, uint64_t id, const uint8_t *data, size_t
             p.operator_quiet = approved;
             if (!approved) {
                 mode_ = Mode::latched;
-                p.outcome = AYNI_CALL_ABANDONED;
-                p.status = AYNI_RESULT_UNKNOWN;
+                p.outcome = AYNI_CALL_FAILED;
+                p.status = AYNI_DENIED;
             }
             p.phase = Phase::result;
         }

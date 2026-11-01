@@ -37,6 +37,7 @@ class Chat {
     ayni_status_t settle_session(uint64_t durable_seq, bool &settled);
     void status(uint64_t, const char *);
     void publish_model();
+    void diagnostics();
     Transport &transport_;
     Speaker speaker_;
     Motor motor_;
@@ -45,7 +46,7 @@ class Chat {
     void *arena_ = nullptr;
     uint64_t session_ = 0, instance_ = 0, boot_ = 0, sequence_ = 0, pending_command_ = 0;
     uint64_t grant_ = 0, goal_ = 0, turn_ = 0;
-    bool announced_ = false, hold_reported_ = false;
+    bool announced_ = false, hold_reported_ = false, cancel_requested_ = false;
     // Session teardown cancels experiment Goals before Kernel/Host shutdown.
     enum class Closing { open, cancel_work, kernel };
     Closing closing_ = Closing::open;

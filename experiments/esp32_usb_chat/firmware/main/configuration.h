@@ -2,7 +2,7 @@
 #include "protocol.h"
 #include <ayni/ayni.h>
 namespace usbchat {
-inline constexpr uint32_t goal_slots = 4, task_slots = 2, grant_slots = 12;
+inline constexpr uint32_t goal_slots = 4, task_slots = 4, grant_slots = 12, call_slots = 32;
 // No runtime-private default helper is imported. These are public deployment capacities.
 inline ayni_config_v1 chat_config() {
     ayni_config_v1 c{};
@@ -33,7 +33,7 @@ inline ayni_config_v1 chat_config() {
     c.goal_requirement_capacity = 1;
     c.memory_body_max_bytes = AYNI_MEMORY_BODY_BYTES_DEFAULT;
     c.memory_dependency_capacity = AYNI_MEMORY_DEPENDENCY_CAPACITY_DEFAULT;
-    c.call_capacity = 32;
+    c.call_capacity = call_slots;
     c.call_input_max_bytes = prompt_bytes + 256;
     c.call_result_max_bytes = 8192;
     c.call_capability_capacity = 8;
