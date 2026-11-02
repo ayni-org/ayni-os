@@ -548,13 +548,13 @@ void CallTable::discard_unusable_result(uint32_t index) {
     slots_[index].entry->result_kind = CallResultKind::unavailable;
 }
 
-ayni_status_t CallTable::erase_content(uint32_t index, ActionStamp stamp) {
+ayni_status_t CallTable::erase_content(uint32_t index, ActionStamp stamp, bool release) {
     auto &entry = *slots_[index].entry;
     if (entry.state.content_erased || !advances(entry, stamp)) {
         return AYNI_INVALID_STATE;
     }
     auto &erased = slots_[index].erased;
-    if (erased.count == 0U) {
+    if (release && erased.count == 0U) {
         erased.count = body_refs(index, erased.refs.data());
         erased.after_seq = stamp.transition.commit_seq;
     }
@@ -568,7 +568,7 @@ ayni_status_t CallTable::erase_content(uint32_t index, ActionStamp stamp) {
     return AYNI_OK;
 }
 
-bool CallTable::can_retire_task(uint64_t task_id, uint64_t durable_seq) const {
+uint32_t CallTable::task_body_refs(uint64_t task_id) const {
     uint32_t refs = 0;
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         const auto &entry = slots_[at].entry;
@@ -576,6 +576,13 @@ bool CallTable::can_retire_task(uint64_t task_id, uint64_t durable_seq) const {
             std::array<ayni_body_ref_v1, call_body_refs_max> held{};
             refs += body_refs(at, held.data()) + slots_[at].erased.count;
         }
+    }
+    return refs;
+}
+
+bool CallTable::can_retire_task(uint64_t task_id, uint64_t durable_seq) const {
+    for (uint32_t at = 0; at < limits_.capacity; ++at) {
+        const auto &entry = slots_[at].entry;
         if (entry && entry->identity.task_id == task_id &&
             (pending(*entry) || unresolved(at) ||
              (entry->state.execution && !execution_stopped(*entry->state.execution)) ||
@@ -585,7 +592,7 @@ bool CallTable::can_retire_task(uint64_t task_id, uint64_t durable_seq) const {
             return false;
         }
     }
-    return refs <= release_room();
+    return release_fits(task_body_refs(task_id));
 }
 
 void CallTable::retire_task(uint64_t task_id, uint64_t release_seq) {

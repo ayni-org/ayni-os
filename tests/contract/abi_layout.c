@@ -18,6 +18,7 @@
 #include <ayni/scenes.h>
 #include <ayni/storage_format.h>
 #include <ayni/tool_usage.h>
+#include <ayni/values.h>
 #include <ayni/workspace.h>
 
 #include <stddef.h>
@@ -58,6 +59,14 @@ AYNI_LAYOUT(tool_usage_field_count, offsetof(ayni_tool_usage_v1, field_count) ==
 AYNI_LAYOUT(tool_usage_reserved, offsetof(ayni_tool_usage_v1, reserved) == 12 + 13 * AYNI_PTR);
 AYNI_LAYOUT(tool_usage_fields, offsetof(ayni_tool_usage_v1, fields) == 16 + 13 * AYNI_PTR);
 AYNI_LAYOUT(tool_usage_size, sizeof(ayni_tool_usage_v1) == 16 + 14 * AYNI_PTR);
+
+/* Since 0.54 a value node's union holds a body reference, its widest member (ADR-0096). */
+AYNI_LAYOUT(value_node_kind, offsetof(ayni_value_node_v1, kind) == 0);
+AYNI_LAYOUT(value_node_field_id, offsetof(ayni_value_node_v1, field_id) == 4);
+AYNI_LAYOUT(value_node_subtree_end, offsetof(ayni_value_node_v1, subtree_end) == 8);
+AYNI_LAYOUT(value_node_reserved, offsetof(ayni_value_node_v1, reserved) == 12);
+AYNI_LAYOUT(value_node_value, offsetof(ayni_value_node_v1, value) == 16);
+AYNI_LAYOUT(value_node_size, sizeof(ayni_value_node_v1) == 40);
 
 AYNI_LAYOUT(config_struct_size, offsetof(ayni_config_v1, struct_size) == 0);
 AYNI_LAYOUT(config_abi_major, offsetof(ayni_config_v1, abi_major) == 4);

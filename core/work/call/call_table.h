@@ -208,6 +208,10 @@ class CallTable {
     // Task retirement prerequisite: every retained call is known and durable, and the
     // release queue has room for every body reference those rows hold.
     bool can_retire_task(uint64_t task_id, uint64_t durable_seq) const;
+    // Body references a retirement of task_id would queue, and whether the queue has room for
+    // refs of them, so a caller retiring several Tasks in one commit checks their sum.
+    uint32_t task_body_refs(uint64_t task_id) const;
+    bool release_fits(uint32_t refs) const { return refs <= release_room(); }
     // Caller proved the Task terminal and can_retire_task true; wipes its bounded bodies.
     // Body references are released once release_seq is durable; zero (replay) forgets them.
     void retire_task(uint64_t task_id, uint64_t release_seq);
@@ -229,8 +233,9 @@ class CallTable {
     bool find_step(uint64_t task_id, ayni_string_v1 key, uint32_t &index) const;
     // Erase this call's entire request/result regions without changing its real action outcome.
     // The privacy coordinator persists this separate stamp and owns restartable sweep progress.
-    // Its body references are released once the erasure commit is durable.
-    ayni_status_t erase_content(uint32_t index, ActionStamp stamp);
+    // Its body references are released once the erasure commit is durable; replay (release
+    // false) forgets them, because the original run already queued them (ADR-0096).
+    ayni_status_t erase_content(uint32_t index, ActionStamp stamp, bool release = true);
     // Same result transition, after evidence validation: discard only private result bytes.
     void discard_result(uint32_t index);
     // Source invalidation omits the result explicitly, preserving outcome/effect and input facts.

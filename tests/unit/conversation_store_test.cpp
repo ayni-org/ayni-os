@@ -122,6 +122,19 @@ TEST_F(ConversationDatabase, idle_save_collects_bodies_the_record_no_longer_name
     commit();
     EXPECT_EQ(count("bodies"), 1);
 }
+// A durable reference may still name a deleted body, so its identity is never handed out again.
+TEST_F(ConversationDatabase, released_newest_identity_is_not_reused_after_reopen) {
+    write("kept", 7);
+    const auto newest = write("released", 7);
+    commit();
+    store.bodies()->release(store.bodies()->context, &newest);
+    commit();
+    EXPECT_EQ(count("bodies"), 1);
+    store.close();
+    SavedConversation reopened;
+    ASSERT_EQ(store.open(directory.path().c_str(), reopened), AYNI_OK);
+    EXPECT_GT(write("after reopen", 7).id, newest.id);
+}
 TEST_F(ConversationDatabase, erasing_the_conversation_removes_every_body) {
     state.record.summary_first = 1;
     state.record.summary_last = 1;

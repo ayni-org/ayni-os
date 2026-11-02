@@ -127,7 +127,7 @@ durability::RecordUse WorkReplay::restore_privacy(const uint8_t *body, uint32_t 
         expected.request_seq != record.request_seq || expected.phase != record.phase ||
         expected.cursor != record.cursor || expected.effect != record.effect ||
         expected.snapshot_generation != record.snapshot_generation ||
-        !apply_privacy_step(model_, record, boot_epoch)) {
+        !apply_privacy_step(model_, record, boot_epoch, true)) {
         return RecordUse::corrupt;
     }
     pairing_.privacy_progress = true;

@@ -143,8 +143,9 @@ void CallRuntime::release_body(const ayni_body_ref_v1 &ref) const {
 
 CallRuntime::Advance CallRuntime::advance(uint64_t now_us, uint64_t durable_seq, Mode mode) {
     // Bodies whose last durable record is gone; the queue is not a transition (ADR-0096).
+    // Without a store the composition root owns them, and the queue still drains.
     ayni_body_ref_v1 released{};
-    while (host_.bodies != nullptr && work_.calls.next_release(durable_seq, released)) {
+    while (work_.calls.next_release(durable_seq, released)) {
         release_body(released);
     }
     if (mode == Mode::fenced || mode == Mode::closing) {

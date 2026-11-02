@@ -36,6 +36,7 @@ struct Config {
     // Optional for text/tools models: the request body may then also be a body reference,
     // read and verified at submit (ADR-0096). Borrowed until close.
     const ayni_body_store_v1 *bodies = nullptr;
+    uint32_t timeout_ms = 30000; // The contract's positive request timeout.
 };
 // Contract maxima of one configuration: the canonical input and result bytes a Call may carry.
 // The runtime sizes the Kernel's Call strides from these, never from its own estimate.

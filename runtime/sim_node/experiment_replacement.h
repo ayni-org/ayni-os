@@ -30,6 +30,7 @@ class Replacement {
     ayni_status_t close();
     bool run(ReplacementScenario);
     uint64_t completed() const { return completed_ ? 1 : 0; }
+    const ayni_body_store_v1 *bodies() const { return bodies_.store(); }
 
   private:
     enum class Policy { rules, tool_loop, incompatible, unknown_version };

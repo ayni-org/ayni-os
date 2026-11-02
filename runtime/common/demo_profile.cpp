@@ -17,6 +17,11 @@
 #include <new>
 namespace ayni::runtime {
 namespace {
+static_assert(HarnessSettings::model_concurrency_max <=
+                      providers::openai_compat::request_capacity_max &&
+                  HarnessSettings::request_timeout_ms_max <=
+                      providers::openai_compat::timeout_ms_max,
+              "every valid setting configures the remote model Provider");
 constexpr uint32_t model_index = 0, summary_index = 1, schedule_index = 2;
 constexpr uint32_t notify_index = 3, health_index = 4, observe_index = 5;
 constexpr uint32_t offer_count = 6, chat_offer_count = 2, destination_field = 1;
@@ -47,11 +52,13 @@ ayni_scope_v1 empty_scope() {
 // Mock model bodies arrive by reference, so the inline bound covers only the fixture reply.
 providers::mock::Config mock_model(providers::mock::Service service,
                                    const ayni_body_store_v1 *bodies = nullptr,
-                                   uint32_t concurrency = 1) {
-    providers::mock::Config config{providers::mock::Variant::b, service, concurrency, 4096,
+                                   const HarnessSettings &harness = {}) {
+    providers::mock::Config config{providers::mock::Variant::b, service, harness.model_concurrency,
+                                   4096,
                                    text(service == providers::mock::Service::tools
                                             ? "Mock 助理：已收到。这是本地确定性回复。"
                                             : "Mock 摘要：之前进行了对话；这是未确认的测试摘要。")};
+    config.timeout_ms = harness.request_timeout_ms;
     config.bodies = bodies;
     return config;
 }
@@ -211,16 +218,16 @@ struct DemoProfile::Impl {
         }
         ayni_status_t status = AYNI_OK;
         if (model == Model::mock) {
-            status = mocks[model_index].configure(mock_model(
-                providers::mock::Service::tools, ports.bodies, harness.model_concurrency));
+            status = mocks[model_index].configure(
+                mock_model(providers::mock::Service::tools, ports.bodies, harness));
             if (status == AYNI_OK) {
                 status = mocks[model_index].describe(offers[model_index]);
             }
             if (status != AYNI_OK) {
                 return status;
             }
-            status = mocks[summary_index].configure(mock_model(
-                providers::mock::Service::text, ports.bodies, harness.model_concurrency));
+            status = mocks[summary_index].configure(
+                mock_model(providers::mock::Service::text, ports.bodies, harness));
             return status == AYNI_OK ? mocks[summary_index].describe(offers[summary_index])
                                      : status;
         }

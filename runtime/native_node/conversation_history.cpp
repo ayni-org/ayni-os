@@ -1,5 +1,6 @@
 // Native body store (ADR-0096): one SQLite row per immutable body, cached in memory.
 #include "conversation_store.h"
+#include <algorithm>
 #include <cstring>
 #include <sqlite3.h>
 #include <string>
@@ -150,6 +151,21 @@ ayni_status_t ConversationStore::load_bodies() {
         }
         bodies_[id] = std::move(body);
         next_body_ = id + 1U;
+    }
+    if (result != SQLITE_DONE) {
+        return AYNI_STORAGE_FAILED;
+    }
+    // AUTOINCREMENT keeps the highest identity ever stored, so a deleted body's identity is
+    // never handed out again, even when it was the newest.
+    auto highest = prepare(database_, "SELECT seq FROM sqlite_sequence WHERE name='bodies'");
+    if (!highest) {
+        return AYNI_STORAGE_FAILED;
+    }
+    result = sqlite3_step(highest.get());
+    if (result == SQLITE_ROW) {
+        next_body_ = std::max<uint64_t>(
+            next_body_, static_cast<uint64_t>(sqlite3_column_int64(highest.get(), 0)) + 1U);
+        result = sqlite3_step(highest.get());
     }
     return result == SQLITE_DONE ? AYNI_OK : AYNI_STORAGE_FAILED;
 }

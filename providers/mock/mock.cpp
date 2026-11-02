@@ -21,7 +21,6 @@ constexpr uint32_t fixture_reply_max = 512;
 // its body plus this much framing for the other fields.
 constexpr uint32_t fixture_envelope_bytes = 128;
 constexpr uint32_t contract_version = 1;
-constexpr uint32_t request_timeout_ms = 30000;
 constexpr uint32_t variant_b_ticks = 2;
 ayni_string_v1 text(const char *value) {
     return {value, static_cast<uint32_t>(std::strlen(value))};
@@ -98,7 +97,7 @@ struct Provider::Impl {
                                AYNI_CALL_QUERY_NONE,
                                AYNI_CALL_CANCEL_REQUEST,
                                0,
-                               request_timeout_ms,
+                               config.timeout_ms,
                                AYNI_CALL_INPUT_VALUE,
                                tools ? AYNI_CALL_RESULT_TOOL_CALLS : AYNI_CALL_RESULT_TEXT,
                                call_input_bytes(config),
@@ -328,7 +327,7 @@ ayni_status_t Provider::configure(Config config) {
         (config.service != Service::text && config.service != Service::action &&
          config.service != Service::tools && config.service != Service::health) ||
         config.request_capacity == 0 || config.request_capacity > request_capacity_max ||
-        config.text_max_bytes == 0 ||
+        config.timeout_ms == 0 || config.text_max_bytes == 0 ||
         config.text_max_bytes > (config.reply_text.size ? fixture_input_max : text_bytes_max) ||
         config.reply_text.size > fixture_reply_max ||
         config.reply_text.size > config.text_max_bytes ||

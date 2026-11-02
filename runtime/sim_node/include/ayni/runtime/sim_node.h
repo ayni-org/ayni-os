@@ -13,8 +13,10 @@ class SimNode {
     ~SimNode();
     SimNode(const SimNode &) = delete;
     SimNode &operator=(const SimNode &) = delete;
-    // Creates CONFIGURING; registration and start belong to the caller.
-    ayni_status_t assemble(const ayni_config_v1 &config);
+    // Creates CONFIGURING; registration and start belong to the caller. Core releases dropped
+    // bodies to bodies, which must outlive the Kernel; null leaves them to the caller.
+    ayni_status_t assemble(const ayni_config_v1 &config,
+                           const ayni_body_store_v1 *bodies = nullptr);
     // Completes Host requests and advances fake time; no wall-clock sleeping.
     void advance(uint64_t microseconds);
     // Advances the same Core/Provider clock without completing held storage I/O.

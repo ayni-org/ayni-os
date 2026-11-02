@@ -55,7 +55,7 @@ model=deepseek-chat
 key_environment=AYNI_LLM_API_KEY
 ```
 
-另有七项可选运行设置（ADR-0095），省略时取括号中的默认值：`context_window_tokens`（32768）模型窗口；`max_output_tokens`（1024）回答预留，也作为请求的输出上限；`compact_target_tokens`（8192）压缩后的上下文大小；`tool_result_max_tokens`（4096）原样送回的最大工具结果；`max_turns`（8）一轮对话最多的模型调用次数，所有者可提高到 64；`request_timeout_ms`（30000）一次模型请求的时限，含等待空闲槽；`model_concurrency`（1）同时进行的模型请求数。须满足窗口 > 输出预留、工具结果 < 窗口 − 输出预留、压缩目标 < 窗口 − 输出预留 − 工具结果，否则拒绝启动。
+另有七项可选运行设置（ADR-0095），省略时取括号中的默认值：`context_window_tokens`（32768）模型窗口；`max_output_tokens`（1024）回答预留，也作为请求的输出上限；`compact_target_tokens`（8192）压缩后的上下文大小；`tool_result_max_tokens`（4096）原样送回的最大工具结果；`max_turns`（8，1..64）一轮对话最多的模型调用次数，所有者可提高到 64；`request_timeout_ms`（30000，1..300000）一次模型请求的时限，含等待空闲槽；`model_concurrency`（1，1..8）同时进行的模型请求数。须满足窗口 > 输出预留、工具结果 < 窗口 − 输出预留、压缩目标 < 窗口 − 输出预留 − 工具结果，否则读取配置时报错。
 
 时区用 `timezone=CST-8` 这样的 POSIX 规则配置（区域名如 `Asia/Shanghai` 会被拒绝）；不配置时依次取本机时区：`TZ` 本身是完整规则；`TZ`（去掉开头的 `:`）指向的时区文件，绝对路径或相对 `/usr/share/zoneinfo`；`TZ` 未设或为空时 `/etc/localtime` 末尾的规则；都取不到时模型被告知时间未知。与 glibc 的主要差异：规则优先于同名文件，空 `TZ` 或 `:` 不当作 UTC，`:<规则>` 不按规则解析，不读 `TZDIR`。本机时钟未同步时仍写出时间并注明未同步（ADR-0073）。指令与当前时间作为 system 消息发送，对话作为 user 消息（ADR-0074）。
 

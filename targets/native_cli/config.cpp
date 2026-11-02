@@ -202,6 +202,12 @@ bool load(const std::string &path, bool required, Options &options, std::string 
             return false;
         }
     }
+    if (!runtime::valid(options.model.harness)) {
+        error = "运行设置须满足：max_output_tokens < context_window_tokens，tool_result_max_tokens "
+                "< 二者之差，compact_target_tokens < 再减工具结果之差；max_turns 1..64，"
+                "request_timeout_ms 1..300000，model_concurrency 1..8。";
+        return false;
+    }
     return true;
 }
 } // namespace

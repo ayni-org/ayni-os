@@ -330,7 +330,7 @@ uint64_t CallRuntime::next_deadline_us() const {
 // Project only work that can advance now. A pending remote call alone must not
 // keep the owner spinning; completion wakeups or the next timer bring it back.
 bool CallRuntime::ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const {
-    if (host_.bodies != nullptr && work_.calls.release_due(durable_seq)) {
+    if (work_.calls.release_due(durable_seq)) {
         return true;
     }
     if (mode == Mode::fenced || mode == Mode::closing) {

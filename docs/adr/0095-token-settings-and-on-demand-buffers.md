@@ -10,7 +10,7 @@
 
 ## 决策
 
-1. **七项设置。** `runtime::HarnessSettings` 是唯一来源：`context_window_tokens`（W）、`max_output_tokens`（O）、`compact_target_tokens`、`tool_result_max_tokens`（R）、`max_turns`、`request_timeout_ms`、`model_concurrency`。组合根把它传给 ToolLoop、Provider 与 Core，其他地方不再手写这些数。配置必须满足 W > O > 0、R < W − O、压缩目标 < W − O − R、`max_turns` 不超过 Core 上限。Native CLI 用同名配置键；旧键 `output_reserve_tokens` 报明确错误。
+1. **七项设置。** `runtime::HarnessSettings` 是唯一来源：`context_window_tokens`（W）、`max_output_tokens`（O）、`compact_target_tokens`、`tool_result_max_tokens`（R）、`max_turns`、`request_timeout_ms`、`model_concurrency`。组合根把它传给 ToolLoop、Provider 与 Core，其他地方不再手写这些数。配置必须满足 W > O > 0、O 不超过 32 位、R < W − O、压缩目标 < W − O − R、`max_turns` 不超过 Core 上限，`request_timeout_ms` 为 1..300000、`model_concurrency` 为 1..8（每个内置模型 Provider 都接受的范围）。Native CLI 用同名配置键；旧键 `output_reserve_tokens` 报明确错误。
 2. **行为规则。**
    - 单条用户输入的估算 token 放不进 W − O 时拒绝，返回容量超限，不调用模型。
    - 模型回答与摘要只受 O 约束，没有字节上限。

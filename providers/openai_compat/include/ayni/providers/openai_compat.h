@@ -12,6 +12,8 @@ namespace ayni::providers::openai_compat {
 // result text is kept inline. A composition root sizes Core's call bytes from these.
 inline constexpr uint32_t call_input_bytes_max = 16384;
 inline constexpr uint32_t call_result_bytes_max = 0;
+// Widest accepted request_capacity and timeout_ms.
+inline constexpr uint32_t request_capacity_max = 8, timeout_ms_max = 300000;
 // Trusted startup configuration, copied by configure. No secret value belongs here.
 struct Config {
     std::string base_url; // HTTPS API root, optionally with /v1; appends /chat/completions.

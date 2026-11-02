@@ -15,8 +15,6 @@
 
 namespace ayni::providers::openai_compat {
 namespace {
-constexpr uint32_t request_capacity_max = 8;
-constexpr uint32_t timeout_max_ms = 300000;
 // A response holds at most max_tokens of output, each at most a few escaped bytes, plus fixed
 // protocol metadata; a body beyond this is refused rather than buffered (ADR-0095).
 constexpr size_t response_token_bytes = 96, response_metadata_bytes = 65536;
@@ -643,7 +641,11 @@ struct Provider::Impl {
         }
         auto posted = ayni_provider_post(slot.completion, &slot.answer.result);
         if (posted == AYNI_CAPACITY_EXCEEDED || posted == AYNI_INVALID_ARGUMENT) {
-            // The ABI owns list encoding/size. Do not duplicate its wire-size formula.
+            // The ABI owns list encoding/size. Do not duplicate its wire-size formula. Core
+            // refused the post, so nothing else names the stored answer.
+            if (slot.answer.result.body.id && config.bodies->release) {
+                config.bodies->release(config.bodies->context, &slot.answer.result.body);
+            }
             slot.answer.fail(posted, AYNI_REASON_MODEL_OUTPUT);
             posted = ayni_provider_post(slot.completion, &slot.answer.result);
         }
@@ -768,7 +770,7 @@ ayni_status_t Provider::configure(const Config &config) {
     if ((config.result_format != AYNI_CALL_RESULT_TEXT &&
          config.result_format != AYNI_CALL_RESULT_TOOL_CALLS) ||
         !config.request_capacity || config.request_capacity > request_capacity_max ||
-        !config.timeout_ms || config.timeout_ms > timeout_max_ms || !config.max_output_tokens ||
+        !config.timeout_ms || config.timeout_ms > timeout_ms_max || !config.max_output_tokens ||
         !printable(config.base_url, url_bytes_max) || !printable(config.model, model_bytes_max) ||
         !environment_name(config.key_environment) || !identifier(config.provider_id) ||
         !identifier(config.endpoint_id) || !identifier(config.destination_id) || !config.bodies ||

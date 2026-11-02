@@ -52,6 +52,7 @@ class SharedServices {
     bool advance();
     void abandon_kernel();
     ayni_status_t close();
+    const ayni_body_store_v1 *bodies() const { return bodies_.store(); }
     bool begin_close();
     uint64_t clock_delta(const ayni_step_report_v1 &last, uint64_t seen_wakes) const;
     bool run(SharedScenario scenario);

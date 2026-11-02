@@ -297,7 +297,11 @@ bool World::application_policy() {
 bool World::start_recovery() {
     schedule_.reset();
     storage = Storage::complete;
-    return evidence.status("assemble", node.assemble(config)) && register_profile() &&
+    // Core releases the bodies the deployment's Providers and ToolLoop store (ADR-0096).
+    const ayni_body_store_v1 *bodies = shared        ? shared->bodies()
+                                       : replacement ? replacement->bodies()
+                                                     : nullptr;
+    return evidence.status("assemble", node.assemble(config, bodies)) && register_profile() &&
            evidence.status("start", ayni_start(node.kernel()));
 }
 bool World::start(ayni_lifecycle_t expected) {
