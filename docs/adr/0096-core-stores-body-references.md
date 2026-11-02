@@ -15,7 +15,7 @@ ADR-0095 让消息链路只受 token 约束，但模型请求、模型回答、�
 3. **结果先存后递。** Provider 先把回答（文本，或 `ayni_tool_calls_write` 写出的工具调用列表）写入正文存储，存储回答 OK 后才 post 带 `body` 的结果；邮箱槽只保存固定大小的回执，不再有 `payload_bytes_max`。只有 COMPLETED 的 MODEL 结果可以带引用。快照 `call_result` 返回内联文本或引用；内联工具结果的 `text` 就是列表编码。`call_tool` 删除，原位置保留为恒为空的 `reserved_call_tool`，策略用纯函数 `ayni_tool_calls_read`/`ayni_tool_call_read` 解码。
 4. **Core 只存引用。** CALL_STATE 追加结果正文引用，Core schema 升为 9；schema 8 及更早介质只读受限并保留，不迁移（ADR-0038 决策 6）。`call_input/result_max_bytes` 只覆盖结构化参数，由组合根取已注册能力声明的最大值（`runtime::fit_call_bytes`），不再手写余量；`AYNI_CALL_TEXT_BYTES_MAX` 删除。
 5. **释放。** Core 不读写正文，只释放。Task 退休或调用内容擦除时，引用进入调用表内的定长队列，标记丢弃它的提交序号；该提交持久后，Core 才通过 `ayni_host_v1.bodies` 调用 `release`。Core 从未持久引用过的正文（被拒绝、过期、同一转换内丢弃、查询或关闭排空收到的正文）立即释放；Core 同步拒绝的 post 不进邮箱，由 Provider 自己释放。重放只重建状态，不重复释放，隐私擦除的重放也不再排队。没有正文存储时队列照常清空，正文归组合根。Native 存储的正文标识不复用（SQLite AUTOINCREMENT），所以迟到的释放不会删到新正文。
-6. **孤立正文。** 三种情况会在 Task 与调用 scope 留下无人引用的正文：提交持久与释放之间崩溃（释放队列只在内存里）、策略写入请求正文后调用被拒绝或决策被丢弃。当前三种存储只回收对话 scope，这些正文会留到所属对话删除；按 Core 现存引用在启动时回收是后续工作。
+6. **孤立正文。** 三种情况会在 Task 与调用 scope 留下无人引用的正文：提交持久与释放之间崩溃（释放队列只在内存里）、策略写入请求正文后调用被拒绝或决策被丢弃。当前三种存储只回收对话 scope，这些正文目前不会被删除；按 Core 现存引用在启动时回收是后续工作。正常路径不产生孤立正文。
 7. **次数设置。** `ayni_config_v1.task_model_call_hard_limit` 原位改为 `max_turns`：新 Task 的模型调用次数，默认 8；所有者可把暂停的 Task 提高到 `AYNI_MAX_TURNS_MAX`（64）。组合根从运行设置 `max_turns` 填写（ADR-0095）。ABI 升为 0.54，主版本 0 只收当前布局，所有调用方重编译（C-VER-006）。
 
 ## 后果
