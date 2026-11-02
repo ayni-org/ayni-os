@@ -297,7 +297,7 @@ RecordUse WorkReplay::restore_goal(const uint8_t *body, uint32_t size,
     // The goal that gave way took its tasks, which name the place, with it
     // (work::insert_goal).
     if (record.replaced_goal_id != 0U) {
-        model_.retire_goal_task_metadata(index, stamp.commit_seq);
+        model_.retire_goal_task_metadata(index, stamp.commit_seq, 0);
         model_.tasks.remove_goal(index);
     }
     if (model_.goals.at(index).depth != record.depth) {
@@ -498,7 +498,7 @@ RecordUse WorkReplay::restore_task_authority(const uint8_t *body, uint32_t size,
         model_.release_task_references(previous, stamp.commit_seq);
     }
     if (created) {
-        model_.calls.retire_task(task.replaced_task_id);
+        model_.calls.retire_task(task.replaced_task_id, 0);
     }
     if (reauthorizing && !task_tools_consistent(index, record, UINT64_MAX)) {
         return RecordUse::corrupt;

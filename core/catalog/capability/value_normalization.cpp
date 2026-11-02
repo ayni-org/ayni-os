@@ -85,6 +85,9 @@ bool Plan::append(const Pending &item) {
     case AYNI_VALUE_DECIMAL:
         node.value.decimal = source.value.decimal;
         break;
+    case AYNI_VALUE_BODY:
+        node.value.body = source.value.body;
+        break;
     case AYNI_VALUE_TEXT:
     case AYNI_VALUE_ENUM:
     case AYNI_VALUE_IDENTIFIER:

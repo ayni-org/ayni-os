@@ -5,6 +5,7 @@
 #include "function_proposal.h"
 #include "work_node.h"
 #include <ayni/providers/software/work.h>
+#include <ayni/runtime/common/memory_bodies.h>
 #include <ayni/strategies/builtin.h>
 #include <ayni/values.hpp>
 #include <ayni/values_json.hpp>
@@ -12,6 +13,7 @@
 
 namespace ayni::test {
 namespace policies = ayni::strategies;
+inline constexpr uint32_t prompt_bytes = 32768; // Inline model Call text in this fixture.
 class StrategiesFixture : public ::testing::Test {
   protected:
     struct Pending {
@@ -27,6 +29,9 @@ class StrategiesFixture : public ::testing::Test {
     ayni::providers::software::WorkProvider software;
     uint32_t tool_alias_count = 0;
     policies::HistoryPort history_port{};
+    const ayni_body_store_v1 *body_store = nullptr; // ToolLoop store; null uses bodies.
+    // Compaction starts above 5000 - 1000 - 1000 = 3000 estimated tokens.
+    policies::TokenLimits limits{5000, 1000, 1000, 1000};
     ayni_model_usage_v1 service_usage{AYNI_MODEL_USAGE_REPORTED, 0, 100, 10, 110};
     void SetUp() override {
         steps[0] = {text("inspect"),
@@ -43,19 +48,19 @@ class StrategiesFixture : public ::testing::Test {
         cfg.model = {AYNI_POLICY_REQUEST_MODEL, text("model"), 1, empty_scope(),
                      text("Use tools if needed.")};
         cfg.summary = {AYNI_POLICY_REQUEST_MODEL, text("summary"), 1, empty_scope(), {}};
-        cfg.context_window_tokens = 5000;
-        cfg.output_reserve_tokens = 1000;
+        cfg.limits = limits;
+        cfg.bodies = body_store ? body_store : bodies.store();
         cfg.history = history_port;
         ASSERT_EQ(loop.configure(cfg, ::ayni::test::loop_workspace()), AYNI_OK);
         auto &c = work.node().config();
         c.storage_buffer_bytes = 0;
-        c.goal_parameter_max_bytes = policies::state_bytes_max;
-        c.task_checkpoint_max_bytes = policies::state_bytes_max;
+        c.goal_parameter_max_bytes = policies::encoded_bytes_max;
+        c.task_checkpoint_max_bytes = policies::encoded_bytes_max;
         c.task_step_capacity = 64;
         c.task_capacity = 8;
         c.strategy_capacity = 2;
         c.call_capacity = 24;
-        c.call_input_max_bytes = policies::prompt_bytes_max + 36;
+        c.call_input_max_bytes = prompt_bytes + 36;
         c.call_result_max_bytes = 4096;
         c.call_capability_capacity = software_tools ? 5 : 3;
         c.capability_capacity = software_tools ? 5 : 3;
@@ -120,6 +125,8 @@ class StrategiesFixture : public ::testing::Test {
             offer.version = 1;
             offer.capability_id = id;
             const bool model = at != 2;
+            // Without an archive a tool's declared result must fit tool_result_max_tokens.
+            const uint32_t result_bytes = model || history_port.archive ? 4096U : 1024U;
             offer.contract = {sizeof(ayni_call_contract_v1),
                               !model && action_tool ? AYNI_CALL_ACTION : AYNI_CALL_UNARY,
                               model ? AYNI_CALL_MODEL : AYNI_CALL_TOOL,
@@ -131,8 +138,8 @@ class StrategiesFixture : public ::testing::Test {
                               1000000,
                               AYNI_CALL_INPUT_VALUE,
                               at == 0 ? AYNI_CALL_RESULT_TOOL_CALLS : AYNI_CALL_RESULT_TEXT,
-                              policies::prompt_bytes_max + 36,
-                              4096,
+                              prompt_bytes + 36,
+                              result_bytes,
                               model ? 1U : 0U,
                               model ? &slot : nullptr,
                               nullptr};
@@ -143,16 +150,16 @@ class StrategiesFixture : public ::testing::Test {
                 schema[1].kind = AYNI_VALUE_TEXT;
                 schema[1].field_id = AYNI_MODEL_BODY_FIELD_ID;
                 schema[1].subtree_end = 2;
-                schema[1].flags = AYNI_SCHEMA_REQUIRED;
+                schema[1].flags = AYNI_SCHEMA_REQUIRED | AYNI_SCHEMA_EXTERNAL;
                 schema[1].name = text("body");
-                schema[1].max_count = policies::prompt_bytes_max;
+                schema[1].max_count = prompt_bytes;
             } else {
-                schema[0].max_count = policies::prompt_bytes_max;
+                schema[0].max_count = prompt_bytes;
             }
             auto &result_schema = result_schemas[at];
             result_schema.kind = AYNI_VALUE_TEXT;
             result_schema.subtree_end = 1;
-            result_schema.max_count = 4096;
+            result_schema.max_count = result_bytes;
             business[at] = {{schema.data(), model ? 2U : 1U}, {&result_schema, 1}, 0, 0, nullptr};
             if (!model && structured_tool) {
                 auto &input = input_schemas[at];
@@ -226,12 +233,25 @@ class StrategiesFixture : public ::testing::Test {
             } else {
                 ValueReader reader;
                 ayni_string_v1 body{};
-                if (reader.read(request->value) != AYNI_OK ||
-                    !ValueReader::text(
-                        model ? reader.field(AYNI_MODEL_BODY_FIELD_ID) : reader.root(), body)) {
+                ayni_body_ref_v1 ref{};
+                if (reader.read(request->value) != AYNI_OK) {
                     return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
                 }
-                copied = string_of(body);
+                const auto *field = model ? reader.field(AYNI_MODEL_BODY_FIELD_ID) : reader.root();
+                if (model && ValueReader::body(field, ref)) {
+                    // A model request names its body; read and verify it (ADR-0096).
+                    const auto &store = self.body_store ? *self.body_store : *self.bodies.store();
+                    copied.resize(ref.size);
+                    auto *out = reinterpret_cast<uint8_t *>(copied.data());
+                    if (store.read(store.context, &ref, out, ref.size) != AYNI_OK ||
+                        ayni_body_verify(&ref, {out, ref.size}) != AYNI_OK) {
+                        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+                    }
+                } else if (ValueReader::text(field, body)) {
+                    copied = string_of(body);
+                } else {
+                    return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+                }
             }
             self.pending.push_back({request->attempt, completion, string_of(request->capability_id),
                                     copied, request->operation_id, false});
@@ -391,11 +411,12 @@ class StrategiesFixture : public ::testing::Test {
         }
     }
     uint64_t start(const char *type = "chat", const char *input = "hello",
-                   uint32_t model_limit = AYNI_TASK_MODEL_CALL_LIMIT_DEFAULT) {
+                   uint32_t model_limit = AYNI_MAX_TURNS_DEFAULT) {
         policies::Encoded parameters;
         if (std::strcmp(type, "chat") == 0) {
             EXPECT_EQ(policies::Conversation::begin(::ayni::test::conversation_workspace(),
-                                                    conversation, text(input), parameters),
+                                                    *bodies.store(), conversation, text(input),
+                                                    parameters),
                       AYNI_OK);
         }
         auto body = WorkNode::create_body(work.instance(agent_a), 0, type, 1, parameters.view(),
@@ -404,7 +425,7 @@ class StrategiesFixture : public ::testing::Test {
         EXPECT_EQ(made.status, AYNI_OK);
         pump();
         const auto task = work.goal(made.result.object.id).last_task_id;
-        if (model_limit > AYNI_TASK_MODEL_CALL_LIMIT_DEFAULT) {
+        if (model_limit > AYNI_MAX_TURNS_DEFAULT) {
             const ayni_task_raise_model_limit_v1 raise{sizeof(raise), model_limit, task};
             auto intent =
                 work.intent(AYNI_INTENT_TASK_RAISE_MODEL_LIMIT, &raise, work.task(task).revision);
@@ -456,11 +477,11 @@ class StrategiesFixture : public ::testing::Test {
     }
     uint64_t start_until_budget_summary() {
         // ADR-0085: short histories do not compact at a fixed round count.
-        const std::string question(policies::turn_text_max, 'q');
-        const std::string answer(policies::turn_text_max, 'a');
-        constexpr uint32_t search_turns = 8;
+        const std::string question(384, 'q');
+        const std::string answer(384, 'a');
+        constexpr uint32_t search_turns = 8, reported_turn = 4;
         for (uint32_t at = 0; at < search_turns; ++at) {
-            if (at == policies::retained_rounds_max) {
+            if (at == reported_turn) {
                 conversation.last_usage = {AYNI_MODEL_USAGE_REPORTED, 0, 3100, 20, 3120};
             }
             const auto task = start("chat", question.c_str());
@@ -481,7 +502,7 @@ class StrategiesFixture : public ::testing::Test {
     void finish(uint64_t task) {
         policies::Encoded state;
         ASSERT_EQ(ayni_copy_task_checkpoint(work.kernel(), task, state.bytes.data(),
-                                            policies::state_bytes_max, &state.size),
+                                            policies::encoded_bytes_max, &state.size),
                   AYNI_OK);
         policies::ConversationRecord candidate;
         ASSERT_EQ(policies::Conversation::finish(::ayni::test::conversation_workspace(),
@@ -489,6 +510,16 @@ class StrategiesFixture : public ::testing::Test {
                   AYNI_OK);
         // Simulated successful outer-store commit; until here originals remain.
         conversation = candidate;
+    }
+    std::string text_of(const policies::BodyRef &ref) {
+        std::string out;
+        EXPECT_EQ(policies::Conversation::text(bodies.store()[0], ref, out), AYNI_OK);
+        return out;
+    }
+    std::vector<policies::Round> rounds_of(const policies::ConversationRecord &record) {
+        std::vector<policies::Round> out;
+        EXPECT_EQ(policies::Conversation::rounds(bodies.store()[0], record, out), AYNI_OK);
+        return out;
     }
     void TearDown() override {
         if (!work.kernel() || work.node().lifecycle() == AYNI_LIFECYCLE_STOPPED) {
@@ -521,6 +552,7 @@ class StrategiesFixture : public ::testing::Test {
     policies::Rule rule;
     ayni_strategy_v1 rules_desc{};
     std::vector<Pending> pending;
+    ayni::runtime::MemoryBodies bodies; // Declared before use by SetUp's ToolLoop config.
     policies::ConversationRecord conversation;
     uint64_t command = 600;
     uint64_t echo_grant = 0;

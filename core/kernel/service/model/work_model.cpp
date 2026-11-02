@@ -210,7 +210,7 @@ bool WorkModel::insert_goal(const work::NewGoal &goal, uint64_t goal_id,
     const auto replacing = goals.giving_way();
     if (replacing != work::GoalTable::no_index) {
         // All creation admission has passed; terminal Tasks leave with this exact Goal.
-        retire_goal_task_metadata(replacing, stamp.commit_seq);
+        retire_goal_task_metadata(replacing, stamp.commit_seq, stamp.commit_seq);
     }
     auto work = tables();
     if (!work::insert_goal(work, goal, goal_id, stamp, out_index)) {

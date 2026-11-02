@@ -1,11 +1,17 @@
 // Native non-streaming Chat Completions adapter (ADR-0055). No Core-private dependency.
 #ifndef AYNI_PROVIDERS_OPENAI_COMPAT_H
 #define AYNI_PROVIDERS_OPENAI_COMPAT_H
+#include <ayni/bodies.h>
 #include <ayni/calls.h>
 #include <memory>
 #include <string>
 
 namespace ayni::providers::openai_compat {
+// The contract's inline bounds (ADR-0096). A request value holds its destination and either a
+// short inline body or a body reference; every answer is written to the body store, so no
+// result text is kept inline. A composition root sizes Core's call bytes from these.
+inline constexpr uint32_t call_input_bytes_max = 16384;
+inline constexpr uint32_t call_result_bytes_max = 0;
 // Trusted startup configuration, copied by configure. No secret value belongs here.
 struct Config {
     std::string base_url; // HTTPS API root, optionally with /v1; appends /chat/completions.
@@ -14,17 +20,22 @@ struct Config {
     std::string provider_id = "openai.compat";
     std::string endpoint_id = "openai.chat";
     std::string destination_id = "openai.remote";
-    uint32_t request_capacity = 1;        // 1..8 concurrent requests; fixed at configure.
-    uint32_t text_max_bytes = 4096;       // Input and result limit, 1..CALL_TEXT_BYTES_MAX.
-    uint32_t response_max_bytes = 131072; // Whole HTTP body, 1..1048576 bytes.
-    uint32_t timeout_ms = 30000;          // From submit, including the local queue; 1..300000 ms.
-    uint32_t max_output_tokens = 1024;    // Sent as max_tokens, 1..8192; distinct from byte limits.
+    uint32_t request_capacity = 1; // 1..8 concurrent requests; fixed at configure.
+    uint32_t timeout_ms = 30000;   // From submit, including the local queue; 1..300000 ms.
+    // Sent as max_tokens, positive. Buffers grow with each request and its response; the
+    // response is refused past what this many output tokens can need (ADR-0095).
+    uint32_t max_output_tokens = 1024;
     // TEXT declares openai.text and offers no tools (conversation summaries);
     // TOOL_CALLS preserves openai.chat. Other formats are rejected.
     uint32_t result_format = AYNI_CALL_RESULT_TOOL_CALLS;
+    // Required. Request bodies are read and verified here, and each answer (text, or the
+    // tool-call list encoding) is written here before it is posted. Outlives close.
+    const ayni_body_store_v1 *bodies = nullptr;
 };
 // Owner-thread configure/describe/close and callbacks; one internal I/O worker.
-// submit copies views without I/O, allocation or waiting. Worker calls only provider_post.
+// submit copies an inline body or a body reference without I/O or waiting. The worker reads
+// a referenced body, refusing one whose length or digest differs, and writes each answer to
+// the body store, posting its reference once durable. Worker calls only these and provider_post.
 // TLS is verified; redirects, proxies, retries and fallback are disabled. Plain HTTP is
 // accepted only for numeric loopback protocol fixtures (127.0.0.1 or [::1]).
 class Provider {

@@ -59,14 +59,14 @@ std::size_t TaskTable::storage_size(const Limits &limits) {
            static_cast<std::size_t>(limits.capacity) * limits.checkpoint_max_bytes;
 }
 
-TaskTable::TaskTable(void *storage, const Limits &limits, uint32_t model_call_hard_limit)
+TaskTable::TaskTable(void *storage, const Limits &limits, uint32_t max_turns)
     : tasks_(storage, limits.capacity),
       steps_(reinterpret_cast<catalog::CatalogId *>(
           static_cast<uint8_t *>(storage) +
           foundation::BoundedArray<Task>::storage_size(limits.capacity))),
       checkpoints_(reinterpret_cast<uint8_t *>(steps_) + steps_size(limits)),
       step_capacity_(limits.step_capacity), checkpoint_max_bytes_(limits.checkpoint_max_bytes),
-      model_call_hard_limit_(model_call_hard_limit) {
+      max_turns_(max_turns) {
     const uint32_t steps = limits.capacity * limits.step_capacity;
     for (uint32_t index = 0; index < steps; ++index) {
         new (steps_ + index) catalog::CatalogId();
@@ -113,9 +113,7 @@ void TaskTable::place(const NewTask &task, uint64_t task_id, uint64_t replaced_t
     created.revision = 1;
     created.lifecycle = AYNI_TASK_READY;
     created.slot = slot;
-    if (created.model_calls.limit > model_call_hard_limit_) {
-        created.model_calls.limit = model_call_hard_limit_;
-    }
+    created.model_calls.limit = max_turns_;
     // Cannot fail: the caller made room.
     static_cast<void>(tasks_.push_back(created));
 }
@@ -221,7 +219,7 @@ ayni_status_t TaskTable::check_model_limit_raise(uint32_t index, uint32_t expect
     if (at_revision_limit(task)) {
         return AYNI_CAPACITY_EXCEEDED;
     }
-    if (limit <= task.model_calls.limit || limit > model_call_hard_limit_) {
+    if (limit <= task.model_calls.limit || limit > AYNI_MAX_TURNS_MAX) {
         return AYNI_INVALID_ARGUMENT;
     }
     return AYNI_OK;
@@ -373,9 +371,6 @@ TaskTable::Restore TaskTable::restore_model_limit_raise(uint32_t index, const Ta
         state.model_calls.limit <= task.model_calls.limit || state.call != task.call ||
         state.operation_wait != task.operation_wait || state.call_unknown != task.call_unknown) {
         return Restore::corrupt;
-    }
-    if (state.model_calls.limit > model_call_hard_limit_) {
-        return Restore::no_room;
     }
     raise_model_limit(index, state.model_calls.limit, stamp);
     return Restore::restored;
@@ -721,9 +716,6 @@ TaskTable::Restore TaskTable::restore_state(uint32_t index, const TaskState &sta
         (held && state.lifecycle == AYNI_TASK_READY &&
          !(state.hold_status == AYNI_EXPIRED && state.hold_reason == AYNI_REASON_RESOURCE_WAIT))) {
         return Restore::corrupt;
-    }
-    if (state.model_calls.limit > model_call_hard_limit_) {
-        return Restore::no_room;
     }
     if (still_held(task)) {
         --held_count_;

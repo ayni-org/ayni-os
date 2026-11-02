@@ -9,6 +9,7 @@
 #define AYNI_RUNTIME_NATIVE_NODE_H
 
 #include <ayni/ayni.h>
+#include <ayni/bodies.h>
 #include <ayni/runtime/common/clock.h>
 
 #include <chrono>
@@ -47,7 +48,10 @@ class NativeNode {
 
     // Explicit deployment capacities; copied by create, with identical ownership
     // and failures to assemble(directory). The caller registers its profile.
-    ayni_status_t assemble(const char *state_directory, const ayni_config_v1 &config);
+    // bodies, when given, is where Core releases the bodies its records stop naming
+    // (ADR-0096); it is borrowed until release() returns AYNI_OK.
+    ayni_status_t assemble(const char *state_directory, const ayni_config_v1 &config,
+                           const ayni_body_store_v1 *bodies = nullptr);
 
     // Owner thread, between ayni_step calls: true as soon as the Host's wake
     // was called since the previous return, false once timeout passes

@@ -221,7 +221,7 @@ void write_task_info(const ayni_kernel &kernel, uint32_t index, ayni_task_info_v
     info.step_count = task.step_count;
     info.model_calls_used = task.model_calls.used;
     info.model_call_limit = task.model_calls.limit;
-    info.model_call_hard_limit = kernel.model().tasks.model_call_hard_limit();
+    info.model_call_hard_limit = AYNI_MAX_TURNS_MAX;
     info.model_call_limit_reached = task.model_calls.blocked ? 1U : 0U;
     info.logical_call_id = task.call.id;
     if (task.operation_wait) {

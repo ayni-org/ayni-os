@@ -234,7 +234,7 @@ struct ToolPlanner::Impl {
             }
         }
         uint32_t bytes = 0;
-        out.status = ayni_tool_calls_measure(out.calls.data(), out.count, &bytes);
+        out.status = ayni_tool_calls_measure(out.calls.data(), out.count, {}, &bytes);
         if (out.status == AYNI_OK && bytes > result_limit) {
             out.status = AYNI_CAPACITY_EXCEEDED;
         }

@@ -15,9 +15,11 @@ bool Replacement::register_profile(ayni_kernel_t *kernel) {
     if (!offers_) {
         const auto clock = world_.node.clock();
         if (!e.status("configure replacement A",
-                      a_.configure(providers::mock::Variant::a, model_delay_us, clock)) ||
+                      a_.configure(providers::mock::Variant::a, model_delay_us, clock, std::nullopt,
+                                   providers::mock::Service::text, bodies_.store())) ||
             !e.status("configure replacement B",
-                      b_.configure(providers::mock::Variant::b, model_delay_us, clock))) {
+                      b_.configure(providers::mock::Variant::b, model_delay_us, clock, std::nullopt,
+                                   providers::mock::Service::text, bodies_.store()))) {
             return false;
         }
         offers_ = Offers{a_.describe(), b_.describe()};
@@ -39,6 +41,8 @@ bool Replacement::register_profile(ayni_kernel_t *kernel) {
                         {sizeof(ayni_scope_v1), 0, nullptr},
                         text("Reply briefly.")};
         config.summary = config.model;
+        config.limits = {32768, 1024, 8192, 4096};
+        config.bodies = bodies_.store();
         if (!e.status("configure replacement ToolLoop",
                       loop_.configure(config, loop_workspace_.get()))) {
             return false;
@@ -129,10 +133,10 @@ uint64_t Replacement::create(const char *type) {
     record.id = world_.last_command() + 1;
     record.owner_instance_id = world_.instance(1);
     strategies::Encoded parameters;
-    if (!world_.evidence.status("replacement conversation",
-                                strategies::Conversation::begin(conversation_workspace_.get(),
-                                                                record, text("fixture input"),
-                                                                parameters))) {
+    if (!world_.evidence.status(
+            "replacement conversation",
+            strategies::Conversation::begin(conversation_workspace_.get(), *bodies_.store(), record,
+                                            text("fixture input"), parameters))) {
         return 0;
     }
     auto goal = initialized<ayni_goal_create_v1>();

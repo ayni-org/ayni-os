@@ -7,6 +7,7 @@
 #include "fixture_model.h"
 #include <ayni/applications/experiment_fixtures.h>
 #include <ayni/memory.h>
+#include <ayni/runtime/common/memory_bodies.h>
 #include <ayni/strategies/builtin.h>
 namespace ayni::runtime::experiments {
 enum class ReplacementScenario {
@@ -34,6 +35,7 @@ class Replacement {
     enum class Policy { rules, tool_loop, incompatible, unknown_version };
     World &world_;
     ayni::Workspace loop_workspace_, conversation_workspace_; // Distinct owner/validator regions.
+    runtime::MemoryBodies bodies_; // Conversation texts and model bodies for the simulated run.
     strategies::ToolLoop loop_;
     bool configured_ = false; // Immutable concrete strategy configuration installed once.
     static ayni_status_t loop(void *, const ayni_task_snapshot_v1 *, ayni_policy_output_v1 *);

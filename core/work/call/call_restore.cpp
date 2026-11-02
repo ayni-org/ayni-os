@@ -127,6 +127,7 @@ bool valid_business_content(ayni::foundation::Workspace &workspace, const CallRe
             return false;
         }
         if (!state.content_erased && record.result_kind == CallResultKind::text &&
+            state.result_body.id == 0U &&
             (state.outcome == AYNI_CALL_COMPLETED || record.result.size != 0U)) {
             ayni_value_node_v1 text{};
             text.kind = AYNI_VALUE_TEXT;
@@ -291,7 +292,20 @@ bool CallTable::valid_record(ayni::foundation::Workspace &workspace, const CallR
         catalog::normalize_call_contract(record.contract, normalized) != AYNI_OK ||
         !catalog::same_call_contract(record.contract, normalized) ||
         !valid_business_content(workspace, record) || !valid_content(workspace, record, input) ||
-        check_body(workspace, record.contract, record.result, record.result_kind) != AYNI_OK ||
+        (state.result_body.id == 0U
+             ? state.result_body.digest != 0U || state.result_body.size != 0U ||
+                   state.result_body_calls != 0U ||
+                   check_body(workspace, record.contract, record.result, record.result_kind) !=
+                       AYNI_OK
+             : state.outcome != AYNI_CALL_COMPLETED || record.result.size != 0U ||
+                   record.state.content_erased ||
+                   record.contract.category != catalog::CallClass::model ||
+                   record.contract.result_format == catalog::call_value_result_format ||
+                   state.result_body_calls > AYNI_CALL_TOOL_COUNT_MAX ||
+                   record.result_kind != (state.result_body_calls ? CallResultKind::tool_calls
+                                                                  : CallResultKind::text) ||
+                   (state.result_body_calls != 0U &&
+                    record.contract.result_format != catalog::call_tool_calls_result_format)) ||
         (record.result_kind == CallResultKind::tool_calls &&
          state.outcome != AYNI_CALL_COMPLETED) ||
         (state.attempt.boot_epoch == 0U) != (state.attempt.request_id == 0U) ||
@@ -433,11 +447,18 @@ ayni_status_t CallTable::restore_validated(const CallRecord &record) {
     return AYNI_OK;
 }
 
+// Pending releases may name rows a reload brings back, so they are forgotten.
 void CallTable::clear() {
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         if (occupied(at)) {
-            retire_task(identity(at).task_id);
+            retire_task(identity(at).task_id, 0);
         }
+        slots_[at].erased = {};
     }
+    for (uint32_t at = 0; at < release_capacity(); ++at) {
+        releases_[at] = {};
+    }
+    release_head_ = 0;
+    release_count_ = 0;
 }
 } // namespace ayni::work

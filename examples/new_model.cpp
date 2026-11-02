@@ -23,7 +23,12 @@ struct Policy {
         if (status != AYNI_OK) {
             return status;
         }
-        if (!equal(answer.text, "alternate fixture reply")) {
+        std::string reply;
+        const auto read = ayni::examples::answer(f, answer, reply);
+        if (read != AYNI_OK) {
+            return read;
+        }
+        if (reply != "alternate fixture reply") {
             return AYNI_INVALID_STATE;
         }
         return report(*s, *out, AYNI_POLICY_REPORT_COMPLETION);

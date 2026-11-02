@@ -9,7 +9,8 @@
 
 namespace ayni::catalog {
 namespace {
-constexpr uint32_t schema_flags = AYNI_SCHEMA_REQUIRED | AYNI_SCHEMA_NULLABLE;
+constexpr uint32_t schema_flags =
+    AYNI_SCHEMA_REQUIRED | AYNI_SCHEMA_NULLABLE | AYNI_SCHEMA_EXTERNAL;
 constexpr uint32_t decimal_radix = 10;
 
 bool finite_real(double value) {
@@ -40,7 +41,7 @@ template <typename Nodes> bool tree_shape(const Nodes &nodes, uint32_t count, ui
             --depth;
         }
         const auto &node = nodes[index];
-        if (node.kind > AYNI_VALUE_TEXT || node.subtree_end <= index || node.subtree_end > count ||
+        if (node.kind > AYNI_VALUE_BODY || node.subtree_end <= index || node.subtree_end > count ||
             depth >= AYNI_VALUE_DEPTH_MAX ||
             (!value_container(node.kind) && node.subtree_end != index + 1U)) {
             return false;
@@ -104,6 +105,7 @@ bool choices_valid(const ayni_schema_node_v1 &node) {
 bool declaration_valid(const ayni_schema_v1 &schema, uint32_t index) {
     const auto &node = schema.nodes[index];
     if (node.kind == AYNI_VALUE_NULL || (node.flags & ~schema_flags) != 0U ||
+        ((node.flags & AYNI_SCHEMA_EXTERNAL) != 0U && node.kind != AYNI_VALUE_TEXT) ||
         node.name.size > AYNI_SCHEMA_NAME_BYTES_MAX || node.unit.size > AYNI_CATALOG_ID_MAX_BYTES ||
         !text_valid(node.name) || !text_valid(node.unit) ||
         ((node.field_id == 0U) != (node.name.size == 0U)) ||
@@ -158,14 +160,19 @@ ayni_status_t validate_value_nodes(const ValueNodes &nodes) {
     if (!tree_shape(nodes, nodes.count, AYNI_VALUE_NODE_COUNT_MAX)) {
         return AYNI_INVALID_ARGUMENT;
     }
-    uint32_t bytes = 0;
+    uint32_t bytes = 0, bodies = 0;
     for (uint32_t at = 0; at < nodes.count; ++at) {
         const auto node = nodes[at];
+        if (node.kind == AYNI_VALUE_BODY && ++bodies > AYNI_VALUE_BODY_COUNT_MAX) {
+            return AYNI_CAPACITY_EXCEEDED;
+        }
         if (node.reserved != 0U || (node.kind == AYNI_VALUE_BOOL && node.value.boolean > 1U) ||
             (node.kind == AYNI_VALUE_FLOAT64 && !finite_real(node.value.approximate)) ||
             (node.kind == AYNI_VALUE_DECIMAL &&
              (node.value.decimal.reserved != 0U ||
-              node.value.decimal.scale > AYNI_DECIMAL_SCALE_MAX))) {
+              node.value.decimal.scale > AYNI_DECIMAL_SCALE_MAX)) ||
+            (node.kind == AYNI_VALUE_BODY &&
+             (node.value.body.id == 0U || node.value.body.reserved != 0U))) {
             return AYNI_INVALID_ARGUMENT;
         }
         const bool is_text = node.kind == AYNI_VALUE_TEXT || node.kind == AYNI_VALUE_ENUM ||
@@ -204,6 +211,11 @@ ayni_status_t validate_value(const ayni_value_v1 &value) {
 bool scalar_matches(const ayni_schema_node_v1 &schema, const ayni_value_node_v1 &value) {
     if (value.kind == AYNI_VALUE_NULL) {
         return (schema.flags & AYNI_SCHEMA_NULLABLE) != 0U;
+    }
+    if (value.kind == AYNI_VALUE_BODY) {
+        return schema.kind == AYNI_VALUE_TEXT && (schema.flags & AYNI_SCHEMA_EXTERNAL) != 0U &&
+               value.value.body.size >= schema.min_count &&
+               value.value.body.size <= schema.max_count;
     }
     if (schema.kind != value.kind) {
         return false;

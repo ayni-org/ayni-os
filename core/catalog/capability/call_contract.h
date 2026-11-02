@@ -28,7 +28,6 @@ constexpr uint32_t call_effect_notification = AYNI_CALL_EFFECT_NOTIFICATION;
 constexpr uint32_t call_effect_physical = AYNI_CALL_EFFECT_PHYSICAL;
 constexpr uint32_t call_effect_mask =
     call_effect_egress | call_effect_billing | call_effect_notification | call_effect_physical;
-constexpr uint32_t call_text_limit_max = AYNI_CALL_TEXT_BYTES_MAX;
 constexpr uint32_t call_value_input_format = AYNI_CALL_INPUT_VALUE;
 constexpr uint32_t call_text_result_format = AYNI_CALL_RESULT_TEXT;
 constexpr uint32_t call_value_result_format = AYNI_CALL_RESULT_VALUE;

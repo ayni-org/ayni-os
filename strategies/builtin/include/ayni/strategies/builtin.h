@@ -1,49 +1,43 @@
-// Bounded policies and conversation values (ADR-0056). No I/O beyond an injected nonblocking
-// clock (ADR-0073), no Kernel internals and no allocation. Objects and borrowed configuration
-// live through Kernel destroy; one owner thread uses each strategy. Scratch is reset on every
-// decide.
+// Policies and conversation values (ADR-0056). No I/O beyond an injected nonblocking clock
+// (ADR-0073) and the host body store (ADR-0096), no Kernel internals. Message texts live in the
+// body store; records, Goal parameters and checkpoints hold only references and control state.
+// Working copies are allocated on demand during a call and freed before it returns (ADR-0095).
+// Objects and borrowed configuration live through Kernel destroy; one owner thread uses each
+// strategy.
 #ifndef AYNI_STRATEGIES_BUILTIN_H
 #define AYNI_STRATEGIES_BUILTIN_H
 #include <array>
+#include <ayni/bodies.h>
 #include <ayni/calendar.h>
 #include <ayni/calls.h>
 #include <ayni/directory.h>
 #include <ayni/workspace.h>
 #include <optional>
+#include <string>
+#include <vector>
 
 namespace ayni::strategies {
 inline constexpr uint32_t rule_count_max = 8;
 inline constexpr uint32_t rule_steps_max = 16;
-inline constexpr uint32_t retained_rounds_max = 4; // Independently retained user inputs.
-inline constexpr uint32_t turn_text_max = 384;
-inline constexpr uint32_t summary_text_max = 512;
-inline constexpr uint32_t history_bytes_max = 49152; // Complete groups retained through compaction.
-inline constexpr uint32_t state_bytes_max = 65536;   // Portable record/controller upper bound.
-inline constexpr uint32_t prompt_bytes_max =
-    32768; // Hard framed request bound, independent of budget.
-inline constexpr uint32_t context_trigger_percent = 75;
-inline constexpr uint32_t context_target_percent = 50;
 
-// Fixed text, size bytes used, no terminator; empty is a valid answer.
-template <uint32_t Capacity> struct Text {
-    std::array<char, Capacity> bytes{};
-    uint32_t size = 0;
-    ayni_string_v1 view() const { return {bytes.data(), size}; }
-};
-// Portable encoded parameter/checkpoint/record; never raw C++ object bytes.
+using BodyRef = ayni_body_ref_v1;
+// Fixed encodings: a conversation record or one turn's parameters/checkpoint. Texts are body
+// references, so the size no longer depends on message length.
+inline constexpr uint32_t encoded_bytes_max = 2048;
 struct Encoded {
-    std::array<uint8_t, state_bytes_max> bytes{};
+    std::array<uint8_t, encoded_bytes_max> bytes{};
     uint32_t size = 0;
     ayni_bytes_v1 view() const { return {bytes.data(), size}; }
 };
-// One user turn and its final answer; tools remain in the Task call ledger.
+// One retained user turn and its final answer; tools remain in the Task call ledger.
 struct Round {
     uint64_t number = 0;
-    Text<turn_text_max> user;
-    Text<turn_text_max> answer;
+    std::string user;
+    std::string answer;
 };
 // Caller-owned conversation, isolated by id/owner/generation. Summary is model
-// inference for this conversation only, with inclusive source turn numbers.
+// inference for this conversation only, with inclusive source turn numbers. Every text is a
+// body in the store, in scope id; an empty reference means no text.
 struct ConversationRecord {
     uint64_t id = 0;
     uint64_t owner_instance_id = 0;
@@ -52,10 +46,8 @@ struct ConversationRecord {
     uint64_t last_round = 0;
     uint64_t summary_first = 0;
     uint64_t summary_last = 0;
-    Text<summary_text_max> summary;
-    Text<history_bytes_max>
-        history;              // Complete standard messages, without fixed system instructions.
-    uint64_t history_ref = 0; // Immutable external view; nonzero excludes history from the codec.
+    BodyRef summary{};
+    BodyRef history{}; // Complete standard messages, without fixed system instructions.
     ayni_model_usage_v1 last_usage{}; // Last serving-model observation; NONE after context reset.
     uint64_t last_request_characters = 0; // Unicode characters in the last sent messages/tools.
     uint64_t last_input_estimate =
@@ -64,9 +56,9 @@ struct ConversationRecord {
         disclosure{};             // Conservative retained metadata visibility, zero before use.
     uint64_t context_version = 1; // Positive generation; changes when derived context is rebuilt.
     // Independent accepted input survives invalidation before publication.
-    Text<turn_text_max> draft;
+    BodyRef draft{};
+    BodyRef rounds{}; // Retained rounds, oldest first; read with Conversation::rounds.
     uint32_t round_count = 0;
-    std::array<Round, retained_rounds_max> rounds{};
 };
 
 // An outer store persists the candidate *before* accepting it. begin/finish are
@@ -77,25 +69,30 @@ class Conversation {
   public:
     // Since 0.53: every synchronous codec call borrows a queried exclusive region.
     static ayni_status_t workspace_requirements(size_t *bytes, size_t *alignment);
-    static ayni_status_t begin(const ayni_workspace_v1 *workspace, const ConversationRecord &record,
-                               ayni_string_v1 user, Encoded &parameters, uint64_t memory_id = 0);
-    // Extract independent user input from a validated turn, without exposing the wire layout.
+    // Writes draft+user as one input body; NOT_READY while the store is not yet durable.
+    static ayni_status_t begin(const ayni_workspace_v1 *workspace, const ayni_body_store_v1 &bodies,
+                               const ConversationRecord &record, ayni_string_v1 user,
+                               Encoded &parameters, uint64_t memory_id = 0);
+    // Reference to independent user input of a validated turn, without exposing the wire layout.
     static ayni_status_t input(const ayni_workspace_v1 *workspace, ayni_bytes_v1 parameters,
-                               Text<turn_text_max> &out);
+                               BodyRef &out);
     static ayni_status_t finish(const ayni_workspace_v1 *workspace,
                                 const ConversationRecord &current, ayni_bytes_v1 checkpoint,
                                 ConversationRecord &candidate);
     // Preserve a superseded publication under its original turn identity, without its answer.
     static ayni_status_t retain_published_input(const ayni_workspace_v1 *workspace,
+                                                const ayni_body_store_v1 &bodies,
                                                 const ConversationRecord &, uint64_t,
                                                 ConversationRecord &);
     static ayni_status_t erase(const ayni_workspace_v1 *workspace,
                                const ConversationRecord &current, ConversationRecord &candidate);
     // Single/historical turn deletion clears generated text and preserves other retained users.
-    static ayni_status_t erase_round(const ayni_workspace_v1 *workspace, const ConversationRecord &,
+    static ayni_status_t erase_round(const ayni_workspace_v1 *workspace,
+                                     const ayni_body_store_v1 &bodies, const ConversationRecord &,
                                      uint64_t, ConversationRecord &);
     static ayni_status_t erase_derived(const ayni_workspace_v1 *workspace,
-                                       const ConversationRecord &, ConversationRecord &);
+                                       const ayni_body_store_v1 &bodies, const ConversationRecord &,
+                                       ConversationRecord &);
     static ayni_status_t encode(const ayni_workspace_v1 *workspace,
                                 const ConversationRecord &record, Encoded &out);
     static ayni_status_t decode(const ayni_workspace_v1 *workspace, ayni_bytes_v1 bytes,
@@ -103,6 +100,16 @@ class Conversation {
     // GoalType validator context is a borrowed ayni_workspace_v1 descriptor.
     // Use a wrapper when other GoalType callbacks require a different context.
     static ayni_status_t validate_turn(void *, ayni_bytes_v1 parameters);
+    // Body reads verify length and digest; NOT_READY while the store is still loading.
+    static ayni_status_t text(const ayni_body_store_v1 &bodies, const BodyRef &ref,
+                              std::string &out);
+    static ayni_status_t rounds(const ayni_body_store_v1 &bodies, const ConversationRecord &record,
+                                std::vector<Round> &out);
+    // Every body a record names, for a store that collects what no record references.
+    static void references(const ConversationRecord &record, std::vector<BodyRef> &out);
+    // Bodies a turn's parameters or checkpoint name, in addition to its record's.
+    static ayni_status_t turn_references(const ayni_workspace_v1 *workspace, ayni_bytes_v1 bytes,
+                                         std::vector<BodyRef> &out);
 };
 
 // Immutable concrete call; all strings/fields borrow the trusted configuration.
@@ -165,9 +172,9 @@ struct LocalClock {
 // Both calls are MODEL class; summary binding must have a text result contract.
 // model.text and summary.text are trusted instructions, framed apart from the conversation data
 // (AYNI_MODEL_INSTRUCTIONS_PREFIX, ADR-0074). User text is in parameters.
-// Optional Host-owned long history boundary. Calls copy/return bounded data and
-// never perform I/O on the strategy thread. NOT_READY retains no policy output;
-// ready becomes true after a worker completes. Views are owner/conversation/generation scoped.
+// Optional Host-owned result archive. Calls copy/return data and never perform I/O on the
+// strategy thread. NOT_READY retains no policy output; ready becomes nonzero after a worker
+// completes, for this port and for a body store that answered NOT_READY.
 struct ArchivedResult {
     uint64_t reference = 0;  // Immutable backend result version, positive after archive commits.
     uint32_t json_bytes = 0; // Complete rendered UTF-8 bytes; independent of token statistics.
@@ -175,16 +182,23 @@ struct ArchivedResult {
 struct HistoryPort {
     void *context = nullptr;
     uint32_t (*ready)(void *, uint64_t) = nullptr;
-    ayni_status_t (*load)(void *, uint64_t task, const ConversationRecord &,
-                          Text<history_bytes_max> &) = nullptr;
-    ayni_status_t (*save)(void *, uint64_t task, uint64_t turn, const ConversationRecord &,
-                          uint64_t &reference) = nullptr;
     // Complete raw facts/proofs are copied before returning NOT_READY. A successful
     // archive makes immutable rendered chunks available until the next archive.
     ayni_status_t (*archive)(void *, uint64_t task, const ConversationRecord &,
                              const ayni_task_call_result_v1 &, ArchivedResult &) = nullptr;
+    // Copies at most maximum bytes from offset; fewer only at the end of the result.
     ayni_status_t (*result_chunk)(void *, uint64_t task, uint64_t call, uint32_t offset,
-                                  Text<prompt_bytes_max> &, uint32_t maximum) = nullptr;
+                                  std::string &, uint32_t maximum) = nullptr;
+};
+// The model binding's token settings (ADR-0095), all positive. A request holds at most
+// context_window_tokens; max_output_tokens of it are left for the answer. Compaction starts when
+// the estimated input would leave no room for one tool result of tool_result_max_tokens and
+// shrinks the context to compact_target_tokens, which also bounds the retained user inputs.
+struct TokenLimits {
+    uint64_t context_window_tokens = 0;
+    uint64_t max_output_tokens = 0;
+    uint64_t compact_target_tokens = 0;
+    uint64_t tool_result_max_tokens = 0;
 };
 struct ToolLoopConfig {
     Identity identity;
@@ -192,13 +206,16 @@ struct ToolLoopConfig {
     Call summary;
     LocalClock clock;
     Call shell; // Optional trusted exact Shell selection; empty Binding means unavailable.
-    uint64_t context_window_tokens =
-        0; // Explicit model window; zero disables automatic compression.
-    uint64_t output_reserve_tokens = 0; // Positive and below window when compression is enabled.
+    TokenLimits limits;
+    // Required store for every conversation text and model request body, borrowed like the
+    // rest of the config. Bodies of conversation id use scope id.
+    const ayni_body_store_v1 *bodies = nullptr;
     HistoryPort history{};
 };
 class ToolLoop {
   public:
+    // Declared checkpoint and turn-parameter size; independent of message length.
+    static constexpr uint32_t checkpoint_bytes = encoded_bytes_max;
     // Since 0.53: the region remains alive through Kernel destruction. Its scratch
     // borrow lasts only for configure/decide. One logical owner may reuse the same
     // region for other strategies/codecs whose synchronous calls cannot overlap;

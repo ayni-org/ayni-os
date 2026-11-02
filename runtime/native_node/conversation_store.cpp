@@ -13,7 +13,7 @@ namespace ayni::runtime {
 namespace {
 constexpr char filename[] = "conversation.sqlite3";
 constexpr int application_id = 0x41594E49;
-constexpr int database_version = 2; // Conversation format 4 includes Task-scoped sample provenance.
+constexpr int database_version = 3; // Conversation format 5: texts are bodies (ADR-0096).
 using Statement = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>;
 Statement statement(sqlite3 *db, const char *sql) {
     sqlite3_stmt *out = nullptr;
@@ -109,17 +109,8 @@ ayni_status_t ConversationStore::open(const char *directory, SavedConversation &
         "BEGIN IMMEDIATE;"
         "CREATE TABLE IF NOT EXISTS state(singleton INTEGER PRIMARY KEY CHECK(singleton=1),"
         "context INTEGER NOT NULL,pending INTEGER NOT NULL,body BLOB NOT NULL);"
-        "CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT,conversation "
-        "INTEGER NOT NULL,"
-        "owner INTEGER NOT NULL,generation INTEGER NOT NULL,turn INTEGER NOT NULL,role INTEGER NOT "
-        "NULL,body BLOB NOT NULL);"
-        "CREATE TABLE IF NOT EXISTS views(id INTEGER PRIMARY KEY AUTOINCREMENT,conversation "
-        "INTEGER NOT NULL,"
-        "owner INTEGER NOT NULL,generation INTEGER NOT NULL);"
-        "CREATE TABLE IF NOT EXISTS view_messages(view_id INTEGER NOT NULL REFERENCES views(id) ON "
-        "DELETE CASCADE,"
-        "ordinal INTEGER NOT NULL,message_id INTEGER NOT NULL REFERENCES messages(id),"
-        "PRIMARY KEY(view_id,ordinal));"
+        "CREATE TABLE IF NOT EXISTS bodies(id INTEGER PRIMARY KEY,scope INTEGER NOT NULL,"
+        "digest INTEGER NOT NULL,body BLOB NOT NULL);"
         "CREATE TABLE IF NOT EXISTS results(id INTEGER PRIMARY KEY AUTOINCREMENT,conversation "
         "INTEGER NOT NULL,"
         "owner INTEGER NOT NULL,generation INTEGER NOT NULL,task INTEGER NOT NULL,call INTEGER NOT "
@@ -131,11 +122,16 @@ ayni_status_t ConversationStore::open(const char *directory, SavedConversation &
         "input_tokens INTEGER NOT NULL,output_tokens INTEGER NOT NULL,total_tokens INTEGER NOT "
         "NULL,"
         "UNIQUE(conversation,owner,generation,call,sequence));"
-        "PRAGMA application_id=1096371785; PRAGMA user_version=2; COMMIT;";
+        "PRAGMA application_id=1096371785; PRAGMA user_version=3; COMMIT;";
     // The application id is independent from Core journal/schema and message-frame versions.
     if (!sql(database_, schema)) {
         close();
         return AYNI_STORAGE_FAILED;
+    }
+    const auto loaded = load_bodies();
+    if (loaded != AYNI_OK) {
+        close();
+        return loaded;
     }
     const auto result = read(state);
     if (result != AYNI_OK && result != AYNI_NOT_FOUND) {
@@ -208,6 +204,7 @@ ayni_status_t ConversationStore::save(const SavedConversation &state, Erasure er
     pending_ = state;
     erasure_ = erasure;
     erased_turn_ = turn;
+    collect_below_ = next_body_;
     phase_ = Phase::queued;
     wake_.notify_one();
     return AYNI_OK;
@@ -225,59 +222,37 @@ ayni_status_t ConversationStore::write() {
         sql(database_, "ROLLBACK");
         return AYNI_STORAGE_FAILED;
     };
-    for (const char *text :
-         {"DELETE FROM views WHERE conversation=? AND owner=? AND generation<>?",
-          "DELETE FROM results WHERE conversation=? AND owner=? AND generation<>?"}) {
-        auto erase = statement(database_, text);
-        if (!erase) {
-            return finish(false);
-        }
-        sqlite3_bind_int64(erase.get(), 1, static_cast<sqlite3_int64>(pending_.record.id));
-        sqlite3_bind_int64(erase.get(), 2,
-                           static_cast<sqlite3_int64>(pending_.record.owner_instance_id));
-        sqlite3_bind_int64(erase.get(), 3, static_cast<sqlite3_int64>(pending_.record.generation));
-        if (sqlite3_step(erase.get()) != SQLITE_DONE) {
-            return finish(false);
-        }
-    }
-    // Independent user statements retain their original turn identity. Erasing
-    // one source discards all derived content while preserving other user turns.
-    const bool keep_users = erasure_ == Erasure::derived || erasure_ == Erasure::turn;
-    const auto bind_scope = [&](sqlite3_stmt *command) {
-        sqlite3_bind_int64(command, 1, static_cast<sqlite3_int64>(pending_.record.id));
-        sqlite3_bind_int64(command, 2,
-                           static_cast<sqlite3_int64>(pending_.record.owner_instance_id));
-        sqlite3_bind_int64(command, 3, static_cast<sqlite3_int64>(pending_.record.generation));
-    };
-    auto erase = statement(
-        database_, keep_users
-                       ? "DELETE FROM messages WHERE conversation=? AND owner=? AND generation<>? "
-                         "AND (role<>? OR turn=?)"
-                       : "DELETE FROM messages WHERE conversation=? AND owner=? AND generation<>?");
-    if (!erase) {
+    auto results = statement(
+        database_, "DELETE FROM results WHERE conversation=? AND owner=? AND generation<>?");
+    if (!results) {
         return finish(false);
     }
-    bind_scope(erase.get());
-    if (keep_users) {
-        sqlite3_bind_int(erase.get(), 4, static_cast<int>(model::Role::user));
-        sqlite3_bind_int64(
-            erase.get(), 5,
-            static_cast<sqlite3_int64>(erasure_ == Erasure::turn ? erased_turn_ : 0));
-    }
-    if (sqlite3_step(erase.get()) != SQLITE_DONE) {
+    sqlite3_bind_int64(results.get(), 1, static_cast<sqlite3_int64>(pending_.record.id));
+    sqlite3_bind_int64(results.get(), 2,
+                       static_cast<sqlite3_int64>(pending_.record.owner_instance_id));
+    sqlite3_bind_int64(results.get(), 3, static_cast<sqlite3_int64>(pending_.record.generation));
+    if (sqlite3_step(results.get()) != SQLITE_DONE) {
         return finish(false);
     }
-    if (keep_users) {
-        auto retain = statement(
-            database_, "UPDATE messages SET generation=? WHERE conversation=? AND owner=?");
-        if (!retain) {
+    // With no turn outstanding, conversation bodies the new record does not name are garbage:
+    // superseded versions, erased texts and a finished turn's intermediate bodies. Bodies
+    // written after this save was queued belong to a later operation and stay.
+    if (!pending_.pending_goal) {
+        std::vector<ayni_body_ref_v1> keep;
+        strategies::Conversation::references(pending_.record, keep);
+        std::string kept;
+        for (const auto &ref : keep) {
+            kept += (kept.empty() ? "" : ",") + std::to_string(ref.id);
+        }
+        const auto text = "DELETE FROM bodies WHERE scope=? AND id<?" +
+                          (kept.empty() ? std::string() : " AND id NOT IN (" + kept + ")");
+        auto collect = statement(database_, text.c_str());
+        if (!collect) {
             return finish(false);
         }
-        sqlite3_bind_int64(retain.get(), 1, static_cast<sqlite3_int64>(pending_.record.generation));
-        sqlite3_bind_int64(retain.get(), 2, static_cast<sqlite3_int64>(pending_.record.id));
-        sqlite3_bind_int64(retain.get(), 3,
-                           static_cast<sqlite3_int64>(pending_.record.owner_instance_id));
-        if (sqlite3_step(retain.get()) != SQLITE_DONE) {
+        sqlite3_bind_int64(collect.get(), 1, static_cast<sqlite3_int64>(pending_.record.id));
+        sqlite3_bind_int64(collect.get(), 2, static_cast<sqlite3_int64>(collect_below_));
+        if (sqlite3_step(collect.get()) != SQLITE_DONE) {
             return finish(false);
         }
     }
@@ -296,31 +271,55 @@ void ConversationStore::run() {
     std::unique_lock<std::mutex> lock(mutex_);
     for (;;) {
         wake_.wait(lock, [this] {
-            return phase_ == Phase::queued || phase_ == Phase::stopping ||
-                   loading_.phase == Phase::queued || storing_.phase == Phase::queued ||
-                   archiving_.phase == Phase::queued;
+            return phase_ == Phase::queued || phase_ == Phase::stopping || !inserts_.empty() ||
+                   !deletes_.empty() || archiving_.phase == Phase::queued;
         });
         if (phase_ == Phase::stopping) {
             return;
         }
-        HistoryJob *job = loading_.phase == Phase::queued   ? &loading_
-                          : storing_.phase == Phase::queued ? &storing_
-                                                            : nullptr;
-        const bool archive = !job && archiving_.phase == Phase::queued;
+        // Bodies go first: a record or archive may name a body queued before it.
+        if (!inserts_.empty() || !deletes_.empty()) {
+            std::vector<std::pair<uint64_t, Body>> inserts;
+            for (const auto id : inserts_) {
+                const auto found = bodies_.find(id);
+                if (found != bodies_.end()) {
+                    inserts.emplace_back(id, found->second);
+                }
+            }
+            auto deletes = std::move(deletes_);
+            inserts_.clear();
+            deletes_.clear();
+            lock.unlock();
+            ayni_status_t result = AYNI_INTERNAL;
+            try {
+                result = write_bodies(inserts, deletes);
+            } catch (const std::bad_alloc &) {
+                sql(database_, "ROLLBACK");
+                result = AYNI_CAPACITY_EXCEEDED;
+            }
+            lock.lock();
+            for (const auto &[id, body] : inserts) {
+                const auto found = bodies_.find(id);
+                if (found != bodies_.end()) {
+                    found->second.state =
+                        result == AYNI_OK ? Body::State::durable : Body::State::failed;
+                }
+            }
+            // A failed delete leaves an unreferenced row; the next collecting save removes it.
+            durable_.notify_all();
+            wake_.notify_all();
+            continue;
+        }
+        const bool archive = archiving_.phase == Phase::queued;
         if (archive) {
             archiving_.phase = Phase::writing;
-        } else if (job) {
-            job->phase = Phase::writing;
         } else {
             phase_ = Phase::writing;
         }
         lock.unlock();
         ayni_status_t result = AYNI_INTERNAL;
         try {
-            result = job == &loading_   ? read_history(*job)
-                     : job == &storing_ ? write_history(*job)
-                     : archive          ? write_result()
-                                        : write();
+            result = archive ? write_result() : write();
         } catch (const std::bad_alloc &) {
             sql(database_, "ROLLBACK");
             result = AYNI_CAPACITY_EXCEEDED;
@@ -329,9 +328,6 @@ void ConversationStore::run() {
         if (archive) {
             archiving_.status = result;
             archiving_.phase = Phase::done;
-        } else if (job) {
-            job->status = result;
-            job->phase = Phase::done;
         } else {
             status_ = result;
             phase_ = Phase::done;
@@ -339,14 +335,19 @@ void ConversationStore::run() {
                 conversation_ = pending_.record.id;
                 owner_ = pending_.record.owner_instance_id;
                 generation_ = pending_.record.generation;
-                // The ACK covers managed copies and jobs queued during erasure.
-                for (auto *cached : {&loading_, &storing_}) {
-                    if (cached->record.id != conversation_ ||
-                        cached->record.owner_instance_id != owner_ ||
-                        cached->record.generation != generation_) {
-                        *cached = {};
+                if (!pending_.pending_goal) {
+                    std::vector<ayni_body_ref_v1> keep;
+                    strategies::Conversation::references(pending_.record, keep);
+                    for (auto at = bodies_.begin(); at != bodies_.end();) {
+                        bool kept =
+                            at->second.scope != pending_.record.id || at->first >= collect_below_;
+                        for (const auto &ref : keep) {
+                            kept = kept || ref.id == at->first;
+                        }
+                        at = kept ? std::next(at) : bodies_.erase(at);
                     }
                 }
+                // The ACK covers managed copies and jobs queued during erasure.
                 if (archiving_.conversation != conversation_ || archiving_.owner != owner_ ||
                     archiving_.generation != generation_) {
                     archiving_ = {};
@@ -373,10 +374,9 @@ void ConversationStore::close() {
         {
             std::unique_lock<std::mutex> lock(mutex_);
             wake_.wait(lock, [this] {
-                return phase_ != Phase::queued && phase_ != Phase::writing &&
-                       loading_.phase != Phase::queued && loading_.phase != Phase::writing &&
-                       storing_.phase != Phase::queued && storing_.phase != Phase::writing &&
-                       archiving_.phase != Phase::queued && archiving_.phase != Phase::writing;
+                return phase_ != Phase::queued && phase_ != Phase::writing && inserts_.empty() &&
+                       deletes_.empty() && archiving_.phase != Phase::queued &&
+                       archiving_.phase != Phase::writing;
             });
             phase_ = Phase::stopping;
         }
@@ -394,9 +394,11 @@ void ConversationStore::close() {
     bytes_.fill(0);
     size_ = 0;
     pending_ = {};
-    loading_ = {};
-    storing_ = {};
     archiving_ = {};
+    bodies_.clear();
+    inserts_.clear();
+    deletes_.clear();
     phase_ = Phase::idle;
+    durable_.notify_all();
 }
 } // namespace ayni::runtime

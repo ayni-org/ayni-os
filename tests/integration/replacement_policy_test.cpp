@@ -3,6 +3,7 @@
 #include <ayni/applications/experiment_fixtures.h>
 #include <ayni/ayni.hpp>
 #include <ayni/model_messages.hpp>
+#include <ayni/runtime/common/memory_bodies.h>
 #include <ayni/strategies/builtin.h>
 #include <ayni/workspace.hpp>
 #include <cstring>
@@ -23,15 +24,25 @@ struct Requested {
     static ayni_status_t record(void *ctx, const ayni_call_request_v1 *r) {
         ayni::ValueReader input;
         ayni_string_v1 body{};
-        if (input.read(r->value) != AYNI_OK ||
-            !ayni::ValueReader::text(r->kind == AYNI_POLICY_REQUEST_MODEL
-                                         ? input.field(AYNI_MODEL_BODY_FIELD_ID)
-                                         : input.root(),
-                                     body)) {
+        ayni_body_ref_v1 ref{};
+        if (input.read(r->value) != AYNI_OK) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        const auto *field = r->kind == AYNI_POLICY_REQUEST_MODEL
+                                ? input.field(AYNI_MODEL_BODY_FIELD_ID)
+                                : input.root();
+        std::string named;
+        if (ayni::ValueReader::body(field, ref)) {
+            // A model body by reference (ADR-0096): equal bytes have an equal reference.
+            named = "body:" + std::to_string(ref.id) + ":" + std::to_string(ref.digest) + ":" +
+                    std::to_string(ref.size);
+        } else if (ayni::ValueReader::text(field, body)) {
+            named = string(body);
+        } else {
             return AYNI_INVALID_ARGUMENT;
         }
         *static_cast<Requested *>(ctx) = {r->kind, string(r->step_key), string(r->binding_id),
-                                          string(body), r->binding_version};
+                                          named, r->binding_version};
         return AYNI_OK;
     }
     bool operator==(const Requested &r) const {
@@ -49,7 +60,8 @@ TEST(ReplacementPolicy, both_implementations_repeat_the_same_common_snapshot_dec
     conversation.id = 1;
     conversation.owner_instance_id = 1;
     strategies::Encoded parameters;
-    ASSERT_EQ(strategies::Conversation::begin(codec_workspace.get(), conversation,
+    ayni::runtime::MemoryBodies bodies;
+    ASSERT_EQ(strategies::Conversation::begin(codec_workspace.get(), *bodies.store(), conversation,
                                               text("fixture input"), parameters),
               AYNI_OK);
     strategies::ToolLoop loop;
@@ -61,6 +73,8 @@ TEST(ReplacementPolicy, both_implementations_repeat_the_same_common_snapshot_dec
                     {sizeof(ayni_scope_v1), 0, nullptr},
                     text("Reply briefly.")};
     config.summary = config.model;
+    config.limits = {32768, 1024, 8192, 4096};
+    config.bodies = bodies.store();
     ASSERT_EQ(loop.configure(config, loop_workspace.get()), AYNI_OK);
     const ayni_task_step_v1 steps[] = {{text("increment")}, {text("checkpoint.ready")}};
     auto snapshot = initialized<ayni_task_snapshot_v1>();
@@ -98,7 +112,7 @@ TEST(ReplacementPolicy, both_implementations_repeat_the_same_common_snapshot_dec
         Requested requests[2];
         std::vector<uint8_t> checkpoints[2];
         for (uint32_t at = 0; at < std::size(requests); ++at) {
-            std::array<uint8_t, strategies::state_bytes_max> checkpoint{};
+            std::array<uint8_t, strategies::encoded_bytes_max> checkpoint{};
             ayni_policy_intent_v1 intent{};
             auto output = initialized<ayni_policy_output_v1>();
             output.intents = &intent;

@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <ayni/providers/mock/subscription.h>
+#include <ayni/values.hpp>
 #include <cstring>
 #include <new>
 #include <optional>
@@ -31,6 +32,9 @@ uint64_t after(uint64_t now, uint64_t duration) {
     return duration >= no_time - now ? no_time : now + duration;
 }
 } // namespace
+uint32_t subscription_input_bytes() {
+    return text_value_bytes(0);
+}
 struct SubscriptionProvider::Impl {
     enum class Phase { starting, active, stopping };
     struct Frame {
@@ -71,8 +75,9 @@ struct SubscriptionProvider::Impl {
                       text("mock.observe"),
                       {sizeof(ayni_call_contract_v1), AYNI_CALL_SUBSCRIPTION, AYNI_CALL_TOOL, 0,
                        AYNI_CALL_IDEMPOTENT, AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_CONFIRMED, 0,
-                       request_timeout_ms, AYNI_CALL_INPUT_VALUE, AYNI_CALL_RESULT_TEXT, 24, 0, 1,
-                       &resource, &subscription},
+                       request_timeout_ms, AYNI_CALL_INPUT_VALUE, AYNI_CALL_RESULT_TEXT,
+                       subscription_input_bytes(), subscription_result_bytes, 1, &resource,
+                       &subscription},
                       nullptr};
         input_schema.kind = result_schema.kind = AYNI_VALUE_TEXT;
         input_schema.subtree_end = result_schema.subtree_end = 1;

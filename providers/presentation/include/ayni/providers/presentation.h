@@ -5,6 +5,9 @@
 #include <memory>
 namespace ayni::providers::presentation {
 inline constexpr uint32_t request_capacity = 8, text_bytes_max = 512;
+// Contract maxima; the runtime sizes the Kernel's Call strides from them.
+uint32_t call_input_bytes();
+inline constexpr uint32_t call_result_bytes = 0;
 // Called only by the writer worker, without a Provider lock. OK proves complete
 // write+flush. UNSUPPORTED explicitly proves no channel/no output began; every
 // other failure has UNKNOWN extent. Must not throw. Context lives through quiesce.

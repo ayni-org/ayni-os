@@ -88,9 +88,8 @@ struct Provider::Impl {
         contract.timeout_ms = config.timeout_ms;
         contract.input_format = AYNI_CALL_INPUT_VALUE;
         contract.result_format = AYNI_CALL_RESULT_VALUE;
-        contract.input_text_limit = config.command_max_bytes + encoded_metadata_bytes;
-        contract.result_text_limit =
-            encoded_metadata_bytes + ((config.output_max_bytes + 2U) / 3U) * 4U;
+        contract.input_text_limit = call_input_bytes(config);
+        contract.result_text_limit = call_result_bytes(config);
         contract.resource_count = 1;
         contract.resources = &resource;
         domain.struct_size = sizeof(domain);
@@ -343,6 +342,12 @@ struct Provider::Impl {
     }
 };
 
+uint32_t call_input_bytes(const Config &config) {
+    return config.command_max_bytes + encoded_metadata_bytes;
+}
+uint32_t call_result_bytes(const Config &config) {
+    return encoded_metadata_bytes + ((config.output_max_bytes + 2U) / 3U) * 4U;
+}
 Provider::Provider() = default;
 Provider::~Provider() {
     if (close() == AYNI_BUSY) {

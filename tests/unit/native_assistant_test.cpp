@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <ayni/applications/assistant/schedule_tool.h>
 #include <ayni/host_authority.h>
+#include <ayni/runtime/common/memory_bodies.h>
 #include <ayni/runtime/native_node/assistant.h>
 #include <ayni/runtime/sim_node.h>
 #include <chrono>
@@ -502,7 +503,8 @@ TEST_F(NativeAssistant, grant_revoke_and_cancel_use_public_management_commands) 
     settle();
     EXPECT_EQ(run(Operation::goals).goals.front().lifecycle, AYNI_GOAL_CANCELLED);
     EXPECT_EQ(run(Operation::conversation).conversation.draft, "先取消");
-    EXPECT_EQ(run(Operation::say, 0, std::string(385, 'x')).status, AYNI_CAPACITY_EXCEEDED);
+    // ADR-0095: input length is bounded by tokens in the ToolLoop, not by bytes here.
+    EXPECT_EQ(run(Operation::say, 0, std::string(385, 'x')).status, AYNI_OK);
 }
 TEST_F(NativeAssistant,
        continuing_past_retained_capacity_keeps_latest_context_and_queryable_calls) {
@@ -531,8 +533,10 @@ TEST_F(NativeAssistant, remote_memory_requires_separate_destination_grant_before
     ASSERT_EQ(setenv("AYNI_P3_FIXTURE_KEY", "local-fixture-only", 1), 0);
     ModelConfig config;
     config.model = Model::remote;
-    config.context_window_tokens = 5000;
-    config.output_reserve_tokens = 1000;
+    config.harness.context_window_tokens = 5000;
+    config.harness.max_output_tokens = 1000;
+    config.harness.compact_target_tokens = 1000;
+    config.harness.tool_result_max_tokens = 1000;
     config.base_url = server.url();
     config.model_name = "fixture";
     config.key_environment = "AYNI_P3_FIXTURE_KEY";
@@ -613,8 +617,10 @@ TEST_F(NativeAssistant, local_http_tool_loop_and_text_only_summary_use_real_prov
     ASSERT_EQ(setenv("AYNI_P2_FIXTURE_KEY", "local-fixture-only", 1), 0);
     ModelConfig config;
     config.model = Model::remote;
-    config.context_window_tokens = 5000;
-    config.output_reserve_tokens = 1000;
+    config.harness.context_window_tokens = 5000;
+    config.harness.max_output_tokens = 1000;
+    config.harness.compact_target_tokens = 1000;
+    config.harness.tool_result_max_tokens = 1000;
     config.base_url = server.url();
     config.model_name = "fixture";
     config.key_environment = "AYNI_P2_FIXTURE_KEY";
@@ -659,8 +665,8 @@ TEST_F(NativeAssistant, model_schedule_tool_registers_a_goal_that_waits_for_owne
     ASSERT_EQ(setenv("AYNI_P7_FIXTURE_KEY", "local-fixture-only", 1), 0);
     ModelConfig config;
     config.model = Model::remote;
-    config.context_window_tokens = 32000;
-    config.output_reserve_tokens = 1000;
+    config.harness.context_window_tokens = 32000;
+    config.harness.max_output_tokens = 1000;
     config.base_url = server.url();
     config.model_name = "fixture";
     config.key_environment = "AYNI_P7_FIXTURE_KEY";
@@ -738,8 +744,10 @@ TEST_F(NativeAssistant, model_goals_waiting_for_approval_are_bounded) {
     ASSERT_EQ(setenv("AYNI_P7_FIXTURE_KEY", "local-fixture-only", 1), 0);
     ModelConfig config;
     config.model = Model::remote;
-    config.context_window_tokens = 5000;
-    config.output_reserve_tokens = 1000;
+    config.harness.context_window_tokens = 5000;
+    config.harness.max_output_tokens = 1000;
+    config.harness.compact_target_tokens = 1000;
+    config.harness.tool_result_max_tokens = 1000;
     config.base_url = server.url();
     config.model_name = "fixture";
     config.key_environment = "AYNI_P7_FIXTURE_KEY";
@@ -805,8 +813,10 @@ TEST_F(NativeAssistant, stop_before_the_schedule_tool_decides_registers_nothing)
     ASSERT_EQ(setenv("AYNI_P7_FIXTURE_KEY", "local-fixture-only", 1), 0);
     ModelConfig config;
     config.model = Model::remote;
-    config.context_window_tokens = 5000;
-    config.output_reserve_tokens = 1000;
+    config.harness.context_window_tokens = 5000;
+    config.harness.max_output_tokens = 1000;
+    config.harness.compact_target_tokens = 1000;
+    config.harness.tool_result_max_tokens = 1000;
     config.base_url = server.url();
     config.model_name = "fixture";
     config.key_environment = "AYNI_P7_FIXTURE_KEY";
@@ -856,13 +866,16 @@ TEST_F(NativeAssistant, stop_before_the_schedule_tool_decides_registers_nothing)
 }
 TEST(SimDemo, independent_nodes_use_the_same_profile_and_retain_storage_on_release) {
     SimNode first, second;
+    ayni::runtime::MemoryBodies bodies;
     for (uint64_t expected_epoch = 1; expected_epoch <= 2; ++expected_epoch) {
         for (auto *node : {&first, &second}) {
             DemoProfile profile;
             ASSERT_EQ(node->assemble(demo_config()), AYNI_OK);
             const ayni::providers::presentation::Output sink{
                 nullptr, [](void *, ayni_string_v1) { return AYNI_OK; }};
-            ASSERT_EQ(profile.assemble(node->kernel(), {}, {node->clock(), sink, {}, {}}), AYNI_OK);
+            ASSERT_EQ(profile.assemble(node->kernel(), {},
+                                       {node->clock(), sink, {}, {}, {}, bodies.store()}),
+                      AYNI_OK);
             ASSERT_EQ(ayni_start(node->kernel()), AYNI_OK);
             for (unsigned i = 0; i < 200; ++i) {
                 ayni_step_report_v1 report{};

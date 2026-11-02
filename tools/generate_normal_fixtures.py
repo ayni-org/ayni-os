@@ -248,11 +248,11 @@ def load_case(path, clauses, steps):
     if value["seed"] != "0":
         raise FixtureError("normal profile uses explicit ordering, seed must be 0")
     cfg = value["config"]
-    keys(cfg, {"tick_us", "model_delay_us", "step_units", "max_steps", "model_hard_limit"})
+    keys(cfg, {"tick_us", "model_delay_us", "step_units", "max_steps", "max_turns"})
     config = (f"Config{{UINT64_C({number(cfg['tick_us'], 1000000, 1, decimal=True)}), "
               f"UINT64_C({number(cfg['model_delay_us'], 10000000, 1, decimal=True)}), "
               f"{number(cfg['step_units'], 1024, 1)}, {number(cfg['max_steps'], 100000, 1)}, "
-              f"{number(cfg['model_hard_limit'], 64, 1)}}}")
+              f"{number(cfg['max_turns'], 64, 1)}}}")
     for field in ("script", "expect"):
         if not isinstance(value[field], list) or not 1 <= len(value[field]) <= ACTION_MAX:
             raise FixtureError(f"{field} needs 1..{ACTION_MAX} entries")

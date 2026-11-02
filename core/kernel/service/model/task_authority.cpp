@@ -106,7 +106,7 @@ bool WorkModel::inherit_task_metadata(uint64_t task_id, foundation::TransitionSt
     if (task_authority.read(task.slot, task.replaced_task_id, replaced)) {
         release_task_references(replaced, stamp.commit_seq);
     }
-    calls.retire_task(task.replaced_task_id);
+    calls.retire_task(task.replaced_task_id, stamp.commit_seq);
     // Configured Task and Goal requirement bounds are identical. A failure
     // here is an internal defect, never a partially accepted derivation.
     return task_authority.install_validated(task.slot, record) == AYNI_OK;
@@ -127,7 +127,8 @@ void WorkModel::release_task_references(const work::TaskAuthorityRecord &record,
     }
 }
 
-void WorkModel::retire_goal_task_metadata(uint32_t goal_index, uint64_t commit_seq) {
+void WorkModel::retire_goal_task_metadata(uint32_t goal_index, uint64_t commit_seq,
+                                          uint64_t release_seq) {
     for (uint32_t index = 0; index < tasks.size(); ++index) {
         const auto &task = tasks.at(index);
         work::TaskAuthorityRecord record{};
@@ -138,7 +139,7 @@ void WorkModel::retire_goal_task_metadata(uint32_t goal_index, uint64_t commit_s
         if (task_authority.read(task.slot, task.task_id, record)) {
             release_task_references(record, commit_seq);
         }
-        calls.retire_task(task.task_id);
+        calls.retire_task(task.task_id, release_seq);
         task_authority.clear(task.slot);
     }
 }

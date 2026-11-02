@@ -51,8 +51,7 @@ ayni_config_v1 configuration(const Config &fixture) {
     c.task_checkpoint_max_bytes = 64;
     c.task_step_capacity = AYNI_TASK_STEP_CAPACITY_MAX;
     c.call_capacity = fixture_call_capacity;
-    c.call_input_max_bytes = 640;
-    c.call_result_max_bytes = 512;
+    Profile::fit_call_bytes(c);
     c.call_capability_capacity = 6;
     c.capability_capacity = 7;
     c.provider_capacity = 6;
@@ -60,7 +59,7 @@ ayni_config_v1 configuration(const Config &fixture) {
     c.resource_capacity = 5;
     c.resource_request_capacity = 16;
     c.observation_source_capacity = 1;
-    c.task_model_call_hard_limit = fixture.model_hard_limit;
+    c.max_turns = fixture.max_turns;
     return c;
 }
 const char *metric_name(Metric metric) {
@@ -244,9 +243,9 @@ class Engine {
             << scalar("model_delay_us", data_.config.model_delay_us)
             << scalar("step_units", data_.config.step_units)
             << scalar("max_steps", data_.config.max_steps)
-            << scalar("model_hard_limit", data_.config.model_hard_limit)
-            << scalar("arena_bytes", arena) << scalar("arena_alignment", alignment)
-            << ",\"status\":" << result.status << ",\"close_status\":" << result.close_status
+            << scalar("max_turns", data_.config.max_turns) << scalar("arena_bytes", arena)
+            << scalar("arena_alignment", alignment) << ",\"status\":" << result.status
+            << ",\"close_status\":" << result.close_status
             << ",\"artifact_status\":" << result.artifact_status
             << ",\"passed\":" << (result.status == AYNI_OK ? "true" : "false")
             << ",\"first_failure\":" << quoted(result.detail)

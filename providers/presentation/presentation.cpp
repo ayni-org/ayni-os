@@ -20,6 +20,9 @@ bool same(ayni_string_v1 a, ayni_string_v1 b) {
     return a.size == b.size && a.data && b.data && std::memcmp(a.data, b.data, a.size) == 0;
 }
 } // namespace
+uint32_t call_input_bytes() {
+    return text_value_bytes(text_bytes_max);
+}
 struct Provider::Impl {
     enum class Phase { empty, queued, checking, writing, cancelled, terminal };
     struct Slot {
@@ -60,8 +63,8 @@ struct Provider::Impl {
                                notification_timeout_ms,
                                AYNI_CALL_INPUT_VALUE,
                                AYNI_CALL_RESULT_TEXT,
-                               text_bytes_max + 24,
-                               0,
+                               call_input_bytes(),
+                               call_result_bytes,
                                static_cast<uint32_t>(resources.size()),
                                resources.data(),
                                nullptr};

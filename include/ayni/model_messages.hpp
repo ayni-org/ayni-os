@@ -1,5 +1,5 @@
-// Bounded model-neutral history framing and Chat Completions projection.
-// No JSON parser, allocation, I/O or Kernel state; all views borrow their input.
+// Model-neutral history framing and Chat Completions projection. No JSON parser, I/O or
+// Kernel state; all views borrow their input. Only a growing Writer's callback allocates.
 #ifndef AYNI_MODEL_MESSAGES_HPP
 #define AYNI_MODEL_MESSAGES_HPP
 #include <array>
@@ -120,6 +120,12 @@ struct Message {
 class Writer {
   public:
     Writer(char *data, uint32_t capacity) : data_(data), capacity_(capacity) {}
+    // Grows its lane on demand (ADR-0095): grow(context, size) makes the lane exactly size
+    // bytes, keeping its first used bytes, and returns it, or null when it cannot.
+    using Grow = char *(*)(void *context, uint32_t size);
+    Writer(void *context, Grow grow, uint32_t used)
+        : data_(grow ? grow(context, used) : nullptr), capacity_(UINT32_MAX), used_(used),
+          ok_(data_ != nullptr), context_(context), grow_(grow) {}
     void prefix() { raw(messages_prefix); }
     void text(Role role, ayni_string_v1 content) {
         if (role != Role::system && role != Role::user && role != Role::assistant &&
@@ -169,6 +175,10 @@ class Writer {
             ok_ = false;
             return;
         }
+        if (grow_ && !(data_ = grow_(context_, used_ + value.size))) {
+            ok_ = false;
+            return;
+        }
         if (value.size) {
             std::memcpy(data_ + used_, value.data, value.size);
         }
@@ -192,10 +202,12 @@ class Writer {
         }
         raw(std::string_view(digits, static_cast<size_t>(end.ptr - digits)));
     }
-    char *data_;        // Borrowed exclusive lane through finish.
-    uint32_t capacity_; // Bytes in lane; used never exceeds it.
-    uint32_t used_ = 0; // Prefix length, zero is initially empty.
-    bool ok_ = true;    // Sticky failure, no writes after failure.
+    char *data_;              // Borrowed exclusive lane through finish.
+    uint32_t capacity_;       // Bytes in lane; used never exceeds it.
+    uint32_t used_ = 0;       // Prefix length, zero is initially empty.
+    bool ok_ = true;          // Sticky failure, no writes after failure.
+    void *context_ = nullptr; // Growing lane owner, borrowed by grow_.
+    Grow grow_ = nullptr;     // Null for a fixed lane.
 };
 // Strict length framing, with no delimiter interpretation inside a payload.
 class Reader {

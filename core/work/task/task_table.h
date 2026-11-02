@@ -51,8 +51,8 @@ struct NewTask {
 // Durable per-Task model admission facts (C-RUN-002/003). Request acceptance
 // owns the increment; a failed next admission owns the hold. No cost balance.
 struct TaskModelCalls {
-    uint32_t used = 0; // Accepted requests, <= limit; never decremented.
-    uint32_t limit = AYNI_TASK_MODEL_CALL_LIMIT_DEFAULT; // Positive soft ceiling.
+    uint32_t used = 0;                       // Accepted requests, <= limit; never decremented.
+    uint32_t limit = AYNI_MAX_TURNS_DEFAULT; // Positive; a new Task takes the table's max_turns.
     bool blocked = false; // True only when used == limit and a next request was refused.
     // Complete equality for immutable authorization transitions and codecs.
     bool operator==(const TaskModelCalls &other) const {
@@ -62,7 +62,7 @@ struct TaskModelCalls {
     bool operator!=(const TaskModelCalls &other) const { return !(*this == other); }
     // One validator for struct/record inputs, independent of this boot's ceiling.
     bool valid() const {
-        return limit > 0U && limit <= AYNI_TASK_MODEL_CALL_HARD_LIMIT_MAX && used <= limit &&
+        return limit > 0U && limit <= AYNI_MAX_TURNS_MAX && used <= limit &&
                (!blocked || used == limit);
     }
 };
@@ -201,10 +201,9 @@ class TaskTable {
     static std::size_t storage_size(const Limits &limits);
 
     // storage holds storage_size(limits) bytes aligned to storage_alignment
-    // and outlives the table. model_call_hard_limit (1..64 calls) bounds each
-    // Task's model requests and takes no storage, so it is not a Limit.
-    TaskTable(void *storage, const Limits &limits,
-              uint32_t model_call_hard_limit = AYNI_TASK_MODEL_CALL_HARD_LIMIT_DEFAULT);
+    // and outlives the table. max_turns (1..AYNI_MAX_TURNS_MAX calls) is a new Task's
+    // model request limit and takes no storage, so it is not a Limit.
+    TaskTable(void *storage, const Limits &limits, uint32_t max_turns = AYNI_MAX_TURNS_DEFAULT);
 
     TaskTable(const TaskTable &) = delete;
     TaskTable &operator=(const TaskTable &) = delete;
@@ -268,8 +267,8 @@ class TaskTable {
     // Only after check_model_limit_raise succeeds, in the command transition.
     // Preserves count/progress and all other holds, advancing revision once.
     void raise_model_limit(uint32_t index, uint32_t limit, foundation::TransitionStamp stamp);
-    // Positive startup count ceiling; not a concurrent-slot allocation.
-    uint32_t model_call_hard_limit() const { return model_call_hard_limit_; }
+    // A new Task's model request limit; not a concurrent-slot allocation.
+    uint32_t max_turns() const { return max_turns_; }
     // Internal MA-008 admission boundary: caller atomically commits the same
     // accepted call identity; only with READY, spare count and revision capacity.
     void accept_model_call(uint32_t index, foundation::TransitionStamp stamp);
@@ -480,7 +479,7 @@ class TaskTable {
     uint8_t *checkpoints_;
     uint32_t step_capacity_;
     uint32_t checkpoint_max_bytes_;
-    uint32_t model_call_hard_limit_;     // Fixed this boot; independent of steps and concurrency.
+    uint32_t max_turns_;                 // Fixed this boot; independent of steps and concurrency.
     uint32_t held_count_ = 0;            // still_held() tasks
     const void *call_context_ = nullptr; // Borrowed coordinator for the table lifetime.
     CallQuery call_query_ = nullptr;     // Pure owner-thread projection; null in standalone tables.

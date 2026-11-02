@@ -60,8 +60,7 @@ ayni_status_t ConversationStore::archive_result(void *context, uint64_t task,
     }
     const uint64_t size = uint64_t{result.text.size} + result.encoded_value.size +
                           result.original_domain.size + result.business_contract.size;
-    if (!result.outcome || !result.logical_call_id || !result.requires_seq ||
-        size > job.raw.size()) {
+    if (!result.outcome || !result.logical_call_id || !result.requires_seq || size > UINT32_MAX) {
         return AYNI_INVALID_ARGUMENT;
     }
     job = {};
@@ -70,6 +69,7 @@ ayni_status_t ConversationStore::archive_result(void *context, uint64_t task,
     job.owner = record.owner_instance_id;
     job.generation = record.generation;
     job.result = result;
+    job.raw.resize(size);
     uint32_t offset = 0;
     const auto copy = [&](ayni_bytes_v1 source) -> ayni_bytes_v1 {
         auto *destination = job.raw.data() + offset;
@@ -89,9 +89,7 @@ ayni_status_t ConversationStore::archive_result(void *context, uint64_t task,
     return AYNI_NOT_READY;
 }
 ayni_status_t ConversationStore::result_chunk(void *context, uint64_t task, uint64_t reference,
-                                              uint32_t offset,
-                                              strategies::Text<strategies::prompt_bytes_max> &out,
-                                              uint32_t maximum) {
+                                              uint32_t offset, std::string &out, uint32_t maximum) {
     auto &self = *static_cast<ConversationStore *>(context);
     std::lock_guard<std::mutex> lock(self.mutex_);
     auto &job = self.archiving_;
@@ -100,7 +98,7 @@ ayni_status_t ConversationStore::result_chunk(void *context, uint64_t task, uint
         job.owner != self.owner_ || job.generation != self.generation_) {
         return AYNI_EXPIRED;
     }
-    if (offset > job.archived.json_bytes || !maximum || maximum > out.bytes.size()) {
+    if (offset > job.archived.json_bytes || !maximum) {
         return AYNI_INVALID_ARGUMENT;
     }
     uint32_t take = std::min(maximum, job.archived.json_bytes - offset);
@@ -113,12 +111,27 @@ ayni_status_t ConversationStore::result_chunk(void *context, uint64_t task, uint
     if (!take && offset < job.archived.json_bytes) {
         return AYNI_CAPACITY_EXCEEDED;
     }
-    out = {};
-    out.size = take;
-    if (take) {
-        std::memcpy(out.bytes.data(), job.json.data() + offset, take);
-    }
+    out.assign(job.json.data() + offset, take);
     return AYNI_OK;
+}
+// Renders the job's result into json, sized by a measuring pass first.
+ayni_status_t ConversationStore::render(uint64_t reference, size_t &size) {
+    auto &job = archiving_;
+    auto measured = json::Writer::measuring();
+    auto status = json::write_call_result(result_workspace_.get(), measured, job.result, reference);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    if (!measured.finish(size) || size > UINT32_MAX) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    job.json.assign(size, '\0');
+    json::Writer writer(job.json.data(), size);
+    status = json::write_call_result(result_workspace_.get(), writer, job.result, reference);
+    size_t written = 0;
+    return status != AYNI_OK                           ? status
+           : writer.finish(written) && written == size ? AYNI_OK
+                                                       : AYNI_CAPACITY_EXCEEDED;
 }
 // SQL owns complete original bytes/proofs and the exact rendered view. The
 // transaction commits before a Core checkpoint may contain the result reference.
@@ -147,7 +160,7 @@ ayni_status_t ConversationStore::write_result() {
     const auto found = sqlite3_step(prior.get());
     if (found == SQLITE_ROW) {
         const auto size = sqlite3_column_bytes(prior.get(), 1);
-        if (size < 0 || static_cast<uint32_t>(size) > job.json.size()) {
+        if (size < 0) {
             return AYNI_INVALID_ARGUMENT;
         }
         const std::array<ayni_bytes_v1, 4> originals{
@@ -165,12 +178,9 @@ ayni_status_t ConversationStore::write_result() {
             ++column;
         }
         const auto reference = static_cast<uint64_t>(sqlite3_column_int64(prior.get(), 0));
-        json::Writer writer(job.json.data(), static_cast<uint32_t>(job.json.size()));
-        const auto rendered =
-            json::write_call_result(result_workspace_.get(), writer, job.result, reference);
         size_t written = 0;
-        if (rendered != AYNI_OK || !writer.finish(written) ||
-            written != static_cast<size_t>(size) ||
+        const auto rendered = render(reference, written);
+        if (rendered != AYNI_OK || written != static_cast<size_t>(size) ||
             (written &&
              std::memcmp(job.json.data(), sqlite3_column_blob(prior.get(), 1), written))) {
             return AYNI_INVALID_ARGUMENT;
@@ -222,13 +232,11 @@ ayni_status_t ConversationStore::write_result() {
         return fail();
     }
     const auto reference = static_cast<uint64_t>(sqlite3_last_insert_rowid(database_));
-    json::Writer writer(job.json.data(), static_cast<uint32_t>(job.json.size()));
-    const auto rendered =
-        json::write_call_result(result_workspace_.get(), writer, job.result, reference);
     size_t size = 0;
-    if (rendered != AYNI_OK || !writer.finish(size)) {
+    const auto rendered = render(reference, size);
+    if (rendered != AYNI_OK) {
         sqlite3_exec(database_, "ROLLBACK", nullptr, nullptr, nullptr);
-        return rendered != AYNI_OK ? rendered : AYNI_CAPACITY_EXCEEDED;
+        return rendered;
     }
     auto update = prepare(database_, "UPDATE results SET json=? WHERE id=?");
     if (!update) {

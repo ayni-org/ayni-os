@@ -146,17 +146,46 @@ bool load(const std::string &path, bool required, Options &options, std::string 
             model.timezone = value;
         } else if (key == "shell_working_directory") {
             model.shell_working_directory = value;
-        } else if (key == "context_window_tokens" || key == "output_reserve_tokens") {
-            uint32_t tokens = 0;
-            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), tokens);
-            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || !tokens) {
-                error = "token 配置须为正整数。";
+        } else if (key == "output_reserve_tokens") {
+            error = "output_reserve_tokens 已改名为 max_output_tokens。";
+            return false;
+        } else if (key == "context_window_tokens" || key == "max_output_tokens" ||
+                   key == "compact_target_tokens" || key == "tool_result_max_tokens" ||
+                   key == "max_turns" || key == "request_timeout_ms" ||
+                   key == "model_concurrency") {
+            uint64_t number = 0;
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), number);
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || !number) {
+                error = key + " 须为正整数。";
                 return false;
             }
+            auto &h = model.harness;
+            const auto small = [&](uint32_t &out) {
+                if (number > UINT32_MAX) {
+                    return false;
+                }
+                out = static_cast<uint32_t>(number);
+                return true;
+            };
+            bool fits = true;
             if (key == "context_window_tokens") {
-                model.context_window_tokens = tokens;
+                h.context_window_tokens = number;
+            } else if (key == "max_output_tokens") {
+                h.max_output_tokens = number;
+            } else if (key == "compact_target_tokens") {
+                h.compact_target_tokens = number;
+            } else if (key == "tool_result_max_tokens") {
+                h.tool_result_max_tokens = number;
+            } else if (key == "max_turns") {
+                fits = small(h.max_turns);
+            } else if (key == "request_timeout_ms") {
+                fits = small(h.request_timeout_ms);
             } else {
-                model.output_reserve_tokens = tokens;
+                fits = small(h.model_concurrency);
+            }
+            if (!fits) {
+                error = key + " 超出范围。";
+                return false;
             }
         } else if (key == "quiet_timezone") {
             options.quiet.timezone = value;

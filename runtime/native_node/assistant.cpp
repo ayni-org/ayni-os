@@ -64,7 +64,7 @@ ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelCo
     if (status != AYNI_OK) {
         return status;
     }
-    status = node.assemble(directory.c_str(), demo_config());
+    status = node.assemble(directory.c_str(), demo_config(config.harness), store.bodies());
     if (status != AYNI_OK) {
         return status;
     }
@@ -75,9 +75,13 @@ ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelCo
     if (!output.write) {
         output.write = unavailable_channel;
     }
-    status = profile.assemble(
-        node.kernel(), config,
-        {node.clock(), output, std::move(quiet), {this, propose}, store.history_port()});
+    status = profile.assemble(node.kernel(), config,
+                              {node.clock(),
+                               output,
+                               std::move(quiet),
+                               {this, propose},
+                               store.history_port(),
+                               store.bodies()});
     if (status != AYNI_OK) {
         return status;
     }

@@ -77,10 +77,10 @@ Reply Assistant::Impl::say(const Command &command) {
         return failure(AYNI_BUSY);
     }
     strategies::Encoded parameters;
-    strategies::Text<strategies::turn_text_max> input;
-    auto status =
-        strategies::Conversation::begin(conversation_workspace.get(), current.record,
-                                        runtime_text(command.text), parameters, command.id);
+    strategies::BodyRef input{};
+    auto status = strategies::Conversation::begin(
+        conversation_workspace.get(), *store.waiting_bodies(), current.record,
+        runtime_text(command.text), parameters, command.id);
     if (status == AYNI_OK) {
         status =
             strategies::Conversation::input(conversation_workspace.get(), parameters.view(), input);
@@ -184,7 +184,7 @@ ayni_status_t Assistant::Impl::creation(uint64_t id, Creation &out) const {
     auto status = ayni_get_goal(node.kernel(), id, &out.info);
     if (status == AYNI_OK) {
         status = ayni_get_goal_parameters(node.kernel(), id, out.parameters.bytes.data(),
-                                          strategies::state_bytes_max, &out.parameters.size);
+                                          strategies::encoded_bytes_max, &out.parameters.size);
     }
     if (status != AYNI_OK) {
         return status;
@@ -417,13 +417,17 @@ Reply Assistant::Impl::describe(const Command &command) const {
         auto &view = reply.conversation;
         view.generation = record.generation;
         view.revision = record.revision;
-        view.summary.assign(record.summary.bytes.data(), record.summary.size);
-        view.draft.assign(record.draft.bytes.data(), record.draft.size);
-        for (uint32_t at = 0; at < record.round_count; ++at) {
-            const auto &round = record.rounds[at];
-            view.turns.push_back({round.number,
-                                  std::string(round.user.bytes.data(), round.user.size),
-                                  std::string(round.answer.bytes.data(), round.answer.size)});
+        const auto &bodies = *store.bodies();
+        std::vector<strategies::Round> rounds;
+        reply.status = strategies::Conversation::text(bodies, record.summary, view.summary);
+        if (reply.status == AYNI_OK) {
+            reply.status = strategies::Conversation::text(bodies, record.draft, view.draft);
+        }
+        if (reply.status == AYNI_OK) {
+            reply.status = strategies::Conversation::rounds(bodies, record, rounds);
+        }
+        for (auto &round : rounds) {
+            view.turns.push_back({round.number, std::move(round.user), std::move(round.answer)});
         }
     } else {
         const auto kind = command.operation == Operation::goals   ? AYNI_OBJECT_GOAL

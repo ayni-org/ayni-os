@@ -85,7 +85,7 @@ bool profile(std::istringstream &input, runtime::Command &c) {
 }
 } // namespace
 const char *help() {
-    return "普通文本交给助理（ToolLoop），每条输入/回答最多 384 UTF-8 字节。\n"
+    return "普通文本交给助理（ToolLoop），长度只受 token 配置限制。\n"
            "停 / 停止 / stop 或 /stop  立即取消当前回答并暂停后台工作，不经过模型；提醒保留\n"
            "/remind once|daily|weekly YYYY-MM-DDTHH:MM POSIX-TZ 提醒内容\n"
            "/check [周期秒]            周期设备检查（Mock，至少 300 秒）\n"

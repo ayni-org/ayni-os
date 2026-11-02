@@ -74,7 +74,7 @@
 
 | [0053](0053-m1-structure-wrap-up.md) | M1 结构收尾：主版本 0 只收当前 ABI 布局、精确命令查找、调用传播与共享默认配置 | 已接受 | §3.2、§8、§14.1 |
 
-| [0054](0054-typed-tool-calls.md) | 类型化工具调用：允许列表 ∩ 授权、Provider 侧解码与 v4 调用行 | 已接受 | §2.7、§3.3、§9.1 |
+| [0054](0054-typed-tool-calls.md) | 类型化工具调用：允许列表 ∩ 授权、Provider 侧解码与 v4 调用行 | 已接受；`call_tool` 读取由 0096 取代 | §2.7、§3.3、§9.1 |
 
 ## 模板
 
@@ -139,13 +139,15 @@
 
 | [0084](0084-typed-capability-values-and-authority-projection.md) | 通用业务值、完整授权投影与开发期升级 | 已接受范围；实现未交付 | §3、§9、§14、AP-02 |
 
-| [0085](0085-stable-capability-tools-and-shell.md) | 固定能力工具、按需说明、连续上下文与显式 Shell | 已接受范围；实施中 | AP-02/AP-03 |
+| [0085](0085-stable-capability-tools-and-shell.md) | 固定能力工具、按需说明、连续上下文与显式 Shell | 已接受范围；实施中；决策 5 由 0095 取代 | AP-02/AP-03 |
 
 | [0086](0086-task-owned-managed-operation-controls.md) | Task 所有长操作与订阅的模型控制 | 已接受产品选择；实施设计 | §2、§3、§9、§14、AP-05 |
 | [0087](0087-binding-resource-mapping-and-foundation-acceptance.md) | Binding 资源映射与基础验收边界 | 已接受；验证与交付见 #117 | AP-04/AP-06、基础验收 |
 | [0088](0088-safety-branch-coverage-target.md) | 安全关键分支覆盖目标统一为 80% | 已接受 | 仓库规则、工作流、基础及发布验收 |
-| [0090](0090-bounded-portable-workspaces.md) | 通用有界工作区与低栈接口 | 已接受；实现与验证见 #119 | ABI0.53、独立接入 |
+| [0090](0090-bounded-portable-workspaces.md) | 通用有界工作区与低栈接口 | 已接受；实现与验证见 #119；策略分配规定由 0095 取代 | ABI0.53、独立接入 |
 | [0091](0091-shared-host-file-storage.md) | 共用Host文件存储与平台文件端口 | 已接受；实现与验证见 #120 | 独立接入、C-HOST-009～019 |
 | [0092](0092-esp-idf-littlefs-host.md) | FreeRTOS异步Host与专用LittleFS卷 | 已接受；实现与验证见 #121 | 独立接入、C-HOST |
 | [0093](0093-host-outer-file-values.md) | 外层文件值与共同Host队列 | 已接受；实现与验证见 #122 | C-HVAL、独立接入 |
 | [0094](0094-portable-runtime-and-independent-normal-program.md) | 共同会话运行时与独立正常程序 | 已接受范围；验证见 #123 | 独立SDK/平台接入 |
+| [0095](0095-token-settings-and-on-demand-buffers.md) | 七项运行设置与按需分配 | 已接受；部分取代 0085 决策 5 与 0090 | ToolLoop、Provider、组合根 |
+| [0096](0096-core-stores-body-references.md) | 正文存储与 Core 只存引用 | 已接受；部分取代 0054、0085、0090 的正文规定 | ABI0.54、schema9、Provider、组合根 |

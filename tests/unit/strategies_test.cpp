@@ -57,9 +57,38 @@ TEST_F(StrategiesFixture, two_tools_then_a_new_model_round_complete_the_conversa
     EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
     EXPECT_EQ(work.task(task).model_calls_used, 2U);
     finish(task);
-    ASSERT_EQ(conversation.round_count, 1U);
-    EXPECT_EQ(string_of(conversation.rounds[0].user.view()), "hello");
-    EXPECT_EQ(string_of(conversation.rounds[0].answer.view()), "done");
+    const auto rounds = rounds_of(conversation);
+    ASSERT_EQ(rounds.size(), 1U);
+    EXPECT_EQ(rounds[0].user, "hello");
+    EXPECT_EQ(rounds[0].answer, "done");
+}
+// ADR-0095: one input larger than the window minus the answer room is refused before any
+// model request; a long input that fits is sent as is.
+TEST_F(StrategiesFixture, single_input_beyond_the_window_is_refused_without_a_model_call) {
+    const std::string fits(2000, 'f'), oversized(8000, 'o');
+    auto task = start("chat", fits.c_str());
+    ASSERT_EQ(pending.size(), 1U);
+    EXPECT_NE(pending[0].text.find(fits), std::string::npos);
+    post(0, text("done"));
+    pump();
+    finish(task);
+    task = start("chat", oversized.c_str());
+    EXPECT_EQ(pending.size(), 1U);
+    const auto info = work.task(task);
+    EXPECT_NE(info.lifecycle, AYNI_TASK_COMPLETED);
+    EXPECT_EQ(info.hold_status, AYNI_CAPACITY_EXCEEDED);
+}
+// ADR-0095: an answer is bounded by max_output_tokens only, not by a byte limit.
+TEST_F(StrategiesFixture, long_answer_completes_and_is_retained_intact) {
+    const auto task = start();
+    const std::string answer(3000, 'a');
+    post(0, {answer.data(), static_cast<uint32_t>(answer.size())});
+    pump();
+    ASSERT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+    finish(task);
+    const auto rounds = rounds_of(conversation);
+    ASSERT_EQ(rounds.size(), 1U);
+    EXPECT_EQ(rounds[0].answer, answer);
 }
 TEST_F(StrategiesFixture, unknown_first_tool_blocks_later_tools_and_models) {
     const auto task = start();
@@ -84,7 +113,7 @@ TEST_F(StrategiesFixture, unlisted_binding_returns_matching_tool_error_without_b
 }
 TEST_F(StrategiesFixture, default_eight_model_calls_pause_before_the_ninth) {
     const auto task = start();
-    for (uint32_t round = 0; round < AYNI_TASK_MODEL_CALL_LIMIT_DEFAULT; ++round) {
+    for (uint32_t round = 0; round < AYNI_MAX_TURNS_DEFAULT; ++round) {
         const uint32_t model = round * 2U;
         ASSERT_EQ(pending.size(), model + 1U);
         propose(model, 1);
@@ -116,17 +145,18 @@ TEST_F(StrategiesFixture, summary_replaces_history_only_after_all_budget_chunks_
     const auto task = start_until_budget_summary();
     ASSERT_NE(task, 0U);
     const auto old_round = conversation.last_round;
-    const auto old_history =
-        std::string(conversation.history.bytes.data(), conversation.history.size);
+    const auto old_history = text_of(conversation.history);
+    // ADR-0095: a summary is bounded by max_output_tokens only, not by a byte limit.
+    const std::string summary_text(1500, 's');
     uint32_t summaries = 0;
     while (pending.back().capability == "summary") {
         ++summaries;
-        ASSERT_LT(summaries, AYNI_TASK_MODEL_CALL_LIMIT_DEFAULT);
-        EXPECT_EQ(conversation.summary.size, 0U);
+        ASSERT_LT(summaries, AYNI_MAX_TURNS_DEFAULT);
+        EXPECT_EQ(conversation.summary.id, 0U);
         EXPECT_EQ(conversation.last_round, old_round);
-        EXPECT_EQ(std::string(conversation.history.bytes.data(), conversation.history.size),
-                  old_history);
-        post(static_cast<uint32_t>(pending.size() - 1U), text("tentative summary"));
+        EXPECT_EQ(text_of(conversation.history), old_history);
+        post(static_cast<uint32_t>(pending.size() - 1U),
+             {summary_text.data(), static_cast<uint32_t>(summary_text.size())});
         pump();
     }
     EXPECT_GT(summaries, 0U);
@@ -153,7 +183,17 @@ TEST_F(StrategiesFixture, summary_replaces_history_only_after_all_budget_chunks_
     pump();
     finish(task);
     EXPECT_EQ(conversation.last_round, old_round + 1U);
-    EXPECT_EQ(conversation.round_count, policies::retained_rounds_max);
+    EXPECT_GE(text_of(conversation.summary).size(), summary_text.size());
+    // Retained user inputs are bounded by compact_target_tokens, newest first.
+    const auto rounds = rounds_of(conversation);
+    ASSERT_FALSE(rounds.empty());
+    EXPECT_EQ(rounds.back().number, conversation.last_round);
+    uint64_t retained = 0;
+    for (const auto &round : rounds) {
+        retained += ayni::model::estimate_tokens(round.user.size());
+    }
+    EXPECT_LE(retained, 1000U);
+    EXPECT_LT(rounds.size(), conversation.last_round);
     EXPECT_EQ(conversation.summary_first, 1U);
     EXPECT_EQ(conversation.summary_last, old_round);
     EXPECT_GT(conversation.context_version, 1U);
@@ -161,14 +201,14 @@ TEST_F(StrategiesFixture, summary_replaces_history_only_after_all_budget_chunks_
 TEST_F(StrategiesFixture, unsuccessful_summary_preserves_every_original_message) {
     const auto task = start_until_budget_summary();
     ASSERT_NE(task, 0U);
-    const auto old = std::string(conversation.history.bytes.data(), conversation.history.size);
+    const auto old = text_of(conversation.history);
     const auto old_round = conversation.last_round;
     post(static_cast<uint32_t>(pending.size() - 1U), {}, AYNI_CALL_FAILED, AYNI_NOT_READY);
     pump();
     EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_PAUSED);
     EXPECT_EQ(conversation.last_round, old_round);
-    EXPECT_EQ(conversation.summary.size, 0U);
-    EXPECT_EQ(std::string(conversation.history.bytes.data(), conversation.history.size), old);
+    EXPECT_EQ(conversation.summary.id, 0U);
+    EXPECT_EQ(text_of(conversation.history), old);
 }
 TEST_F(StrategiesFixture, deleting_the_whole_conversation_refuses_a_late_turn) {
     const auto task = start();
@@ -180,21 +220,21 @@ TEST_F(StrategiesFixture, deleting_the_whole_conversation_refuses_a_late_turn) {
     pump();
     policies::Encoded state;
     ASSERT_EQ(ayni_copy_task_checkpoint(work.kernel(), task, state.bytes.data(),
-                                        policies::state_bytes_max, &state.size),
+                                        policies::encoded_bytes_max, &state.size),
               AYNI_OK);
     policies::ConversationRecord candidate;
     EXPECT_EQ(policies::Conversation::finish(::ayni::test::conversation_workspace(), erased,
                                              state.view(), candidate),
               AYNI_REVISION_CONFLICT);
     EXPECT_EQ(erased.round_count, 0U);
-    EXPECT_EQ(erased.summary.size, 0U);
+    EXPECT_EQ(erased.summary.id, 0U);
 }
 TEST_F(StrategiesFixture, completed_checkpoint_export_has_a_durable_barrier_and_copy_bounds) {
     const auto task = start();
     policies::Encoded state;
     state.size = 77;
     EXPECT_EQ(ayni_copy_task_checkpoint(work.kernel(), task, state.bytes.data(),
-                                        policies::state_bytes_max, &state.size),
+                                        policies::encoded_bytes_max, &state.size),
               AYNI_BUSY);
     EXPECT_EQ(state.size, 77U);
     post(0, text("answer"));
@@ -207,14 +247,14 @@ TEST_F(StrategiesFixture, completed_checkpoint_export_has_a_durable_barrier_and_
     }
     ASSERT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
     EXPECT_EQ(ayni_copy_task_checkpoint(work.kernel(), task, state.bytes.data(),
-                                        policies::state_bytes_max, &state.size),
+                                        policies::encoded_bytes_max, &state.size),
               AYNI_BUSY);
     pump();
     EXPECT_EQ(ayni_copy_task_checkpoint(work.kernel(), task, nullptr, 0, &state.size),
               AYNI_BUFFER_TOO_SMALL);
     EXPECT_GT(state.size, 0U);
     EXPECT_EQ(ayni_copy_task_checkpoint(work.kernel(), task, state.bytes.data(),
-                                        policies::state_bytes_max, &state.size),
+                                        policies::encoded_bytes_max, &state.size),
               AYNI_OK);
 }
 // Normal clean restart for the explicitly planned strategy replacement, not a
@@ -380,9 +420,39 @@ TEST_F(StructuredToolLoop, nested_input_and_structured_result_complete_the_same_
 
 namespace {
 // ADR-0085: model-visible pagination survives its own model/progress commits.
+// ADR-0095: compaction starts once the estimated input exceeds the window minus the answer
+// and one tool result, here 5000 - 1000 - 500 = 3500 tokens (a 75% rule would give 3000).
+class CompactionTrigger : public ayni::test::StrategiesFixture {
+    void SetUp() override {
+        limits.tool_result_max_tokens = 500;
+        StrategiesFixture::SetUp();
+    }
+
+  protected:
+    // One turn on top of a reported prefix of input tokens; returns the first Call's capability.
+    std::string next_turn(uint64_t reported) {
+        conversation.last_usage = {AYNI_MODEL_USAGE_REPORTED, 0, reported, 10, reported + 10};
+        const auto task = start("chat", "next");
+        EXPECT_FALSE(pending.empty());
+        const auto capability = pending.empty() ? std::string{} : pending.back().capability;
+        if (capability == "model") {
+            post(static_cast<uint32_t>(pending.size() - 1U), text("answer"));
+            pump();
+            finish(task);
+        }
+        return capability;
+    }
+};
+TEST_F(CompactionTrigger, compaction_starts_past_window_minus_output_minus_tool_result) {
+    ASSERT_EQ(next_turn(100), "model"); // Gives the next turns an older group to compact.
+    EXPECT_EQ(next_turn(3200), "model");
+    EXPECT_EQ(next_turn(3500), "summary");
+}
 class ManyCapabilities : public ayni::test::StrategiesFixture {
     void SetUp() override {
         tool_alias_count = 24;
+        limits.context_window_tokens = 16000; // One listing page of 16 capabilities fits.
+        limits.tool_result_max_tokens = 8000;
         StrategiesFixture::SetUp();
     }
 };

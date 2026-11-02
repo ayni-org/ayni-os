@@ -58,7 +58,7 @@ struct WorkModel {
                 {capacities.goal_capacity, capacities.goal_parameter_max_bytes,
                  limits.goal_depth_max, limits.goal_children_max}),
           calendars(storage[Store::calendars], capacities.goal_capacity),
-          tasks(storage[Store::tasks], task_limits(capacities), limits.task_model_call_hard_limit),
+          tasks(storage[Store::tasks], task_limits(capacities), limits.max_turns),
           commands(storage[Store::commands], command_limits(capacities)),
           scenes(storage[Store::scenes], scene_limits(capacities), registered.capabilities,
                  registered.observation_sources),
@@ -141,7 +141,8 @@ struct WorkModel {
     // Release a Task's selected references at one accepted transition boundary.
     void release_task_references(const work::TaskAuthorityRecord &record, uint64_t commit_seq);
     // Release and clear exact Task metadata before its terminal Goal gives way.
-    void retire_goal_task_metadata(uint32_t goal_index, uint64_t commit_seq);
+    // release_seq is zero in replay, which forgets call body references (ADR-0096).
+    void retire_goal_task_metadata(uint32_t goal_index, uint64_t commit_seq, uint64_t release_seq);
     // Persist authorization pause for this Goal and its direct live Task admissions;
     // preserve their user/strategy state and saturated revisions.
     void pause_goal_authority(uint32_t index);

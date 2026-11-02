@@ -8,7 +8,7 @@
 #include "work/call/call_table.h"
 
 namespace ayni::work {
-// One complete current row in journal and snapshot (schema 7).
+// One complete current row in journal and snapshot (schema 9).
 constexpr uint16_t call_record_type = durability::record_type::call;
 constexpr uint16_t call_record_version = 1;
 constexpr uint32_t call_subscription_fixed_bytes = 44; // Attachment now belongs to common state.
@@ -17,9 +17,11 @@ constexpr uint32_t call_metadata_tail_size = 36;
 // Original optional Grant ID/revision, contracts/storage/records.md.
 constexpr uint32_t call_authorization_size = 12;
 constexpr uint32_t call_mode_attachment_bytes = 8; // Two u32, contracts/storage/records.md.
-constexpr uint32_t call_record_fixed_size = 292 + call_metadata_tail_size +
-                                            call_authorization_size + call_mode_attachment_bytes +
-                                            model_context_record_bytes + model_usage_record_bytes;
+// Result body reference (id, digest, size) and its tool call count; schema 9 (ADR-0096).
+constexpr uint32_t call_result_body_bytes = 24;
+constexpr uint32_t call_record_fixed_size =
+    292 + call_metadata_tail_size + call_authorization_size + call_mode_attachment_bytes +
+    model_context_record_bytes + model_usage_record_bytes + call_result_body_bytes;
 constexpr uint32_t call_record_id_count =
     6; // Step, binding, capability, provider, endpoint, destination.
 constexpr uint32_t call_record_resource_fixed_size = 8; // String length and units per resource.

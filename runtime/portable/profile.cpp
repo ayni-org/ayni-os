@@ -7,6 +7,7 @@
 #include <ayni/providers/software/work.h>
 #include <ayni/resources.h>
 #include <ayni/runtime/common/default_config.h>
+#include <ayni/runtime/common/harness_settings.h>
 #include <ayni/runtime/common/memory_capability.h>
 #include <ayni/runtime/portable.h>
 #include <ayni/scenes.h>
@@ -21,15 +22,14 @@ constexpr uint32_t retained_calls = 32, retained_steps = 64;
 constexpr uint32_t source_capacity = 4, resource_capacity = 8, catalog_capacity = 8;
 constexpr uint32_t kernel_command_capacity = 4;
 constexpr uint32_t ingress_capacity = 8, authority_scope_bytes = 256, retained_goals = 8;
-constexpr uint32_t model_hard_limit = 16, call_result_bytes = 1024, memory_capacity = 8;
+constexpr uint32_t memory_capacity = 8;
 constexpr uint32_t write_interval_us = 1000, journal_bytes = 512 * 1024;
-constexpr uint64_t model_window_tokens = 12288, model_output_tokens = 3072;
+// Fixture models: small window so the normal suite crosses compaction (ADR-0095).
+constexpr runtime::HarnessSettings harness{12288, 3072, 4096, 2304, 8, 30000, 1};
 constexpr int64_t execution_minimum = -100, execution_maximum = 100;
 constexpr uint32_t execution_lease_us = 200000, command_age_us = 100000;
 constexpr uint64_t command_range = UINT64_C(1) << 32;
 constexpr uint64_t event_interval_us = 10000;
-constexpr uint32_t value_envelope_bytes = 128;
-constexpr uint32_t model_input_bytes = strategies::prompt_bytes_max;
 constexpr const char *chat_types[agent_count] = {"portable.chat.a", "portable.chat.b"};
 constexpr const char *model_bindings[agent_count] = {"portable.model.a", "portable.model.b"};
 constexpr const char *model_resources[agent_count] = {"model.a", "model.b"};
@@ -38,6 +38,24 @@ ayni_string_v1 text(const char *s) {
 }
 ayni_scope_v1 scope() {
     return {sizeof(ayni_scope_v1), 0, nullptr};
+}
+// The one yaw limit field; the clock is absent only when sizing the Kernel.
+providers::mock_execution::Config execution_config(const ayni_host_v1 *host) {
+    providers::mock_execution::Config config;
+    if (host) {
+        config.clock_context = host->ctx;
+        config.now_us = host->monotonic_now_us;
+        config.executor_boot_epoch = host->monotonic_now_us(host->ctx) + 1;
+    }
+    config.limits.count = 1;
+    auto &limit = config.limits.fields[0];
+    std::memcpy(limit.field_id.data, "yaw", sizeof("yaw") - 1);
+    limit.field_id.size = sizeof("yaw") - 1;
+    std::memcpy(limit.unit.data, "mrad", sizeof("mrad") - 1);
+    limit.unit.size = sizeof("mrad") - 1;
+    limit.minimum = execution_minimum;
+    limit.maximum = execution_maximum;
+    return config;
 }
 // One deterministic region planner for sizing and placement; queries never create objects.
 struct Regions {
@@ -62,13 +80,16 @@ ayni_config_v1 configuration() {
     c.task_capacity = live_task_limit;
     c.goal_type_capacity = agent_count + extra_goal_types;
     c.strategy_capacity = agent_count + extra_strategies;
-    c.goal_parameter_max_bytes = strategies::state_bytes_max;
-    c.task_checkpoint_max_bytes = strategies::state_bytes_max;
+    c.goal_parameter_max_bytes = strategies::ToolLoop::checkpoint_bytes;
+    c.task_checkpoint_max_bytes = strategies::ToolLoop::checkpoint_bytes;
     c.task_step_capacity = retained_steps;
     c.call_capacity = retained_calls;
-    c.task_model_call_hard_limit = model_hard_limit;
-    c.call_input_max_bytes = model_input_bytes + value_envelope_bytes;
-    c.call_result_max_bytes = call_result_bytes;
+    c.max_turns = harness.max_turns;
+    fit_call_bytes(c, {{providers::fixture_model::call_input_bytes(true),
+                        providers::fixture_model::call_result_bytes},
+                       {providers::software::call_bytes, providers::software::call_bytes},
+                       {providers::mock_execution::call_input_bytes(execution_config(nullptr)),
+                        providers::mock_execution::call_result_bytes}});
     c.capability_capacity = catalog_capacity;
     c.call_capability_capacity = catalog_capacity;
     c.provider_capacity = catalog_capacity;
@@ -89,13 +110,14 @@ struct Profile::Impl {
     explicit Impl(const ayni_host_v1 &ports, hosts::storage::FileValuePort files)
         : host(ports), values(files),
           model_a(providers::fixture_model::Variant::a, providers::fixture_model::Service::tools,
-                  host.ctx, host.monotonic_now_us),
+                  host.ctx, host.monotonic_now_us, bodies.store()),
           model_b(providers::fixture_model::Variant::b, providers::fixture_model::Service::tools,
-                  host.ctx, host.monotonic_now_us),
+                  host.ctx, host.monotonic_now_us, bodies.store()),
           summary(providers::fixture_model::Variant::a, providers::fixture_model::Service::summary,
-                  host.ctx, host.monotonic_now_us) {}
+                  host.ctx, host.monotonic_now_us, bodies.store()) {}
     ayni_host_v1 host;
     hosts::storage::FileValuePort values;
+    runtime::FileBodies bodies; // Every conversation text and model body, on the value files.
     ayni_kernel_t *kernel = nullptr;
     providers::fixture_model::Provider model_a, model_b, summary;
     providers::software::WorkProvider software;
@@ -275,18 +297,7 @@ struct Profile::Impl {
     // Explicit simulated execution profile. It owns no driver or real actuator;
     // Core still requires a durable Scene, Grant and independently checked permit.
     ayni_status_t execution_catalog() {
-        providers::mock_execution::Config config;
-        config.clock_context = host.ctx;
-        config.now_us = host.monotonic_now_us;
-        config.executor_boot_epoch = host.monotonic_now_us(host.ctx) + 1;
-        config.limits.count = 1;
-        auto &limit = config.limits.fields[0];
-        std::memcpy(limit.field_id.data, "yaw", sizeof("yaw") - 1);
-        limit.field_id.size = sizeof("yaw") - 1;
-        std::memcpy(limit.unit.data, "mrad", sizeof("mrad") - 1);
-        limit.unit.size = sizeof("mrad") - 1;
-        limit.minimum = execution_minimum;
-        limit.maximum = execution_maximum;
+        const auto config = execution_config(&host);
         auto status = executor.configure(config);
         ayni_provider_v1 provider{};
         if (status == AYNI_OK) {
@@ -379,8 +390,10 @@ struct Profile::Impl {
         for (uint32_t at = 0; at < agent_count; ++at) {
             strategies::ToolLoopConfig c;
             c.identity.id = text(chat_types[at]);
-            c.context_window_tokens = model_window_tokens;
-            c.output_reserve_tokens = model_output_tokens;
+            c.limits = {harness.context_window_tokens, harness.max_output_tokens,
+                        harness.compact_target_tokens, harness.tool_result_max_tokens};
+            c.bodies = bodies.store();
+            c.history = {&bodies, runtime::FileBodies::ready, nullptr, nullptr};
             c.model.kind = c.summary.kind = AYNI_POLICY_REQUEST_MODEL;
             c.model.binding_id = text(model_bindings[at]);
             c.summary.binding_id = text("portable.summary");
@@ -493,12 +506,17 @@ ayni_status_t Profile::create_in(void *data, size_t bytes, const ayni_host_v1 &h
     }
     Regions regions{static_cast<uint8_t *>(data)};
     impl_ = new (regions.take(sizeof(Impl), alignof(Impl))) Impl(host, files);
+    status = impl_->bodies.configure(files);
+    if (status != AYNI_OK) {
+        return status;
+    }
     auto config = configuration();
     size_t kernel_bytes = 0, alignment = 0;
     status = ayni_kernel_memory_requirements(&config, &kernel_bytes, &alignment);
     if (status == AYNI_OK) {
-        status = ayni_create(&config, &host, regions.take(kernel_bytes, alignment), kernel_bytes,
-                             &impl_->kernel);
+        impl_->host.bodies = impl_->bodies.store(); // Core releases the bodies it stops naming.
+        status = ayni_create(&config, &impl_->host, regions.take(kernel_bytes, alignment),
+                             kernel_bytes, &impl_->kernel);
     }
     if (status == AYNI_OK) {
         status = owner_workspace(regions, &impl_->owner_region);
@@ -513,6 +531,9 @@ uint64_t Profile::session() const {
 }
 uint64_t Profile::instance(uint32_t index) const {
     return impl_ && index < agent_count ? impl_->instances[index] : 0;
+}
+const ayni_body_store_v1 *Profile::bodies() const {
+    return impl_ ? impl_->bodies.store() : nullptr;
 }
 const ayni_workspace_v1 *Profile::value_workspace() const {
     return impl_ ? &impl_->owner_region : nullptr;
@@ -650,6 +671,7 @@ ayni_status_t Profile::open_conversations() {
                                                    text(chat_types[at]),
                                                    &self.owner_region,
                                                    self.values,
+                                                   &self.bodies,
                                                    {&self, Impl::command}});
         if (status != AYNI_OK) {
             return status;

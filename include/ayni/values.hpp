@@ -39,6 +39,14 @@ class ValueReader {
         out = node->value.text;
         return true;
     }
+    // Borrow a BODY reference node (ADR-0096); the caller reads and verifies the body.
+    static bool body(const ayni_value_node_v1 *node, ayni_body_ref_v1 &out) {
+        if (node == nullptr || node->kind != AYNI_VALUE_BODY) {
+            return false;
+        }
+        out = node->value.body;
+        return true;
+    }
 
   private:
     std::optional<ayni_value_v1> value_; // None before read; otherwise a complete admitted source.
@@ -107,6 +115,13 @@ template <uint32_t Capacity = AYNI_VALUE_NODE_COUNT_MAX> class ValueBuilder {
     // Borrow UTF-8 business text until Core copies it; no implicit NUL terminator.
     ayni_status_t text(uint32_t field, ayni_string_v1 value) {
         return string(AYNI_VALUE_TEXT, field, value);
+    }
+    // A body already durable in the host body store, for an EXTERNAL TEXT field. Since 0.54.
+    ayni_status_t body(uint32_t field, ayni_body_ref_v1 value) {
+        if (auto *node = scalar(AYNI_VALUE_BODY, field)) {
+            node->value.body = value;
+        }
+        return status_;
     }
     // Distinguish a catalog identifier from arbitrary business text.
     ayni_status_t identifier(uint32_t field, ayni_string_v1 value) {
@@ -177,5 +192,29 @@ template <uint32_t Capacity = AYNI_VALUE_NODE_COUNT_MAX> class ValueBuilder {
     uint32_t depth_ = 0;             // Open containers, zero only before/after a complete tree.
     ayni_status_t status_ = AYNI_OK; // Sticky admission error, reset only by clear.
 };
+// Encoded bytes of value plus text more bytes of text, or 0 when it cannot be encoded. A text
+// node's encoding grows by exactly its byte count, so a Provider derives a contract maximum from
+// its shape with empty text instead of writing framing bytes by hand. Since 0.54.
+inline uint32_t encoded_bytes(const ayni_value_v1 &value, uint32_t text = 0) {
+    uint32_t size = 0;
+    return ayni_value_write(&value, nullptr, 0, &size) == AYNI_BUFFER_TOO_SMALL &&
+                   text <= UINT32_MAX - size
+               ? size + text
+               : 0U;
+}
+// The largest encoding of one TEXT value of at most text bytes: the root when field is zero,
+// otherwise the only field of a root object. Since 0.54.
+inline uint32_t text_value_bytes(uint32_t text, uint32_t field = 0) {
+    ValueBuilder<2> shape;
+    if (field != 0U) {
+        shape.object();
+    }
+    shape.text(field, {});
+    if (field != 0U) {
+        shape.end();
+    }
+    ayni_value_v1 value{};
+    return shape.finish(value) == AYNI_OK ? encoded_bytes(value, text) : 0U;
+}
 } // namespace ayni
 #endif

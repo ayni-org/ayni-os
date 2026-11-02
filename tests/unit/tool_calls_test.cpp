@@ -151,9 +151,6 @@ TEST_F(ToolCallsTest, provider_shape_errors_are_classified_and_measure_nothing) 
     expect(AYNI_INVALID_ARGUMENT);
     empty.value.text = {nullptr, 1};
     expect(AYNI_INVALID_ARGUMENT);
-    std::string big(AYNI_CALL_TEXT_BYTES_MAX + 1U, 'a');
-    empty.value.text = {big.data(), static_cast<uint32_t>(big.size())};
-    expect(AYNI_CAPACITY_EXCEEDED);
 }
 
 // Format 2 requires exact framing and a supported nested body. Old-format
@@ -205,7 +202,7 @@ TEST(ToolValueCalls, portable_list_preserves_protocol_identity_raw_errors_and_nu
     calls[1].input_kind = AYNI_TOOL_INPUT_ARGUMENTS;
     calls[1].input.arguments = {arguments.data(), static_cast<uint32_t>(arguments.size())};
     uint32_t size = 0;
-    ASSERT_EQ(ayni_tool_calls_measure(calls.data(), 2, &size), AYNI_OK);
+    ASSERT_EQ(ayni_tool_calls_measure(calls.data(), 2, {}, &size), AYNI_OK);
     std::vector<uint8_t> bytes(size);
     write_tool_calls(calls.data(), 2, bytes.data(), size);
     ToolCallList decoded;
@@ -222,8 +219,8 @@ TEST(ToolValueCalls, portable_list_preserves_protocol_identity_raw_errors_and_nu
     EXPECT_EQ(string_of(named.nodes[1].value.text), "9007199254740993");
     calls[1].protocol_id = calls[0].protocol_id;
     size = 99;
-    EXPECT_EQ(ayni_tool_calls_measure(calls.data(), 2, &size), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_tool_calls_measure(calls.data(), 2, {}, &size), AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(size, 99U);
     calls[1].protocol_id = {};
-    EXPECT_EQ(ayni_tool_calls_measure(calls.data(), 2, &size), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(ayni_tool_calls_measure(calls.data(), 2, {}, &size), AYNI_INVALID_ARGUMENT);
 }

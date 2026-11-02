@@ -1,8 +1,8 @@
 # 持久记录格式
 
-- **关联**：计划 §2.8、§4.2「持久化」、§4.3、§4.4「升级」；ADR-0002、ADR-0016、ADR-0026、ADR-0027、ADR-0030、ADR-0031；`MA-010`、`MA-006`；E2 F0–F8、F11、F12，E4 步骤 6
+- **关联**：计划 §2.8、§4.2「持久化」、§4.3、§4.4「升级」；ADR-0002、ADR-0016、ADR-0026、ADR-0027、ADR-0030、ADR-0031、ADR-0096；`MA-010`、`MA-006`；E2 F0–F8、F11、F12，E4 步骤 6
 - **属主**：`durability`（批次编码、持久前缀、快照、重放、栅栏记录、迁移机制）；领域记录的内容由各属主模块定义，`durability` 不理解其语义
-- **状态**：M1 当前批次与快照只读写 `storage_schema=8`（ADR-0087）；其他 schema（包括 0/1/2/3/4/5/6/7） 在新写入前只读受限并保留，不迁移、不自动清空或回退（ADR-0038 决策 6）。布局以本文件和编解码测试为准；Native/模拟证据不代表 ESP32 或真实 OTA 验证；C 的 Grant/完整命令扩展及 D 的撤销扩展各自验证与交付状态见 ADR-0030/0031；D 已通过 Native 场景、覆盖率与内存量测，#28 已合并
+- **状态**：M1 当前批次与快照只读写 `storage_schema=9`（ADR-0096）；其他 schema（包括 0/1/2/3/4/5/6/7/8） 在新写入前只读受限并保留，不迁移、不自动清空或回退（ADR-0038 决策 6）。布局以本文件和编解码测试为准；Native/模拟证据不代表 ESP32 或真实 OTA 验证；C 的 Grant/完整命令扩展及 D 的撤销扩展各自验证与交付状态见 ADR-0030/0031；D 已通过 Native 场景、覆盖率与内存量测，#28 已合并
 
 ## 编码约定
 
@@ -44,7 +44,7 @@ marker 或身份语义，不能替代 Core 的完整批次校验。失败不修�
 | 4 | `length` | 记录体字节数 |
 | `length` | 记录体 | 由属主模块定义的字段编码 |
 
-schema 8 的 `REQUIRED` 是已知记录合法性的必需标记，不再用它决定是否跳过未知记录；未知记录始终拒绝。
+schema 9 的 `REQUIRED` 是已知记录合法性的必需标记，不再用它决定是否跳过未知记录；未知记录始终拒绝。
 
 ## 记录类型
 
@@ -94,7 +94,7 @@ phase 1..7 依次为 prepared、dispatching、in_progress、completed、failed�
 
 ## 工作记录
 
-schema 8 每个类型/上下文只有一个当前正文。下表为日志 v1；快照中 INSTANCE/OWNER_BINDING/GOAL/TASK/GRANT/COMMAND_MAPPING 使用 v2（追加原历史）。其余记录在允许的两种上下文均为 v1。状态记录写完整事实，不重执行业务规则。ID 字节串至多 32 B；固定长度包括所有长度/count 字段，不含变长数据。
+schema 9 每个类型/上下文只有一个当前正文。下表为日志 v1；快照中 INSTANCE/OWNER_BINDING/GOAL/TASK/GRANT/COMMAND_MAPPING 使用 v2（追加原历史）。其余记录在允许的两种上下文均为 v1。状态记录写完整事实，不重执行业务规则。ID 字节串至多 32 B；固定长度包括所有长度/count 字段，不含变长数据。
 
 | 类型 | 记录 | 当前正文 | 固定长度 |
 |---:|---|---|---:|
@@ -135,7 +135,7 @@ Canonical Grant create 保留原 raw Scope 表达、expected revision、Capabili
 ## 控制记录与读取
 
 - `WRITER_FENCE` 单独成批，新 epoch 必须严格大于前缀现有有效 epoch。其后的完整旧 epoch 帧被忽略，不推进有效 commit、transition 或 boot 基线；其他有效批次仍须连续。
-- `SNAPSHOT_COMMIT` 正文为 `slot` u32、`payload_crc` u32、`generation` u64、`covers_commit_seq` u64、`max_transition_id` u64，共 32 字节。它自身是覆盖边界之后的下一批次；维护也消耗统一 transition 身份。当前外壳只接受 schema 8；无旧格式 reader、迁移或自动清空。
+- `SNAPSHOT_COMMIT` 正文为 `slot` u32、`payload_crc` u32、`generation` u64、`covers_commit_seq` u64、`max_transition_id` u64，共 32 字节。它自身是覆盖边界之后的下一批次；维护也消耗统一 transition 身份。当前外壳只接受 schema 9；无旧格式 reader、迁移或自动清空。
 - 恢复使用 Host 物理 cursor，不能用最大已见 commit_seq 翻页；旧 epoch 的高序号帧可能位于合法新批次之前。cursor 在同一日志实例中严格递增，轮转后从 0 重读。
 - 首个完整批次放不下时，Host 以读专用 `READ_BUFFER_TOO_SMALL` 报精确所需长度，映射 `STATE_EXCEEDS_CAPACITY`。真正 I/O 故障、非法大小或 `OK` 越界仍是 `STORAGE_READ_FAILED`。
 
@@ -143,7 +143,7 @@ Canonical Grant create 保留原 raw Scope 表达、expected revision、Capabili
 
 快照采用两个槽。维护先冻结新 transition 并排空 journal，得到边界 `S`，再写非当前槽的内容，回读校验版本、长度与 CRC 后独立写槽尾标记。槽尾标记只证明槽内容完整；日志中的 `SNAPSHOT_COMMIT` 是激活新状态的唯一切换提交，持久化后才轮转旧日志。尚未激活的新槽不参与恢复。
 
-### 槽头与槽尾（schema 8）
+### 槽头与槽尾（schema 9）
 
 头部固定为 72 字节：
 
@@ -291,13 +291,14 @@ journal 使用 REQUIRED `GOAL_STATE` 4/v1（change=5）、`GOAL_AUTHORITY` 17/v1
 
 ## 统一调用记录（ABI 0.31，ADR-0045）
 
-schema 8 的 REQUIRED `CALL_STATE` type21/v1 为完整行。固定部分 424 B，加六个 CatalogId、每个资源的 8 B 固定部分及资源 ID、原域/输入/结果/原业务证明和可选嵌入 ActionState 正文。全部整数小端，字段按下列顺序，变长串均带 u32 字节数：
+schema 9 的 REQUIRED `CALL_STATE` type21/v1 为完整行。固定部分 448 B，加六个 CatalogId、每个资源的 8 B 固定部分及资源 ID、原域/输入/结果/原业务证明和可选嵌入 ActionState 正文。全部整数小端，字段按下列顺序，变长串均带 u32 字节数：
 
 1. call_id、operation_id、task_id、owner_instance_id（各 u64）；Binding/Capability/Provider version（各 u32）；mode u32（0=foreground、1=managed）；step_key、Binding ID、Capability ID、Provider ID、endpoint、destination（六个长度串）。
 2. 原 CallContract：form/category/effects/idempotency/query/cancel/dedupe_window_ms/timeout_ms/input_format/result_format/input_text_limit/result_text_limit/resource_count（13 个 u32）；每个资源按规范 ID 顺序写 ID 长度串及 units u32。
 3. attachment u32（1=foreground、2=background）；created 和 latest stamp（各 boot/transition/commit_seq 三个 u64）；原执行 attempt 两个 u64；progress_sequence u64；cancel_cause、cancel_result、outcome、status、reason（各 u32，status 为有符号值的原位编码）。
 4. 独立查询固定 60 B：generation/phase u32、requested stamp 三个 u64、查询 attempt 两个 u64、status/reason/conclusion u32。未请求查询时全部为零。phase 1/2/3 为 requested/dispatching/finished；generation 从 1 开始，管理 CAS 为 generation+1，无查询时 revision=1。原执行 attempt 不因查询改变。
 5. 模型统计固定 32 B：kind/reserved u32、input/output/total u64；NONE/INVALID 的计数全零，REPORTED 要求无溢出的 input+output=total。业务调用必须为 NONE；正文失效或擦除仍保留已知统计。
+5a. 结果正文引用固定 24 B（schema 9，ADR-0096）：id/digest u64、size u32、工具调用数 u32。id 为 0 时其余全零，结果在第 6 项内联；非零时只允许 COMPLETED 的 MODEL 调用，第 6 项结果为空，结果种类为文本或工具调用列表（调用数非零），正文本身在 Host 正文存储中，Core 不读不写。
 6. 原 authority domain、规范 CallInput、结果（由 result kind 决定）、ActionState（四个长度串）；ActionState 在资源准备前为空，准备后使用既有 20/v1 codec，不另写 type20 记录。
 
 完整 TASK_STATE 保存选定 call id/end，end 0/1/2=none/cancel/expire；无调用时同零，RUNNING/CANCELLING 要求选定调用，后者必须 cancel/expire。前台终态 Call/Task 更新同批；受管接受与 Task 步骤/检查点同批，后续后台完成不结束另一前台。取消后 retained UNKNOWN 可以没有 Task 选定引用。
@@ -306,7 +307,7 @@ schema 8 的 REQUIRED `CALL_STATE` type21/v1 为完整行。固定部分 424 B�
 
 快照按稳定 call_id 保存全部 Call，正文与 journal 共用。每 transition 至多改一条 Call；UNKNOWN 与未释放借用继续阻止不安全回收。此格式无旧布局读取或迁移器。
 
-### 按需工具来源（自 schema 6，当前 schema 8 / ADR-0085）
+### 按需工具来源（自 schema 6，当前 schema 9 / ADR-0085）
 
 GOAL 尾部工具策略 mode 为 0=REQUIRED、1=ON_DEMAND；count 0..256，各项依次为 Binding version u32、role u32（0=capability、1=shell，至多一项）、Binding ID 长度串，ID 不重复。预算和恢复容量上限同时受部署 Binding capacity 约束；策略按原顺序持久化，不回查新 GoalType 填充。
 

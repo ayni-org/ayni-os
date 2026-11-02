@@ -41,7 +41,7 @@ ayni_status_t Session::configure(Config config) {
         return AYNI_INVALID_STATE;
     }
     if (!config.kernel || !config.session || !config.owner_instance || !config.goal_type.data ||
-        !config.goal_type.size || !config.workspace || !config.files.submit ||
+        !config.goal_type.size || !config.workspace || !config.files.submit || !config.bodies ||
         !config.commands.submit) {
         return AYNI_INVALID_ARGUMENT;
     }
@@ -153,6 +153,12 @@ ayni_status_t Session::saved(const ayni_context_info_v1 &anchor) {
         return AYNI_NOT_READY;
     }
     current_ = candidate_;
+    if (save_ == Save::publication || save_ == Save::erasure) {
+        // No turn is outstanding: bodies this record does not name are superseded or erased.
+        std::vector<strategies::BodyRef> keep;
+        Conversation::references(current_, keep);
+        config_.bodies->collect(current_.id, keep);
+    }
     phase_ = save_ == Save::draft        ? Phase::start_turn
              : save_ == Save::initialize ? Phase::ready
                                          : Phase::acknowledge;
@@ -164,8 +170,21 @@ ayni_status_t Session::begin(ayni_string_v1 user, uint64_t memory_id) {
     if (available != AYNI_OK) {
         return available;
     }
-    const auto status =
-        Conversation::begin(config_.workspace, current_, user, parameters_, memory_id);
+    input_.assign(user.data ? user.data : "", user.size);
+    memory_id_ = memory_id;
+    const auto status = input();
+    if (status != AYNI_OK && status != AYNI_NOT_READY) {
+        input_.clear();
+        return status;
+    }
+    phase_ = status == AYNI_OK ? Phase::save : Phase::input;
+    return AYNI_OK;
+}
+// Stores the accepted input as a body; NOT_READY until the body store made it durable.
+ayni_status_t Session::input() {
+    const auto status = Conversation::begin(config_.workspace, *config_.bodies->store(), current_,
+                                            {input_.data(), static_cast<uint32_t>(input_.size())},
+                                            parameters_, memory_id_);
     if (status != AYNI_OK) {
         return status;
     }
@@ -175,8 +194,8 @@ ayni_status_t Session::begin(ayni_string_v1 user, uint64_t memory_id) {
     if (copied != AYNI_OK) {
         return copied;
     }
+    input_.clear();
     save_ = Save::draft;
-    phase_ = Phase::save;
     return AYNI_OK;
 }
 // Core owns Goal/Task lifecycle and the ToolLoop. This application only submits
@@ -274,14 +293,20 @@ ayni_status_t Session::forget(ayni_context_action_t action, uint64_t turn_id) {
     return accepted.status;
 }
 ayni_status_t Session::erase(const ayni_context_info_v1 &anchor) {
-    const auto status = anchor.pending_action == AYNI_CONTEXT_ERASE_ALL
-                            ? Conversation::erase(config_.workspace, current_, candidate_)
-                        : anchor.pending_action == AYNI_CONTEXT_ERASE_ROUND
-                            ? Conversation::erase_round(config_.workspace, current_,
-                                                        anchor.pending_turn_id, candidate_)
-                        : anchor.pending_action == AYNI_CONTEXT_ERASE_DERIVED
-                            ? Conversation::erase_derived(config_.workspace, current_, candidate_)
-                            : AYNI_NOT_READY;
+    if (anchor.pending_action < AYNI_CONTEXT_ERASE_ALL) {
+        return AYNI_NOT_READY;
+    }
+    const auto &bodies = *config_.bodies->store();
+    const auto status =
+        anchor.pending_action == AYNI_CONTEXT_ERASE_ALL
+            ? Conversation::erase(config_.workspace, current_, candidate_)
+        : anchor.pending_action == AYNI_CONTEXT_ERASE_ROUND
+            ? Conversation::erase_round(config_.workspace, bodies, current_, anchor.pending_turn_id,
+                                        candidate_)
+            : Conversation::erase_derived(config_.workspace, bodies, current_, candidate_);
+    if (status == AYNI_NOT_READY) {
+        return AYNI_OK; // The kept inputs' body is still being stored; retried next poll.
+    }
     if (status != AYNI_OK) {
         return status;
     }
@@ -313,6 +338,14 @@ ayni_status_t Session::poll() {
     case Phase::load:
     case Phase::loading:
         status = load(anchor);
+        break;
+    case Phase::input:
+        status = input();
+        if (status == AYNI_OK) {
+            phase_ = Phase::save;
+        } else if (status == AYNI_NOT_READY) {
+            status = AYNI_OK;
+        }
         break;
     case Phase::save:
         status = save();

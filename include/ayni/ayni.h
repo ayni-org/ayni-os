@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 53u
+#define AYNI_ABI_MINOR 54u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -160,10 +160,11 @@ typedef struct ayni_config_v1 {
      * profile enables them; no implicit hardware/resource discovery. */
     uint32_t resource_capacity;
     uint32_t resource_request_capacity;
-    /* Since 0.30. Per-Task model call hard ceiling, 1..64; 0 selects 64.
-     * Initial soft limit is min(8, ceiling). Fixed for this boot;
-     * independent of concurrent Provider slots and committed step capacity. */
-    uint32_t task_model_call_hard_limit;
+    /* Since 0.54 (ADR-0095). Model calls a new Task may make before it pauses,
+     * 1..MAX_TURNS_MAX; 0 selects MAX_TURNS_DEFAULT. The owner may raise a paused
+     * Task's limit up to MAX_TURNS_MAX. Independent of concurrent Provider slots
+     * and committed step capacity. Replaces task_model_call_hard_limit (0.30). */
+    uint32_t max_turns;
     /* Since 0.31. Zero disables the respective trusted directory.
      * Counts include exact versions; none grows during execution. */
     uint32_t call_capability_capacity;
@@ -219,10 +220,9 @@ typedef struct ayni_config_v1 {
 #define AYNI_CALL_RESULT_BYTES_DEFAULT 4096u
 #define AYNI_CALL_RESULT_BYTES_MAX 65536u
 
-/* Since 0.30. Model request counts, not token or monetary allowances. */
-#define AYNI_TASK_MODEL_CALL_LIMIT_DEFAULT 8u
-#define AYNI_TASK_MODEL_CALL_HARD_LIMIT_DEFAULT 64u
-#define AYNI_TASK_MODEL_CALL_HARD_LIMIT_MAX 64u
+/* Since 0.54. Model request counts per Task, not token or monetary allowances. */
+#define AYNI_MAX_TURNS_DEFAULT 8u
+#define AYNI_MAX_TURNS_MAX 64u
 
 /* Since 0.29. Counts of immutable resources and pending/held request groups. */
 #define AYNI_RESOURCE_CAPACITY_DEFAULT 0u
@@ -387,6 +387,8 @@ typedef struct ayni_storage_batch_v1 {
  * Further services are appended as they are implemented; their planned shape
  * is in include/ayni/draft/host_v1.h.
  */
+struct ayni_body_store_v1; /* include/ayni/bodies.h */
+
 typedef struct ayni_host_v1 {
     uint32_t struct_size;
     void *ctx;
@@ -486,6 +488,11 @@ typedef struct ayni_host_v1 {
      * Host may wake the owner after a trust/clock jump; Kernel requests a step
      * at least once per second while a calendar Goal exists. Since 0.41. */
     void (*utc_now)(void *ctx, ayni_utc_sample_v1 *out_sample);
+    /* Since 0.54 (ADR-0096). Optional body store that call inputs and results
+     * name by reference. Core never reads or writes a body: it only releases a
+     * reference once the commit that dropped Core's last record of it is durable.
+     * Null leaves such bodies to the composition root. */
+    const struct ayni_body_store_v1 *bodies;
 } ayni_host_v1;
 
 /*
@@ -1424,7 +1431,7 @@ typedef struct ayni_task_info_v1 {
     uint32_t model_calls_used;
     /* Since 0.30. Durable positive soft ceiling; owner can only increase it. */
     uint32_t model_call_limit;
-    /* Since 0.30. Positive startup ceiling; cannot be changed by an intent. */
+    /* Since 0.30. Ceiling a raise may reach; MAX_TURNS_MAX since 0.54. */
     uint32_t model_call_hard_limit;
     /* Since 0.30. 1 if a new model request hit the ceiling, else 0. Raising
      * clears only this hold; other holds and progress remain unchanged. */
@@ -1525,7 +1532,7 @@ ayni_status_t ayni_get_pause_group(const ayni_kernel_t *kernel, uint32_t group,
 /* Since 0.30. Body of TASK_RAISE_MODEL_LIMIT; copied during submission. */
 typedef struct ayni_task_raise_model_limit_v1 {
     uint32_t struct_size;      /* sizeof this struct */
-    uint32_t model_call_limit; /* strictly above current soft limit, <= startup hard limit */
+    uint32_t model_call_limit; /* strictly above current limit, <= AYNI_MAX_TURNS_MAX */
     uint64_t task_id;          /* nonzero retained live Task */
 } ayni_task_raise_model_limit_v1;
 
@@ -1721,7 +1728,6 @@ struct ayni_task_call_result_v1;
 struct ayni_subscription_info_v1;
 struct ayni_observation_info_v1;
 /* Since 0.37. Defined in calls.h. */
-struct ayni_task_tool_call_v1;
 /* Since 0.49. Defined in directory.h; Task-scoped decision leases. */
 struct ayni_capability_cursor_v1;
 struct ayni_capability_info_v1;
@@ -1763,11 +1769,10 @@ typedef struct ayni_task_snapshot_v1 {
     const void *call_context;
     ayni_status_t (*call_result)(const void *context, ayni_string_v1 step_key,
                                  struct ayni_task_call_result_v1 *out);
-    /* Since 0.37. Read tool call index (below the result's tool_call_count)
-     * of this Task's completed model call by step key, with call_context.
-     * The typed view borrows Core memory and out until decide returns. */
-    ayni_status_t (*call_tool)(const void *context, ayni_string_v1 step_key, uint32_t index,
-                               struct ayni_task_tool_call_v1 *out);
+    /* Since 0.37 the call_tool callback; null since 0.54 (ADR-0096), keeping the layout
+     * (C-VER-002). A result's tool calls are read with ayni_tool_calls_read and
+     * ayni_tool_call_read from its text, or from its body when it is stored. */
+    const void *reserved_call_tool;
     /* Since 0.40. Restricted memory view; null when memory is disabled. */
     const struct ayni_memory_view_v1 *memory;
     /* Planned civil identity/UTC; -1 for non-calendar Tasks. Since 0.41. */

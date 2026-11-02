@@ -235,9 +235,42 @@ TEST_F(CallTableTest, result_and_step_facts_wait_for_durability_before_retiremen
     EXPECT_TRUE(calls.can_retire_task(identity.task_id, 5));
     EXPECT_EQ(calls.finish(::ayni::test::codec_workspace(), index, completed, stamp(6)),
               AYNI_INVALID_STATE);
-    calls.retire_task(identity.task_id);
+    calls.retire_task(identity.task_id, 7);
     EXPECT_EQ(calls.size(), 0U);
     EXPECT_TRUE(calls.has_room());
+}
+
+// ADR-0096: Core keeps only a result body's reference. Retiring the Task queues it, and it is
+// handed back only once the commit that dropped the record is durable.
+TEST_F(CallTableTest, retired_result_body_is_released_only_after_its_dropping_commit_is_durable) {
+    contract.category = ayni::catalog::CallClass::model;
+    dispatch();
+    const ayni_body_ref_v1 body{41, 0x1234, 300000, 0};
+    CallResult completed{
+        AYNI_CALL_COMPLETED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::complete, {}};
+    completed.body = body;
+    ASSERT_EQ(calls.finish(::ayni::test::codec_workspace(), index, completed, stamp(5)), AYNI_OK);
+    EXPECT_EQ(calls.state(index).result_body.id, body.id);
+    EXPECT_EQ(calls.result(index).size, 0U);
+    const auto saved = calls.record(index);
+    std::vector<uint8_t> bytes(call_record_size(saved));
+    write_call_record(saved, bytes.data());
+    CallRecord decoded{};
+    ASSERT_TRUE(read_call_record(::ayni::test::codec_workspace(), bytes.data(),
+                                 static_cast<uint32_t>(bytes.size()), decoded));
+    EXPECT_EQ(decoded.state.result_body.digest, body.digest);
+    EXPECT_EQ(decoded.state.result_body.size, body.size);
+    ASSERT_TRUE(calls.can_retire_task(identity.task_id, 5));
+    calls.retire_task(identity.task_id, 7);
+    EXPECT_EQ(calls.size(), 0U);
+    ayni_body_ref_v1 released{};
+    EXPECT_FALSE(calls.release_due(6));
+    EXPECT_FALSE(calls.next_release(6, released));
+    ASSERT_TRUE(calls.release_due(7));
+    ASSERT_TRUE(calls.next_release(7, released));
+    EXPECT_EQ(released.id, body.id);
+    EXPECT_EQ(released.digest, body.digest);
+    EXPECT_FALSE(calls.next_release(UINT64_MAX, released));
 }
 
 TEST_F(CallTableTest, cancellation_control_does_not_replace_terminal_effect_evidence) {

@@ -5,7 +5,9 @@
 #include <ayni/ayni.hpp>
 #include <ayni/context.h>
 #include <ayni/hosts/storage/file_value.h>
+#include <ayni/runtime/conversation/file_bodies.h>
 #include <ayni/strategies/builtin.h>
+#include <string>
 namespace ayni::runtime::conversation {
 // Composition-owned command identities/session. submit copies body synchronously;
 // no callback may reenter Session. The caller observes its own command receipts.
@@ -21,6 +23,7 @@ struct Config {
     const ayni_workspace_v1 *workspace =
         nullptr;                         // Exclusive during each owner call, may be shared.
     hosts::storage::FileValuePort files; // Worker callback context remains alive through Host join.
+    FileBodies *bodies = nullptr;        // The ToolLoop's body store, borrowed through Host join.
     Commands commands;
 };
 // Caller places this bounded object in suitable RAM (it contains large records).
@@ -38,7 +41,8 @@ class Session {
     // through the public API, resolve with owner authority, then continue polling.
     // Bridge file/version errors are sticky. BUSY is ordinary queue backpressure.
     ayni_status_t poll();
-    // OK copies input and starts durable draft saving. One turn at a time per Session.
+    // OK copies input and starts storing it as a body, then the durable draft save. One turn at
+    // a time per Session.
     // Completion is ready() with a new last_round; the final answer crosses Core ACK durability.
     ayni_status_t begin(ayni_string_v1 user, uint64_t memory_id = 0);
     ayni_status_t forget(ayni_context_action_t action, uint64_t turn = 0);
@@ -48,7 +52,9 @@ class Session {
     // rechecks privacy; retaining a pointer is not native-process isolation.
     const strategies::ConversationRecord *record() const { return ready() ? &current_ : nullptr; }
     uint64_t latest_goal() const { return goal_; } // Zero until a turn Goal was accepted.
-    bool file_pending() const { return phase_ == Phase::loading || phase_ == Phase::saving; }
+    bool file_pending() const {
+        return phase_ == Phase::input || phase_ == Phase::loading || phase_ == Phase::saving;
+    }
 
   private:
     enum class Phase {
@@ -56,6 +62,7 @@ class Session {
         load,
         loading,
         ready,
+        input,
         save,
         saving,
         start_turn,
@@ -79,6 +86,7 @@ class Session {
     ayni_status_t turn(const ayni_context_info_v1 &);
     ayni_status_t publish(const ayni_context_info_v1 &);
     ayni_status_t erase(const ayni_context_info_v1 &);
+    ayni_status_t input();
     Config config_{};
     Phase phase_ = Phase::empty;      // Sole lifecycle/worker-buffer state.
     Save save_ = Save::initialize;    // Meaningful only in save/saving.
@@ -88,7 +96,9 @@ class Session {
     uint64_t goal_ = 0;               // Current/last turn Goal; retained until next accepted turn.
     strategies::ConversationRecord current_{}, candidate_{}; // Adopt only proven versions.
     strategies::Encoded file_{}, parameters_{}; // Worker-exclusive file lane; owner parameter lane.
-    hosts::storage::FileValueResult answer_{};  // Published before completed_'s release store.
+    std::string input_;                         // Accepted user text until its body is durable.
+    uint64_t memory_id_ = 0;
+    hosts::storage::FileValueResult answer_{}; // Published before completed_'s release store.
     std::atomic<bool> completed_{false}; // Worker->owner one-shot publication, not domain state.
 };
 } // namespace ayni::runtime::conversation

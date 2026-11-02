@@ -17,10 +17,12 @@ bool SharedServices::register_profile(ayni_kernel_t *kernel) {
         const auto clock = world_.node.clock();
         if (!e.status("configure model A",
                       model_a_.configure(providers::mock::Variant::a, model_delay_us, clock,
-                                         model_timeout_ms)) ||
+                                         model_timeout_ms, providers::mock::Service::text,
+                                         bodies_.store())) ||
             !e.status("configure model B",
                       model_b_.configure(providers::mock::Variant::b, model_delay_us, clock,
-                                         model_timeout_ms))) {
+                                         model_timeout_ms, providers::mock::Service::text,
+                                         bodies_.store()))) {
             return false;
         }
         auto memory = loop_workspace_.create(strategies::ToolLoop::workspace_requirements);
@@ -39,6 +41,8 @@ bool SharedServices::register_profile(ayni_kernel_t *kernel) {
                       {sizeof(ayni_scope_v1), 0, nullptr},
                       text("Reply briefly.")};
         loop.summary = loop.model;
+        loop.limits = {32768, 1024, 8192, 4096};
+        loop.bodies = bodies_.store();
         if (!e.status("configure actual ToolLoop",
                       tool_loop_.configure(loop, loop_workspace_.get()))) {
             return false;
@@ -160,10 +164,10 @@ uint64_t SharedServices::create_chat(uint64_t agent) {
     conversation.id = 1;
     conversation.owner_instance_id = world_.instance(agent);
     strategies::Encoded parameters;
-    if (!world_.evidence.status(
-            "encode ToolLoop turn",
-            strategies::Conversation::begin(conversation_workspace_.get(), conversation,
-                                            text("synthetic question"), parameters))) {
+    if (!world_.evidence.status("encode ToolLoop turn",
+                                strategies::Conversation::begin(
+                                    conversation_workspace_.get(), *bodies_.store(), conversation,
+                                    text("synthetic question"), parameters))) {
         return 0;
     }
     auto body = initialized<ayni_goal_create_v1>();

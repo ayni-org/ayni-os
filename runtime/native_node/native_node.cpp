@@ -54,7 +54,8 @@ ayni_status_t NativeNode::assemble(const char *state_directory) {
     return assemble(state_directory, default_config());
 }
 
-ayni_status_t NativeNode::assemble(const char *state_directory, const ayni_config_v1 &config) {
+ayni_status_t NativeNode::assemble(const char *state_directory, const ayni_config_v1 &config,
+                                   const ayni_body_store_v1 *bodies) {
     if (kernel_ != nullptr) {
         return AYNI_INVALID_STATE;
     }
@@ -81,7 +82,8 @@ ayni_status_t NativeNode::assemble(const char *state_directory, const ayni_confi
         return AYNI_CAPACITY_EXCEEDED;
     }
 
-    const ayni_host_v1 table = host->table();
+    ayni_host_v1 table = host->table();
+    table.bodies = bodies;
     ayni_kernel_t *kernel = nullptr;
     status = ayni_create(&config, &table, memory, size, &kernel);
     if (status != AYNI_OK) {

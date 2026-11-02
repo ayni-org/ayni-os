@@ -135,7 +135,18 @@ CallRuntime::Advance CallRuntime::cancel_local(uint32_t index, uint32_t task_ind
 
 // Receipt consumption has priority over another dispatch. Every call step is
 // one item; no loop waits for a resource, a Provider or a durable acknowledgement.
+void CallRuntime::release_body(const ayni_body_ref_v1 &ref) const {
+    if (host_.bodies != nullptr && host_.bodies->release != nullptr) {
+        host_.bodies->release(host_.bodies->context, &ref);
+    }
+}
+
 CallRuntime::Advance CallRuntime::advance(uint64_t now_us, uint64_t durable_seq, Mode mode) {
+    // Bodies whose last durable record is gone; the queue is not a transition (ADR-0096).
+    ayni_body_ref_v1 released{};
+    while (host_.bodies != nullptr && work_.calls.next_release(durable_seq, released)) {
+        release_body(released);
+    }
     if (mode == Mode::fenced || mode == Mode::closing) {
         return drain_transport(mode);
     }

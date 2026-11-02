@@ -43,7 +43,7 @@ static inline ayni_config_v1 ayni_measure_maximum_config(void) {
     c.goal_requirement_capacity = AYNI_GOAL_REQUIREMENT_CAPACITY_MAX;
     c.resource_capacity = AYNI_RESOURCE_CAPACITY_MAX;
     c.resource_request_capacity = AYNI_RESOURCE_REQUEST_CAPACITY_MAX;
-    c.task_model_call_hard_limit = AYNI_TASK_MODEL_CALL_HARD_LIMIT_MAX;
+    c.max_turns = AYNI_MAX_TURNS_MAX;
     c.call_capability_capacity = AYNI_CALL_CAPABILITY_CAPACITY_MAX;
     c.provider_capacity = AYNI_PROVIDER_CAPACITY_MAX;
     c.binding_capacity = AYNI_BINDING_CAPACITY_MAX;

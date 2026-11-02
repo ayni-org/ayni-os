@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <ayni/hosts/storage/file_value.h>
+#include <cerrno>
 #include <cinttypes>
 #include <cstdio>
 #include <cstring>
@@ -216,6 +217,9 @@ bool valid_file_value_request(const FileValueRequest &request) {
     case FileValueRequest::Kind::write:
         return request.generation > request.previous_generation && !request.buffer &&
                (request.data || request.size == 0);
+    case FileValueRequest::Kind::remove:
+        return !request.previous_generation && !request.generation && !request.data &&
+               !request.buffer && !request.size;
     }
     return false;
 }
@@ -224,6 +228,16 @@ FileValueResult serve_file_value(Files &files, const FileValueRequest &request) 
         return {AYNI_INVALID_ARGUMENT, 0, 0, 0};
     }
     const auto name = name_of(request.key);
+    if (request.kind == FileValueRequest::Kind::remove) {
+        auto error = files.remove(name.data());
+        if (error == ENOENT) {
+            error = 0;
+        }
+        if (error == 0) {
+            error = files.sync_namespace();
+        }
+        return error == 0 ? FileValueResult{AYNI_OK, 0, 0, 0} : failed(error);
+    }
     return request.kind == FileValueRequest::Kind::read ? read(files, request, name.data())
                                                         : write(files, request, name.data());
 }

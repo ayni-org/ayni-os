@@ -8,18 +8,18 @@
 #include <cstdio>
 #include <cstring>
 #include <new>
+#include <string>
 #include <utility>
 
 namespace ayni::providers::mock {
 namespace {
 constexpr uint32_t request_capacity_max = 64;
 constexpr uint32_t text_bytes_max = 4096;
-constexpr uint32_t fixture_input_max = 32768;
+constexpr uint32_t fixture_input_max = AYNI_CALL_RESULT_BYTES_MAX;
 constexpr uint32_t fixture_reply_max = 512;
-constexpr uint32_t model_envelope_bytes = 36;
-constexpr uint32_t text_envelope_bytes = 24;
+// A test-supplied business schema publishes no maximum encoding of its own, so a fixture admits
+// its body plus this much framing for the other fields.
 constexpr uint32_t fixture_envelope_bytes = 128;
-// Bounded value framing, independent of body UTF-8 budget.
 constexpr uint32_t contract_version = 1;
 constexpr uint32_t request_timeout_ms = 30000;
 constexpr uint32_t variant_b_ticks = 2;
@@ -44,13 +44,13 @@ struct Provider::Impl {
         ayni_provider_completion_t *completion = nullptr;
         uint32_t ticks = 0;
         uint32_t text_size = 0;
+        std::string text; // Copied request body; a referenced one may exceed text_max_bytes.
     };
     explicit Impl(Config config_value) : config(config_value) {}
 
     Config config;
     char reply[fixture_reply_max]{}; // Copied fixture response; no borrowed config pointer.
     std::unique_ptr<Slot[]> slots;
-    std::unique_ptr<char[]> bodies;
     std::unique_ptr<ToolPlanner> planner; // Only configured for the tools service.
     ayni_call_resource_v1 resource{};
     ayni_call_capability_v1 capability{};
@@ -61,7 +61,18 @@ struct Provider::Impl {
     uint32_t active = 0;
     uint64_t executed = 0;
 
-    char *body(uint32_t index) { return bodies.get() + index * config.text_max_bytes; }
+    char *body(uint32_t index) { return slots[index].text.data(); }
+    // A referenced request body, read at submit and checked against its reference (ADR-0096).
+    bool read_body(std::string &out, const ayni_body_ref_v1 &ref) const {
+        if (!config.bodies) {
+            return false;
+        }
+        out.resize(ref.size);
+        const ayni_bytes_v1 bytes{reinterpret_cast<const uint8_t *>(out.data()), ref.size};
+        return config.bodies->read(config.bodies->context, &ref,
+                                   reinterpret_cast<uint8_t *>(out.data()), ref.size) == AYNI_OK &&
+               ayni_body_verify(&ref, bytes) == AYNI_OK;
+    }
 
     void build_descriptor() {
         const bool tools = config.service == Service::tools;
@@ -90,11 +101,8 @@ struct Provider::Impl {
                                request_timeout_ms,
                                AYNI_CALL_INPUT_VALUE,
                                tools ? AYNI_CALL_RESULT_TOOL_CALLS : AYNI_CALL_RESULT_TEXT,
-                               config.text_max_bytes +
-                                   (config.business
-                                        ? fixture_envelope_bytes
-                                        : (model ? model_envelope_bytes : text_envelope_bytes)),
-                               config.text_max_bytes,
+                               call_input_bytes(config),
+                               call_result_bytes(config),
                                1,
                                &resource,
                                nullptr};
@@ -104,9 +112,11 @@ struct Provider::Impl {
             input_schema[1].kind = AYNI_VALUE_TEXT;
             input_schema[1].field_id = AYNI_MODEL_BODY_FIELD_ID;
             input_schema[1].subtree_end = 2;
-            input_schema[1].flags = AYNI_SCHEMA_REQUIRED;
+            // With a body store, a longer body may come by reference (ADR-0096).
+            input_schema[1].flags =
+                AYNI_SCHEMA_REQUIRED | (config.bodies ? AYNI_SCHEMA_EXTERNAL : 0U);
             input_schema[1].name = text("body");
-            input_schema[1].max_count = config.text_max_bytes;
+            input_schema[1].max_count = config.bodies ? UINT32_MAX : config.text_max_bytes;
         } else {
             input_schema[0].max_count = config.text_max_bytes;
         }
@@ -150,25 +160,36 @@ struct Provider::Impl {
         }
         ayni::ValueReader input;
         ayni_string_v1 body{};
+        ayni_body_ref_v1 ref{};
         const bool model =
             self.config.service == Service::text || self.config.service == Service::tools;
-        if (input.read(request->value) != AYNI_OK ||
-            !ayni::ValueReader::text(
-                model
-                    ? input.field(AYNI_MODEL_BODY_FIELD_ID)
-                    : (self.config.body_field ? input.field(self.config.body_field) : input.root()),
-                body) ||
+        if (input.read(request->value) != AYNI_OK) {
+            return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+        }
+        const auto *field =
+            model ? input.field(AYNI_MODEL_BODY_FIELD_ID)
+                  : (self.config.body_field ? input.field(self.config.body_field) : input.root());
+        if ((!ayni::ValueReader::text(field, body) &&
+             !(model && ayni::ValueReader::body(field, ref))) ||
             body.size > self.config.text_max_bytes) {
             return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
         }
         for (uint32_t at = 0; at < self.config.request_capacity; ++at) {
             auto &slot = self.slots[at];
             if (slot.phase == Phase::empty) {
-                if (body.size != 0) {
-                    std::memcpy(self.body(at), body.data, body.size);
+                if (ref.id) {
+                    if (!self.read_body(slot.text, ref)) {
+                        std::fill(slot.text.begin(), slot.text.end(), '\0');
+                        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+                    }
+                    body = {slot.text.data(), ref.size};
+                } else {
+                    slot.text.assign(body.data, body.size);
                 }
-                slot = {Phase::waiting, request->attempt, completion,
-                        self.config.variant == Variant::a ? 1U : variant_b_ticks, body.size};
+                auto text = std::move(slot.text);
+                slot = {Phase::waiting, request->attempt,
+                        completion,     self.config.variant == Variant::a ? 1U : variant_b_ticks,
+                        body.size,      std::move(text)};
                 if (self.planner) {
                     self.planner->prepare(at, *request, {self.body(at), body.size});
                 }
@@ -218,6 +239,7 @@ struct Provider::Impl {
                                                        0,
                                                        nullptr,
                                                        {},
+                                                       {},
                                                        {}};
                 const auto status = ayni_provider_post(slot.completion, &progress);
                 if (status == AYNI_OK) {
@@ -249,6 +271,7 @@ struct Provider::Impl {
                                        0,
                                        nullptr,
                                        {},
+                                       {},
                                        {}};
         if (tool_answer && answer.status != AYNI_OK) {
             // The model ran; its output could not become a typed answer.
@@ -269,14 +292,28 @@ struct Provider::Impl {
             if (planner) {
                 planner->clear(index);
             }
-            std::memset(body(index), 0, slot.text_size); // No completed conversation cache in Mock.
+            // No completed conversation cache in Mock; the buffer is kept for the next request.
+            auto text = std::move(slot.text);
+            std::fill(text.begin(), text.end(), '\0');
+            text.clear();
             slot = {};
+            slot.text = std::move(text);
             --active;
         }
         return status;
     }
 };
 
+uint32_t call_input_bytes(const Config &config) {
+    if (config.business) {
+        return config.text_max_bytes + fixture_envelope_bytes;
+    }
+    const bool model = config.service == Service::text || config.service == Service::tools;
+    return text_value_bytes(config.text_max_bytes, model ? AYNI_MODEL_BODY_FIELD_ID : 0U);
+}
+uint32_t call_result_bytes(const Config &config) {
+    return config.text_max_bytes;
+}
 Provider::Provider() = default;
 Provider::~Provider() {
     if (impl_ && impl_->active != 0) {
@@ -348,7 +385,6 @@ ayni_status_t Provider::configure(Config config) {
         created->config.reply_text.data = created->reply;
     }
     created->slots.reset(new (std::nothrow) Impl::Slot[config.request_capacity]);
-    created->bodies.reset(new (std::nothrow) char[config.request_capacity * config.text_max_bytes]);
     if (config.service == Service::tools) {
         created->planner.reset(new (std::nothrow) ToolPlanner);
         if (!created->planner) {
@@ -360,8 +396,7 @@ ayni_status_t Provider::configure(Config config) {
             return status;
         }
     }
-    if (!created->slots || !created->bodies ||
-        (config.service == Service::tools && !created->planner)) {
+    if (!created->slots || (config.service == Service::tools && !created->planner)) {
         return AYNI_CAPACITY_EXCEEDED;
     }
     created->build_descriptor();
@@ -404,8 +439,9 @@ void Provider::abandon_kernel() {
         return;
     }
     for (uint32_t at = 0; at < impl_->config.request_capacity; ++at) {
+        auto &text = impl_->slots[at].text;
+        std::fill(text.begin(), text.end(), '\0');
         impl_->slots[at] = {};
-        std::memset(impl_->body(at), 0, impl_->config.text_max_bytes);
         if (impl_->planner) {
             impl_->planner->clear(at);
         }

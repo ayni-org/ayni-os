@@ -16,6 +16,9 @@
 
 namespace ayni::work {
 
+// Body references one row can hold: its input's BODY nodes and one result body (ADR-0096).
+constexpr uint32_t call_body_refs_max = AYNI_VALUE_BODY_COUNT_MAX + 1U;
+
 // One Call owns its Task attachment; subscriptions do not maintain a second copy.
 enum class CallAttachment : uint32_t { foreground = 1, background };
 
@@ -78,6 +81,9 @@ struct CallState {
     std::optional<SubscriptionFact> subscription; // Sole durable lease intent/generation facts.
     std::optional<CallQuery> query; // Absent before owner reconciliation; never an execution retry.
     ayni_model_usage_v1 model_usage{}; // Actual terminal MODEL statistics, NONE before completion.
+    // A completed MODEL result kept in the host body store; zero when inline or absent.
+    ayni_body_ref_v1 result_body{};
+    uint32_t result_body_calls = 0; // Tool calls in that body's list; zero for a text body.
     std::optional<ActionStamp> content_erased; // None retains bodies; otherwise irreversible
                                                // privacy stamp, independent of outcome.
 };
@@ -92,6 +98,9 @@ struct CallResult {
     // UTF-8 text, or a tool-call list only in a TOOL_CALLS contract's completion.
     CallResultKind kind = CallResultKind::text;
     ayni_model_usage_v1 model_usage{}; // Optional reported counts, not a generated text body.
+    // A COMPLETED MODEL body by reference instead of text, with its tool call count.
+    ayni_body_ref_v1 body{};
+    uint32_t body_calls = 0;
 };
 
 // Whether exact input evidence still permits a result to advance dependent work.
@@ -196,10 +205,16 @@ class CallTable {
     // Shared persisted query shape/history rules, including command generation changes.
     static bool valid_query(const CallRecord &record);
     static bool query_advances(const CallState &before, const CallState &after);
-    // Task retirement prerequisite: every retained call is known and durable.
+    // Task retirement prerequisite: every retained call is known and durable, and the
+    // release queue has room for every body reference those rows hold.
     bool can_retire_task(uint64_t task_id, uint64_t durable_seq) const;
     // Caller proved the Task terminal and can_retire_task true; wipes its bounded bodies.
-    void retire_task(uint64_t task_id);
+    // Body references are released once release_seq is durable; zero (replay) forgets them.
+    void retire_task(uint64_t task_id, uint64_t release_seq);
+    // A body reference whose dropping commit is now durable, removed from the queue; false
+    // when none is due. The caller hands it to the host body store's release.
+    bool next_release(uint64_t durable_seq, ayni_body_ref_v1 &out);
+    bool release_due(uint64_t durable_seq) const;
     // Clears replay-owned rows only after transport borrowers have been drained or isolated.
     void clear();
     // Export a row for record writing; views last until the next owner mutation.
@@ -214,6 +229,7 @@ class CallTable {
     bool find_step(uint64_t task_id, ayni_string_v1 key, uint32_t &index) const;
     // Erase this call's entire request/result regions without changing its real action outcome.
     // The privacy coordinator persists this separate stamp and owns restartable sweep progress.
+    // Its body references are released once the erasure commit is durable.
     ayni_status_t erase_content(uint32_t index, ActionStamp stamp);
     // Same result transition, after evidence validation: discard only private result bytes.
     void discard_result(uint32_t index);
@@ -235,8 +251,20 @@ class CallTable {
     ayni_bytes_v1 tool_calls(uint32_t index) const;
     ayni_bytes_v1
     value_result(uint32_t index) const; // Canonical structured result; empty for other kinds.
+    // Every body reference the row holds: its input's BODY nodes, then any result body.
+    uint32_t body_refs(uint32_t index, ayni_body_ref_v1 *out) const;
 
   private:
+    // References dropped by a commit, released once that commit is durable.
+    struct Release {
+        ayni_body_ref_v1 ref;
+        uint64_t after_seq;
+    };
+    struct Erased {
+        std::array<ayni_body_ref_v1, call_body_refs_max> refs{};
+        uint32_t count = 0;
+        uint64_t after_seq = 0;
+    };
     struct Entry {
         CallIdentity identity;          // Immutable acceptance identity, owns no views.
         catalog::CallContract contract; // Copied original semantics, not live registration state.
@@ -251,6 +279,7 @@ class CallTable {
     };
     struct Slot {
         std::optional<Entry> entry; // Empty means free; removing never moves another call.
+        Erased erased; // References of an erased row awaiting durability; follows the row out.
     };
     // Reserve a unique slot after normal admission or complete record validation; empty input
     // is possible only for a restored explicitly erased row.
@@ -284,9 +313,15 @@ class CallTable {
     void copy_bodies(uint32_t index, ayni_bytes_v1 domain, ayni_bytes_v1 input,
                      ayni_string_v1 result);
 
-    Slot *slots_;     // Caller arena, stable objects for this table lifetime.
-    uint8_t *bodies_; // Fixed domain/input/result regions, never heap allocation.
-    Limits limits_;   // Immutable byte/count capacities, no resizing.
+    uint32_t release_room() const { return release_capacity() - release_count_; }
+    uint32_t release_capacity() const { return limits_.capacity * call_body_refs_max; }
+
+    Slot *slots_;       // Caller arena, stable objects for this table lifetime.
+    Release *releases_; // FIFO of dropped references, call_body_refs_max per slot.
+    uint8_t *bodies_;   // Fixed domain/input/result regions, never heap allocation.
+    uint32_t release_head_ = 0;
+    uint32_t release_count_ = 0;
+    Limits limits_; // Immutable byte/count capacities, no resizing.
     const void *retention_context_ =
         nullptr; // Borrowed coordinator, absent in standalone table tests.
     bool (*runtime_retains_)(const void *, uint64_t) = nullptr; // Pure owner-thread query, no I/O.

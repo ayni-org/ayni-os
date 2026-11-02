@@ -162,7 +162,7 @@ TEST(CallContract, invalid_declarations_and_unknown_formats_do_not_silently_defa
     input.input_format = 0;
     EXPECT_EQ(normalize_call_contract(input, output), AYNI_UNSUPPORTED_VERSION);
     input = contract();
-    input.result_text_limit = call_text_limit_max + 1U;
+    input.result_text_limit = AYNI_CALL_RESULT_BYTES_MAX + 1U;
     EXPECT_EQ(normalize_call_contract(input, output), AYNI_INVALID_ARGUMENT);
     input = contract();
     input.category = static_cast<CallClass>(0);

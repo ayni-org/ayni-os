@@ -124,6 +124,8 @@ class ActionService {
     explicit ActionService(ayni_call_query_authority_t query = AYNI_CALL_QUERY_AUTHORITATIVE);
     ActionService(const char *capability, const ayni_call_resource_v1 *, uint32_t count,
                   uint32_t effects = 0);
+    // A notification carries text of at most this many bytes; other actions carry none.
+    static constexpr uint32_t notification_text_bytes = 512;
     ayni_provider_v1 describe();
     ayni_call_capability_v1 capability() const { return capability_; }
     uint64_t executions() const;

@@ -2,6 +2,7 @@
 #ifndef AYNI_RUNTIME_EXAMPLES_H
 #define AYNI_RUNTIME_EXAMPLES_H
 #include <ayni/ayni.hpp>
+#include <ayni/bodies.h>
 #include <ayni/calls.h>
 #include <memory>
 namespace ayni::runtime::examples {
@@ -43,7 +44,9 @@ class Fixture {
     ayni_status_t
     wait_task(uint64_t goal);        // Finite normal-path wait for one completed durable Task.
     uint32_t model_requests() const; // Actual alternate loopback HTTP requests, zero in mock mode.
-    uint32_t notifications() const;  // Completed fixture-channel writes.
+    // Where a model answer stored by reference is read (ADR-0096); borrowed through close.
+    const ayni_body_store_v1 *bodies() const;
+    uint32_t notifications() const; // Completed fixture-channel writes.
     ayni_status_t close(); // Bounded drain, joins producers, destroys Kernel, closes adapters.
   private:
     struct Impl;

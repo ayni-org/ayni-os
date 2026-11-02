@@ -6,12 +6,13 @@ namespace {
 constexpr uint64_t conversation_id = 1;
 constexpr uint32_t step_units = 64;
 constexpr uint64_t step_us = 10000;
-Notice published_notice(const SavedConversation &file) {
-    if (file.record.round_count == 0) {
+Notice published_notice(const ayni_body_store_v1 &bodies, const SavedConversation &file) {
+    std::vector<strategies::Round> rounds;
+    if (strategies::Conversation::rounds(bodies, file.record, rounds) != AYNI_OK ||
+        rounds.empty()) {
         return {};
     }
-    const auto &answer = file.record.rounds[file.record.round_count - 1].answer;
-    return {NoticeKind::answer, std::string(answer.bytes.data(), answer.size)};
+    return {NoticeKind::answer, std::move(rounds.back().answer)};
 }
 } // namespace
 ayni_status_t Assistant::Impl::context_info(ayni_context_info_v1 &context) const {
@@ -143,7 +144,7 @@ ayni_status_t Assistant::Impl::publish_context(const ayni_context_info_v1 &conte
     strategies::Encoded encoded;
     const auto copied =
         ayni_copy_task_checkpoint(node.kernel(), context.pending_task_id, encoded.bytes.data(),
-                                  strategies::state_bytes_max, &encoded.size);
+                                  strategies::encoded_bytes_max, &encoded.size);
     if (copied != AYNI_OK) {
         return copied;
     }
@@ -157,7 +158,7 @@ ayni_status_t Assistant::Impl::publish_context(const ayni_context_info_v1 &conte
     if (!matches(candidate, context)) {
         return AYNI_REVISION_CONFLICT;
     }
-    return persist(candidate, published_notice(candidate));
+    return persist(candidate, published_notice(*store.bodies(), candidate));
 }
 // Invalidation is already durable. Clearing generated answers is conservative; undiscarded user
 // inputs stay independent facts. The original Call ledger keeps actual physical outcomes.
@@ -172,7 +173,8 @@ ayni_status_t Assistant::Impl::erase_context(const ayni_context_info_v1 &context
     // a subsequent single-turn delete. begin reserves this one bounded retention slot.
     if (context.last_turn_id > base.last_round) {
         const auto retained = strategies::Conversation::retain_published_input(
-            conversation_workspace.get(), current.record, context.last_turn_id, base);
+            conversation_workspace.get(), *store.waiting_bodies(), current.record,
+            context.last_turn_id, base);
         if (retained != AYNI_OK) {
             return retained;
         }
@@ -181,10 +183,11 @@ ayni_status_t Assistant::Impl::erase_context(const ayni_context_info_v1 &context
         context.pending_action == AYNI_CONTEXT_ERASE_ALL
             ? strategies::Conversation::erase(conversation_workspace.get(), base, candidate.record)
         : context.pending_action == AYNI_CONTEXT_ERASE_ROUND
-            ? strategies::Conversation::erase_round(conversation_workspace.get(), base,
+            ? strategies::Conversation::erase_round(conversation_workspace.get(),
+                                                    *store.waiting_bodies(), base,
                                                     context.pending_turn_id, candidate.record)
-            : strategies::Conversation::erase_derived(conversation_workspace.get(), base,
-                                                      candidate.record);
+            : strategies::Conversation::erase_derived(
+                  conversation_workspace.get(), *store.waiting_bodies(), base, candidate.record);
     if (status != AYNI_OK) {
         return status;
     }
@@ -232,7 +235,7 @@ ayni_status_t Assistant::Impl::collect(std::vector<Notice> &notices) {
         if (!awaiting_notice) {
             awaiting_notice = AwaitingNotice{context.revision, context.generation,
                                              context.pending_action == AYNI_CONTEXT_PUBLISH
-                                                 ? published_notice(current)
+                                                 ? published_notice(*store.bodies(), current)
                                                  : Notice{NoticeKind::context_erased, {}}};
         }
         status = context_command(AYNI_INTENT_CONTEXT_ACK, context).status;

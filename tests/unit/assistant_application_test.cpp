@@ -3,6 +3,7 @@
 #include <ayni/applications/assistant/schedule_tool.h>
 #include <ayni/host_authority.h>
 #include <ayni/runtime/common/demo_profile.h>
+#include <ayni/runtime/common/memory_bodies.h>
 #include <ayni/runtime/sim_node.h>
 #include <condition_variable>
 #include <cstring>
@@ -36,7 +37,9 @@ class AssistantApplication : public ::testing::Test {
                 self.presented_output.emplace_back(s.data, s.size);
                 return AYNI_OK;
             }};
-        ASSERT_EQ(profile.assemble(node.kernel(), {}, {node.clock(), output, quiet, {}}), AYNI_OK);
+        ASSERT_EQ(profile.assemble(node.kernel(), {},
+                                   {node.clock(), output, quiet, {}, {}, bodies.store()}),
+                  AYNI_OK);
         ASSERT_EQ(ayni_start(node.kernel()), AYNI_OK);
         pump();
         const ayni_session_desc_v1 session_desc{sizeof(session_desc), AYNI_CHANNEL_MANAGEMENT,
@@ -130,6 +133,7 @@ class AssistantApplication : public ::testing::Test {
                                           nullptr};
         return submit(AYNI_INTENT_MEMORY_SAVE, &request).object.id;
     }
+    MemoryBodies bodies; // Outlives the profile that borrows it.
     DemoProfile profile;
     SimNode node;
     QuietHours quiet;
@@ -332,7 +336,7 @@ TEST_F(AssistantApplication,
         pump(20);
     }
     EXPECT_EQ(task(id).lifecycle, AYNI_TASK_PAUSED);
-    EXPECT_EQ(task(id).model_calls_used, AYNI_TASK_MODEL_CALL_LIMIT_DEFAULT);
+    EXPECT_EQ(task(id).model_calls_used, AYNI_MAX_TURNS_DEFAULT);
     EXPECT_EQ(task(id).model_call_limit_reached, 1U);
 }
 // ADR-0066: pause cancels the accepted analysis round; resume uses a new generation/key.

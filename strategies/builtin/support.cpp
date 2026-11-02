@@ -97,8 +97,7 @@ bool valid_call(const Call &call) {
            (call.kind == AYNI_POLICY_REQUEST_CALL || call.kind == AYNI_POLICY_REQUEST_MODEL) &&
            call.arguments.struct_size == sizeof(ayni_scope_v1) &&
            call.arguments.field_count <= AYNI_AUTHORITY_FIELD_COUNT_MAX &&
-           (call.arguments.field_count == 0 || call.arguments.fields) &&
-           call.text.size <= AYNI_CALL_TEXT_BYTES_MAX && valid_text(call.text);
+           (call.arguments.field_count == 0 || call.arguments.fields) && valid_text(call.text);
 }
 bool valid_identity(const Identity &identity) {
     if (!valid_id(identity.id) || identity.version == 0 ||
@@ -148,9 +147,20 @@ ayni_status_t report(const ayni_task_snapshot_v1 &snapshot, ayni_policy_output_v
     return AYNI_OK;
 }
 ayni_status_t request(const Call &call, ayni_string_v1 key, ayni_string_v1 text,
-                      ayni_policy_output_v1 &output) {
+                      ayni_policy_output_v1 &output, const ayni_body_store_v1 *bodies,
+                      uint64_t scope) {
     if (!output.request_call) {
         return AYNI_UNSUPPORTED;
+    }
+    BodyRef body{};
+    if (bodies && !call.input && call.kind == AYNI_POLICY_REQUEST_MODEL) {
+        const auto stored = put_body(*bodies, scope, text, body);
+        if (stored == AYNI_NOT_READY) {
+            output.disposition = AYNI_POLICY_OUTPUT_DEFER; // Sent once the body is durable.
+        }
+        if (stored != AYNI_OK) {
+            return stored;
+        }
     }
     ayni_call_request_v1 request{};
     request.struct_size = sizeof(request);
@@ -192,9 +202,13 @@ ayni_status_t request(const Call &call, ayni_string_v1 key, ayni_string_v1 text,
                     return AYNI_INVALID_ARGUMENT;
                 }
             }
-            builder.text(call.kind == AYNI_POLICY_REQUEST_MODEL ? AYNI_MODEL_BODY_FIELD_ID
-                                                                : UINT32_MAX,
-                         text);
+            if (body.id) {
+                builder.body(AYNI_MODEL_BODY_FIELD_ID, body);
+            } else {
+                builder.text(call.kind == AYNI_POLICY_REQUEST_MODEL ? AYNI_MODEL_BODY_FIELD_ID
+                                                                    : UINT32_MAX,
+                             text);
+            }
             builder.end();
         } else {
             builder.text(0, text);
@@ -214,6 +228,51 @@ ayni_status_t result(const ayni_task_snapshot_v1 &snapshot, ayni_string_v1 key,
     out = {};
     out.struct_size = sizeof(out);
     return snapshot.call_result(snapshot.call_context, key, &out);
+}
+ayni_status_t model_result(Workspace &workspace, const ayni_body_store_v1 &bodies,
+                           const ayni_task_snapshot_v1 &snapshot, ayni_string_v1 key,
+                           ModelResult &out) {
+    auto status = result(snapshot, key, out.call);
+    auto &call = out.call;
+    if (status != AYNI_OK || call.outcome != AYNI_CALL_COMPLETED) {
+        return status;
+    }
+    ayni_string_v1 bytes = call.text;
+    if (call.body.id) {
+        status = get_body(bodies, call.body, out.owned);
+        if (status != AYNI_OK) {
+            return status;
+        }
+        bytes = view(out.owned);
+        call.body = {};
+    }
+    if (!call.tool_call_count) {
+        call.text = bytes;
+        return AYNI_OK;
+    }
+    uint32_t count = 0;
+    ayni_string_v1 assistant{};
+    status = ::ayni::detail::with_workspace(
+        workspace, ayni_tool_calls_workspace_requirements, [&](const ayni_workspace_v1 *region) {
+            return ayni_tool_calls_read(region,
+                                        {reinterpret_cast<const uint8_t *>(bytes.data), bytes.size},
+                                        &count, &assistant);
+        });
+    if (status != AYNI_OK || count != call.tool_call_count) {
+        return status != AYNI_OK ? status : AYNI_INVALID_ARGUMENT;
+    }
+    out.list = bytes;
+    call.text = assistant;
+    return AYNI_OK;
+}
+ayni_status_t read_proposal(Workspace &workspace, ayni_string_v1 list, uint32_t index,
+                            ayni_task_tool_call_v1 &out) {
+    out.struct_size = sizeof(out);
+    return ::ayni::detail::with_workspace(
+        workspace, ayni_tool_calls_workspace_requirements, [&](const ayni_workspace_v1 *region) {
+            return ayni_tool_call_read(
+                region, {reinterpret_cast<const uint8_t *>(list.data), list.size}, index, &out);
+        });
 }
 ayni_status_t outcome(const ayni_task_call_result_v1 &result) {
     if (result.outcome == AYNI_CALL_ABANDONED || result.status == AYNI_RESULT_UNKNOWN) {
@@ -241,6 +300,15 @@ void Writer::instructions(std::initializer_list<ayni_string_v1> parts) {
     }
 }
 void Writer::add(ayni_string_v1 text) {
+    if (grow_) {
+        if (!ok_ || (text.size && !text.data) || text.size > UINT32_MAX - grow_->size()) {
+            ok_ = false;
+            return;
+        }
+        grow_->append(text.data, text.size);
+        size_ = static_cast<uint32_t>(grow_->size());
+        return;
+    }
     if (!ok_ || text.size > capacity_ - size_ || (text.size && !text.data)) {
         ok_ = false;
         return;

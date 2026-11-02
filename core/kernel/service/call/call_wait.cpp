@@ -49,7 +49,9 @@ void CallRuntime::describe_call(uint32_t index, uint64_t now_us, uint64_t durabl
            calls.input(index).size,
            calls.result(index).size + calls.value_result(index).size,
            wait_reason,
-           ayni::work::tool_call_count(work_.workspace, calls.tool_calls(index)),
+           state.result_body.id != 0U
+               ? state.result_body_calls
+               : ayni::work::tool_call_count(work_.workspace, calls.tool_calls(index)),
            waited,
            calls.query_revision(index),
            static_cast<ayni_call_query_phase_t>(query.phase),
@@ -60,7 +62,8 @@ void CallRuntime::describe_call(uint32_t index, uint64_t now_us, uint64_t durabl
            query.attempt,
            static_cast<uint32_t>(calls.record(index).result_kind),
            0,
-           state.model_usage};
+           state.model_usage,
+           state.result_body};
 }
 
 // Resource owner diagnoses its own queue. Durability and Provider ownership

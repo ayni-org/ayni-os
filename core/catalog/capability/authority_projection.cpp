@@ -70,8 +70,9 @@ ayni_status_t schema_leaf(const ayni_schema_v1 &schema, const ayni_authority_pro
             }
         }
     }
+    // An EXTERNAL field's body is outside the value, so no projection can see it (ADR-0096).
     if (value_container(schema.nodes[node].kind) ||
-        (schema.nodes[node].flags & AYNI_SCHEMA_NULLABLE) != 0U) {
+        (schema.nodes[node].flags & (AYNI_SCHEMA_NULLABLE | AYNI_SCHEMA_EXTERNAL)) != 0U) {
         return AYNI_UNSUPPORTED;
     }
     leaf = node;

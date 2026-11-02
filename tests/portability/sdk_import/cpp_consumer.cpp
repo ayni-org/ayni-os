@@ -48,6 +48,16 @@ int main() {
     config.model.kind = AYNI_POLICY_REQUEST_MODEL;
     config.model.binding_id = {"consumer.model", sizeof("consumer.model") - 1};
     config.summary = config.model;
+    config.limits = {32768, 1024, 8192, 4096};
+    // Only configuration is probed here, so this body store never holds a body.
+    static const ayni_body_store_v1 bodies{
+        sizeof(ayni_body_store_v1),
+        0,
+        nullptr,
+        [](void *, uint64_t, ayni_bytes_v1, ayni_body_ref_v1 *) { return AYNI_UNSUPPORTED; },
+        [](void *, const ayni_body_ref_v1 *, uint8_t *, uint32_t) { return AYNI_NOT_FOUND; },
+        [](void *, const ayni_body_ref_v1 *) {}};
+    config.bodies = &bodies;
     if (loop.configure(config, workspace.get()) != AYNI_OK || loop.describe().ctx == nullptr) {
         std::puts("consumer: ToolLoop configure");
         return 1;

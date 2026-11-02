@@ -8,6 +8,7 @@ include("${CMAKE_CURRENT_LIST_DIR}/../cmake/AyniLayers.cmake")
 
 ayni_add_core_module(foundation
     SOURCES
+        foundation/body.cpp
         foundation/crc32.cpp
         foundation/utf8.cpp)
 

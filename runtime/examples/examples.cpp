@@ -7,6 +7,7 @@
 #include <ayni/providers/openai_compat/loopback.h>
 #include <ayni/providers/software/work.h>
 #include <ayni/runtime/common/demo_profile.h>
+#include <ayni/runtime/common/memory_bodies.h>
 #include <ayni/runtime/examples.h>
 #include <ayni/workspace.hpp>
 #include <chrono>
@@ -35,6 +36,7 @@ struct Fixture::Impl {
     hosts::sim::Host host;
     std::unique_ptr<hosts::native::Host> native_host; // Present only for the native profile.
     ayni_host_v1 host_ports{}; // Borrowed from the selected Host through successful close.
+    MemoryBodies bodies;       // Outlives the profile that borrows it.
     DemoProfile profile;
     providers::openai_compat::Provider alternate;
     std::unique_ptr<providers::openai_compat::fixtures::LoopbackHttp> server;
@@ -96,6 +98,7 @@ struct Fixture::Impl {
         if (selection.kind == HostConfig::Kind::sim) {
             host.set_utc(fixture_utc_s);
             host_ports = host.table();
+            host_ports.bodies = bodies.store();
             return AYNI_OK;
         }
         native_host = std::make_unique<hosts::native::Host>();
@@ -104,6 +107,7 @@ struct Fixture::Impl {
         switch (opened.status) {
         case Status::ok:
             host_ports = native_host->table();
+            host_ports.bodies = bodies.store();
             clock_us.store(host_ports.monotonic_now_us(host_ports.ctx));
             return AYNI_OK;
         case Status::invalid_argument:
@@ -133,8 +137,8 @@ struct Fixture::Impl {
         config.destination_id = "example.openai.destination";
         config.key_environment = "AYNI_EXAMPLE_FIXTURE_KEY";
         config.result_format = AYNI_CALL_RESULT_TEXT;
-        config.text_max_bytes = 4096;
         config.timeout_ms = 2000;
+        config.bodies = bodies.store();
         // Child process fixture only: no secret, external service or persistent config.
         if (setenv(config.key_environment.c_str(), "fixture-only", 1) != 0) {
             return AYNI_INTERNAL;
@@ -276,7 +280,8 @@ struct Fixture::Impl {
         if (status != AYNI_OK) {
             return status;
         }
-        status = profile.assemble(kernel.get(), {}, {{this, now, utc}, {this, present}, {}, {}});
+        status = profile.assemble(kernel.get(), {},
+                                  {{this, now, utc}, {this, present}, {}, {}, {}, bodies.store()});
         if (status == AYNI_OK && model == Model::alternate_loopback) {
             status = register_alternate();
         }
@@ -477,6 +482,9 @@ ayni_status_t Fixture::wait_task(uint64_t id) {
         }
     } while (std::chrono::steady_clock::now() < end);
     return AYNI_BUSY;
+}
+const ayni_body_store_v1 *Fixture::bodies() const {
+    return impl_ ? impl_->bodies.store() : nullptr;
 }
 uint32_t Fixture::model_requests() const {
     return impl_ && impl_->server ? impl_->server->requests() : 0;

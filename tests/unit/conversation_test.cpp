@@ -1,6 +1,8 @@
 #include "strategy_workspace_fixture.h"
 // ADR-0056: caller-owned, portable values. No external persistence is implied.
+#include <array>
 #include <ayni/model_messages.hpp>
+#include <ayni/runtime/common/memory_bodies.h>
 #include <ayni/strategies/builtin.h>
 #include <ayni/values.hpp>
 #include <cstring>
@@ -17,6 +19,73 @@ ConversationRecord empty() {
     record.id = 11;
     record.owner_instance_id = 22;
     return record;
+}
+ayni::runtime::MemoryBodies &memory() {
+    static ayni::runtime::MemoryBodies bodies;
+    return bodies;
+}
+const ayni_body_store_v1 &bodies() {
+    return *memory().store();
+}
+BodyRef body(const std::string &text) {
+    BodyRef ref{};
+    const ayni_bytes_v1 bytes{reinterpret_cast<const uint8_t *>(text.data()),
+                              static_cast<uint32_t>(text.size())};
+    EXPECT_EQ(bodies().write(bodies().context, empty().id, bytes, &ref), AYNI_OK);
+    return ref;
+}
+std::string read(const BodyRef &ref) {
+    std::string out;
+    EXPECT_EQ(Conversation::text(bodies(), ref, out), AYNI_OK);
+    return out;
+}
+// The text of a model request, which the ToolLoop names by reference (ADR-0096).
+bool model_body(const ayni_call_request_v1 &request, std::string &out) {
+    ayni::ValueReader value;
+    ayni_body_ref_v1 ref{};
+    ayni_string_v1 text{};
+    if (value.read(request.value) != AYNI_OK) {
+        return false;
+    }
+    const auto *field = value.field(AYNI_MODEL_BODY_FIELD_ID);
+    if (ayni::ValueReader::body(field, ref)) {
+        return Conversation::text(bodies(), ref, out) == AYNI_OK;
+    }
+    if (!ayni::ValueReader::text(field, text)) {
+        return false;
+    }
+    out.assign(text.data, text.size);
+    return true;
+}
+// Retained rounds as one body, the way the ToolLoop publishes them.
+void retain(ConversationRecord &record, uint32_t count, uint32_t bytes) {
+    std::string encoded;
+    for (uint32_t at = 0; at < count; ++at) {
+        const uint64_t number = record.last_round - count + 1U + at;
+        const std::string user(bytes, 'u'), answer(bytes, 'a');
+        for (uint32_t b = 0; b < 8; ++b) {
+            encoded.push_back(static_cast<char>((number >> (8U * b)) & 0xffU));
+        }
+        for (const auto *text : {&user, &answer}) {
+            const auto size = static_cast<uint32_t>(text->size());
+            for (uint32_t b = 0; b < 4; ++b) {
+                encoded.push_back(static_cast<char>((size >> (8U * b)) & 0xffU));
+            }
+            encoded += *text;
+        }
+    }
+    record.rounds = body(encoded);
+    record.round_count = count;
+}
+ToolLoopConfig loop_config() {
+    ToolLoopConfig config;
+    config.identity.id = text("loop");
+    config.model = {
+        AYNI_POLICY_REQUEST_MODEL, text("model"), 1, {sizeof(ayni_scope_v1), 0, nullptr}, {}};
+    config.summary = config.model;
+    config.limits = {32768, 1024, 8192, 4096};
+    config.bodies = &bodies();
+    return config;
 }
 TEST(Conversation, portable_record_round_trip_and_strict_version) {
     auto record = empty();
@@ -43,9 +112,11 @@ TEST(Conversation, portable_record_round_trip_and_strict_version) {
 TEST(Conversation, new_turn_is_deterministic_and_retains_the_original) {
     const auto record = empty();
     Encoded a, b;
-    ASSERT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), record, text("你好"), a),
+    ASSERT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), bodies(), record,
+                                  text("你好"), a),
               AYNI_OK);
-    ASSERT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), record, text("你好"), b),
+    ASSERT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), bodies(), record,
+                                  text("你好"), b),
               AYNI_OK);
     EXPECT_EQ(a.size, b.size);
     EXPECT_EQ(a.bytes, b.bytes);
@@ -59,22 +130,32 @@ TEST(Conversation, new_turn_is_deterministic_and_retains_the_original) {
         AYNI_BUSY);
     EXPECT_EQ(record.revision, 0U);
 }
-TEST(Conversation, bounded_input_rejects_invalid_utf8_and_oversize_without_changing_output) {
+// ADR-0096: input length is a token question for the ToolLoop; the parameters hold a reference.
+TEST(Conversation, long_input_is_a_body_and_invalid_input_leaves_output_unchanged) {
     const auto record = empty();
     Encoded encoded;
     encoded.size = 71;
-    const std::string long_text(turn_text_max + 1U, 'a');
-    EXPECT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), record,
-                                  {long_text.data(), static_cast<uint32_t>(long_text.size())},
-                                  encoded),
-              AYNI_CAPACITY_EXCEEDED);
-    EXPECT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), record,
+    EXPECT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), bodies(), record,
                                   {"\xED\xA0\x80", 3}, encoded),
               AYNI_INVALID_ARGUMENT);
-    EXPECT_EQ(
-        Conversation::begin(::ayni::test::conversation_workspace(), record, {nullptr, 1}, encoded),
-        AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), bodies(), record,
+                                  {nullptr, 1}, encoded),
+              AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(encoded.size, 71U);
+    Encoded small, large;
+    const std::string long_text(200 * 1024, 'a');
+    ASSERT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), bodies(), record,
+                                  text("a"), small),
+              AYNI_OK);
+    ASSERT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), bodies(), record,
+                                  {long_text.data(), static_cast<uint32_t>(long_text.size())},
+                                  large),
+              AYNI_OK);
+    EXPECT_EQ(large.size, small.size);
+    BodyRef input{};
+    ASSERT_EQ(Conversation::input(::ayni::test::conversation_workspace(), large.view(), input),
+              AYNI_OK);
+    EXPECT_EQ(read(input), long_text);
 }
 TEST(Conversation, whole_delete_clears_text_and_lineage_together) {
     auto record = empty();
@@ -82,8 +163,7 @@ TEST(Conversation, whole_delete_clears_text_and_lineage_together) {
     record.last_round = 2;
     record.summary_first = 1;
     record.summary_last = 2;
-    std::memcpy(record.summary.bytes.data(), "inferred", 8);
-    record.summary.size = 8;
+    record.summary = body("inferred");
     ConversationRecord candidate;
     ASSERT_EQ(Conversation::erase(::ayni::test::conversation_workspace(), record, candidate),
               AYNI_OK);
@@ -93,7 +173,7 @@ TEST(Conversation, whole_delete_clears_text_and_lineage_together) {
     EXPECT_EQ(candidate.last_round, 2U);
     EXPECT_EQ(candidate.generation, 2U);
     EXPECT_EQ(candidate.revision, 5U);
-    EXPECT_EQ(record.summary.size, 8U); // Caller has not committed replacement yet.
+    EXPECT_EQ(read(record.summary), "inferred"); // Caller has not committed replacement yet.
 }
 TEST(Conversation, inconsistent_lineage_and_exhausted_generation_are_rejected) {
     auto record = empty();
@@ -124,37 +204,24 @@ TEST(BuiltinRules, invalid_and_duplicate_configuration_is_rejected) {
 } // namespace
 
 namespace {
-// Same snapshot twice produces identical request bytes and checkpoint bytes;
-// also exercises the largest supported recent-history parameter representation.
-TEST(BuiltinLoop, maximum_context_is_bounded_and_decisions_are_deterministic) {
+// Same snapshot twice produces identical request bytes and checkpoint bytes, and the turn's
+// parameters hold references only, however long the retained texts are (ADR-0096).
+TEST(BuiltinLoop, long_context_keeps_parameters_small_and_decisions_are_deterministic) {
     auto record = empty();
     record.revision = 5;
     record.last_round = 5;
     record.summary_first = 1;
     record.summary_last = 2;
-    record.summary.size = summary_text_max;
-    record.summary.bytes.fill('s');
-    record.round_count = retained_rounds_max - 1U;
-    for (uint32_t at = 0; at < retained_rounds_max - 1U; ++at) {
-        auto &round = record.rounds[at];
-        round.number = at + 3U;
-        round.user.size = turn_text_max;
-        round.user.bytes.fill('u');
-        round.answer.size = turn_text_max;
-        round.answer.bytes.fill('a');
-    }
-    std::string user(turn_text_max, 'n');
+    record.summary = body(std::string(4096, 's'));
+    retain(record, 3, 2048);
+    std::string user(4096, 'n');
     Encoded parameters;
-    ASSERT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), record,
-                                  {user.data(), turn_text_max}, parameters),
+    ASSERT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), bodies(), record,
+                                  {user.data(), static_cast<uint32_t>(user.size())}, parameters),
               AYNI_OK);
-    EXPECT_LE(parameters.size, state_bytes_max);
+    EXPECT_LE(parameters.size, ToolLoop::checkpoint_bytes);
     ToolLoop loop;
-    ToolLoopConfig config;
-    config.identity.id = text("loop");
-    config.model = {
-        AYNI_POLICY_REQUEST_MODEL, text("model"), 1, {sizeof(ayni_scope_v1), 0, nullptr}, {}};
-    config.summary = config.model;
+    auto config = loop_config();
     config.summary.binding_id = text("summary");
     ASSERT_EQ(loop.configure(config, ::ayni::test::loop_workspace()), AYNI_OK);
     auto descriptor = loop.describe();
@@ -182,18 +249,15 @@ TEST(BuiltinLoop, maximum_context_is_bounded_and_decisions_are_deterministic) {
         ayni_policy_output_v1 output{};
         output.struct_size = sizeof(output);
         output.checkpoint = checkpoints[at].bytes.data();
-        output.checkpoint_capacity = state_bytes_max;
+        output.checkpoint_capacity = ToolLoop::checkpoint_bytes;
         output.call_context = &requests[at];
         output.request_call = [](void *ctx, const ayni_call_request_v1 *request) {
-            ayni::ValueReader value;
-            ayni_string_v1 body{};
-            if (value.read(request->value) != AYNI_OK ||
-                !ayni::ValueReader::text(value.field(AYNI_MODEL_BODY_FIELD_ID), body)) {
+            std::string body;
+            if (!model_body(*request, body)) {
                 return AYNI_INVALID_ARGUMENT;
             }
             *static_cast<std::string *>(ctx) =
-                std::string(request->step_key.data, request->step_key.size) +
-                std::string(body.data, body.size);
+                std::string(request->step_key.data, request->step_key.size) + body;
             return AYNI_OK;
         };
         ASSERT_EQ(descriptor.decide(descriptor.ctx, &snapshot, &output), AYNI_OK);
@@ -206,8 +270,37 @@ TEST(BuiltinLoop, maximum_context_is_bounded_and_decisions_are_deterministic) {
     EXPECT_NE(requests[0].find(ayni::model::system_instructions), std::string::npos);
     EXPECT_NE(requests[0].find(user), std::string::npos);
     std::cout << "ConversationRecord=" << sizeof(ConversationRecord)
-              << " ToolLoop=" << sizeof(ToolLoop) << " max_turn_encoding=" << parameters.size
+              << " ToolLoop=" << sizeof(ToolLoop) << " turn_encoding=" << parameters.size
               << " bytes\n";
+}
+// ADR-0096: a record names its texts, so its encoding does not grow with the conversation and a
+// decoded copy reads the same texts back from the store.
+TEST(Conversation, record_size_is_constant_as_history_grows_and_reopens_the_same_texts) {
+    std::array<uint32_t, 3> sizes{};
+    const std::array<uint32_t, 3> lengths{16, 4096, 128 * 1024};
+    for (uint32_t at = 0; at < lengths.size(); ++at) {
+        auto record = empty();
+        record.revision = 3;
+        record.last_round = 3;
+        record.history = body(std::string(lengths[at], 'h'));
+        retain(record, 3, lengths[at]);
+        Encoded encoded;
+        ASSERT_EQ(Conversation::encode(::ayni::test::conversation_workspace(), record, encoded),
+                  AYNI_OK);
+        sizes[at] = encoded.size;
+        ConversationRecord reopened;
+        ASSERT_EQ(
+            Conversation::decode(::ayni::test::conversation_workspace(), encoded.view(), reopened),
+            AYNI_OK);
+        std::vector<Round> rounds;
+        ASSERT_EQ(Conversation::rounds(bodies(), reopened, rounds), AYNI_OK);
+        ASSERT_EQ(rounds.size(), 3U);
+        EXPECT_EQ(rounds.back().number, 3U);
+        EXPECT_EQ(rounds.back().answer, std::string(lengths[at], 'a'));
+        EXPECT_EQ(read(reopened.history), std::string(lengths[at], 'h'));
+    }
+    EXPECT_EQ(sizes[0], sizes[1]);
+    EXPECT_EQ(sizes[1], sizes[2]);
 }
 // ADR-0073/0074: the instructions of the model request state the local date, weekday and zone,
 // so the model resolves relative dates itself, apart from the conversation data. An untrusted
@@ -226,18 +319,13 @@ TEST(BuiltinLoop, model_request_instructions_state_the_local_time) {
     };
     const auto request = [&](const char *zone, bool port = true) {
         ToolLoop loop;
-        ToolLoopConfig config;
-        config.identity.id = text("loop");
-        config.model = {AYNI_POLICY_REQUEST_MODEL,
-                        text("model"),
-                        1,
-                        {sizeof(ayni_scope_v1), 0, nullptr},
-                        text("prefix")};
+        auto config = loop_config();
+        config.model.text = text("prefix");
         config.summary = config.model;
         config.clock = {&clock, port ? FakeClock::now : nullptr, text(zone)};
         EXPECT_EQ(loop.configure(config, ::ayni::test::loop_workspace()), AYNI_OK);
         Encoded parameters;
-        EXPECT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), empty(),
+        EXPECT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), bodies(), empty(),
                                       text("明天提醒我"), parameters),
                   AYNI_OK);
         ayni_task_snapshot_v1 snapshot{};
@@ -263,17 +351,11 @@ TEST(BuiltinLoop, model_request_instructions_state_the_local_time) {
         ayni_policy_output_v1 output{};
         output.struct_size = sizeof(output);
         output.checkpoint = checkpoint.bytes.data();
-        output.checkpoint_capacity = state_bytes_max;
+        output.checkpoint_capacity = ToolLoop::checkpoint_bytes;
         output.call_context = &body.bytes;
         output.request_call = [](void *ctx, const ayni_call_request_v1 *r) {
-            ayni::ValueReader value;
-            ayni_string_v1 model_body{};
-            if (value.read(r->value) != AYNI_OK ||
-                !ayni::ValueReader::text(value.field(AYNI_MODEL_BODY_FIELD_ID), model_body)) {
-                return AYNI_INVALID_ARGUMENT;
-            }
-            *static_cast<std::string *>(ctx) = std::string(model_body.data, model_body.size);
-            return AYNI_OK;
+            return model_body(*r, *static_cast<std::string *>(ctx)) ? AYNI_OK
+                                                                    : AYNI_INVALID_ARGUMENT;
         };
         auto descriptor = loop.describe();
         EXPECT_EQ(descriptor.decide(descriptor.ctx, &snapshot, &output), AYNI_OK);
@@ -314,25 +396,17 @@ TEST(BuiltinLoop, model_request_instructions_state_the_local_time) {
                   "prefix\nCurrent local time: unknown.\nTime zone: CST-8");
     }
     ToolLoop loop;
-    ToolLoopConfig config;
-    config.identity.id = text("loop");
-    config.model = {
-        AYNI_POLICY_REQUEST_MODEL, text("model"), 1, {sizeof(ayni_scope_v1), 0, nullptr}, {}};
-    config.summary = config.model;
+    auto config = loop_config();
     config.clock = {&clock, FakeClock::now, text("Asia/Shanghai")};
     EXPECT_EQ(loop.configure(config, ::ayni::test::loop_workspace()), AYNI_INVALID_ARGUMENT);
 }
 TEST(BuiltinLoop, foreign_conversation_owner_is_rejected_before_any_request) {
     Encoded parameters;
-    ASSERT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), empty(), text("hello"),
-                                  parameters),
+    ASSERT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), bodies(), empty(),
+                                  text("hello"), parameters),
               AYNI_OK);
     ToolLoop loop;
-    ToolLoopConfig config;
-    config.identity.id = text("loop");
-    config.model = {
-        AYNI_POLICY_REQUEST_MODEL, text("model"), 1, {sizeof(ayni_scope_v1), 0, nullptr}, {}};
-    config.summary = config.model;
+    const auto config = loop_config();
     ASSERT_EQ(loop.configure(config, ::ayni::test::loop_workspace()), AYNI_OK);
     auto descriptor = loop.describe();
     ayni_task_snapshot_v1 snapshot{};
@@ -362,12 +436,12 @@ TEST(Conversation, encoded_turn_with_exhausted_round_numbers_is_rejected) {
     record.last_round = UINT64_MAX;
     record.summary_first = 1;
     record.summary_last = UINT64_MAX;
-    record.summary.size = 1;
-    record.summary.bytes[0] = 's';
+    record.summary = body("s");
     Encoded record_bytes, seed;
     ASSERT_EQ(Conversation::encode(::ayni::test::conversation_workspace(), record, record_bytes),
               AYNI_OK);
-    ASSERT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), empty(), text("x"), seed),
+    ASSERT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), bodies(), empty(),
+                                  text("x"), seed),
               AYNI_OK);
     constexpr uint32_t record_header_bytes = 8; // AYNC + version.
     constexpr uint32_t turn_header_bytes = 28; // AYNT + version + done + base_revision + memory_id.
@@ -388,74 +462,74 @@ TEST(Conversation, encoded_turn_with_exhausted_round_numbers_is_rejected) {
         Conversation::validate_turn(
             const_cast<ayni_workspace_v1 *>(::ayni::test::conversation_workspace()), raw.view()),
         AYNI_CAPACITY_EXCEEDED);
-    EXPECT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), record, text("x"), seed),
+    EXPECT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), bodies(), record,
+                                  text("x"), seed),
               AYNI_CAPACITY_EXCEEDED);
 }
 } // namespace
 
 namespace {
 // ADR-0060: an independent accepted input survives invalidation and orderly record round-trip.
-TEST(Conversation, unpublished_input_survives_derived_erasure_and_is_bounded_when_resumed) {
+TEST(Conversation, unpublished_input_survives_derived_erasure_and_joins_the_next_turn) {
     auto record = empty();
-    record.draft.size = 5;
-    std::memcpy(record.draft.bytes.data(), "first", record.draft.size);
+    record.draft = body("first");
     Encoded stored, parameters;
     ASSERT_EQ(Conversation::encode(::ayni::test::conversation_workspace(), record, stored),
               AYNI_OK);
     ConversationRecord restored, erased;
     ASSERT_EQ(Conversation::decode(::ayni::test::conversation_workspace(), stored.view(), restored),
               AYNI_OK);
-    ASSERT_EQ(Conversation::erase_derived(::ayni::test::conversation_workspace(), restored, erased),
+    ASSERT_EQ(Conversation::erase_derived(::ayni::test::conversation_workspace(), bodies(),
+                                          restored, erased),
               AYNI_OK);
-    EXPECT_EQ(erased.draft.size, 5U);
-    ASSERT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), erased, text("next"),
-                                  parameters),
+    EXPECT_EQ(read(erased.draft), "first");
+    ASSERT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), bodies(), erased,
+                                  text("next"), parameters),
               AYNI_OK);
-    Text<turn_text_max> input;
+    BodyRef input{};
     ASSERT_EQ(Conversation::input(::ayni::test::conversation_workspace(), parameters.view(), input),
               AYNI_OK);
-    EXPECT_EQ(std::string(input.bytes.data(), input.size), "first\nnext");
-    erased.draft.size = turn_text_max;
-    erased.draft.bytes.fill('u');
-    EXPECT_EQ(
-        Conversation::begin(::ayni::test::conversation_workspace(), erased, text("x"), parameters),
-        AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(read(input), "first\nnext");
     ASSERT_EQ(Conversation::erase(::ayni::test::conversation_workspace(), erased, restored),
               AYNI_OK);
-    EXPECT_EQ(restored.draft.size, 0U);
+    EXPECT_EQ(restored.draft.id, 0U);
 }
-TEST(Conversation, superseded_publication_keeps_original_turn_identity_and_reserves_capacity) {
+TEST(Conversation, superseded_publication_keeps_original_turn_identity) {
     auto record = empty();
-    record.draft.size = 1;
-    record.draft.bytes[0] = 'u';
+    record.draft = body("u");
     ConversationRecord retained, erased;
-    ASSERT_EQ(Conversation::retain_published_input(::ayni::test::conversation_workspace(), record,
-                                                   1, retained),
+    ASSERT_EQ(Conversation::retain_published_input(::ayni::test::conversation_workspace(), bodies(),
+                                                   record, 1, retained),
               AYNI_OK);
-    ASSERT_EQ(retained.round_count, 1U);
-    EXPECT_EQ(retained.rounds[0].number, 1U);
-    ASSERT_EQ(
-        Conversation::erase_round(::ayni::test::conversation_workspace(), retained, 1, erased),
-        AYNI_OK);
+    std::vector<Round> rounds;
+    ASSERT_EQ(Conversation::rounds(bodies(), retained, rounds), AYNI_OK);
+    ASSERT_EQ(rounds.size(), 1U);
+    EXPECT_EQ(rounds[0].number, 1U);
+    EXPECT_EQ(rounds[0].user, "u");
+    ASSERT_EQ(Conversation::erase_round(::ayni::test::conversation_workspace(), bodies(), retained,
+                                        1, erased),
+              AYNI_OK);
     EXPECT_EQ(erased.round_count, 0U);
-    EXPECT_EQ(erased.draft.size, 0U);
-    for (uint64_t turn = 2; turn <= retained_rounds_max; ++turn) {
+    EXPECT_EQ(erased.draft.id, 0U);
+    for (uint64_t turn = 2; turn <= 6; ++turn) {
         retained.draft = record.draft;
         ASSERT_EQ(Conversation::retain_published_input(::ayni::test::conversation_workspace(),
-                                                       retained, turn, erased),
+                                                       bodies(), retained, turn, erased),
                   AYNI_OK);
         retained = erased;
     }
+    EXPECT_EQ(retained.round_count, 6U);
     Encoded encoded;
-    EXPECT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), retained, text("next"),
-                                  encoded),
+    EXPECT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), bodies(), retained,
+                                  text("next"), encoded),
               AYNI_OK);
-    ASSERT_EQ(
-        Conversation::erase_round(::ayni::test::conversation_workspace(), retained, 1, erased),
-        AYNI_OK);
-    EXPECT_EQ(
-        Conversation::begin(::ayni::test::conversation_workspace(), erased, text("next"), encoded),
-        AYNI_OK);
+    ASSERT_EQ(Conversation::erase_round(::ayni::test::conversation_workspace(), bodies(), retained,
+                                        1, erased),
+              AYNI_OK);
+    EXPECT_EQ(erased.round_count, 5U);
+    EXPECT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), bodies(), erased,
+                                  text("next"), encoded),
+              AYNI_OK);
 }
 } // namespace
 
@@ -469,11 +543,12 @@ TEST(Conversation, short_workspace_preserves_parameters_and_valid_region_support
     parameters.bytes.front() = 91;
     auto short_region = *memory.get();
     --short_region.byte_capacity;
-    EXPECT_EQ(Conversation::begin(&short_region, empty(), text("hello"), parameters),
+    EXPECT_EQ(Conversation::begin(&short_region, bodies(), empty(), text("hello"), parameters),
               AYNI_BUFFER_TOO_SMALL);
     EXPECT_EQ(parameters.size, 7U);
     EXPECT_EQ(parameters.bytes.front(), 91U);
-    ASSERT_EQ(Conversation::begin(memory.get(), empty(), text("hello"), parameters), AYNI_OK);
+    ASSERT_EQ(Conversation::begin(memory.get(), bodies(), empty(), text("hello"), parameters),
+              AYNI_OK);
     EXPECT_EQ(Conversation::validate_turn(nullptr, parameters.view()), AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(Conversation::validate_turn(const_cast<ayni_workspace_v1 *>(memory.get()),
                                           parameters.view()),
@@ -484,11 +559,8 @@ TEST(Conversation, short_workspace_preserves_parameters_and_valid_region_support
 TEST(ToolLoop, short_workspace_refuses_configuration_without_consuming_the_instance) {
     ayni::Workspace memory;
     ASSERT_EQ(memory.create(ToolLoop::workspace_requirements), AYNI_OK);
-    ToolLoopConfig config;
+    auto config = loop_config();
     config.identity.id = text("bounded.loop");
-    config.model.kind = AYNI_POLICY_REQUEST_MODEL;
-    config.model.binding_id = text("model");
-    config.summary = config.model;
     ToolLoop loop;
     auto short_region = *memory.get();
     --short_region.byte_capacity;

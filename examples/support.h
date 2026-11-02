@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 namespace ayni::examples {
 inline ayni_string_v1 text(const char *s) {
     return {s, static_cast<uint32_t>(std::strlen(s))};
@@ -96,6 +97,23 @@ inline ayni_status_t result(const ayni_task_snapshot_v1 &s, const char *key,
         return out.status == AYNI_OK ? AYNI_INVALID_STATE : out.status;
     }
     return AYNI_OK;
+}
+// The answer of a completed model result: inline text, or its stored body read from the
+// fixture's store and checked against its reference (ADR-0096).
+inline ayni_status_t answer(const ayni::runtime::examples::Fixture &f,
+                            const ayni_task_call_result_v1 &result, std::string &out) {
+    if (!result.body.id) {
+        out.assign(result.text.data ? result.text.data : "", result.text.size);
+        return AYNI_OK;
+    }
+    const auto *store = f.bodies();
+    if (!store) {
+        return AYNI_INVALID_STATE;
+    }
+    out.assign(result.body.size, '\0');
+    auto *bytes = reinterpret_cast<uint8_t *>(out.data());
+    const auto status = store->read(store->context, &result.body, bytes, result.body.size);
+    return status != AYNI_OK ? status : ayni_body_verify(&result.body, {bytes, result.body.size});
 }
 inline ayni_status_t install(ayni_kernel_t *kernel, const char *type_id, const char *strategy_id,
                              void *context, ayni_decide_fn decide,

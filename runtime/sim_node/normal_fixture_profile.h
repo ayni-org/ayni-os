@@ -21,6 +21,7 @@ class Counter {
   public:
     enum class Effect { increment, notification };
     Counter(const char *capability, Effect);
+    static uint32_t input_bytes(); // The contract's input maximum; results carry no text.
     ayni_provider_v1 describe();
     ayni_status_t advance(ayni_kernel_t *, uint64_t &barrier_checks);
     uint64_t executions() const { return executions_; }
@@ -51,6 +52,8 @@ class Profile {
     ayni_status_t close(); // Only after successful Kernel destruction.
     Totals totals() const;
     static const char *capability(const char *alias);
+    // Sizes config's Call strides to the contracts assemble registers.
+    static void fit_call_bytes(ayni_config_v1 &config);
 
   private:
     ayni_kernel_t *kernel_ = nullptr;
