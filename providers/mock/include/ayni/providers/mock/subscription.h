@@ -5,6 +5,9 @@
 #include <ayni/providers/mock/media.h>
 namespace ayni::providers::mock {
 // Fixed startup bounds; clock belongs to the same monotonic domain as Kernel requests.
+// Contract maxima of the observation Call; the runtime sizes the Kernel's Call strides from them.
+uint32_t subscription_input_bytes();
+inline constexpr uint32_t subscription_result_bytes = 0;
 struct SubscriptionConfig {
     Variant variant = Variant::a;
     uint32_t request_capacity = 4; // 1..64 concurrent generation borrows.

@@ -27,7 +27,8 @@ struct FileValueResult {
 // cannot throw. Completion context lives through Host close/join. No cancellation; close drains
 // accepted work.
 struct FileValueRequest {
-    enum class Kind { read, write } kind = Kind::read;
+    // Remove deletes the named value, OK also when none exists; it carries no CAS (ADR-0096).
+    enum class Kind { read, write, remove } kind = Kind::read;
     FileValueKey key;
     uint64_t previous_generation = 0; // Write CAS: 0 means no file; unused/zero for read.
     uint64_t generation = 0; // Write positive and greater than previous; unused/zero for read.

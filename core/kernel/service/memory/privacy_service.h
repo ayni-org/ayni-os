@@ -14,7 +14,9 @@ ayni_status_t privacy_progress_status(const WorkModel &model, uint64_t generatio
 // The result has no stamp until the caller admits and publishes its transition.
 bool next_privacy_step(const WorkModel &model, uint64_t generation, work::PrivacyRecord &out);
 // Apply a previously selected/proved effect and its cursor atomically; no I/O or callbacks.
-bool apply_privacy_step(WorkModel &model, const work::PrivacyRecord &record, uint64_t boot_epoch);
+// Replay applies a persisted step without queueing body releases the original run queued.
+bool apply_privacy_step(WorkModel &model, const work::PrivacyRecord &record, uint64_t boot_epoch,
+                        bool replay = false);
 // Advance exactly one selected item after runtime's external completion gates hold.
 bool advance_privacy(WorkModel &model, uint64_t generation);
 } // namespace ayni::kernel

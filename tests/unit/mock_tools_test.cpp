@@ -238,7 +238,7 @@ class MockTools : public ::testing::Test {
         }
         ayni_task_tool_call_v1 proposed{};
         proposed.struct_size = sizeof(proposed);
-        const auto status = snapshot.call_tool(snapshot.call_context, text("plan"), 0, &proposed);
+        const auto status = ayni::test::read_tool_call(result, 0, &proposed);
         if (status != AYNI_OK) {
             return status;
         }
@@ -355,7 +355,16 @@ TEST_F(MockTools, generic_function_arguments_run_through_original_schema_and_aut
               AYNI_TASK_COMPLETED);
     EXPECT_EQ(planned.outcome, AYNI_CALL_COMPLETED);
     EXPECT_EQ(planned.tool_call_count, 1U);
-    EXPECT_EQ(planned_text, "");
+    // ADR-0096: an inline tool result's text is its list encoding, here with no assistant text.
+    uint32_t listed = 0;
+    ayni_string_v1 assistant{text("unchanged")};
+    ASSERT_EQ(ayni_tool_calls_read(ayni::test::tool_calls_workspace(),
+                                   {reinterpret_cast<const uint8_t *>(planned_text.data()),
+                                    static_cast<uint32_t>(planned_text.size())},
+                                   &listed, &assistant),
+              AYNI_OK);
+    EXPECT_EQ(listed, 1U);
+    EXPECT_EQ(assistant.size, 0U);
     // ADR-0085: deterministic source values still pass the ordinary whole-Grant boundary.
     EXPECT_EQ(proposal, "mock.show|hello|5second|calm");
     EXPECT_EQ(acted, "hello");

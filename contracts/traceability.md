@@ -26,7 +26,7 @@
 | [fixtures/experiments/README.md](fixtures/experiments/README.md) | 5 | 0 |
 | [fixtures/normal/README.md](fixtures/normal/README.md) | 10 | 0 |
 | [host/cpp_sdk.md](host/cpp_sdk.md) | 10 | 0 |
-| [host/file_values.md](host/file_values.md) | 3 | 3 |
+| [host/file_values.md](host/file_values.md) | 4 | 4 |
 | [host/host_ports.md](host/host_ports.md) | 21 | 14 |
 | [host/native_runtime.md](host/native_runtime.md) | 13 | 9 |
 | [host/policy_interface.md](host/policy_interface.md) | 12 | 8 |
@@ -35,7 +35,7 @@
 | [storage/records.md](storage/records.md) | 22 | 16 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 4 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 439 | 144 |
+| 合计 | 440 | 145 |
 
 ## 计划章节 → 契约文档
 
@@ -116,6 +116,8 @@
 | ADR-0084 | domain/business_values.md |
 | ADR-0085 | domain/capability_directory.md |
 | ADR-0093 | host/file_values.md |
+| ADR-0095 | domain/limits.md、domain/runtime_limits.md |
+| ADR-0096 | domain/calls_and_bindings.md、domain/limits.md、domain/runtime_limits.md、domain/versions.md、host/cpp_sdk.md、storage/records.md |
 
 ## 工作包 → 条款
 
@@ -259,7 +261,7 @@
 | C-MEM-007 | M1 已实现：`NativeAssistant.remote_memory_requires_separate_destination_grant_before_http_submission`、`MemoryFacts.first_export_permission_extends_lineage_without_duplicate_read_slots`；真实远端删除不在本契约内 |
 | C-MEM-008 | M1 已实现：`KernelMemory.deletion_blocks_body_before_storage_acknowledgement`、`KernelMemory.deletion_scrubs_retained_storage_and_preserves_unrelated_retry_after_reopen`、`MemoryCall.invalid_late_text_remains_unknown_after_its_source_is_deleted`、`CallTableTest.authoritative_query_after_erasure_keeps_outcome_without_refilling_content` |
 | C-MEM-009 | M1 已实现：`KernelContext.publication_waits_for_ack_and_old_task_cannot_publish_again`、`KernelContext.context_erasure_revisits_earlier_memory_until_sources_are_stable`、`NativeAssistant.invalidating_publication_preserves_draft_across_reopen_and_next_turn` |
-| C-MEM-010 | M1 已实现：`NativeAssistant.deleting_one_turn_preserves_other_users_and_rebuilds_history_from_valid_inputs`、`NativeAssistant.whole_context_delete_erases_content_and_preserves_actual_work_outcomes`、`Conversation.superseded_publication_keeps_original_turn_identity_and_reserves_capacity` |
+| C-MEM-010 | M1 已实现：`NativeAssistant.deleting_one_turn_preserves_other_users_and_rebuilds_history_from_valid_inputs`、`NativeAssistant.whole_context_delete_erases_content_and_preserves_actual_work_outcomes`、`Conversation.superseded_publication_keeps_original_turn_identity` |
 | C-MEM-011 | M1 已实现：`KernelContext.forget_immediately_blocks_old_checkpoint_and_waits_for_exact_file_ack`、`KernelContextApproval.retired_approval_canonical_is_erased_with_its_context`、`KernelMemory.deletion_scrubs_retained_storage_and_preserves_unrelated_retry_after_reopen`；新故障、恢复、耐久专项未验证，不保证介质取证擦除 |
 | C-MEM-012 | M1 已实现：`NativeAssistant.legacy_conversation_refusal_preserves_the_entire_kernel_directory`、`KernelLegacyContext.changed_type_version_rejects_untracked_historical_body_exports`、`ContextCapacity.valid_history_exceeding_configured_dependencies_is_classified_as_capacity`、`MemoryFacts.lowering_dependency_capacity_does_not_classify_valid_history_as_corrupt`；迁移工具未实现 |
 | C-OBS-001 | M1 已实现：`ObservationIngress.worker_stack_views_are_copied_and_wake_outside_lock`、`ObservationIngress.close_discards_accepted_samples_and_orderly_reopen_rejects_old_boot`；join 是 runtime 调用前提，未验证未协作线程退出 |
@@ -285,6 +287,7 @@
 | C-HVAL-001 | M1 已实现（正常生命周期）；`FileValues.close_answers_an_accepted_value_and_old_ports_refuse_new_borrows`、既有HostStorage/NativeHost回归 |
 | C-HVAL-002 | M1 已实现（正常CAS与重开）；`FileValues.durable_generation_write_retry_and_normal_reopen_preserve_exact_bytes`、`esp_files_emulated_normal_medium`（RAM介质） |
 | C-HVAL-003 | M1 已实现（正常key与容量）；`FileValues.owner_object_keys_and_required_read_capacity_remain_explicit`；未知/损坏与介质故障拒绝路径已实现但未新增专项执行 |
+| C-HVAL-004 | M1 已实现（正常删除）；`FileBodies.released_bodies_leave_no_files` |
 | C-HOST-001 | M0 已实现：`KernelApi.create_copies_host_table_before_return` |
 | C-HOST-004 | M1 已实现（Kernel 侧）：`CompletionPoolTest.rejected_request_frees_the_slot_and_runs_no_handler`、`CompletionPoolTest.accept_unknown_waits_for_the_post`、`CompletionPoolTest.undefined_submit_result_counts_as_in_flight`、`CompletionPoolTest.post_before_a_rejection_is_still_applied`；E2 F10；C-OUT-003 |
 | C-HOST-006 | M1 已实现（完成槽部分）：`CompletionPoolTest.exhausted_slots_return_busy_without_calling_the_port`、`CompletionPoolTest.result_is_applied_once`、`CompletionPoolTest.late_post_cannot_complete_a_reused_slot`、`CompletionPoolTest.post_from_an_earlier_boot_is_ignored`、`CompletionPoolTest.stale_posts_racing_slot_reuse_are_ignored`、`CompletionPoolTest.concurrent_posts_apply_each_result_exactly_once`、`KernelCompletions.posts_succeed_while_the_event_queue_is_full`；遥测合并见 C-LIMIT-008，订阅的 gap 报告随订阅实现；E1 步骤 10；`MA-003` |

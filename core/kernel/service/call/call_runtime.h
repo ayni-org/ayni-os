@@ -238,8 +238,6 @@ class CallRuntime {
                                                        ayni_observation_info_v1 *out);
     static ayni_status_t read_result(const void *context, ayni_string_v1 step,
                                      ayni_task_call_result_v1 *out);
-    static ayni_status_t read_tool_call(const void *context, ayni_string_v1 step, uint32_t index,
-                                        ayni_task_tool_call_v1 *out);
     // Listed tool at position, if this Task's immutable Goal ceiling covers
     // its capability and admits the Binding's route; no Grant liveness check.
     bool offer_tool(uint32_t task_index, uint32_t position, ToolOffer &out) const;
@@ -329,6 +327,10 @@ class CallRuntime {
     cancel_transport(Delivery &delivery); // One shared cancel port contract, never a terminal.
     bool transport_ready(Mode mode) const;
     Advance consume(uint64_t now_us, uint64_t durable_seq);
+    // apply_receipt, then any privacy discard; returns a body the result does not keep.
+    ayni_status_t apply_delivery(uint32_t index, uint32_t task_index,
+                                 const ProviderMessage &message, uint64_t durable_seq,
+                                 bool &terminal);
     // Applies one exact receipt to its invariant owner, before mailbox acknowledgement.
     ayni_status_t apply_receipt(uint32_t index, uint32_t task_index, const ProviderMessage &message,
                                 foundation::TransitionStamp stamp, bool &terminal);
@@ -352,6 +354,8 @@ class CallRuntime {
                         uint64_t now_us);
     Advance cancel_local(uint32_t index, uint32_t task_index);
     void release(uint32_t index, uint64_t now_us); // Exact claim/waiter; delivery already drained.
+    // Hands a body Core no longer names to the host body store, when one is installed.
+    void release_body(const ayni_body_ref_v1 &ref) const;
 
     bool active_index(uint64_t call_id,
                       uint32_t &index) const; // Stable identity lookup survives work-table discard.

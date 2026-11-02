@@ -1,13 +1,17 @@
-// Native SQLite conversation/history owner. The Host directory lock spans open
-// through close; startup checks run before use, then only the worker accesses SQL.
+// Native SQLite conversation, body store (ADR-0096) and result archive owner. The Host directory
+// lock spans open through close; startup checks run before use, then only the worker accesses
+// SQL. Every live body is also cached in memory, so reads never wait for SQL.
 #ifndef AYNI_RUNTIME_CONVERSATION_STORE_H
 #define AYNI_RUNTIME_CONVERSATION_STORE_H
 #include <array>
 #include <ayni/strategies/builtin.h>
 #include <ayni/workspace.hpp>
 #include <condition_variable>
+#include <map>
 #include <mutex>
+#include <string>
 #include <thread>
+#include <vector>
 struct sqlite3;
 namespace ayni::runtime {
 struct SavedConversation {
@@ -29,28 +33,30 @@ class ConversationStore {
     // True consumes a completed write; false leaves status unchanged.
     bool poll(ayni_status_t &status);
     strategies::HistoryPort history_port();
+    // Asynchronous writes for decide and Provider threads: NOT_READY until SQL committed.
+    const ayni_body_store_v1 *bodies() const { return &bodies_port_; }
+    // Same store whose write waits for the commit, for owner-thread calls outside decide.
+    const ayni_body_store_v1 *waiting_bodies() const { return &waiting_port_; }
     void close(); // Joins worker; call only after consuming the last save.
   private:
     enum class Phase { idle, queued, writing, done, stopping };
-    static constexpr uint32_t file_size_max = strategies::state_bytes_max;
+    static constexpr uint32_t file_size_max = strategies::encoded_bytes_max;
     using Buffer = std::array<uint8_t, file_size_max>;
     ayni_status_t read(SavedConversation &state);
     ayni_status_t write();
-    struct HistoryJob {
-        Phase phase = Phase::idle;
-        uint64_t task = 0;
-        uint64_t turn = 0;
-        strategies::ConversationRecord record;
-        uint64_t reference = 0;
-        ayni_status_t status = AYNI_OK;
+    struct Body {
+        uint64_t scope = 0;
+        uint64_t digest = 0;
+        std::string bytes;
+        enum class State { pending, durable, failed } state = State::pending;
     };
     static uint32_t history_ready(void *, uint64_t);
-    static ayni_status_t history_load(void *, uint64_t, const strategies::ConversationRecord &,
-                                      strategies::Text<strategies::history_bytes_max> &);
-    static ayni_status_t history_save(void *, uint64_t, uint64_t,
-                                      const strategies::ConversationRecord &, uint64_t &);
-    ayni_status_t read_history(HistoryJob &);
-    ayni_status_t write_history(HistoryJob &);
+    static ayni_status_t body_write(void *, uint64_t, ayni_bytes_v1, ayni_body_ref_v1 *);
+    static ayni_status_t body_write_waiting(void *, uint64_t, ayni_bytes_v1, ayni_body_ref_v1 *);
+    static ayni_status_t body_read(void *, const ayni_body_ref_v1 *, uint8_t *, uint32_t);
+    static void body_release(void *, const ayni_body_ref_v1 *);
+    ayni_status_t load_bodies();
+    ayni_status_t write_bodies(std::vector<std::pair<uint64_t, Body>> &, std::vector<uint64_t> &);
     ayni_status_t current_namespace(const strategies::ConversationRecord &);
     void run();
     int directory_ = -1;
@@ -59,28 +65,33 @@ class ConversationStore {
     Erasure erasure_ = Erasure::none;
     uint64_t erased_turn_ = 0;
     uint64_t conversation_ = 0, owner_ = 0, generation_ = 0; // Last committed SQLite namespace.
-    HistoryJob loading_, storing_;
+    std::map<uint64_t, Body> bodies_; // Every live body; pending ones await the worker.
+    std::vector<uint64_t> inserts_;   // Pending bodies in write order.
+    std::vector<uint64_t> deletes_;   // Released bodies to remove from SQL.
+    uint64_t next_body_ = 1;          // Next identity; never reused within the database.
+    uint64_t collect_below_ = 0;      // Bodies older than the queued save it may collect.
+    std::condition_variable durable_; // Signalled after each body batch.
+    ayni_body_store_v1 bodies_port_{
+        sizeof(ayni_body_store_v1), 0, this, body_write, body_read, body_release};
+    ayni_body_store_v1 waiting_port_{sizeof(ayni_body_store_v1), 0,         this,
+                                     body_write_waiting,         body_read, body_release};
     struct ResultJob {
-        static constexpr uint32_t raw_bytes_max = 2 * AYNI_CALL_RESULT_BYTES_MAX +
-                                                  AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX +
-                                                  AYNI_BUSINESS_CONTRACT_BYTES_MAX;
-        static constexpr uint32_t json_bytes_max =
-            1048576; // Includes worst-case string/key escaping.
         Phase phase = Phase::idle;
         uint64_t task = 0;
         uint64_t conversation = 0, owner = 0, generation = 0;
         ayni_task_call_result_v1 result{};
-        std::array<uint8_t, raw_bytes_max> raw{};
-        std::array<char, json_bytes_max> json{};
+        std::vector<uint8_t> raw;
+        std::string json;
         strategies::ArchivedResult archived;
         ayni_status_t status = AYNI_OK;
     } archiving_;
     static ayni_status_t archive_result(void *, uint64_t, const strategies::ConversationRecord &,
                                         const ayni_task_call_result_v1 &,
                                         strategies::ArchivedResult &);
-    static ayni_status_t result_chunk(void *, uint64_t, uint64_t, uint32_t,
-                                      strategies::Text<strategies::prompt_bytes_max> &, uint32_t);
+    static ayni_status_t result_chunk(void *, uint64_t, uint64_t, uint32_t, std::string &,
+                                      uint32_t);
     ayni_status_t write_result();
+    ayni_status_t render(uint64_t reference, size_t &size);
     ayni::Workspace owner_workspace_;  // Save encoder: owner thread only.
     ayni::Workspace worker_workspace_; // Startup read, then SQLite worker only.
     ayni::Workspace result_workspace_; // Result rendering: SQLite worker only.

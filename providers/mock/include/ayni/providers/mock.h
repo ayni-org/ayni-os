@@ -2,6 +2,7 @@
 // Uses only the public C ABI; it makes no hardware, network or persistence claim.
 #ifndef AYNI_PROVIDERS_MOCK_H
 #define AYNI_PROVIDERS_MOCK_H
+#include <ayni/bodies.h>
 #include <ayni/calls.h>
 #include <cstdint>
 #include <memory>
@@ -25,14 +26,22 @@ struct Config {
     uint32_t text_max_bytes = 512; // Copied input/result bytes per slot, 1..4096.
     // Optional deterministic final text for conversation/summary fixtures, copied
     // at configure (at most 512 bytes). Empty preserves echo/tool behavior. Such
-    // fixtures accept up to 32768 input bytes; tool proposals still take priority.
+    // fixtures accept up to CALL_RESULT_BYTES_MAX input bytes; tool proposals still take priority.
     ayni_string_v1 reply_text{};
     // Optional explicit fixture definition, immutable and borrowed until close.
     // Action/health consume its root TEXT, or this direct object TEXT field.
     // Core still copies/adopts and validates the complete schema/projection.
     const ayni_business_contract_v1 *business = nullptr;
     uint32_t body_field = 0;
+    // Optional for text/tools models: the request body may then also be a body reference,
+    // read and verified at submit (ADR-0096). Borrowed until close.
+    const ayni_body_store_v1 *bodies = nullptr;
+    uint32_t timeout_ms = 30000; // The contract's positive request timeout.
 };
+// Contract maxima of one configuration: the canonical input and result bytes a Call may carry.
+// The runtime sizes the Kernel's Call strides from these, never from its own estimate.
+uint32_t call_input_bytes(const Config &config);
+uint32_t call_result_bytes(const Config &config);
 // Single owner-thread component. Call advance between Kernel steps to deliver
 // completions; callbacks only copy/enqueue. No private Kernel state is accessed.
 class Provider {

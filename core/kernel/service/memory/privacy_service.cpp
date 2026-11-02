@@ -216,7 +216,8 @@ bool next_privacy_step(const WorkModel &model, uint64_t generation, work::Privac
 }
 // Every branch delegates erasure to the representation's owner. The progress record is the sole
 // journal effect, while snapshots retain each owner's explicit erased representation.
-bool apply_privacy_step(WorkModel &model, const work::PrivacyRecord &record, uint64_t boot_epoch) {
+bool apply_privacy_step(WorkModel &model, const work::PrivacyRecord &record, uint64_t boot_epoch,
+                        bool replay) {
     uint32_t index = 0;
     switch (record.effect) {
     case PrivacyEffect::none:
@@ -243,7 +244,7 @@ bool apply_privacy_step(WorkModel &model, const work::PrivacyRecord &record, uin
         break;
     case PrivacyEffect::call:
         if (!model.calls.find(record.cursor, index) ||
-            model.calls.erase_content(index, {boot_epoch, record.stamp}) != AYNI_OK) {
+            model.calls.erase_content(index, {boot_epoch, record.stamp}, !replay) != AYNI_OK) {
             return false;
         }
         break;

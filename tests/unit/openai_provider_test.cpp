@@ -53,6 +53,37 @@ TEST_F(OpenaiProvider, text_completes_through_public_abi_and_declares_remote_eff
               std::string::npos);
 }
 // ADR-0085: token counts come from the serving model, including its formatting.
+// ADR-0096: neither direction is bounded by a Core byte limit. The request body and the answer
+// travel through the body store; Core holds only their references.
+TEST_F(OpenaiProvider, request_and_answer_over_200_kib_travel_by_reference) {
+    constexpr size_t large = 210 * 1024;
+    prompt.assign(large, 'q');
+    prompt_by_reference = true;
+    const std::string answer(large, 'a');
+    start(R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":")" +
+              answer + R"("}}]})",
+          200, 0, 4096);
+    create();
+    wait_done(10);
+    ASSERT_EQ(seen_result.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_NE(seen_result.body.id, 0U);
+    EXPECT_EQ(seen_result.body.size, large);
+    EXPECT_EQ(seen_result.text.size, 0U);
+    EXPECT_EQ(reply, answer);
+    EXPECT_EQ(server->requests(), 1U);
+    EXPECT_NE(server->request().find(prompt), std::string::npos);
+}
+// The Provider verifies a request body against its reference before any network I/O.
+TEST_F(OpenaiProvider, request_body_that_differs_from_its_reference_is_refused_without_io) {
+    prompt_by_reference = true;
+    change_reference = [](ayni_body_ref_v1 &ref) { ref.digest ^= 1U; };
+    start(text_reply);
+    create();
+    wait_done();
+    EXPECT_EQ(seen_result.outcome, AYNI_CALL_FAILED);
+    EXPECT_EQ(seen_result.effect, AYNI_CALL_EFFECT_NONE);
+    EXPECT_EQ(server->requests(), 0U);
+}
 TEST_F(OpenaiProvider, service_token_usage_reaches_task_and_owner_views) {
     start(
         R"({"usage":{"prompt_tokens":1234,"completion_tokens":56,"total_tokens":1290},"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"done"}}]})");
@@ -534,8 +565,9 @@ TEST_F(OpenaiProvider, malformed_json_is_model_output_failure) {
     EXPECT_EQ(seen_result.status, AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(seen_result.reason, AYNI_REASON_MODEL_OUTPUT);
 }
+// The body limit follows max_output_tokens (ADR-0095): 64 KiB of metadata plus 96 B per token.
 TEST_F(OpenaiProvider, oversized_http_body_is_bounded_model_output_failure) {
-    start(std::string(2048, 'x'), 200, 0, 1024);
+    start(std::string(65536 + 96 + 1, 'x'), 200, 0, 1);
     create();
     wait_done();
     EXPECT_EQ(seen_result.outcome, AYNI_CALL_FAILED);
@@ -543,7 +575,7 @@ TEST_F(OpenaiProvider, oversized_http_body_is_bounded_model_output_failure) {
     EXPECT_EQ(seen_result.reason, AYNI_REASON_MODEL_OUTPUT);
 }
 TEST_F(OpenaiProvider, timeout_returns_borrow_without_retrying_unknown_execution) {
-    start(text_reply, 200, 1000, 4096, 100);
+    start(text_reply, 200, 1000, 1024, 100);
     const auto goal = create();
     wait_request();
     const auto call_id = work.task(work.goal(goal).last_task_id).logical_call_id;
@@ -648,14 +680,14 @@ TEST_F(OpenaiProvider, body_over_tool_limit_is_invalid_argument) {
 }
 TEST_F(OpenaiProvider, redirect_does_not_send_credentials_to_another_server) {
     LoopbackHttp redirected(text_reply);
-    start("", 302, 0, 4096, 1500, "Location: " + redirected.url() + "/chat/completions\r\n");
+    start("", 302, 0, 1024, 1500, "Location: " + redirected.url() + "/chat/completions\r\n");
     create();
     wait_done();
     EXPECT_EQ(seen_result.outcome, AYNI_CALL_FAILED);
     EXPECT_EQ(redirected.requests(), 0U);
 }
-// C-CALL-014: cardinality and encoded bytes are separate limits. The 8-call
-// case reaches provider_post, whose refusal must be followed by a FAILED receipt.
+// C-CALL-014: the list cardinality is the only limit on a model answer; past it the answer
+// fails with a FAILED receipt.
 class OpenaiListLimit : public OpenaiProvider, public ::testing::WithParamInterface<unsigned> {};
 TEST_P(OpenaiListLimit, list_limits_return_capacity_and_release_the_borrow) {
     const auto one = tool_reply(R"({"seconds":7,"voice":"calm","text":"hi"})");
@@ -673,7 +705,7 @@ TEST_P(OpenaiListLimit, list_limits_return_capacity_and_release_the_borrow) {
         response += next;
     }
     response += one.substr(end);
-    start(response, 200, 0, 32768);
+    start(response);
     create();
     wait_done();
     EXPECT_EQ(seen_result.outcome, AYNI_CALL_FAILED);
@@ -681,7 +713,7 @@ TEST_P(OpenaiListLimit, list_limits_return_capacity_and_release_the_borrow) {
     EXPECT_EQ(seen_result.reason, AYNI_REASON_MODEL_OUTPUT);
     EXPECT_EQ(provider.pending(), 0U);
 }
-INSTANTIATE_TEST_SUITE_P(Limits, OpenaiListLimit, ::testing::Values(8U, 9U, 65U));
+INSTANTIATE_TEST_SUITE_P(Limits, OpenaiListLimit, ::testing::Values(9U, 65U));
 TEST_F(OpenaiProvider, deep_json_is_rejected_before_decoding) {
     start("{\"extra\":" + std::string(8, '[') + "0" + std::string(8, ']') + "}");
     create();
@@ -742,15 +774,12 @@ TEST_F(OpenaiProvider, full_provider_queue_preserves_the_accepted_request) {
 // ADR-0085: transport functions stay fixed independently of catalog size/input.
 TEST(OpenaiConfiguration, native_functions_have_one_stable_transport_definition) {
     using namespace ayni::providers::openai_compat;
-    Protocol codec(4096);
+    const Protocol codec;
     Config config;
     config.model = "fixture";
-    auto buffer = std::make_unique<char[]>(request_json_max);
-    size_t size = 0;
-    ASSERT_EQ(codec.encode(config, text("first input"), buffer.get(), size), AYNI_OK);
-    const std::string first(buffer.get(), size);
-    ASSERT_EQ(codec.encode(config, text("second input"), buffer.get(), size), AYNI_OK);
-    const std::string second(buffer.get(), size);
+    std::string first, second;
+    ASSERT_EQ(codec.encode(config, text("first input"), first), AYNI_OK);
+    ASSERT_EQ(codec.encode(config, text("second input"), second), AYNI_OK);
     const auto start = first.find("\"tools\":");
     ASSERT_NE(start, std::string::npos);
     EXPECT_EQ(first.substr(start), second.substr(second.find("\"tools\":")));
@@ -761,7 +790,9 @@ TEST(OpenaiConfiguration, native_functions_have_one_stable_transport_definition)
     EXPECT_EQ(first.find("tool_0"), std::string::npos);
 }
 TEST(OpenaiConfiguration, rejects_unsafe_urls_and_missing_key_without_starting_io) {
+    ayni::runtime::MemoryBodies bodies;
     Config config;
+    config.bodies = bodies.store();
     config.model = "fixture";
     config.key_environment = "AYNI_PROTOCOL_MISSING_KEY";
     for (const char *url :

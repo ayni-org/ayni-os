@@ -8,6 +8,8 @@
 #include <ayni/scenes.h>
 #include <cstdio>
 #include <cstring>
+#include <string>
+#include <vector>
 namespace ayni::portability {
 using runtime::portable::agent_count;
 using runtime::portable::Profile;
@@ -35,6 +37,38 @@ template <class Done> ayni_status_t until(Profile &profile, Clock clock, Done do
         clock.yield(clock.context);
     }
     return AYNI_OK;
+}
+// A conversation's texts as the body store holds them; after a restart they load from files.
+struct Texts {
+    std::string summary, history;
+    std::vector<strategies::Round> rounds;
+};
+static ayni_status_t texts(Profile &p, Clock c, const strategies::ConversationRecord &record,
+                           Texts &out) {
+    const auto &bodies = *p.bodies();
+    ayni_status_t status = AYNI_NOT_READY;
+    const auto loaded = until(p, c, [&] {
+        status = strategies::Conversation::text(bodies, record.summary, out.summary);
+        if (status == AYNI_OK) {
+            status = strategies::Conversation::text(bodies, record.history, out.history);
+        }
+        if (status == AYNI_OK) {
+            status = strategies::Conversation::rounds(bodies, record, out.rounds);
+        }
+        return status != AYNI_NOT_READY;
+    });
+    return loaded != AYNI_OK ? loaded : status;
+}
+static uint32_t answer_bytes(Profile &p, Clock c, const strategies::ConversationRecord *record,
+                             uint32_t index) {
+    Texts loaded;
+    if (!record || texts(p, c, *record, loaded) != AYNI_OK || index >= loaded.rounds.size()) {
+        return 0;
+    }
+    return static_cast<uint32_t>(loaded.rounds[index].answer.size());
+}
+static ayni_string_v1 view(const std::string &text) {
+    return {text.data(), static_cast<uint32_t>(text.size())};
 }
 ayni_status_t durable(Profile &p, Clock c) {
     return until(p, c, [&] { return !p.command_pending(); });
@@ -544,7 +578,7 @@ static ayni_status_t memory(Profile &p, Clock c) {
     }
     const auto *record = p.conversation(0)->record();
     if (!record || record->last_round != 1 || !record->round_count ||
-        !record->rounds[0].answer.size) {
+        !answer_bytes(p, c, record, 0)) {
         return AYNI_INVALID_STATE;
     }
     std::printf("first serving input estimate=%llu\n",
@@ -570,7 +604,7 @@ static ayni_status_t memory(Profile &p, Clock c) {
     }
     record = p.conversation(0)->record();
     if ((remaining == AYNI_OK && derived.usable) || !record || !record->round_count ||
-        record->rounds[0].answer.size) {
+        answer_bytes(p, c, record, 0)) {
         return AYNI_INVALID_STATE;
     }
     std::puts("memory source/derived/confirmation/context-erasure/compaction passed");
@@ -622,7 +656,7 @@ static ayni_status_t compression(Profile &p, Clock c) {
         }
     }
     const auto *record = p.conversation(0)->record();
-    if (!record || !record->summary.size || !record->summary_first ||
+    if (!record || !record->summary.id || !record->summary_first ||
         record->summary_last < record->summary_first || record->context_version <= 1) {
         return AYNI_INVALID_STATE;
     }
@@ -829,6 +863,9 @@ static ayni_status_t retained_call(Profile &p, uint64_t goal_id, uint64_t &sum_c
             }
         }
     }
+    if (status == AYNI_OK && (found != 1 || models != 2)) {
+        std::printf("retained calls found=%u models=%u\n", found, models);
+    }
     return status != AYNI_OK           ? status
            : found == 1 && models == 2 ? exact_sum(p, sum_call)
                                        : AYNI_INVALID_STATE;
@@ -868,33 +905,35 @@ static TextExpectation fingerprint(ayni_string_v1 text) {
     }
     return {text.size, result};
 }
-static BodyExpectation expected_body(const strategies::ConversationRecord &record) {
+static BodyExpectation expected_body(const strategies::ConversationRecord &record,
+                                     const Texts &loaded) {
     BodyExpectation out;
-    out.summary = fingerprint(record.summary.view());
-    out.history = fingerprint(record.history.view());
+    out.summary = fingerprint(view(loaded.summary));
+    out.history = fingerprint(view(loaded.history));
     out.generation = record.generation;
     out.revision = record.revision;
     out.context_version = record.context_version;
     out.summary_first = record.summary_first;
     out.summary_last = record.summary_last;
-    for (uint32_t at = 0; at < record.round_count; ++at) {
-        out.users[at] = fingerprint(record.rounds[at].user.view());
-        out.answers[at] = fingerprint(record.rounds[at].answer.view());
+    for (uint32_t at = 0; at < loaded.rounds.size() && at < BodyExpectation::rounds_max; ++at) {
+        out.users[at] = fingerprint(view(loaded.rounds[at].user));
+        out.answers[at] = fingerprint(view(loaded.rounds[at].answer));
     }
     return out;
 }
 static bool same_text(TextExpectation a, TextExpectation b) {
     return a.bytes == b.bytes && a.fingerprint == b.fingerprint;
 }
-static bool same_body(const strategies::ConversationRecord &record, const BodyExpectation &before) {
-    const auto after = expected_body(record);
+static bool same_body(const strategies::ConversationRecord &record, const Texts &loaded,
+                      const BodyExpectation &before) {
+    const auto after = expected_body(record, loaded);
     if (!same_text(after.summary, before.summary) || !same_text(after.history, before.history) ||
         after.generation != before.generation || after.revision != before.revision ||
         after.context_version != before.context_version ||
         after.summary_first != before.summary_first || after.summary_last != before.summary_last) {
         return false;
     }
-    for (uint32_t at = 0; at < record.round_count; ++at) {
+    for (uint32_t at = 0; at < BodyExpectation::rounds_max; ++at) {
         if (!same_text(after.users[at], before.users[at]) ||
             !same_text(after.answers[at], before.answers[at])) {
             return false;
@@ -970,6 +1009,8 @@ ayni_status_t normal(Profile &p, Clock c, Evidence &e) {
         e.last_round[at] = p.conversation(at)->record()->last_round + 1;
         status = p.conversation(at)->begin(text("sum"));
         if (status != AYNI_OK) {
+            std::printf("begin %u failed %ld\n", static_cast<unsigned>(at),
+                        static_cast<long>(status));
             return status;
         }
     }
@@ -985,30 +1026,37 @@ ayni_status_t normal(Profile &p, Clock c, Evidence &e) {
         return status;
     }
     for (uint32_t at = 0; at < agent_count; ++at) {
-        const auto *record = p.conversation(at)->record();
-        if (!record || record->last_round != e.last_round[at] || !record->round_count ||
-            !record->rounds[record->round_count - 1].answer.size ||
-            p.model_executions(at) != model_before[at] + 2 || !e.model_resource_seen[at]) {
-            std::printf("record %u last %llu rounds %u executions %llu answer %u\n",
-                        static_cast<unsigned>(at),
-                        record ? static_cast<unsigned long long>(record->last_round) : 0,
-                        static_cast<unsigned>(record ? record->round_count : 0),
-                        static_cast<unsigned long long>(p.model_executions(at)),
-                        static_cast<unsigned>(record ? record->rounds[0].answer.size : 0));
+        const auto *current = p.conversation(at)->record();
+        if (!current) {
+            std::printf("record %u unavailable\n", static_cast<unsigned>(at));
+            return AYNI_INVALID_STATE;
+        }
+        const auto record = *current;
+        Texts loaded;
+        status = texts(p, c, record, loaded);
+        if (status != AYNI_OK || record.last_round != e.last_round[at] || loaded.rounds.empty() ||
+            loaded.rounds.size() > BodyExpectation::rounds_max ||
+            loaded.rounds.back().answer.empty() || p.model_executions(at) != model_before[at] + 2 ||
+            !e.model_resource_seen[at]) {
+            std::printf(
+                "record %u last %llu rounds %u executions %llu status %ld\n",
+                static_cast<unsigned>(at), static_cast<unsigned long long>(record.last_round),
+                static_cast<unsigned>(loaded.rounds.size()),
+                static_cast<unsigned long long>(p.model_executions(at)), static_cast<long>(status));
             return AYNI_INVALID_STATE;
         }
         e.goals[at] = p.conversation(at)->latest_goal();
-        e.contexts[at] = record->id;
-        e.rounds[at] = record->round_count;
-        e.body[at] = expected_body(*record);
+        e.contexts[at] = record.id;
+        e.rounds[at] = record.round_count;
+        e.body[at] = expected_body(record, loaded);
         status = retained_call(p, e.goals[at], e.calls[at]);
         if (status != AYNI_OK) {
             return status;
         }
+        const auto &answer = loaded.rounds.back().answer;
         std::printf("agent %u goal %llu answer %.*s\n", static_cast<unsigned>(at),
-                    static_cast<unsigned long long>(e.goals[at]),
-                    static_cast<int>(record->rounds[record->round_count - 1].answer.size),
-                    record->rounds[record->round_count - 1].answer.bytes.data());
+                    static_cast<unsigned long long>(e.goals[at]), static_cast<int>(answer.size()),
+                    answer.data());
     }
     std::printf("peak live Tasks=%u limit=%u; model.a/model.b used, model.slot unused\n",
                 static_cast<unsigned>(e.peak_live_tasks),
@@ -1028,9 +1076,15 @@ ayni_status_t reopened(Profile &p, Clock c, const Evidence &e) {
             p.model_executions(at)) {
             return AYNI_INVALID_STATE;
         }
-        const auto &last = record->rounds[record->round_count - 1];
-        if (!same_body(*record, e.body[at]) || !exact(last.user.view(), "sum") ||
-            !exact(last.answer.view(), at == 0 ? "A: fixture reply." : "B: fixture reply.")) {
+        const auto copy = *record;
+        Texts loaded;
+        status = texts(p, c, copy, loaded);
+        if (status != AYNI_OK || loaded.rounds.empty()) {
+            return status != AYNI_OK ? status : AYNI_INVALID_STATE;
+        }
+        const auto &last = loaded.rounds.back();
+        if (!same_body(copy, loaded, e.body[at]) || !exact(view(last.user), "sum") ||
+            !exact(view(last.answer), at == 0 ? "A: fixture reply." : "B: fixture reply.")) {
             return AYNI_INVALID_STATE;
         }
         auto goal = initialized<ayni_goal_info_v1>();

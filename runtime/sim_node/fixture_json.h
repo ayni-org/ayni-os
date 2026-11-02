@@ -62,7 +62,7 @@ inline std::string configuration_json(const ayni_config_v1 &config) {
     AYNI_FIXTURE_CONFIG_FIELD(goal_requirement_capacity);
     AYNI_FIXTURE_CONFIG_FIELD(resource_capacity);
     AYNI_FIXTURE_CONFIG_FIELD(resource_request_capacity);
-    AYNI_FIXTURE_CONFIG_FIELD(task_model_call_hard_limit);
+    AYNI_FIXTURE_CONFIG_FIELD(max_turns);
     AYNI_FIXTURE_CONFIG_FIELD(call_capability_capacity);
     AYNI_FIXTURE_CONFIG_FIELD(provider_capacity);
     AYNI_FIXTURE_CONFIG_FIELD(binding_capacity);

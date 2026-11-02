@@ -2,17 +2,27 @@
 #ifndef AYNI_PROVIDERS_FIXTURE_MODEL_H
 #define AYNI_PROVIDERS_FIXTURE_MODEL_H
 #include <array>
+#include <ayni/bodies.h>
 #include <ayni/calls.h>
 #include <optional>
 namespace ayni::providers::fixture_model {
 enum class Variant { a, b };           // Two distinct provider/endpoint identities; one capability.
 enum class Service { tools, summary }; // Summary returns fixed fixture text, never a model claim.
+// The longest prompt the fixture reads; a longer one is refused at admission.
+inline constexpr uint32_t prompt_bytes_max = 32768;
+inline constexpr uint32_t call_result_bytes = 1024;
+// Canonical input bytes of the model Call: the whole inline prompt, or only its reference when
+// prompts come from a body store (ADR-0096). The runtime sizes the Kernel's Call strides from it.
+uint32_t call_input_bytes(bool bodies);
 // Owner-thread only, no reentry. All members and the clock context outlive the
 // registered Kernel; accepted requests retain only copied metadata and completion.
 // Destruction requires pending()==false, after terminal posts and Kernel destroy.
 class Provider {
   public:
-    Provider(Variant, Service, void *clock_context, uint64_t (*now_us)(void *));
+    // With bodies, the prompt arrives only by reference and is read and verified at submit;
+    // the store is borrowed through Kernel destroy.
+    Provider(Variant, Service, void *clock_context, uint64_t (*now_us)(void *),
+             const ayni_body_store_v1 *bodies = nullptr);
     Provider(const Provider &) = delete;
     Provider &operator=(const Provider &) = delete;
     // Descriptor views borrow this object through Kernel destroy. Null clock is invalid.
@@ -45,6 +55,8 @@ class Provider {
     Service service_;
     void *clock_context_;        // Borrowed through destruction; null permitted by clock.
     uint64_t (*now_us_)(void *); // Required nonblocking owner clock.
+    const ayni_body_store_v1 *bodies_;
+    std::array<char, prompt_bytes_max> prompt_{}; // A referenced prompt, only during submit.
     ayni_call_resource_v1 resource_{};
     std::array<ayni_schema_node_v1, 2> input_{};
     ayni_schema_node_v1 result_{};

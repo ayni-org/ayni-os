@@ -12,7 +12,8 @@ constexpr uint64_t domain = 1;
 constexpr uint32_t duration_max_us = 1000000;
 constexpr uint32_t sample_age_max_us = 100000;
 constexpr uint32_t poll_period_us = 20000;
-constexpr uint32_t text_bytes = 64;
+constexpr uint32_t text_bytes = call_result_bytes;
+constexpr uint32_t body_field_id = UINT32_MAX; // The text field, after every limit field.
 ayni_string_v1 text(const char *value) {
     return {value, static_cast<uint32_t>(std::strlen(value))};
 }
@@ -53,7 +54,7 @@ struct Executor::Impl {
     ayni_execution_permit_v1 permit{};
     ayni_call_resource_v1 resource{text("mock.actuator"), 1, 0};
     ayni_call_capability_v1 capability{};
-    static constexpr uint32_t body_field = UINT32_MAX;
+    static constexpr uint32_t body_field = body_field_id;
     std::array<ayni_schema_node_v1, AYNI_CONTROL_FIELD_COUNT_MAX + 2> input_schema{};
     std::array<ayni_authority_projection_v1, AYNI_CONTROL_FIELD_COUNT_MAX> projections{};
     ayni_schema_node_v1 result_schema{};
@@ -82,7 +83,7 @@ struct Executor::Impl {
                       {sizeof(ayni_call_contract_v1), AYNI_CALL_ACTION, AYNI_CALL_TOOL,
                        AYNI_CALL_EFFECT_PHYSICAL, AYNI_CALL_NOT_IDEMPOTENT, AYNI_CALL_QUERY_NONE,
                        AYNI_CALL_CANCEL_REQUEST, 0, config.call_timeout_ms, AYNI_CALL_INPUT_VALUE,
-                       AYNI_CALL_RESULT_TEXT, text_bytes + 256, text_bytes, 1, &resource, nullptr},
+                       AYNI_CALL_RESULT_TEXT, 0, call_result_bytes, 1, &resource, nullptr},
                       nullptr};
         const uint32_t count = config.limits.count;
         input_schema[0].kind = AYNI_VALUE_OBJECT;
@@ -119,25 +120,10 @@ struct Executor::Impl {
                     0,
                     count ? projections.data() : nullptr};
         capability.business = &business;
-        ValueBuilder<AYNI_CONTROL_FIELD_COUNT_MAX + 2> maximum;
-        maximum.object();
-        for (uint32_t at = 0; at < count; ++at) {
-            maximum.integer(at + 1, config.limits.fields[at].maximum);
+        capability.contract.input_text_limit = call_input_bytes(config);
+        if (capability.contract.input_text_limit == 0U) {
+            return AYNI_INVALID_ARGUMENT;
         }
-        char longest_text[text_bytes]{};
-        maximum.text(body_field, {longest_text, text_bytes});
-        maximum.end();
-        ayni_value_v1 largest{};
-        const auto built = maximum.finish(largest);
-        if (built != AYNI_OK) {
-            return built;
-        }
-        uint32_t required = 0;
-        const auto measured = ayni_value_write(&largest, nullptr, 0, &required);
-        if (measured != AYNI_BUFFER_TOO_SMALL) {
-            return measured;
-        }
-        capability.contract.input_text_limit = required;
         provider = {sizeof(provider),
                     version,
                     text("mock.execution"),
@@ -459,6 +445,7 @@ struct Executor::Impl {
             0,
             nullptr,
             {},
+            {},
             {}};
         // Kernel power loss ends the borrow, while the independent physical gate
         // continues until its existing lease/interlocks stop it (C-PERMIT-009).
@@ -470,6 +457,26 @@ struct Executor::Impl {
         return posted;
     }
 };
+// The largest admissible input: every limit field at its maximum and the longest body.
+uint32_t call_input_bytes(const Config &config) {
+    if (config.limits.count > AYNI_CONTROL_FIELD_COUNT_MAX) {
+        return 0;
+    }
+    ValueBuilder<AYNI_CONTROL_FIELD_COUNT_MAX + 2> maximum;
+    maximum.object();
+    for (uint32_t at = 0; at < config.limits.count; ++at) {
+        maximum.integer(at + 1, config.limits.fields[at].maximum);
+    }
+    char longest_text[text_bytes]{};
+    maximum.text(body_field_id, {longest_text, text_bytes});
+    maximum.end();
+    ayni_value_v1 largest{};
+    uint32_t required = 0;
+    return maximum.finish(largest) == AYNI_OK &&
+                   ayni_value_write(&largest, nullptr, 0, &required) == AYNI_BUFFER_TOO_SMALL
+               ? required
+               : 0U;
+}
 Executor::Executor() = default;
 Executor::~Executor() {
     if (close() != AYNI_OK) {

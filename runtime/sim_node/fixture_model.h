@@ -8,9 +8,14 @@ namespace ayni::runtime::fixtures {
 // Real reusable Mock plus a fake-time gate; the probe owns only dispatch diagnostics.
 class ModelProbe {
   public:
+    // With bodies, a model request may name its body by reference (ADR-0096).
     ayni_status_t configure(providers::mock::Variant, uint64_t delay_us, Clock,
                             std::optional<uint32_t> timeout_ms = std::nullopt,
-                            providers::mock::Service = providers::mock::Service::text);
+                            providers::mock::Service = providers::mock::Service::text,
+                            const ayni_body_store_v1 *bodies = nullptr);
+    // Contract maxima of the declared model Call, for the Kernel's Call strides.
+    static uint32_t call_input_bytes();
+    static constexpr uint32_t call_result_bytes = 512;
     ayni_provider_v1 describe();
     ayni_status_t advance(ayni_kernel_t *, uint64_t &barrier_checks);
     ayni_status_t close();

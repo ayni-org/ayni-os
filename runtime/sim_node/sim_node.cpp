@@ -27,7 +27,7 @@ SimNode::~SimNode() {
         static_cast<void>(impl_.release());
     }
 }
-ayni_status_t SimNode::assemble(const ayni_config_v1 &config) {
+ayni_status_t SimNode::assemble(const ayni_config_v1 &config, const ayni_body_store_v1 *bodies) {
     if (!impl_) {
         impl_.reset(new (std::nothrow) Impl);
     }
@@ -46,7 +46,8 @@ ayni_status_t SimNode::assemble(const ayni_config_v1 &config) {
     if (!impl_->memory) {
         return AYNI_CAPACITY_EXCEEDED;
     }
-    const auto host = impl_->host.table();
+    auto host = impl_->host.table();
+    host.bodies = bodies;
     status = ayni_create(&config, &host, impl_->memory, bytes, &impl_->kernel);
     if (status != AYNI_OK) {
         release_arena();

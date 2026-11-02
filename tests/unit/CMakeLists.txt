@@ -108,7 +108,7 @@ add_executable(ayni_unit_tests
     work_restore_test.cpp)
 # ayni_core_internal gives white-box tests the Core-internal include root.
 target_link_libraries(ayni_unit_tests PRIVATE
-    ayni_core ayni_core_internal ayni_host_native ayni_host_storage ayni_host_sim ayni_runtime_native_node ayni_provider_mock ayni_provider_mock_execution ayni_provider_shell ayni_control_gate
+    ayni_core ayni_core_internal ayni_host_native ayni_host_storage ayni_host_sim ayni_runtime_conversation ayni_runtime_native_node ayni_provider_mock ayni_provider_mock_execution ayni_provider_shell ayni_control_gate
     ayni_provider_software ayni_warnings GTest::gtest_main)
 # Every test file includes gtest.h, which takes about a second to parse, so the
 # headers most test files share are parsed once per build. Test files still
@@ -127,18 +127,18 @@ gtest_discover_tests(ayni_unit_tests)
 # Separate protocol executable keeps network fixture dependencies out of Core tests.
 add_executable(ayni_openai_provider_tests openai_provider_test.cpp)
 target_link_libraries(ayni_openai_provider_tests PRIVATE ayni_core ayni_core_internal
-    ayni_openai_protocol_fixture
+    ayni_openai_protocol_fixture ayni_runtime_common
     ayni_host_sim ayni_provider_mock ayni_provider_openai_compat ayni_warnings GTest::gtest_main)
 gtest_discover_tests(ayni_openai_provider_tests)
 
 # No CTest registration: this executable sends billed requests only when invoked
 # manually with --live and runtime environment configuration (ADR-0055).
 add_executable(ayni_openai_smoke EXCLUDE_FROM_ALL ../manual/openai_smoke.cpp)
-target_link_libraries(ayni_openai_smoke PRIVATE ayni_core ayni_core_internal
+target_link_libraries(ayni_openai_smoke PRIVATE ayni_core ayni_core_internal ayni_runtime_common
     ayni_host_sim ayni_provider_mock ayni_provider_openai_compat ayni_warnings GTest::gtest)
 
 add_executable(ayni_strategies_tests strategies_test.cpp conversation_test.cpp harness_context_test.cpp managed_operations_test.cpp)
-target_link_libraries(ayni_strategies_tests PRIVATE ayni_core ayni_core_internal
+target_link_libraries(ayni_strategies_tests PRIVATE ayni_core ayni_core_internal ayni_runtime_common
     ayni_host_sim ayni_strategies ayni_provider_software ayni_warnings GTest::gtest_main)
 gtest_discover_tests(ayni_strategies_tests)
 

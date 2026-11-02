@@ -3,22 +3,32 @@
 #include <ayni/ayni.hpp>
 namespace ayni::runtime::fixtures {
 namespace {
-// AP-03 messages include fixed instructions and complete tool groups. The
-// synthetic answer stays short instead of echoing an entire framed request.
-constexpr uint32_t text_limit = 32768;
-constexpr uint32_t result_limit = 512;
+// Inline prompts of the fixture policies; ToolLoop requests travel by reference (ADR-0096), so
+// this bounds only inline text. The synthetic answer stays short instead of echoing a request.
+constexpr uint32_t text_limit = 1024;
 constexpr char synthetic_reply[] = "Deterministic model fixture reply.";
+providers::mock::Config mock(providers::mock::Variant variant, providers::mock::Service service,
+                             const ayni_body_store_v1 *bodies) {
+    providers::mock::Config config{
+        variant, service, 1, text_limit, {synthetic_reply, sizeof(synthetic_reply) - 1}};
+    config.bodies = bodies;
+    return config;
+}
 } // namespace
+uint32_t ModelProbe::call_input_bytes() {
+    return providers::mock::call_input_bytes(
+        mock(providers::mock::Variant::a, providers::mock::Service::text, nullptr));
+}
 ayni_status_t ModelProbe::configure(providers::mock::Variant variant, uint64_t delay_us,
                                     Clock clock, std::optional<uint32_t> timeout_ms,
-                                    providers::mock::Service service) {
+                                    providers::mock::Service service,
+                                    const ayni_body_store_v1 *bodies) {
     clock_ = clock;
     if (timeout_ms && *timeout_ms == 0) {
         return AYNI_INVALID_ARGUMENT;
     }
     delay_us_ = delay_us;
-    const auto status = provider_.configure(
-        {variant, service, 1, text_limit, {synthetic_reply, sizeof(synthetic_reply) - 1}});
+    const auto status = provider_.configure(mock(variant, service, bodies));
     if (status != AYNI_OK) {
         return status;
     }
@@ -33,7 +43,7 @@ ayni_status_t ModelProbe::configure(providers::mock::Variant variant, uint64_t d
         declaration_ = *offer.capabilities;
         // This adapter emits only its fixed short fixture reply. Preserve the
         // existing result lane while admitting larger framed model input.
-        declaration_.contract.result_text_limit = result_limit;
+        declaration_.contract.result_text_limit = call_result_bytes;
         if (timeout_ms) {
             declaration_.contract.timeout_ms = *timeout_ms;
         }

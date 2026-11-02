@@ -11,6 +11,7 @@
 #include <ayni/model_messages.hpp>
 #include <ayni/providers/mock.h>
 #include <ayni/providers/openai_compat.h>
+#include <ayni/runtime/common/memory_bodies.h>
 #include <ayni/values.hpp>
 #include <cstdlib>
 #include <functional>
@@ -20,7 +21,6 @@ namespace ayni::test {
 using namespace ayni::test;
 using ayni::providers::openai_compat::Config;
 using ayni::providers::openai_compat::Provider;
-constexpr uint32_t result_limit = 512;
 constexpr uint32_t destination_field = AYNI_MODEL_DESTINATION_FIELD_ID;
 ayni_authority_value_set_v1 tokens(ayni_authority_value_kind_t kind, const ayni_string_v1 *values,
                                    uint32_t count) {
@@ -33,7 +33,7 @@ ayni_authority_value_set_v1 tokens(ayni_authority_value_kind_t kind, const ayni_
 class OpenaiFixture : public ::testing::Test {
   protected:
     void start(const std::string &body, int http = 200, unsigned delay_ms = 0,
-               uint32_t response_limit = 4096, uint32_t timeout_ms = 1500,
+               uint32_t max_output_tokens = 1024, uint32_t timeout_ms = 1500,
                const std::string &headers = {}) {
         server = std::make_unique<LoopbackHttp>(body, http, delay_ms, headers);
         ASSERT_EQ(setenv("AYNI_PROTOCOL_FIXTURE_KEY", "fixture-only-key", 1), 0);
@@ -41,14 +41,16 @@ class OpenaiFixture : public ::testing::Test {
         config.base_url = server->url();
         config.model = "fixture-model";
         config.key_environment = "AYNI_PROTOCOL_FIXTURE_KEY";
-        config.text_max_bytes = result_limit;
         config.request_capacity = 1;
-        config.response_max_bytes = response_limit;
+        config.max_output_tokens = max_output_tokens;
         config.timeout_ms = timeout_ms;
         config.result_format = model_result_format;
         initialize(config);
     }
-    void initialize(const Config &config) {
+    void initialize(Config config) {
+        if (!config.bodies) {
+            config.bodies = bodies.store();
+        }
         ASSERT_EQ(provider.configure(config), AYNI_OK);
         ASSERT_EQ(provider.describe(descriptor), AYNI_OK);
         display.input[1].min_i64 = 5;
@@ -68,8 +70,8 @@ class OpenaiFixture : public ::testing::Test {
         c.call_capability_capacity = 2;
         c.provider_capacity = 2;
         c.binding_capacity = 2;
-        c.call_input_max_bytes = 640;
-        c.call_result_max_bytes = result_limit;
+        c.call_input_max_bytes = ayni::providers::openai_compat::call_input_bytes_max;
+        c.call_result_max_bytes = AYNI_CALL_RESULT_BYTES_DEFAULT;
         c.resource_capacity = 2;
         c.resource_request_capacity = 4;
         work.node().on_create([this](ayni_kernel_t *kernel) { register_profile(kernel); });
@@ -227,8 +229,22 @@ class OpenaiFixture : public ::testing::Test {
         if (read == AYNI_NOT_FOUND) {
             ayni::ValueBuilder<2> value;
             value.object();
-            value.text(AYNI_MODEL_BODY_FIELD_ID,
-                       {prompt.data(), static_cast<uint32_t>(prompt.size())});
+            if (prompt_by_reference) {
+                // The prompt goes to the body store and only its reference to Core (ADR-0096).
+                ayni_body_ref_v1 ref{};
+                const ayni_bytes_v1 bytes{reinterpret_cast<const uint8_t *>(prompt.data()),
+                                          static_cast<uint32_t>(prompt.size())};
+                if (bodies.store()->write(bodies.store()->context, 1, bytes, &ref) != AYNI_OK) {
+                    return AYNI_INTERNAL;
+                }
+                if (change_reference) {
+                    change_reference(ref);
+                }
+                value.body(AYNI_MODEL_BODY_FIELD_ID, ref);
+            } else {
+                value.text(AYNI_MODEL_BODY_FIELD_ID,
+                           {prompt.data(), static_cast<uint32_t>(prompt.size())});
+            }
             value.end();
             ayni_call_request_v1 request{sizeof(request),
                                          AYNI_POLICY_REQUEST_MODEL,
@@ -252,12 +268,32 @@ class OpenaiFixture : public ::testing::Test {
             return read;
         }
         seen_result = result;
-        reply = string_of(result.text);
+        // A stored answer is read from the body store and checked against its reference.
+        std::string stored;
+        ayni_bytes_v1 answer{reinterpret_cast<const uint8_t *>(result.text.data), result.text.size};
+        if (result.body.id) {
+            stored.resize(result.body.size);
+            auto *out = reinterpret_cast<uint8_t *>(stored.data());
+            if (bodies.store()->read(bodies.store()->context, &result.body, out,
+                                     result.body.size) != AYNI_OK ||
+                ayni_body_verify(&result.body, {out, result.body.size}) != AYNI_OK) {
+                return AYNI_INTERNAL;
+            }
+            answer = {out, result.body.size};
+        }
+        reply.assign(reinterpret_cast<const char *>(answer.data), answer.size);
         if (result.tool_call_count) {
+            uint32_t listed = 0;
+            ayni_string_v1 assistant{};
+            if (ayni_tool_calls_read(tool_calls_workspace(), answer, &listed, &assistant) !=
+                    AYNI_OK ||
+                listed != result.tool_call_count) {
+                return AYNI_INTERNAL;
+            }
+            reply = string_of(assistant);
             ayni_task_tool_call_v1 proposed{};
             proposed.struct_size = sizeof(proposed);
-            const auto status =
-                snapshot.call_tool(snapshot.call_context, text("plan"), 0, &proposed);
+            const auto status = ayni_tool_call_read(tool_calls_workspace(), answer, 0, &proposed);
             if (status != AYNI_OK) {
                 return status;
             }
@@ -440,6 +476,7 @@ class OpenaiFixture : public ::testing::Test {
     }
     std::unique_ptr<LoopbackHttp> server;
     MockDisplaySchema display;
+    ayni::runtime::MemoryBodies bodies; // Answers by reference (ADR-0096); outlives provider.
     Provider provider;
     ayni::providers::mock::Provider presenter;
     WorkNode work;
@@ -450,6 +487,8 @@ class OpenaiFixture : public ::testing::Test {
     std::string device_reply;
     std::string reply, proposal;
     std::string prompt = "say hello";
+    bool prompt_by_reference = false;                         // Send prompt as a body reference.
+    std::function<void(ayni_body_ref_v1 &)> change_reference; // Alters that reference first.
     uint64_t command = 0, last_goal = 0;
     uint32_t model_capacity = 1;
     uint32_t model_result_format = AYNI_CALL_RESULT_TOOL_CALLS;

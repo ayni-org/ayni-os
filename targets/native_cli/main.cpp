@@ -194,11 +194,10 @@ class Driver {
     ayni_status_t startup_ = AYNI_NOT_READY, final_status_ = AYNI_OK;
     std::thread worker_;
 };
-enum class Line { ready, end, too_long, error };
+enum class Line { ready, end, error };
+// The line grows as it arrives; the ToolLoop refuses an input that does not fit the window.
 Line read_line(std::string &line, Driver &driver) {
-    constexpr size_t line_max = 4096;
     line.clear();
-    bool overflow = false;
     for (;;) {
         if (interrupted.load(std::memory_order_relaxed) || driver.finished()) {
             return Line::end;
@@ -223,19 +222,15 @@ Line read_line(std::string &line, Driver &driver) {
             return Line::error;
         }
         if (!n) {
-            return overflow ? Line::too_long : line.empty() ? Line::end : Line::ready;
+            return line.empty() ? Line::end : Line::ready;
         }
         if (c == '\n') {
-            return overflow ? Line::too_long : Line::ready;
+            return Line::ready;
         }
         if (c == '\r') {
             continue;
         }
-        if (line.size() == line_max) {
-            overflow = true;
-        } else if (!overflow) {
-            line.push_back(c);
-        }
+        line.push_back(c);
     }
 }
 
@@ -284,13 +279,10 @@ int main(int argc, char **argv) {
             if (read == Line::end) {
                 break;
             }
-            if (read != Line::ready) {
-                output("ERROR 输入行无效或超过 4096 字节。");
+            if (read == Line::error) {
+                output("ERROR 无法读取输入。");
                 failed = true;
-                if (read == Line::error) {
-                    break;
-                }
-                continue;
+                break;
             }
             if (line.empty()) {
                 continue;

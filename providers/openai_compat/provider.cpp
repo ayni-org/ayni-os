@@ -1,4 +1,5 @@
 #include "protocol.h"
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <ayni/providers/openai_compat.h>
@@ -14,10 +15,9 @@
 
 namespace ayni::providers::openai_compat {
 namespace {
-constexpr uint32_t request_capacity_max = 8;
-constexpr uint32_t response_bytes_max = 1048576;
-constexpr uint32_t timeout_max_ms = 300000;
-constexpr uint32_t output_tokens_max = 8192;
+// A response holds at most max_tokens of output, each at most a few escaped bytes, plus fixed
+// protocol metadata; a body beyond this is refused rather than buffered (ADR-0095).
+constexpr size_t response_token_bytes = 96, response_metadata_bytes = 65536;
 constexpr size_t key_bytes_max = 4096;
 constexpr size_t url_bytes_max = 2048;
 constexpr size_t model_bytes_max = 128;
@@ -110,6 +110,11 @@ void wipe(char *data, size_t size) {
         --size;
     }
 }
+// Erases the private bytes and empties the text, keeping its storage for the next request.
+void wipe(std::string &text) {
+    wipe(text.data(), text.size());
+    text.clear();
+}
 } // namespace
 
 struct Provider::Impl {
@@ -121,14 +126,14 @@ struct Provider::Impl {
         std::atomic<Phase> phase{Phase::empty};
         std::atomic<bool> cancel_requested{false};
         ayni_attempt_ref_v1 attempt{};
+        uint64_t logical_call_id = 0; // Scope of the answer body.
         ayni_provider_completion_t *completion = nullptr;
         Clock::time_point deadline;
-        std::unique_ptr<char[]> input;
-        uint32_t input_size = 0;
-        std::unique_ptr<char[]> request;
-        size_t request_size = 0;
-        std::unique_ptr<char[]> response;
-        size_t response_size = 0;
+        ayni_body_ref_v1 input_ref{}; // Nonzero until the worker has read the request body.
+        std::string input;
+        std::string answer_body; // Encoded answer while its body write is not yet durable.
+        std::string request;
+        std::string response; // Grows on demand up to response_limit, wiping old copies.
         size_t response_limit = 0;
         bool response_overflow = false; // Worker-owned callback evidence.
         bool cancel_control = false;    // Ready answer must publish this before its terminal.
@@ -140,7 +145,7 @@ struct Provider::Impl {
             }
         }
     };
-    explicit Impl(const Config &value) : config(value), protocol(value.response_max_bytes) {}
+    explicit Impl(const Config &value) : config(value) {}
     ~Impl() {
         stop();
         if (multi) {
@@ -254,11 +259,8 @@ struct Provider::Impl {
         slots = std::make_unique<Slot[]>(config.request_capacity);
         for (uint32_t i = 0; i < config.request_capacity; ++i) {
             auto &slot = slots[i];
-            slot.input = std::make_unique<char[]>(config.text_max_bytes);
-            slot.request = std::make_unique<char[]>(request_json_max);
-            slot.response = std::make_unique<char[]>(config.response_max_bytes);
-            slot.answer.body = std::make_unique<char[]>(config.text_max_bytes);
-            slot.response_limit = config.response_max_bytes;
+            slot.response_limit =
+                response_metadata_bytes + response_token_bytes * config.max_output_tokens;
             slot.easy = curl_easy_init();
             if (!slot.easy) {
                 return AYNI_CAPACITY_EXCEEDED;
@@ -282,8 +284,8 @@ struct Provider::Impl {
                       {sizeof(ayni_call_contract_v1), AYNI_CALL_UNARY, AYNI_CALL_MODEL,
                        AYNI_CALL_EFFECT_EGRESS | AYNI_CALL_EFFECT_BILLING, AYNI_CALL_NOT_IDEMPOTENT,
                        AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_REQUEST, 0, config.timeout_ms,
-                       AYNI_CALL_INPUT_VALUE, config.result_format, config.text_max_bytes + 128,
-                       config.text_max_bytes, 1, &resource, nullptr},
+                       AYNI_CALL_INPUT_VALUE, config.result_format, call_input_bytes_max,
+                       call_result_bytes_max, 1, &resource, nullptr},
                       nullptr};
         input_schema[0].kind = AYNI_VALUE_OBJECT;
         input_schema[0].subtree_end = static_cast<uint32_t>(input_schema.size());
@@ -304,12 +306,12 @@ struct Provider::Impl {
         body.kind = AYNI_VALUE_TEXT;
         body.field_id = AYNI_MODEL_BODY_FIELD_ID;
         body.subtree_end = static_cast<uint32_t>(input_schema.size());
-        body.flags = AYNI_SCHEMA_REQUIRED;
+        body.flags = AYNI_SCHEMA_REQUIRED | AYNI_SCHEMA_EXTERNAL;
         body.name = {"body", 4};
-        body.max_count = config.text_max_bytes;
+        body.max_count = UINT32_MAX; // The context window, not a byte count, bounds it.
         result_schema.kind = AYNI_VALUE_TEXT;
         result_schema.subtree_end = 1;
-        result_schema.max_count = config.text_max_bytes;
+        result_schema.max_count = UINT32_MAX;
         projection.field_id = AYNI_MODEL_DESTINATION_FIELD_ID;
         projection.path_count = 1;
         projection.path[0] = AYNI_MODEL_DESTINATION_FIELD_ID;
@@ -346,9 +348,10 @@ struct Provider::Impl {
         }
         ayni::ValueReader input;
         ayni_string_v1 body{};
+        ayni_body_ref_v1 ref{};
         if (input.read(request->value) != AYNI_OK ||
-            !ayni::ValueReader::text(input.field(AYNI_MODEL_BODY_FIELD_ID), body) ||
-            body.size > self.config.text_max_bytes) {
+            (!ayni::ValueReader::text(input.field(AYNI_MODEL_BODY_FIELD_ID), body) &&
+             !ayni::ValueReader::body(input.field(AYNI_MODEL_BODY_FIELD_ID), ref))) {
             return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
         }
         for (uint32_t i = 0; i < self.config.request_capacity; ++i) {
@@ -356,11 +359,14 @@ struct Provider::Impl {
             if (slot.phase.load(std::memory_order_acquire) != Phase::empty) {
                 continue;
             }
-            if (body.size) {
-                std::memcpy(slot.input.get(), body.data, body.size);
+            try {
+                slot.input.assign(body.data, body.size);
+            } catch (const std::bad_alloc &) {
+                return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
             }
-            slot.input_size = body.size;
             slot.attempt = request->attempt;
+            slot.logical_call_id = request->logical_call_id;
+            slot.input_ref = ref;
             slot.completion = completion;
             slot.deadline = Clock::now() + std::chrono::milliseconds(self.config.timeout_ms);
             slot.cancel_requested.store(false);
@@ -385,13 +391,26 @@ struct Provider::Impl {
     }
     static size_t receive(char *data, size_t width, size_t count, void *context) {
         auto &slot = *static_cast<Slot *>(context);
-        if (width != 0 && count > (slot.response_limit - slot.response_size) / width) {
+        if (width != 0 && count > (slot.response_limit - slot.response.size()) / width) {
             slot.response_overflow = true;
             return 0;
         }
         const size_t size = width * count;
-        std::memcpy(slot.response.get() + slot.response_size, data, size);
-        slot.response_size += size;
+        if (slot.response.size() + size > slot.response.capacity()) {
+            // Grow by doubling into a fresh buffer and wipe the old one, so no private copy
+            // is left behind in freed memory.
+            std::string grown;
+            try {
+                grown.reserve(std::max(slot.response.size() + size, 2 * slot.response.capacity()));
+            } catch (const std::bad_alloc &) {
+                slot.response_overflow = true;
+                return 0;
+            }
+            grown.assign(slot.response);
+            wipe(slot.response);
+            slot.response.swap(grown);
+        }
+        slot.response.append(data, size);
         return size;
     }
     bool setup(Slot &slot, long remaining_ms) {
@@ -400,9 +419,9 @@ struct Provider::Impl {
         return curl_easy_setopt(slot.easy, CURLOPT_URL, url.c_str()) == CURLE_OK &&
                curl_easy_setopt(slot.easy, CURLOPT_HTTPHEADER, headers) == CURLE_OK &&
                curl_easy_setopt(slot.easy, CURLOPT_POST, 1L) == CURLE_OK &&
-               curl_easy_setopt(slot.easy, CURLOPT_POSTFIELDS, slot.request.get()) == CURLE_OK &&
+               curl_easy_setopt(slot.easy, CURLOPT_POSTFIELDS, slot.request.data()) == CURLE_OK &&
                curl_easy_setopt(slot.easy, CURLOPT_POSTFIELDSIZE_LARGE,
-                                static_cast<curl_off_t>(slot.request_size)) == CURLE_OK &&
+                                static_cast<curl_off_t>(slot.request.size())) == CURLE_OK &&
                curl_easy_setopt(slot.easy, CURLOPT_WRITEFUNCTION, receive) == CURLE_OK &&
                curl_easy_setopt(slot.easy, CURLOPT_WRITEDATA, &slot) == CURLE_OK &&
                curl_easy_setopt(slot.easy, CURLOPT_PRIVATE, &slot) == CURLE_OK &&
@@ -420,13 +439,98 @@ struct Provider::Impl {
                curl_easy_setopt(slot.easy, CURLOPT_FRESH_CONNECT, 1L) == CURLE_OK &&
                curl_easy_setopt(slot.easy, CURLOPT_FORBID_REUSE, 1L) == CURLE_OK;
     }
+    // The referenced request body, read and verified before anything is sent. False keeps the
+    // slot queued while the store is still loading it.
+    bool load(Slot &slot) {
+        if (!slot.input_ref.id) {
+            return true;
+        }
+        auto status = AYNI_CAPACITY_EXCEEDED;
+        try {
+            slot.input.resize(slot.input_ref.size);
+            status = config.bodies->read(config.bodies->context, &slot.input_ref,
+                                         reinterpret_cast<uint8_t *>(slot.input.data()),
+                                         static_cast<uint32_t>(slot.input.size()));
+        } catch (const std::bad_alloc &) {
+        }
+        if (status == AYNI_NOT_READY && Clock::now() < slot.deadline) {
+            return false;
+        }
+        if (status == AYNI_OK) {
+            status = ayni_body_verify(&slot.input_ref,
+                                      {reinterpret_cast<const uint8_t *>(slot.input.data()),
+                                       static_cast<uint32_t>(slot.input.size())});
+        }
+        slot.input_ref = {};
+        if (status == AYNI_OK) {
+            return true;
+        }
+        // Nothing was sent: a missing, changed or unreadable body is refused (ADR-0096).
+        wipe(slot.input);
+        slot.answer.result = {};
+        slot.answer.result.struct_size = sizeof(ayni_provider_result_v1);
+        slot.answer.result.attempt = slot.attempt;
+        slot.answer.fail(status == AYNI_NOT_READY ? AYNI_EXPIRED : status, AYNI_REASON_NONE);
+        slot.answer.result.effect = AYNI_CALL_EFFECT_NONE;
+        slot.phase.store(Phase::ready);
+        return false;
+    }
+    // A completed answer becomes a body: its text, or the tool-call list encoding with the
+    // assistant text beside it. False while the store has not yet made it durable.
+    bool store(Slot &slot) {
+        auto &result = slot.answer.result;
+        if (result.outcome != AYNI_CALL_COMPLETED || result.body.id) {
+            return true;
+        }
+        auto status = AYNI_OK;
+        try {
+            if (result.tool_call_count && slot.answer_body.empty()) {
+                uint32_t size = 0;
+                status = ayni_tool_calls_write(result.tool_calls, result.tool_call_count,
+                                               result.result, nullptr, 0, &size);
+                if (status == AYNI_BUFFER_TOO_SMALL) {
+                    slot.answer_body.resize(size);
+                    status = ayni_tool_calls_write(
+                        result.tool_calls, result.tool_call_count, result.result,
+                        reinterpret_cast<uint8_t *>(slot.answer_body.data()), size, &size);
+                }
+            }
+            // Text is written straight from the decoded answer, which lives until publication.
+            const ayni_bytes_v1 bytes =
+                result.tool_call_count
+                    ? ayni_bytes_v1{reinterpret_cast<const uint8_t *>(slot.answer_body.data()),
+                                    static_cast<uint32_t>(slot.answer_body.size())}
+                    : ayni_bytes_v1{reinterpret_cast<const uint8_t *>(result.result.data),
+                                    result.result.size};
+            ayni_body_ref_v1 ref{};
+            if (status == AYNI_OK) {
+                status =
+                    config.bodies->write(config.bodies->context, slot.logical_call_id, bytes, &ref);
+            }
+            if (status == AYNI_NOT_READY) {
+                return false;
+            }
+            if (status == AYNI_OK) {
+                result.result = {};
+                result.tool_calls = nullptr;
+                result.body = ref;
+            }
+        } catch (const std::bad_alloc &) {
+            status = AYNI_CAPACITY_EXCEEDED;
+        }
+        if (status != AYNI_OK) {
+            slot.answer.fail(status, AYNI_REASON_MODEL_OUTPUT);
+        }
+        wipe(slot.answer_body);
+        return true;
+    }
     void prepare(Slot &slot) {
         slot.answer.result = {};
         slot.answer.result.struct_size = sizeof(ayni_provider_result_v1);
         slot.answer.result.attempt = slot.attempt;
         slot.answer.used = 0;
         slot.answer.fail(AYNI_INTERNAL, AYNI_REASON_NONE);
-        slot.response_size = 0;
+        wipe(slot.response);
         slot.response_overflow = false;
         slot.phase.store(Phase::ready);
         const auto remaining =
@@ -437,13 +541,16 @@ struct Provider::Impl {
             slot.answer.result.effect = AYNI_CALL_EFFECT_NONE;
             return;
         }
-        const auto encoded = protocol.encode(config, {slot.input.get(), slot.input_size},
-                                             slot.request.get(), slot.request_size);
+        ayni_status_t encoded = AYNI_CAPACITY_EXCEEDED;
+        try {
+            encoded = protocol.encode(config,
+                                      {slot.input.data(), static_cast<uint32_t>(slot.input.size())},
+                                      slot.request);
+        } catch (const std::bad_alloc &) {
+        }
         if (encoded != AYNI_OK) {
-            // Encoding can fail after a private prefix was written, before it
-            // published a size; erase the whole reserved lane on this path.
-            wipe(slot.request.get(), request_json_max);
-            slot.request_size = 0;
+            // Encoding can fail after a private prefix was written; erase the whole lane.
+            wipe(slot.request);
             slot.answer.fail(encoded, AYNI_REASON_NONE);
             slot.answer.result.effect = AYNI_CALL_EFFECT_NONE;
             return;
@@ -500,8 +607,11 @@ struct Provider::Impl {
                        http_forbidden = 403, http_not_found = 404, http_timeout = 408,
                        http_rate_limit = 429, http_server_error = 500;
         if (http == http_ok) {
-            protocol.decode(slot.response.get(), slot.response_size, config.text_max_bytes,
-                            slot.answer);
+            try {
+                protocol.decode(slot.response.data(), slot.response.size(), slot.answer);
+            } catch (const std::bad_alloc &) {
+                slot.answer.fail(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_MODEL_OUTPUT);
+            }
         } else {
             const auto status = http == http_bad_request ? AYNI_INVALID_ARGUMENT
                                 : http == http_unauthorized || http == http_forbidden ? AYNI_DENIED
@@ -526,9 +636,16 @@ struct Provider::Impl {
             }
             slot.cancel_control = false;
         }
+        if (!store(slot)) {
+            return; // Posted once the body store has made the answer durable.
+        }
         auto posted = ayni_provider_post(slot.completion, &slot.answer.result);
         if (posted == AYNI_CAPACITY_EXCEEDED || posted == AYNI_INVALID_ARGUMENT) {
-            // The ABI owns list encoding/size. Do not duplicate its wire-size formula.
+            // The ABI owns list encoding/size. Do not duplicate its wire-size formula. Core
+            // refused the post, so nothing else names the stored answer.
+            if (slot.answer.result.body.id && config.bodies->release) {
+                config.bodies->release(config.bodies->context, &slot.answer.result.body);
+            }
             slot.answer.fail(posted, AYNI_REASON_MODEL_OUTPUT);
             posted = ayni_provider_post(slot.completion, &slot.answer.result);
         }
@@ -538,10 +655,12 @@ struct Provider::Impl {
             }
             return;
         }
-        wipe(slot.input.get(), slot.input_size);
-        wipe(slot.request.get(), slot.request_size);
-        wipe(slot.response.get(), slot.response_size);
-        wipe(slot.answer.body.get(), slot.answer.used);
+        wipe(slot.input);
+        wipe(slot.request);
+        wipe(slot.response);
+        wipe(slot.answer.body);
+        wipe(slot.answer_body);
+        slot.input_ref = {};
         active.fetch_sub(1);
         slot.phase.store(Phase::empty, std::memory_order_release);
     }
@@ -596,10 +715,10 @@ struct Provider::Impl {
                 if (phase != Phase::ready && slot.cancel_requested.load()) {
                     cancel_work(slot);
                 } else if (phase == Phase::queued) {
-                    if (multi) {
-                        prepare(slot);
-                    } else {
+                    if (!multi) {
                         abandon(slot);
+                    } else if (load(slot)) {
+                        prepare(slot);
                     }
                 }
                 if (slot.phase.load() == Phase::ready) {
@@ -626,6 +745,9 @@ struct Provider::Impl {
             }
             if (phase != Phase::ready) {
                 abandon(slot);
+            } else if (!store(slot)) {
+                wipe(slot.answer_body); // No later pass will find the store durable.
+                abandon(slot);
             }
             publish(slot);
         }
@@ -648,13 +770,12 @@ ayni_status_t Provider::configure(const Config &config) {
     if ((config.result_format != AYNI_CALL_RESULT_TEXT &&
          config.result_format != AYNI_CALL_RESULT_TOOL_CALLS) ||
         !config.request_capacity || config.request_capacity > request_capacity_max ||
-        !config.text_max_bytes || config.text_max_bytes > AYNI_CALL_TEXT_BYTES_MAX ||
-        !config.response_max_bytes || config.response_max_bytes > response_bytes_max ||
-        !config.timeout_ms || config.timeout_ms > timeout_max_ms || !config.max_output_tokens ||
-        config.max_output_tokens > output_tokens_max ||
+        !config.timeout_ms || config.timeout_ms > timeout_ms_max || !config.max_output_tokens ||
         !printable(config.base_url, url_bytes_max) || !printable(config.model, model_bytes_max) ||
         !environment_name(config.key_environment) || !identifier(config.provider_id) ||
-        !identifier(config.endpoint_id) || !identifier(config.destination_id)) {
+        !identifier(config.endpoint_id) || !identifier(config.destination_id) || !config.bodies ||
+        config.bodies->struct_size != sizeof(ayni_body_store_v1) || !config.bodies->write ||
+        !config.bodies->read) {
         return AYNI_INVALID_ARGUMENT;
     }
     try {

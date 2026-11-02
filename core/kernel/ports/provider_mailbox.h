@@ -73,6 +73,9 @@ struct ProviderMessage {
     // Present only for a terminal with no payload.data: fills payload.size bytes.
     const PayloadWriter *writer = nullptr;
     ayni_model_usage_v1 model_usage{}; // Copied terminal service counts; NONE for controls.
+    // A completed result's body in the host store instead of a payload; copied, never read.
+    ayni_body_ref_v1 body_ref{};
+    uint32_t body_calls = 0; // Tool calls in that body's list; zero for text.
 };
 
 // Identity of one reserved slot/attempt, scoped to this mailbox's lifetime.
@@ -99,10 +102,9 @@ class ProviderMailbox {
   public:
     struct Limits {
         uint32_t capacity;      // 0 disables delivery; otherwise <= capacity_max, no growth.
-        uint32_t payload_bytes; // Positive bytes per progress/terminal lane, <= payload_bytes_max.
+        uint32_t payload_bytes; // Positive bytes per progress/terminal lane: the call result bound.
     };
     static constexpr uint32_t capacity_max = 256;
-    static constexpr uint32_t payload_bytes_max = 65536;
     static constexpr std::size_t storage_alignment = alignof(uint64_t);
     // Limits must satisfy the above bounds; storage is caller-owned for our lifetime,
     // aligned to storage_alignment and at least storage_size(limits) bytes long.
@@ -166,6 +168,8 @@ class ProviderMailbox {
         uint32_t query_result;     // Copied query classification; zero for submit.
         work::CallResultKind body = work::CallResultKind::text; // Domain validates it.
         ayni_model_usage_v1 model_usage{}; // Copied terminal statistics; no payload pointers.
+        ayni_body_ref_v1 body_ref{};       // Fixed-size receipt of a body kept outside Core.
+        uint32_t body_calls = 0;
     };
     // Keep acknowledged cancellation identity until terminal so duplicate control
     // cannot be accepted again. Separate stages do not overload payload length.

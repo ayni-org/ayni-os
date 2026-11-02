@@ -6,9 +6,6 @@
 namespace ayni::providers::fixture_model {
 namespace {
 constexpr uint32_t version = 1;
-constexpr uint32_t prompt_bytes = 32768;
-constexpr uint32_t value_envelope_bytes = 36;
-constexpr uint32_t result_bytes = 1024;
 constexpr uint32_t timeout_ms = 30000;
 constexpr uint32_t envelope_nodes = 4;
 constexpr uint32_t protocol_id_bytes = 40;
@@ -19,21 +16,33 @@ bool same(ayni_string_v1 a, ayni_string_v1 b) {
     return a.size == b.size && (!a.size || std::memcmp(a.data, b.data, a.size) == 0);
 }
 } // namespace
-Provider::Provider(Variant variant, Service service, void *context, uint64_t (*now)(void *))
-    : variant_(variant), service_(service), clock_context_(context), now_us_(now) {
+uint32_t call_input_bytes(bool bodies) {
+    if (!bodies) {
+        return text_value_bytes(prompt_bytes_max, AYNI_MODEL_BODY_FIELD_ID);
+    }
+    ValueBuilder<2> shape;
+    shape.object();
+    shape.body(AYNI_MODEL_BODY_FIELD_ID, {1, 0, 0, 0});
+    shape.end();
+    ayni_value_v1 value{};
+    return shape.finish(value) == AYNI_OK ? encoded_bytes(value) : 0U;
+}
+Provider::Provider(Variant variant, Service service, void *context, uint64_t (*now)(void *),
+                   const ayni_body_store_v1 *bodies)
+    : variant_(variant), service_(service), clock_context_(context), now_us_(now), bodies_(bodies) {
     const bool tools = service == Service::tools;
     resource_ = {text(tools ? "model.slot" : "summary.slot"), 1, 0};
     input_[0].kind = AYNI_VALUE_OBJECT;
     input_[0].subtree_end = static_cast<uint32_t>(input_.size());
     input_[1].kind = AYNI_VALUE_TEXT;
     input_[1].field_id = AYNI_MODEL_BODY_FIELD_ID;
-    input_[1].flags = AYNI_SCHEMA_REQUIRED;
+    input_[1].flags = AYNI_SCHEMA_REQUIRED | (bodies ? AYNI_SCHEMA_EXTERNAL : 0U);
     input_[1].subtree_end = static_cast<uint32_t>(input_.size());
     input_[1].name = text("body");
-    input_[1].max_count = prompt_bytes;
+    input_[1].max_count = prompt_bytes_max;
     result_.kind = AYNI_VALUE_TEXT;
     result_.subtree_end = 1;
-    result_.max_count = result_bytes;
+    result_.max_count = call_result_bytes;
     business_ = {
         {input_.data(), static_cast<uint32_t>(input_.size())}, {&result_, 1}, 0, 0, nullptr};
     capability_ = {sizeof(capability_),
@@ -43,7 +52,7 @@ Provider::Provider(Variant variant, Service service, void *context, uint64_t (*n
                     AYNI_CALL_IDEMPOTENT, AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_REQUEST, 0,
                     timeout_ms, AYNI_CALL_INPUT_VALUE,
                     tools ? AYNI_CALL_RESULT_TOOL_CALLS : AYNI_CALL_RESULT_TEXT,
-                    prompt_bytes + value_envelope_bytes, result_bytes, 1, &resource_, nullptr},
+                    call_input_bytes(bodies != nullptr), call_result_bytes, 1, &resource_, nullptr},
                    &business_};
     descriptor_ = {
         sizeof(descriptor_),
@@ -83,8 +92,25 @@ ayni_submit_result_t Provider::submit(void *context, const ayni_provider_request
     }
     ValueReader value;
     ayni_string_v1 body{};
-    if (value.read(request->value) != AYNI_OK ||
-        !ValueReader::text(value.field(AYNI_MODEL_BODY_FIELD_ID), body)) {
+    ayni_body_ref_v1 ref{};
+    if (value.read(request->value) != AYNI_OK) {
+        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    }
+    const auto *field = value.field(AYNI_MODEL_BODY_FIELD_ID);
+    struct Erase { // No referenced prompt survives submit.
+        std::array<char, prompt_bytes_max> &prompt;
+        uint32_t size = 0;
+        ~Erase() { std::memset(prompt.data(), 0, size); }
+    } erase{self.prompt_};
+    if (self.bodies_ && ValueReader::body(field, ref) && ref.size <= self.prompt_.size()) {
+        auto *out = reinterpret_cast<uint8_t *>(self.prompt_.data());
+        erase.size = ref.size;
+        if (self.bodies_->read(self.bodies_->context, &ref, out, ref.size) != AYNI_OK ||
+            ayni_body_verify(&ref, {out, ref.size}) != AYNI_OK) {
+            return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+        }
+        body = {self.prompt_.data(), ref.size};
+    } else if (!ValueReader::text(field, body)) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     ayni_string_v1 instructions{}, messages{};

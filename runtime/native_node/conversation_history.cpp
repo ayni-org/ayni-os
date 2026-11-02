@@ -1,12 +1,12 @@
+// Native body store (ADR-0096): one SQLite row per immutable body, cached in memory.
 #include "conversation_store.h"
-#include <ayni/model_messages.hpp>
+#include <algorithm>
+#include <cstring>
 #include <sqlite3.h>
 #include <string>
 #include <vector>
 namespace ayni::runtime {
 namespace {
-using Record = strategies::ConversationRecord;
-using History = strategies::Text<strategies::history_bytes_max>;
 using Statement = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>;
 Statement prepare(sqlite3 *db, const char *sql) {
     sqlite3_stmt *out = nullptr;
@@ -18,222 +18,160 @@ Statement prepare(sqlite3 *db, const char *sql) {
 void integer(sqlite3_stmt *statement, int index, uint64_t value) {
     sqlite3_bind_int64(statement, index, static_cast<sqlite3_int64>(value));
 }
-bool same_owner(const Record &a, const Record &b) {
-    return a.id == b.id && a.owner_instance_id == b.owner_instance_id &&
-           a.generation == b.generation;
-}
-bool same_history(const History &a, const History &b) {
-    return a.size == b.size &&
-           (!a.size || std::memcmp(a.bytes.data(), b.bytes.data(), a.size) == 0);
-}
-struct Frame {
-    uint64_t id = 0;
-    std::string body;
-    uint32_t role = 0;
-};
-// One row per message, with length framing retained exactly. A partially handled
-// tool group may be stored but is never projected to the model until complete.
-bool frames(const History &history, std::vector<Frame> &out) {
-    if (!history.size) {
-        return true;
-    }
-    model::Reader reader(history.view());
-    model::Message message;
-    uint32_t start = history.size - reader.remaining_bytes();
-    while (reader.next(message)) {
-        const auto end = history.size - reader.remaining_bytes();
-        out.push_back({0, std::string(history.bytes.data() + start, end - start),
-                       static_cast<uint32_t>(message.role)});
-        start = end;
-    }
-    return reader.finished();
-}
-// Keyset pages bound each SQL result set; the assembled working view has its own
-// byte resource limit, separate from the database's uncapped long message history.
-ayni_status_t read_frames(sqlite3 *db, const Record &record, std::vector<Frame> &out) {
-    if (!record.history_ref) {
-        return AYNI_OK;
-    }
-    auto owner = prepare(
-        db, "SELECT 1 FROM views WHERE id=? AND conversation=? AND owner=? AND generation=?");
-    if (!owner) {
-        return AYNI_STORAGE_FAILED;
-    }
-    integer(owner.get(), 1, record.history_ref);
-    integer(owner.get(), 2, record.id);
-    integer(owner.get(), 3, record.owner_instance_id);
-    integer(owner.get(), 4, record.generation);
-    if (sqlite3_step(owner.get()) != SQLITE_ROW) {
-        return AYNI_NOT_FOUND;
-    }
-    constexpr int page_rows = 64;
-    uint64_t ordinal = 0;
-    size_t total = model::messages_prefix.size();
-    for (;;) {
-        auto query = prepare(
-            db, "SELECT v.ordinal,m.id,m.body,m.conversation,m.owner,m.generation FROM "
-                "view_messages v LEFT JOIN messages m ON "
-                "m.id=v.message_id WHERE v.view_id=? AND v.ordinal>=? ORDER BY v.ordinal LIMIT ?");
-        if (!query) {
-            return AYNI_STORAGE_FAILED;
-        }
-        integer(query.get(), 1, record.history_ref);
-        integer(query.get(), 2, ordinal);
-        sqlite3_bind_int(query.get(), 3, page_rows);
-        int rows = 0, result = SQLITE_OK;
-        while ((result = sqlite3_step(query.get())) == SQLITE_ROW) {
-            if (static_cast<uint64_t>(sqlite3_column_int64(query.get(), 3)) != record.id ||
-                static_cast<uint64_t>(sqlite3_column_int64(query.get(), 4)) !=
-                    record.owner_instance_id ||
-                static_cast<uint64_t>(sqlite3_column_int64(query.get(), 5)) != record.generation) {
-                return AYNI_DENIED;
-            }
-            const auto index = static_cast<uint64_t>(sqlite3_column_int64(query.get(), 0));
-            const auto size = sqlite3_column_bytes(query.get(), 2);
-            if (index != ordinal || size < 0 ||
-                static_cast<size_t>(size) > strategies::history_bytes_max - total) {
-                return AYNI_INVALID_ARGUMENT;
-            }
-            out.push_back(
-                {static_cast<uint64_t>(sqlite3_column_int64(query.get(), 1)),
-                 std::string(static_cast<const char *>(sqlite3_column_blob(query.get(), 2)),
-                             static_cast<size_t>(size))});
-            total += static_cast<size_t>(size);
-            ++ordinal;
-            ++rows;
-        }
-        if (result != SQLITE_DONE) {
-            return AYNI_STORAGE_FAILED;
-        }
-        if (rows < page_rows) {
-            return AYNI_OK;
-        }
-    }
-}
 } // namespace
 strategies::HistoryPort ConversationStore::history_port() {
-    return {this, history_ready, history_load, history_save, archive_result, result_chunk};
+    return {this, history_ready, archive_result, result_chunk};
 }
+// Wakes a held Task once no body batch, archive or record write is outstanding.
 uint32_t ConversationStore::history_ready(void *context, uint64_t) {
     auto &self = *static_cast<ConversationStore *>(context);
     std::lock_guard<std::mutex> lock(self.mutex_);
-    for (const auto phase :
-         {self.phase_, self.loading_.phase, self.storing_.phase, self.archiving_.phase}) {
+    for (const auto phase : {self.phase_, self.archiving_.phase}) {
         if (phase == Phase::queued || phase == Phase::writing) {
             return 0;
         }
     }
-    return 1;
+    return self.inserts_.empty() ? 1U : 0U;
 }
-
-ayni_status_t ConversationStore::history_load(void *context, uint64_t task, const Record &record,
-                                              History &out) {
-    auto &self = *static_cast<ConversationStore *>(context);
-    std::lock_guard<std::mutex> lock(self.mutex_);
-    auto &job = self.loading_;
-    if (record.id != self.conversation_ || record.owner_instance_id != self.owner_ ||
-        record.generation != self.generation_) {
-        return AYNI_EXPIRED;
-    }
-    if (job.phase == Phase::queued || job.phase == Phase::writing) {
-        return AYNI_NOT_READY;
-    }
-    if (job.phase == Phase::done && same_owner(job.record, record) &&
-        job.record.history_ref == record.history_ref) {
-        if (job.status == AYNI_OK) {
-            out = job.record.history;
-        }
-        return job.status;
-    }
-    job = {};
-    job.task = task;
-    job.record = record;
-    job.record.history = {};
-    job.phase = Phase::queued;
-    self.wake_.notify_one();
-    return AYNI_NOT_READY;
-}
-ayni_status_t ConversationStore::history_save(void *context, uint64_t task, uint64_t turn,
-                                              const Record &record, uint64_t &reference) {
-    auto &self = *static_cast<ConversationStore *>(context);
-    std::lock_guard<std::mutex> lock(self.mutex_);
-    auto &job = self.storing_;
-    if (record.id != self.conversation_ || record.owner_instance_id != self.owner_ ||
-        record.generation != self.generation_) {
-        return AYNI_EXPIRED;
-    }
-    if (job.phase == Phase::queued || job.phase == Phase::writing) {
-        return AYNI_NOT_READY;
-    }
-    if (job.phase == Phase::done && job.task == task && job.turn == turn &&
-        same_owner(job.record, record) && job.record.history_ref == record.history_ref &&
-        same_history(job.record.history, record.history)) {
-        if (job.status == AYNI_OK) {
-            reference = job.reference;
-        }
-        return job.status;
-    }
-    job = {};
-    job.task = task;
-    job.turn = turn;
-    job.record = record;
-    job.phase = Phase::queued;
-    self.wake_.notify_one();
-    return AYNI_NOT_READY;
-}
-ayni_status_t ConversationStore::read_history(HistoryJob &job) {
-    const auto current = current_namespace(job.record);
-    if (current != AYNI_OK) {
-        return current;
-    }
-    std::vector<Frame> source;
-    const auto status = read_frames(database_, job.record, source);
-    if (status != AYNI_OK) {
-        return status;
-    }
-    model::Writer writer(job.record.history.bytes.data(), strategies::history_bytes_max);
-    writer.prefix();
-    for (const auto &frame : source) {
-        writer.raw(std::string_view(frame.body));
-    }
-    ayni_string_v1 body{};
-    if (!writer.finish(body)) {
-        return AYNI_CAPACITY_EXCEEDED;
-    }
-    job.record.history.size = body.size;
-    return AYNI_OK;
-}
-// Immutable views reuse the unchanged prefix/suffix message IDs. Only new frames
-// append payload rows; compaction retains all original rows for paged inspection.
-ayni_status_t ConversationStore::write_history(HistoryJob &job) {
-    const auto current = current_namespace(job.record);
-    if (current != AYNI_OK) {
-        return current;
-    }
-    std::vector<Frame> before, after;
-    auto status = read_frames(database_, job.record, before);
-    if (status != AYNI_OK) {
-        return status;
-    }
-    if (!frames(job.record.history, after)) {
+ayni_status_t ConversationStore::body_write(void *context, uint64_t scope, ayni_bytes_v1 body,
+                                            ayni_body_ref_v1 *out) {
+    if (!context || !out || (body.size && !body.data)) {
         return AYNI_INVALID_ARGUMENT;
     }
-    size_t prefix = 0;
-    while (prefix < before.size() && prefix < after.size() &&
-           before[prefix].body == after[prefix].body) {
-        after[prefix].id = before[prefix].id;
-        ++prefix;
+    auto &self = *static_cast<ConversationStore *>(context);
+    const auto digest = ayni_body_digest(body);
+    std::lock_guard<std::mutex> lock(self.mutex_);
+    if (!self.database_) {
+        return AYNI_INVALID_STATE;
     }
-    if (prefix == before.size() && prefix == after.size()) {
-        job.reference = job.record.history_ref;
+    for (auto at = self.bodies_.begin(); at != self.bodies_.end(); ++at) {
+        auto &stored = at->second;
+        if (stored.scope != scope || stored.digest != digest || stored.bytes.size() != body.size ||
+            (body.size && std::memcmp(stored.bytes.data(), body.data, body.size) != 0)) {
+            continue;
+        }
+        if (stored.state == Body::State::failed) {
+            self.bodies_.erase(at);
+            return AYNI_STORAGE_FAILED;
+        }
+        if (stored.state == Body::State::pending) {
+            return AYNI_NOT_READY;
+        }
+        *out = {at->first, digest, body.size, 0};
         return AYNI_OK;
     }
-    size_t suffix = 0;
-    while (suffix < before.size() - prefix && suffix < after.size() - prefix &&
-           before[before.size() - suffix - 1].body == after[after.size() - suffix - 1].body) {
-        after[after.size() - suffix - 1].id = before[before.size() - suffix - 1].id;
-        ++suffix;
+    const auto id = self.next_body_++;
+    self.bodies_[id] = {scope, digest,
+                        std::string(reinterpret_cast<const char *>(body.data), body.size),
+                        Body::State::pending};
+    self.inserts_.push_back(id);
+    self.wake_.notify_all();
+    return AYNI_NOT_READY;
+}
+// Owner-thread callers outside decide may wait for the worker's commit.
+ayni_status_t ConversationStore::body_write_waiting(void *context, uint64_t scope,
+                                                    ayni_bytes_v1 body, ayni_body_ref_v1 *out) {
+    auto status = body_write(context, scope, body, out);
+    if (status != AYNI_NOT_READY) {
+        return status;
     }
+    auto &self = *static_cast<ConversationStore *>(context);
+    {
+        std::unique_lock<std::mutex> lock(self.mutex_);
+        self.durable_.wait(lock, [&] {
+            if (!self.database_) {
+                return true;
+            }
+            for (const auto &[id, stored] : self.bodies_) {
+                if (stored.state == Body::State::pending && stored.scope == scope &&
+                    stored.bytes.size() == body.size &&
+                    (!body.size || std::memcmp(stored.bytes.data(), body.data, body.size) == 0)) {
+                    return false;
+                }
+            }
+            return true;
+        });
+    }
+    return body_write(context, scope, body, out);
+}
+ayni_status_t ConversationStore::body_read(void *context, const ayni_body_ref_v1 *ref, uint8_t *out,
+                                           uint32_t capacity) {
+    if (!context || !ref || !ref->id || (capacity && !out)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    auto &self = *static_cast<ConversationStore *>(context);
+    std::lock_guard<std::mutex> lock(self.mutex_);
+    const auto found = self.bodies_.find(ref->id);
+    if (found == self.bodies_.end() || found->second.state == Body::State::failed) {
+        return AYNI_NOT_FOUND;
+    }
+    const auto &bytes = found->second.bytes;
+    if (bytes.size() > capacity) {
+        return AYNI_BUFFER_TOO_SMALL;
+    }
+    if (!bytes.empty()) {
+        std::memcpy(out, bytes.data(), bytes.size());
+    }
+    return AYNI_OK;
+}
+// Releasers call this only after no durable state names the body (bodies.h).
+void ConversationStore::body_release(void *context, const ayni_body_ref_v1 *ref) {
+    if (!context || !ref || !ref->id) {
+        return;
+    }
+    auto &self = *static_cast<ConversationStore *>(context);
+    std::lock_guard<std::mutex> lock(self.mutex_);
+    if (self.bodies_.erase(ref->id) != 0U) {
+        self.deletes_.push_back(ref->id);
+        self.wake_.notify_all();
+    }
+}
+// Startup only: every live body enters the cache, so later reads need no SQL.
+ayni_status_t ConversationStore::load_bodies() {
+    auto query = prepare(database_, "SELECT id,scope,digest,body FROM bodies ORDER BY id");
+    if (!query) {
+        return AYNI_STORAGE_FAILED;
+    }
+    int result = SQLITE_OK;
+    while ((result = sqlite3_step(query.get())) == SQLITE_ROW) {
+        const auto id = static_cast<uint64_t>(sqlite3_column_int64(query.get(), 0));
+        const auto size = sqlite3_column_bytes(query.get(), 3);
+        if (!id || size < 0) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        Body body{static_cast<uint64_t>(sqlite3_column_int64(query.get(), 1)),
+                  static_cast<uint64_t>(sqlite3_column_int64(query.get(), 2)),
+                  std::string(static_cast<const char *>(sqlite3_column_blob(query.get(), 3)),
+                              static_cast<size_t>(size)),
+                  Body::State::durable};
+        const ayni_bytes_v1 bytes{reinterpret_cast<const uint8_t *>(body.bytes.data()),
+                                  static_cast<uint32_t>(body.bytes.size())};
+        if (ayni_body_digest(bytes) != body.digest) {
+            return AYNI_STORAGE_FAILED;
+        }
+        bodies_[id] = std::move(body);
+        next_body_ = id + 1U;
+    }
+    if (result != SQLITE_DONE) {
+        return AYNI_STORAGE_FAILED;
+    }
+    // AUTOINCREMENT keeps the highest identity ever stored, so a deleted body's identity is
+    // never handed out again, even when it was the newest.
+    auto highest = prepare(database_, "SELECT seq FROM sqlite_sequence WHERE name='bodies'");
+    if (!highest) {
+        return AYNI_STORAGE_FAILED;
+    }
+    result = sqlite3_step(highest.get());
+    if (result == SQLITE_ROW) {
+        next_body_ = std::max<uint64_t>(
+            next_body_, static_cast<uint64_t>(sqlite3_column_int64(highest.get(), 0)) + 1U);
+        result = sqlite3_step(highest.get());
+    }
+    return result == SQLITE_DONE ? AYNI_OK : AYNI_STORAGE_FAILED;
+}
+// Worker only: one transaction inserts pending bodies, then removes released ones.
+ayni_status_t ConversationStore::write_bodies(std::vector<std::pair<uint64_t, Body>> &inserts,
+                                              std::vector<uint64_t> &deletes) {
     if (sqlite3_exec(database_, "BEGIN IMMEDIATE", nullptr, nullptr, nullptr) != SQLITE_OK) {
         return AYNI_STORAGE_FAILED;
     }
@@ -241,54 +179,32 @@ ayni_status_t ConversationStore::write_history(HistoryJob &job) {
         sqlite3_exec(database_, "ROLLBACK", nullptr, nullptr, nullptr);
         return AYNI_STORAGE_FAILED;
     };
-    auto view =
-        prepare(database_, "INSERT INTO views(conversation,owner,generation) VALUES(?,?,?)");
-    if (!view) {
-        return fail();
-    }
-    integer(view.get(), 1, job.record.id);
-    integer(view.get(), 2, job.record.owner_instance_id);
-    integer(view.get(), 3, job.record.generation);
-    if (sqlite3_step(view.get()) != SQLITE_DONE) {
-        return fail();
-    }
-    const auto reference = static_cast<uint64_t>(sqlite3_last_insert_rowid(database_));
-    for (size_t at = 0; at < after.size(); ++at) {
-        auto &frame = after[at];
-        if (!frame.id) {
-            auto append = prepare(
-                database_, "INSERT INTO messages(conversation,owner,generation,turn,role,body) "
-                           "VALUES(?,?,?,?,?,?)");
-            if (!append) {
-                return fail();
-            }
-            integer(append.get(), 1, job.record.id);
-            integer(append.get(), 2, job.record.owner_instance_id);
-            integer(append.get(), 3, job.record.generation);
-            integer(append.get(), 4, job.turn);
-            integer(append.get(), 5, frame.role);
-            sqlite3_bind_blob(append.get(), 6, frame.body.data(),
-                              static_cast<int>(frame.body.size()), SQLITE_STATIC);
-            if (sqlite3_step(append.get()) != SQLITE_DONE) {
-                return fail();
-            }
-            frame.id = static_cast<uint64_t>(sqlite3_last_insert_rowid(database_));
-        }
-        auto link = prepare(database_, "INSERT INTO view_messages VALUES(?,?,?)");
-        if (!link) {
+    for (const auto &[id, body] : inserts) {
+        auto insert = prepare(
+            database_, "INSERT OR REPLACE INTO bodies(id,scope,digest,body) VALUES(?,?,?,?)");
+        if (!insert) {
             return fail();
         }
-        integer(link.get(), 1, reference);
-        integer(link.get(), 2, at);
-        integer(link.get(), 3, frame.id);
-        if (sqlite3_step(link.get()) != SQLITE_DONE) {
+        integer(insert.get(), 1, id);
+        integer(insert.get(), 2, body.scope);
+        integer(insert.get(), 3, body.digest);
+        sqlite3_bind_blob(insert.get(), 4, body.bytes.empty() ? "" : body.bytes.data(),
+                          static_cast<int>(body.bytes.size()), SQLITE_STATIC);
+        if (sqlite3_step(insert.get()) != SQLITE_DONE) {
             return fail();
         }
     }
-    if (sqlite3_exec(database_, "COMMIT", nullptr, nullptr, nullptr) != SQLITE_OK) {
-        return fail();
+    for (const auto id : deletes) {
+        auto erase = prepare(database_, "DELETE FROM bodies WHERE id=?");
+        if (!erase) {
+            return fail();
+        }
+        integer(erase.get(), 1, id);
+        if (sqlite3_step(erase.get()) != SQLITE_DONE) {
+            return fail();
+        }
     }
-    job.reference = reference;
-    return AYNI_OK;
+    return sqlite3_exec(database_, "COMMIT", nullptr, nullptr, nullptr) == SQLITE_OK ? AYNI_OK
+                                                                                     : fail();
 }
 } // namespace ayni::runtime

@@ -8,6 +8,15 @@
 #include <charconv>
 namespace ayni::strategies::detail {
 inline constexpr uint32_t native_argument_capacity = 7; // All fixed operation-envelope fields.
+// A model frame Writer appending to text, which grows on demand (ADR-0095).
+inline model::Writer growing(std::string &text) {
+    const model::Writer::Grow grow = [](void *context, uint32_t size) -> char * {
+        auto &out = *static_cast<std::string *>(context);
+        out.resize(size);
+        return out.data();
+    };
+    return {&text, grow, static_cast<uint32_t>(text.size())};
+}
 // Native objects are closed, including duplicate keys. Business arguments retain
 // their own names until the selected original Schema resolves them.
 struct NativeArguments {
@@ -133,8 +142,10 @@ ayni_status_t native_error(ayni_status_t status, std::string_view message, char 
                            uint32_t capacity, ayni_string_v1 &response);
 // Chunk only the result body; the final reply keeps the original action facts.
 ayni_status_t summarize_result(Workspace &workspace, Turn &, const ToolLoopConfig &,
-                               const ayni_task_snapshot_v1 &, ayni_policy_output_v1 &, char *,
+                               const ayni_task_snapshot_v1 &, ayni_policy_output_v1 &,
                                bool &requested);
+// Rendering room for a reply of the given tokens (tool_loop.cpp).
+uint32_t reply_bytes(uint64_t tokens);
 // Only an asynchronous archive wait marks DEFER; service failure statuses remain failures.
 ayni_status_t archive_result(const ToolLoopConfig &, const ayni_task_snapshot_v1 &,
                              const ConversationRecord &, const ayni_task_call_result_v1 &,

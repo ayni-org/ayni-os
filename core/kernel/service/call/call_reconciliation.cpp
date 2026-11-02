@@ -174,9 +174,10 @@ bool CallRuntime::consume_query(uint32_t index, uint32_t task_index, const Provi
         message.body,
         message.model_usage};
     const work::ActionStamp action_stamp{work_.ids.boot_epoch(), stamp};
-    // A query reports an operation's outcome, never a fresh model proposal.
-    const bool value_valid = message.body == work::CallResultKind::tool_calls ||
-                             normalize_result(index, message.payload, result) == AYNI_OK;
+    // A query reports an operation's outcome, never a fresh model proposal or body.
+    const bool value_valid =
+        message.body == work::CallResultKind::tool_calls ||
+        (message.body_ref.id == 0U && normalize_result(index, message.payload, result) == AYNI_OK);
     auto status = message.body != work::CallResultKind::tool_calls && value_valid
                       ? work_.calls.reconcile(work_.workspace, index, message.query_result, result,
                                               action_stamp, control_.result_dependencies(index))

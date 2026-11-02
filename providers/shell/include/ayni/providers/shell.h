@@ -17,6 +17,10 @@ struct Config {
     uint32_t timeout_ms = 30000;       // Includes worker execution; 1..300000 milliseconds.
 };
 
+// Contract maxima of one configuration; the runtime sizes the Kernel's Call strides from them.
+uint32_t call_input_bytes(const Config &config);
+uint32_t call_result_bytes(const Config &config);
+
 // Owner-thread configuration/ports, with one I/O worker and bounded copied slots.
 // /bin/sh -c supports scripts and pipelines. Every command needs Core authority
 // for system.shell; this Provider does not grant access or authenticate a caller.

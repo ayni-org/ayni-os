@@ -76,6 +76,10 @@ void write_state(const CallState &state, foundation::BodyWriter &writer) {
     writer.u64(state.model_usage.input_tokens);
     writer.u64(state.model_usage.output_tokens);
     writer.u64(state.model_usage.total_tokens);
+    writer.u64(state.result_body.id);
+    writer.u64(state.result_body.digest);
+    writer.u32(state.result_body.size);
+    writer.u32(state.result_body_calls);
 }
 
 CallState read_state(foundation::BodyReader &reader) {
@@ -100,6 +104,10 @@ CallState read_state(foundation::BodyReader &reader) {
     query.reason = reader.u32();
     query.conclusion = reader.u32();
     state.model_usage = {reader.u32(), reader.u32(), reader.u64(), reader.u64(), reader.u64()};
+    state.result_body.id = reader.u64();
+    state.result_body.digest = reader.u64();
+    state.result_body.size = reader.u32();
+    state.result_body_calls = reader.u32();
     // Absent optional values have one all-zero encoding; noncanonical tails
     // become an invalid present value for the shared intrinsic validator.
     if (query.generation != 0U || static_cast<uint32_t>(query.phase) != 0U ||

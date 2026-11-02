@@ -49,7 +49,6 @@ void CallRuntime::begin_decision(uint32_t task_index, ayni_task_snapshot_v1 &sna
     output.control_operation = stage_operation_control;
     snapshot.call_context = this;
     snapshot.call_result = read_result;
-    snapshot.call_tool = read_tool_call;
     snapshot.list_capabilities = list_capabilities_view;
     snapshot.inspect_capability = inspect_capability_view;
     snapshot.capability_context = capability_context_view;
@@ -247,9 +246,13 @@ ayni_status_t CallRuntime::read_result(const void *context, ayni_string_v1 step,
     }
     const auto &calls = runtime.work_.calls;
     const auto &state = calls.state(index);
-    work::ToolCallList model_output;
-    const bool has_functions =
-        work::read_tool_calls(runtime.work_.workspace, calls.tool_calls(index), model_output);
+    // An inline proposal list is handed over whole, like a body the store keeps (ADR-0096).
+    const auto list = calls.tool_calls(index);
+    const uint32_t inline_calls =
+        list.size != 0U ? work::tool_call_count(runtime.work_.workspace, list) : 0U;
+    const ayni_string_v1 text =
+        list.size != 0U ? ayni_string_v1{reinterpret_cast<const char *>(list.data), list.size}
+                        : calls.result(index);
     *out = {sizeof(*out),
             state.outcome,
             calls.identity(index).call_id,
@@ -258,8 +261,8 @@ ayni_status_t CallRuntime::read_result(const void *context, ayni_string_v1 step,
             state.outcome == 0U ? 0U : state.latest.transition.commit_seq,
             state.status,
             state.reason,
-            has_functions ? model_output.assistant_text : calls.result(index),
-            has_functions ? model_output.count : 0U,
+            text,
+            state.result_body.id != 0U ? state.result_body_calls : inline_calls,
             0,
             static_cast<uint32_t>(calls.effect(index)),
             0,
@@ -267,7 +270,9 @@ ayni_status_t CallRuntime::read_result(const void *context, ayni_string_v1 step,
             calls.domain(index),
             calls.contract(index).business_contract,
             state.model_usage,
-            calls.identity(index).mode};
+            calls.identity(index).mode,
+            0,
+            state.result_body};
     if (calls.record(index).result_kind == work::CallResultKind::unavailable ||
         !runtime.retain_model_context(
             runtime.decision_->task_index, calls.identity(index).model_context,
@@ -276,6 +281,7 @@ ayni_status_t CallRuntime::read_result(const void *context, ayni_string_v1 step,
         out->text = {};
         out->encoded_value = {};
         out->tool_call_count = 0;
+        out->body = {};
         return AYNI_EXPIRED;
     }
     return AYNI_OK;

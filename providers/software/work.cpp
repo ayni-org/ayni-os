@@ -11,7 +11,7 @@ constexpr uint32_t capability_count = 2;
 enum Offer : uint32_t { sum_offer, events_offer };
 constexpr uint32_t version = 1;
 constexpr uint32_t timeout_ms = 60000;
-constexpr uint32_t value_bound = 64;
+constexpr uint32_t value_bound = call_bytes;
 ayni_string_v1 text(const char *value) {
     return {value, static_cast<uint32_t>(std::strlen(value))};
 }

@@ -32,7 +32,7 @@ class TaskRuntimeLimits : public ::testing::Test {
         ASSERT_TRUE(tasks.insert({11, 21, 0, 1, 1, 1}, 31, stamp()));
     }
     void exhaust() {
-        for (uint32_t n = 0; n < AYNI_TASK_MODEL_CALL_LIMIT_DEFAULT; ++n) {
+        for (uint32_t n = 0; n < AYNI_MAX_TURNS_DEFAULT; ++n) {
             tasks.accept_model_call(0, stamp());
         }
         tasks.hold_model_calls(0, stamp());
@@ -53,7 +53,7 @@ TEST_F(TaskRuntimeLimits, limit_hold_keeps_progress_and_other_tasks_ready) {
     ASSERT_EQ(tasks.check_model_limit_raise(0, revision, raised_limit), AYNI_OK);
     tasks.raise_model_limit(0, raised_limit, stamp());
     EXPECT_FALSE(tasks.has_held());
-    EXPECT_EQ(tasks.at(0).model_calls.used, AYNI_TASK_MODEL_CALL_LIMIT_DEFAULT);
+    EXPECT_EQ(tasks.at(0).model_calls.used, AYNI_MAX_TURNS_DEFAULT);
     EXPECT_EQ(tasks.at(0).step_count, 1U);
     EXPECT_EQ(TaskTable::effective_lifecycle(tasks.at(0)), AYNI_TASK_READY);
 }
@@ -65,7 +65,7 @@ TEST_F(TaskRuntimeLimits, ordinary_pause_resume_does_not_reset_count_or_limit_ho
     ASSERT_TRUE(TaskTable::allows(tasks.at(0), TaskChange::resume));
     tasks.apply(0, TaskChange::resume, stamp());
     EXPECT_EQ(TaskTable::effective_lifecycle(tasks.at(0)), AYNI_TASK_PAUSED);
-    EXPECT_EQ(tasks.at(0).model_calls.used, AYNI_TASK_MODEL_CALL_LIMIT_DEFAULT);
+    EXPECT_EQ(tasks.at(0).model_calls.used, AYNI_MAX_TURNS_DEFAULT);
     tasks.apply(0, TaskChange::pause, stamp());
     tasks.raise_model_limit(0, raised_limit, stamp());
     EXPECT_EQ(TaskTable::effective_lifecycle(tasks.at(0)), AYNI_TASK_PAUSED);
@@ -154,16 +154,15 @@ TEST(TaskLimitApi, owner_raise_is_exact_idempotent_and_preserves_policy_hold) {
 
 TEST(TaskLimitApi, validates_cas_hard_ceiling_and_live_state_before_changing_anything) {
     WorkNode work;
-    work.node().config().task_model_call_hard_limit = raised_limit;
     work.run();
     const auto id = create_task(work);
     const auto before = work.task(id);
-    EXPECT_EQ(before.model_call_hard_limit, raised_limit);
+    EXPECT_EQ(before.model_call_hard_limit, AYNI_MAX_TURNS_MAX);
     ayni_task_raise_model_limit_v1 body{sizeof(body), raised_limit, id};
     auto request = work.intent(AYNI_INTENT_TASK_RAISE_MODEL_LIMIT, &body, before.revision);
     EXPECT_EQ(work.submit(request).status, AYNI_INVALID_ARGUMENT); // No command ID.
     request.command_id = command_id;
-    ++body.model_call_limit;
+    body.model_call_limit = AYNI_MAX_TURNS_MAX + 1U;
     EXPECT_EQ(work.submit(request).status, AYNI_INVALID_ARGUMENT);
     body.model_call_limit = before.model_call_limit;
     EXPECT_EQ(work.submit(request).status, AYNI_INVALID_ARGUMENT); // No decrease/reset.
@@ -176,13 +175,13 @@ TEST(TaskLimitApi, validates_cas_hard_ceiling_and_live_state_before_changing_any
     EXPECT_EQ(work.submit(request).status, AYNI_INVALID_STATE);
 }
 
-TEST(TaskLimitApi, startup_ceiling_can_reduce_initial_limit_without_affecting_steps) {
+TEST(TaskLimitApi, max_turns_sets_initial_limit_without_affecting_steps) {
     WorkNode work;
-    work.node().config().task_model_call_hard_limit = 1;
+    work.node().config().max_turns = 1;
     work.run();
     const auto info = work.task(create_task(work));
     EXPECT_EQ(info.model_call_limit, 1U);
-    EXPECT_EQ(info.model_call_hard_limit, 1U);
+    EXPECT_EQ(info.model_call_hard_limit, AYNI_MAX_TURNS_MAX);
     EXPECT_EQ(info.model_calls_used, 0U);
 }
 
@@ -341,13 +340,14 @@ TEST(TaskLimitApi, altered_raise_state_cannot_be_repaired_by_a_later_valid_comma
         }
     }
     ASSERT_EQ(targets, 1U);
+    // max_turns sets only new Tasks' limit; a raised one survives a smaller restart value.
     WorkNode smaller;
     smaller.node().config() = source.node().config();
-    smaller.node().config().task_model_call_hard_limit = raised_limit - 1;
+    smaller.node().config().max_turns = raised_limit - 1;
     smaller.node().sim().log() = log;
     smaller.node().create_and_start();
     smaller.node().recover();
-    EXPECT_EQ(smaller.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
-    EXPECT_EQ(smaller.node().info().restriction, AYNI_RESTRICTION_STATE_EXCEEDS_CAPACITY);
+    ASSERT_EQ(smaller.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_EQ(smaller.task(task_id).model_call_limit, raised_limit);
 }
 } // namespace

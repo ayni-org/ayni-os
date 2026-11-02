@@ -4,6 +4,7 @@
 #ifndef AYNI_VALUES_H
 #define AYNI_VALUES_H
 #include <ayni/ayni.h>
+#include <ayni/bodies.h>
 #include <ayni/workspace.h>
 #ifdef __cplusplus
 extern "C" {
@@ -16,6 +17,8 @@ extern "C" {
 #define AYNI_DECIMAL_SCALE_MAX 18u
 /* Per-tree UTF-8 bytes, independent of the caller's smaller configured bound. Since 0.48. */
 #define AYNI_VALUE_BYTES_MAX AYNI_CALL_INPUT_BYTES_MAX
+/* BODY references in one value, so Core can release each with fixed memory. Since 0.54. */
+#define AYNI_VALUE_BODY_COUNT_MAX 4u
 /* Static field names and units remain finite even before record admission. Since 0.48. */
 #define AYNI_SCHEMA_NAME_BYTES_MAX 64u
 
@@ -42,6 +45,10 @@ typedef uint32_t ayni_value_kind_t;
 #define AYNI_VALUE_IDENTIFIER ((ayni_value_kind_t)9)
 /* Bounded Unicode scalar UTF-8 text. Since 0.48. */
 #define AYNI_VALUE_TEXT ((ayni_value_kind_t)10)
+/* A text body kept in the host body store, given by reference: only the
+ * reference, length and digest enter the value. Valid only for an EXTERNAL
+ * TEXT schema field; never a schema kind. Since 0.54 (ADR-0096). */
+#define AYNI_VALUE_BODY ((ayni_value_kind_t)11)
 
 /* Value unit is supplied by its schema; scale is 0..DECIMAL_SCALE_MAX. */
 typedef struct ayni_decimal_v1 {
@@ -65,6 +72,7 @@ typedef struct ayni_value_node_v1 {
         double approximate;        /* FLOAT64: finite; negative zero canonicalizes to positive. */
         ayni_decimal_v1 decimal;   /* DECIMAL: coefficient/scale as declared above. */
         ayni_string_v1 text;       /* TEXT/ENUM/IDENTIFIER: borrowed bytes, including empty TEXT. */
+        ayni_body_ref_v1 body;     /* BODY: nonzero id, zero reserved. Since 0.54. */
     } value;
 } ayni_value_node_v1;
 
@@ -76,6 +84,10 @@ typedef struct ayni_value_v1 {
 
 #define AYNI_SCHEMA_REQUIRED 1u
 #define AYNI_SCHEMA_NULLABLE 2u
+/* TEXT only: the field may be given inline or as a BODY reference, whose size
+ * min_count/max_count bound. No authority or physical projection may name it.
+ * Since 0.54 (ADR-0096). */
+#define AYNI_SCHEMA_EXTERNAL 4u
 
 /* A schema is also a preorder tree. An object contains its field schemas;
  * a list contains exactly one item schema. Scalar bounds apply to its kind
@@ -84,7 +96,7 @@ typedef struct ayni_schema_node_v1 {
     ayni_value_kind_t kind; /* Concrete non-null kind; nullability uses the explicit flag. */
     uint32_t field_id;      /* Zero for root/list item; nonzero for an object field. */
     uint32_t subtree_end;   /* Exclusive preorder index within the schema node table. */
-    uint32_t flags;         /* REQUIRED/NULLABLE only; root/list item cannot be optional. */
+    uint32_t flags;         /* REQUIRED/NULLABLE/EXTERNAL; root/list item cannot be optional. */
     ayni_string_v1 name;    /* Object field's nonempty UTF-8 JSON name; empty otherwise. */
     ayni_string_v1 unit;    /* Static unit, or empty when dimensionless. */
     int64_t min_i64;        /* I64/DECIMAL inclusive lower bound; coefficient for DECIMAL. */

@@ -18,6 +18,9 @@ CallRuntime::Advance CallRuntime::drain_transport(Mode mode) {
         if (mailbox_.acknowledge(receipt) == ProviderMailbox::Acknowledge::stale) {
             return Advance::internal;
         }
+        if (message.body_ref.id != 0U) {
+            release_body(message.body_ref); // Closing never records this result.
+        }
         if (terminal) {
             for (uint32_t at = 0; at < limits_.capacity; ++at) {
                 const auto &active = slots_[at].active;

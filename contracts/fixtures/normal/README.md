@@ -18,7 +18,7 @@
 
 ## 数据与动作
 
-每个 `<case_id>.json` 必须包含 schema/profile、case_id、experiment_step、clauses、description、seed、config、script、expect。字段、枚举和上限由 `tools/generate_normal_fixtures.py` 校验；case_id 不复用完整实验编号，引用的条款和步骤必须已定义。`config` 明确 tick_us、model_delay_us、step_units、max_steps、model_hard_limit；其余实际 Kernel 配置随产物完整保存。
+每个 `<case_id>.json` 必须包含 schema/profile、case_id、experiment_step、clauses、description、seed、config、script、expect。字段、枚举和上限由 `tools/generate_normal_fixtures.py` 校验；case_id 不复用完整实验编号，引用的条款和步骤必须已定义。`config` 明确 tick_us、model_delay_us、step_units、max_steps、max_turns；其余实际 Kernel 配置随产物完整保存。
 
 动作是 grant、save_memory、share_memory、revoke、goal、steps、advance_clock、set_wall_clock、wait、assert、pause_group、resume_group、pause_goal、resume_goal、local_input、retry、reopen。每个新对象有唯一名称；引用须已创建且类型匹配。local_input 只接受 local Goal，以其唯一名称作为输入源。device_check 固定组 1，reminder 固定组 0；错误配置在生成期拒绝。wait 有 max_steps 上限，assert 只检查当前事实，不推进到断言成立。
 

@@ -27,7 +27,7 @@ CallInputView &CallInputView::operator=(const CallInputView &source) {
 }
 
 ayni_status_t check_call_text(ayni_string_v1 text, uint32_t limit) {
-    if (limit > catalog::call_text_limit_max || (text.size != 0U && text.data == nullptr)) {
+    if (text.size != 0U && text.data == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
     if (text.size > limit) {

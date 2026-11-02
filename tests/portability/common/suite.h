@@ -24,7 +24,8 @@ struct TextExpectation {
 };
 struct BodyExpectation {
     TextExpectation summary, history;
-    std::array<TextExpectation, strategies::retained_rounds_max> users{}, answers{};
+    static constexpr uint32_t rounds_max = 32; // Retained rounds the normal suite compares.
+    std::array<TextExpectation, rounds_max> users{}, answers{};
     uint64_t generation = 0, revision = 0, context_version = 0;
     uint64_t summary_first = 0, summary_last = 0;
 };

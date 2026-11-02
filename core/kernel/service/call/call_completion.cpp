@@ -106,17 +106,7 @@ CallRuntime::Advance CallRuntime::consume(uint64_t now_us, uint64_t durable_seq)
         return control_.request_stop(call_id) ? Advance::applied : Advance::internal;
     }
     bool terminal = false;
-    const auto applied =
-        apply_receipt(index, task_index, message, work_.transitions.next(), terminal);
-    // Validate the original Provider evidence first, including UTF-8 and proposal shape.
-    // Privacy may discard a valid late body; it must never turn malformed evidence into success.
-    if (applied == AYNI_OK && terminal && work_.calls.state(index).outcome != 0U &&
-        (!task_content_current({work_, host_.monotonic_now_us(host_.ctx), durable_seq},
-                               task_index) ||
-         !model_context_current(task_index, work_.calls.identity(index).model_context,
-                                host_.monotonic_now_us(host_.ctx), durable_seq))) {
-        work_.calls.discard_unusable_result(index);
-    }
+    const auto applied = apply_delivery(index, task_index, message, durable_seq, terminal);
     if (applied != AYNI_OK ||
         mailbox_.acknowledge(receipt) == ProviderMailbox::Acknowledge::stale) {
         return Advance::internal;
@@ -125,6 +115,29 @@ CallRuntime::Advance CallRuntime::consume(uint64_t now_us, uint64_t durable_seq)
         release(index, now_us);
     }
     return Advance::applied;
+}
+
+// Validate the original Provider evidence first, including UTF-8 and proposal shape.
+// Privacy may discard a valid late body; it must never turn malformed evidence into success.
+ayni_status_t CallRuntime::apply_delivery(uint32_t index, uint32_t task_index,
+                                          const ProviderMessage &message, uint64_t durable_seq,
+                                          bool &terminal) {
+    const auto applied =
+        apply_receipt(index, task_index, message, work_.transitions.next(), terminal);
+    if (applied == AYNI_OK && terminal && work_.calls.state(index).outcome != 0U &&
+        (!task_content_current({work_, host_.monotonic_now_us(host_.ctx), durable_seq},
+                               task_index) ||
+         !model_context_current(task_index, work_.calls.identity(index).model_context,
+                                host_.monotonic_now_us(host_.ctx), durable_seq))) {
+        work_.calls.discard_unusable_result(index);
+    }
+    // A body this transition does not keep was never named by a durable record.
+    if (message.body_ref.id != 0U &&
+        (applied != AYNI_OK || !work_.calls.occupied(index) ||
+         work_.calls.state(index).result_body.id != message.body_ref.id)) {
+        release_body(message.body_ref);
+    }
+    return applied;
 }
 
 // A successful post released the producer borrow; schema errors are consumed
@@ -239,10 +252,14 @@ ayni_status_t CallRuntime::apply_receipt(uint32_t index, uint32_t task_index,
             static_cast<work::ActionEffect>(message.effect),
             {reinterpret_cast<const char *>(message.payload.data), message.payload.size},
             message.body,
-            message.model_usage};
+            message.model_usage,
+            message.body_ref,
+            message.body_calls};
         // The producer admitted the proposal shape. Names and arguments can be
         // handled as ordinary tool errors; they are not business outcome evidence.
+        // A body by reference is verified by its reader, never read by Core.
         const bool value_valid = message.body == work::CallResultKind::tool_calls ||
+                                 message.body_ref.id != 0U ||
                                  normalize_result(index, message.payload, result) == AYNI_OK;
         applied = message.query_result == 0U && value_valid
                       ? work_.calls.finish(work_.workspace, index, result, action_stamp,
@@ -313,6 +330,9 @@ uint64_t CallRuntime::next_deadline_us() const {
 // Project only work that can advance now. A pending remote call alone must not
 // keep the owner spinning; completion wakeups or the next timer bring it back.
 bool CallRuntime::ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const {
+    if (work_.calls.release_due(durable_seq)) {
+        return true;
+    }
     if (mode == Mode::fenced || mode == Mode::closing) {
         return transport_ready(mode);
     }

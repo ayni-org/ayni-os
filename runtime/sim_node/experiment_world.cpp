@@ -8,6 +8,7 @@
 #include <ayni/memory.h>
 #include <ayni/runtime/common/default_config.h>
 #include <cstring>
+#include <vector>
 namespace ayni::runtime::experiments {
 namespace {
 constexpr uint32_t catalog_capacity = 8;
@@ -70,18 +71,22 @@ World::World(Evidence &out, ayni_call_query_authority_t query, Deployment deploy
     config.strategy_capacity = 2;
     config.call_capacity = operation_capacity;
     config.resource_request_capacity = operation_capacity;
-    config.call_input_max_bytes = body_limit + 128;
-    config.call_result_max_bytes = body_limit;
+    // The Call strides fit the contracts the deployment registers.
+    std::vector<CallBytes> contracts{call_bytes(service.capability().contract)};
+    const CallBytes model{fixtures::ModelProbe::call_input_bytes(),
+                          fixtures::ModelProbe::call_result_bytes};
+    const CallBytes camera{providers::mock::subscription_input_bytes(),
+                           providers::mock::subscription_result_bytes};
+    const CallBytes notification{text_value_bytes(ActionService::notification_text_bytes), 0};
     config.call_capability_capacity = config.provider_capacity = config.binding_capacity =
         catalog_capacity;
     if (deployment == Deployment::replacement) {
         config.resource_capacity = 1;
         config.task_checkpoint_max_bytes = config.goal_parameter_max_bytes =
-            strategies::state_bytes_max;
-        config.call_input_max_bytes = strategies::prompt_bytes_max + 36;
-        config.call_result_max_bytes = 512;
+            strategies::ToolLoop::checkpoint_bytes;
+        contracts.push_back(model);
         config.strategy_capacity = 2;
-        config.task_model_call_hard_limit = 2;
+        config.max_turns = 2;
         replacement = std::make_unique<Replacement>(*this);
     }
     if (deployment == Deployment::physical || deployment == Deployment::shared_physical ||
@@ -90,17 +95,17 @@ World::World(Evidence &out, ayni_call_query_authority_t query, Deployment deploy
         config.executor_capacity = config.execution_binding_capacity = 1;
         physical = std::make_unique<Physical>(*this);
         physical->configure();
+        contracts.push_back(physical->call_bytes());
     }
     if (deployment == Deployment::shared || deployment == Deployment::shared_physical) {
         config.goal_type_capacity = 24;
         config.strategy_capacity = 5;
-        config.goal_parameter_max_bytes = strategies::state_bytes_max;
-        config.task_checkpoint_max_bytes = strategies::state_bytes_max;
+        config.goal_parameter_max_bytes = strategies::ToolLoop::checkpoint_bytes;
+        config.task_checkpoint_max_bytes = strategies::ToolLoop::checkpoint_bytes;
         config.resource_capacity = 5;
         config.observation_source_capacity = 1;
-        config.call_input_max_bytes = strategies::prompt_bytes_max + 36;
-        config.call_result_max_bytes = 512;
-        config.task_model_call_hard_limit = 2;
+        contracts.insert(contracts.end(), {model, camera, notification});
+        config.max_turns = 2;
         if (physical) {
             config.resource_capacity = 6;
             config.strategy_capacity = 6;
@@ -113,11 +118,11 @@ World::World(Evidence &out, ayni_call_query_authority_t query, Deployment deploy
         config.strategy_capacity = 3;
         config.goal_requirement_capacity = 5;
         config.observation_source_capacity = 2;
-        config.call_input_max_bytes = strategies::prompt_bytes_max + 36;
-        config.call_result_max_bytes = 512;
-        config.task_model_call_hard_limit = 2;
+        contracts.insert(contracts.end(), {model, camera, notification});
+        config.max_turns = 2;
         composite = std::make_unique<Composite>(*this);
     }
+    fit_call_bytes(config, contracts);
 }
 World::~World() {
     if (node.kernel()) {
@@ -292,7 +297,11 @@ bool World::application_policy() {
 bool World::start_recovery() {
     schedule_.reset();
     storage = Storage::complete;
-    return evidence.status("assemble", node.assemble(config)) && register_profile() &&
+    // Core releases the bodies the deployment's Providers and ToolLoop store (ADR-0096).
+    const ayni_body_store_v1 *bodies = shared        ? shared->bodies()
+                                       : replacement ? replacement->bodies()
+                                                     : nullptr;
+    return evidence.status("assemble", node.assemble(config, bodies)) && register_profile() &&
            evidence.status("start", ayni_start(node.kernel()));
 }
 bool World::start(ayni_lifecycle_t expected) {

@@ -1,6 +1,6 @@
 # 调用、绑定与订阅
 
-- **关联**：计划 §2.7、§3.2「异步」、§3.6、§4.3；ADR-0004、ADR-0007、ADR-0021、ADR-0026；`MA-008`、`MA-009`、`MA-033`；E2 全部注入点，E3 步骤 2–4，E4 步骤 1–5
+- **关联**：计划 §2.7、§3.2「异步」、§3.6、§4.3；ADR-0004、ADR-0007、ADR-0021、ADR-0026、ADR-0096；`MA-008`、`MA-009`、`MA-033`；E2 全部注入点，E3 步骤 2–4，E4 步骤 1–5
 - **属主**：`work/call`、`work/action`、`work/subscription`（调用实例）；`catalog/capability`、`catalog/binding`（描述与选择约束）
 
 当前实施边界（ABI 0.31 / ADR-0045）：公开 Provider/Binding 注册、有限 typed 参数与 UTF-8 正文、统一调用身份/资源/屏障、可靠完成、Task RUNNING/CANCELLING、所有者主动对账已接入 Kernel。journal/snapshot 共用完整调用记录，默认配置不启用调用容量。本轮验证限正常路径和公开边界；后续已交付范围见各 ABI 段；新故障/恢复专项仍暂停。ABI 0.35 的物理 Mock 许可及最小观察前提见 permits_and_stop.md；ProviderRequest 新增只在 submit 内借用的 execution_permit，非物理请求为 null，旧 0.x 消费者须重编译。
@@ -75,7 +75,7 @@ GoalType 以 `tools` 声明最多 8 个可提议的工具 Binding（精确 ID �
 
 结果格式为 `AYNI_CALL_RESULT_TOOL_CALLS` 的调用只能是非物理、非订阅的 MODEL 契约。派发时 Provider 得到这次调用可用的工具：允许列表中能对上 Task 所属 Goal 某一需求的 Binding（同 Capability 与版本、同来源域，且该需求的上限容许 Binding 自己的端点或目的地），即“允许列表 ∩ 已授权”。每个工具的视图给出字段的类型、单位和该上限内的取值；路由字段只列 Binding 自己的端点或目的地。视图回调只在本次 `submit` 内、在其线程上有效，任何 `submit` 之外返回 `AYNI_INVALID_STATE`；Provider 不保留它。
 
-完成时 Provider 给出最终文本或 1～8 个原生 function 提议，提议可以附同一 assistant 文本。每项保留 function_name、协议 ID 与无损参数树或非法参数原文；这里只校验提议形状和容量，不验证业务 Binding/Schema/Grant。post 拒绝非法外层形状或超限时保持借用。提议以 ATC3 随 CALL_STATE type21/v1 持久，策略经 `call_tool` 读取；Kernel 不自动执行。协议 ID 配对消息，source Model Call+提议序号保证 Ayni 步骤身份。
+完成时 Provider 给出最终文本或 1～8 个原生 function 提议，提议可以附同一 assistant 文本。每项保留 function_name、协议 ID 与无损参数树或非法参数原文；这里只校验提议形状和容量，不验证业务 Binding/Schema/Grant。post 拒绝非法外层形状或超限时保持借用。提议以 ATC3 随 CALL_STATE type21/v1 持久；自 ABI 0.54，结果 `text` 即该列表编码，或经正文引用存放在 Host 正文存储中，策略用纯函数 `ayni_tool_calls_read`/`ayni_tool_call_read` 读取（ADR-0096）；Kernel 不自动执行。协议 ID 配对消息，source Model Call+提议序号保证 Ayni 步骤身份。
 
 | ID | 规则 | 反例 | 验证 |
 |---|---|---|---|

@@ -3,6 +3,7 @@
 #ifndef AYNI_EXPERIMENT_EXECUTION_H
 #define AYNI_EXPERIMENT_EXECUTION_H
 #include <ayni/providers/mock_execution.h>
+#include <ayni/runtime/common/default_config.h>
 #include <ayni/scenes.h>
 #include <optional>
 namespace ayni::runtime::experiments {
@@ -13,6 +14,7 @@ class Physical {
     static constexpr uint32_t observation_age_us = 500000;
     explicit Physical(World &world);
     bool configure();
+    CallBytes call_bytes() const; // The execution contract's maxima.
     bool register_profile(ayni_kernel_t *kernel);
     bool prepare(uint64_t agent = 1);
     bool revoke_queued();

@@ -80,6 +80,27 @@ ayni_status_t CallTable::check_body(ayni::foundation::Workspace &workspace,
 
 ayni_status_t CallTable::check_result(ayni::foundation::Workspace &workspace, uint32_t index,
                                       const CallResult &result) const {
+    const auto &body_contract = slots_[index].entry->contract;
+    if (result.body.id == 0U) {
+        if (result.body.digest != 0U || result.body.size != 0U || result.body.reserved != 0U ||
+            result.body_calls != 0U) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+    } else if (result.body.reserved != 0U || result.outcome != AYNI_CALL_COMPLETED ||
+               !valid_result(result) || result.text.size != 0U ||
+               body_contract.category != catalog::CallClass::model ||
+               body_contract.result_format == catalog::call_value_result_format ||
+               result.body_calls > AYNI_CALL_TOOL_COUNT_MAX ||
+               result.kind !=
+                   (result.body_calls ? CallResultKind::tool_calls : CallResultKind::text) ||
+               (result.body_calls &&
+                body_contract.result_format != catalog::call_tool_calls_result_format) ||
+               !valid_model_usage(result.model_usage)) {
+        // Only a completed MODEL result's text or proposal list may live outside Core.
+        return AYNI_INVALID_ARGUMENT;
+    } else {
+        return AYNI_OK; // Core never reads the body; its reader verifies it.
+    }
     if (!valid_result(result) || !valid_model_usage(result.model_usage) ||
         (result.model_usage.kind != AYNI_MODEL_USAGE_NONE &&
          slots_[index].entry->contract.category != catalog::CallClass::model) ||
@@ -105,6 +126,8 @@ CallResult CallTable::usable_result(const CallResult &validated, ResultDependenc
         result.reason = AYNI_REASON_EXECUTION_OBSERVATION;
         result.text = {};
         result.kind = CallResultKind::text;
+        result.body = {};
+        result.body_calls = 0;
     }
     return result;
 }
@@ -130,16 +153,21 @@ ayni_status_t finish_action(ActionRecord &action, const CallResult &result, Acti
 
 std::size_t CallTable::storage_size(Limits limits) {
     return static_cast<std::size_t>(limits.capacity) *
-           (sizeof(Slot) + limits.domain_bytes + limits.input_bytes + limits.result_bytes +
-            limits.business_bytes);
+           (sizeof(Slot) + call_body_refs_max * sizeof(Release) + limits.domain_bytes +
+            limits.input_bytes + limits.result_bytes + limits.business_bytes);
 }
 
 CallTable::CallTable(void *storage, Limits limits)
     : slots_(static_cast<Slot *>(storage)),
-      bodies_(limits.capacity == 0U ? nullptr
-                                    : reinterpret_cast<uint8_t *>(slots_ + limits.capacity)),
+      releases_(limits.capacity == 0U ? nullptr
+                                      : reinterpret_cast<Release *>(slots_ + limits.capacity)),
+      bodies_(limits.capacity == 0U
+                  ? nullptr
+                  : reinterpret_cast<uint8_t *>(releases_ + limits.capacity * call_body_refs_max)),
       limits_(limits) {
     static_assert(alignof(Slot) <= storage_alignment, "caller arena aligns stable call slots");
+    static_assert(alignof(Release) <= storage_alignment, "caller arena aligns released references");
+    static_assert(sizeof(Slot) % alignof(Release) == 0U, "references follow the slots aligned");
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         new (slots_ + at) Slot{};
     }
@@ -348,6 +376,8 @@ void CallTable::set_terminal(Entry &entry, const CallResult &result, ActionStamp
     entry.state.status = result.status;
     entry.state.reason = result.reason;
     entry.state.model_usage = result.model_usage;
+    entry.state.result_body = result.body;
+    entry.state.result_body_calls = result.body_calls;
     entry.result_size = result.text.size;
     entry.result_kind = result.kind;
     if (entry.state.subscription) {
@@ -483,6 +513,8 @@ ayni_status_t CallTable::finish(ayni::foundation::Workspace &workspace, uint32_t
     if (entry.state.content_erased) {
         result.text = {};
         result.kind = CallResultKind::text;
+        result.body = {};
+        result.body_calls = 0;
     }
     if (!pending(entry) || !advances(entry, stamp) || !entry.action) {
         return AYNI_INVALID_STATE;
@@ -507,6 +539,8 @@ void CallTable::discard_result(uint32_t index) {
     std::memset(bytes(index) + limits_.domain_bytes + limits_.input_bytes, 0, limits_.result_bytes);
     entry.result_size = 0;
     entry.result_kind = CallResultKind::text;
+    entry.state.result_body = {};
+    entry.state.result_body_calls = 0;
 }
 
 void CallTable::discard_unusable_result(uint32_t index) {
@@ -514,17 +548,36 @@ void CallTable::discard_unusable_result(uint32_t index) {
     slots_[index].entry->result_kind = CallResultKind::unavailable;
 }
 
-ayni_status_t CallTable::erase_content(uint32_t index, ActionStamp stamp) {
+ayni_status_t CallTable::erase_content(uint32_t index, ActionStamp stamp, bool release) {
     auto &entry = *slots_[index].entry;
     if (entry.state.content_erased || !advances(entry, stamp)) {
         return AYNI_INVALID_STATE;
     }
+    auto &erased = slots_[index].erased;
+    if (release && erased.count == 0U) {
+        erased.count = body_refs(index, erased.refs.data());
+        erased.after_seq = stamp.transition.commit_seq;
+    }
+    entry.state.result_body = {};
+    entry.state.result_body_calls = 0;
     std::memset(bytes(index) + limits_.domain_bytes, 0, limits_.input_bytes + limits_.result_bytes);
     entry.input_size = 0;
     entry.result_size = 0;
     entry.result_kind = CallResultKind::text;
     entry.state.content_erased = stamp;
     return AYNI_OK;
+}
+
+uint32_t CallTable::task_body_refs(uint64_t task_id) const {
+    uint32_t refs = 0;
+    for (uint32_t at = 0; at < limits_.capacity; ++at) {
+        const auto &entry = slots_[at].entry;
+        if (entry && entry->identity.task_id == task_id) {
+            std::array<ayni_body_ref_v1, call_body_refs_max> held{};
+            refs += body_refs(at, held.data()) + slots_[at].erased.count;
+        }
+    }
+    return refs;
 }
 
 bool CallTable::can_retire_task(uint64_t task_id, uint64_t durable_seq) const {
@@ -539,13 +592,26 @@ bool CallTable::can_retire_task(uint64_t task_id, uint64_t durable_seq) const {
             return false;
         }
     }
-    return true;
+    return release_fits(task_body_refs(task_id));
 }
 
-void CallTable::retire_task(uint64_t task_id) {
+void CallTable::retire_task(uint64_t task_id, uint64_t release_seq) {
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         auto &entry = slots_[at].entry;
         if (entry && entry->identity.task_id == task_id) {
+            std::array<ayni_body_ref_v1, call_body_refs_max * 2U> refs{};
+            auto &erased = slots_[at].erased;
+            uint32_t count = body_refs(at, refs.data());
+            for (uint32_t ref = 0; ref < erased.count; ++ref) {
+                refs[count++] = erased.refs[ref];
+            }
+            erased = {};
+            // Live retirement checked room first; replay forgets references (ADR-0096).
+            for (uint32_t ref = 0; release_seq != 0U && ref < count && release_room() != 0U;
+                 ++ref) {
+                releases_[(release_head_ + release_count_++) % release_capacity()] = {refs[ref],
+                                                                                      release_seq};
+            }
             std::memset(bytes(at), 0,
                         static_cast<std::size_t>(limits_.domain_bytes) + limits_.input_bytes +
                             limits_.result_bytes + limits_.business_bytes);
@@ -614,6 +680,49 @@ ayni_bytes_v1 CallTable::tool_calls(uint32_t index) const {
     const auto list = body(index);
     return {reinterpret_cast<const uint8_t *>(list.data), list.size};
 }
+uint32_t CallTable::body_refs(uint32_t index, ayni_body_ref_v1 *out) const {
+    const auto &entry = *slots_[index].entry;
+    uint32_t count = 0;
+    if (entry.contract.input_format == catalog::call_value_input_format) {
+        count = catalog::value_bodies(input(index), out, AYNI_VALUE_BODY_COUNT_MAX);
+    }
+    if (entry.state.result_body.id != 0U) {
+        out[count++] = entry.state.result_body;
+    }
+    return count;
+}
+
+bool CallTable::release_due(uint64_t durable_seq) const {
+    if (release_count_ != 0U && releases_[release_head_].after_seq <= durable_seq) {
+        return true;
+    }
+    for (uint32_t at = 0; at < limits_.capacity; ++at) {
+        if (slots_[at].erased.count != 0U && slots_[at].erased.after_seq <= durable_seq) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool CallTable::next_release(uint64_t durable_seq, ayni_body_ref_v1 &out) {
+    if (release_count_ != 0U && releases_[release_head_].after_seq <= durable_seq) {
+        out = releases_[release_head_].ref;
+        releases_[release_head_] = {};
+        release_head_ = (release_head_ + 1U) % release_capacity();
+        --release_count_;
+        return true;
+    }
+    for (uint32_t at = 0; at < limits_.capacity; ++at) {
+        auto &erased = slots_[at].erased;
+        if (erased.count != 0U && erased.after_seq <= durable_seq) {
+            out = erased.refs[--erased.count];
+            erased.refs[erased.count] = {};
+            return true;
+        }
+    }
+    return false;
+}
+
 ayni_bytes_v1 CallTable::value_result(uint32_t index) const {
     if (slots_[index].entry->result_kind != CallResultKind::value) {
         return {};

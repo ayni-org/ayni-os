@@ -28,6 +28,8 @@ uint32_t scalar_bytes(const ayni_value_node_v1 &node) {
         return wide_bytes;
     case AYNI_VALUE_DECIMAL:
         return wide_bytes + word_bytes;
+    case AYNI_VALUE_BODY:
+        return wide_bytes + wide_bytes + word_bytes; // id, digest, size; reserved is zero.
     default:
         return 0;
     }
@@ -80,6 +82,11 @@ uint32_t write_node(const ayni_value_node_v1 &node, uint8_t *out) {
         foundation::store_le64(payload, static_cast<uint64_t>(node.value.decimal.coefficient));
         foundation::store_le32(payload + wide_bytes, node.value.decimal.scale);
         break;
+    case AYNI_VALUE_BODY:
+        foundation::store_le64(payload, node.value.body.id);
+        foundation::store_le64(payload + wide_bytes, node.value.body.digest);
+        foundation::store_le32(payload + wide_bytes + wide_bytes, node.value.body.size);
+        break;
     default:
         break;
     }
@@ -116,6 +123,11 @@ void read_scalar(ayni_value_node_v1 &node, const uint8_t *payload) {
         bits = foundation::load_le64(payload);
         std::memcpy(&node.value.decimal.coefficient, &bits, wide_bytes);
         node.value.decimal.scale = foundation::load_le32(payload + wide_bytes);
+        break;
+    case AYNI_VALUE_BODY:
+        node.value.body = {foundation::load_le64(payload),
+                           foundation::load_le64(payload + wide_bytes),
+                           foundation::load_le32(payload + wide_bytes + wide_bytes), 0};
         break;
     default:
         break;
@@ -254,6 +266,12 @@ bool same_value(const ayni_value_v1 &left, const ayni_value_v1 &right) {
                 return false;
             }
             break;
+        case AYNI_VALUE_BODY:
+            if (a.value.body.id != b.value.body.id || a.value.body.digest != b.value.body.digest ||
+                a.value.body.size != b.value.body.size) {
+                return false;
+            }
+            break;
         case AYNI_VALUE_TEXT:
         case AYNI_VALUE_ENUM:
         case AYNI_VALUE_IDENTIFIER:
@@ -294,6 +312,24 @@ bool canonical_value(const ayni_value_v1 &value) {
         }
     }
     return true;
+}
+uint32_t value_bodies(ayni_bytes_v1 body, ayni_body_ref_v1 *out, uint32_t capacity) {
+    if (body.data == nullptr || body.size < value_encoding_header_bytes ||
+        foundation::load_le32(body.data) != value_encoding_version) {
+        return 0;
+    }
+    const auto count = foundation::load_le32(body.data + word_bytes);
+    uint32_t offset = value_encoding_header_bytes, found = 0;
+    for (uint32_t at = 0; at < count; ++at) {
+        ayni_value_node_v1 node{};
+        if (!read_node(body, offset, node)) {
+            return found;
+        }
+        if (node.kind == AYNI_VALUE_BODY && found < capacity) {
+            out[found++] = node.value.body;
+        }
+    }
+    return found;
 }
 } // namespace ayni::catalog
 

@@ -1,3 +1,3 @@
-add_library(ayni_runtime_conversation STATIC conversation.cpp)
+add_library(ayni_runtime_conversation STATIC conversation.cpp file_bodies.cpp)
 target_include_directories(ayni_runtime_conversation PUBLIC include)
 target_link_libraries(ayni_runtime_conversation PUBLIC ayni_strategies ayni_host_storage PRIVATE ayni_core_options)

@@ -22,7 +22,7 @@ ActionService::ActionService(ayni_call_query_authority_t query_authority) {
                             1000,
                             AYNI_CALL_INPUT_VALUE,
                             AYNI_CALL_RESULT_TEXT,
-                            24,
+                            text_value_bytes(0),
                             0,
                             0,
                             nullptr,
@@ -37,8 +37,9 @@ ActionService::ActionService(const char *capability, const ayni_call_resource_v1
     : ActionService() {
     provider_id_ = capability_.capability_id = text(capability);
     capability_.contract.effects = effects;
-    input_schema_.max_count = effects == AYNI_CALL_EFFECT_NOTIFICATION ? 512U : 0U;
-    capability_.contract.input_text_limit = input_schema_.max_count + 24;
+    input_schema_.max_count =
+        effects == AYNI_CALL_EFFECT_NOTIFICATION ? notification_text_bytes : 0U;
+    capability_.contract.input_text_limit = text_value_bytes(input_schema_.max_count);
     capability_.contract.resource_count = count;
     capability_.contract.resources = resources;
 }

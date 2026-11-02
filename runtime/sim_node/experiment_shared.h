@@ -11,6 +11,7 @@
 #include <ayni/memory.h>
 #include <ayni/providers/mock/subscription.h>
 #include <ayni/resources.h>
+#include <ayni/runtime/common/memory_bodies.h>
 #include <ayni/strategies/builtin.h>
 #include <optional>
 namespace ayni::runtime::experiments {
@@ -51,6 +52,7 @@ class SharedServices {
     bool advance();
     void abandon_kernel();
     ayni_status_t close();
+    const ayni_body_store_v1 *bodies() const { return bodies_.store(); }
     bool begin_close();
     uint64_t clock_delta(const ayni_step_report_v1 &last, uint64_t seen_wakes) const;
     bool run(SharedScenario scenario);
@@ -64,6 +66,7 @@ class SharedServices {
     fixtures::ModelProbe model_a_, model_b_;
     applications::normal_fixtures::Policy policy_;
     ayni::Workspace loop_workspace_, conversation_workspace_; // Distinct owner/validator regions.
+    runtime::MemoryBodies bodies_; // Conversation texts and model bodies for the simulated run.
     strategies::ToolLoop tool_loop_;
     applications::experiment_fixtures::Services services_policy_;
     providers::mock::SubscriptionProvider camera_;

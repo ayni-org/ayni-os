@@ -56,14 +56,19 @@ bool WorkModel::retains_goal(const void *context, const work::Goal &goal) {
     if (model.privacy.pending()) {
         return true;
     }
+    // The Goal's Tasks retire in one commit, so their body references must fit together.
+    uint32_t refs = 0;
     for (uint32_t index = 0; index < model.tasks.size(); ++index) {
         const auto &task = model.tasks.at(index);
-        if (task.goal_id == goal.goal_id &&
-            (work::TaskTable::is_live(task.lifecycle) || retains_task(context, task))) {
+        if (task.goal_id != goal.goal_id) {
+            continue;
+        }
+        if (work::TaskTable::is_live(task.lifecycle) || retains_task(context, task)) {
             return true;
         }
+        refs += model.calls.task_body_refs(task.task_id);
     }
-    return false;
+    return !model.calls.release_fits(refs);
 }
 
 void WorkModel::refresh_calendars(work::CalendarClock clock) {
@@ -210,7 +215,7 @@ bool WorkModel::insert_goal(const work::NewGoal &goal, uint64_t goal_id,
     const auto replacing = goals.giving_way();
     if (replacing != work::GoalTable::no_index) {
         // All creation admission has passed; terminal Tasks leave with this exact Goal.
-        retire_goal_task_metadata(replacing, stamp.commit_seq);
+        retire_goal_task_metadata(replacing, stamp.commit_seq, stamp.commit_seq);
     }
     auto work = tables();
     if (!work::insert_goal(work, goal, goal_id, stamp, out_index)) {

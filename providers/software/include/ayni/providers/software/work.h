@@ -5,6 +5,9 @@
 #include <ayni/tool_usage.h>
 #include <memory>
 namespace ayni::providers::software {
+// Input and result bytes of every Call this Provider offers; the runtime sizes the Kernel's
+// Call strides from them.
+inline constexpr uint32_t call_bytes = 64;
 // Caller advances the provider on its owner thread independently of Kernel step.
 struct WorkConfig {
     void *clock_context = nullptr;        // Borrowed through close; same clock domain as Kernel.

@@ -85,8 +85,6 @@ typedef uint32_t ayni_call_cancel_mode_t;
 #define AYNI_CALL_TOOL_COUNT_MAX 8u
 /* Maximum members of one atomic resource group. Since 0.31. */
 #define AYNI_CALL_RESOURCE_COUNT_MAX AYNI_RESOURCE_GROUP_COUNT_MAX
-/* Maximum supported text bytes per input or result. Since 0.31. */
-#define AYNI_CALL_TEXT_BYTES_MAX 65536u
 /* Maximum distinct capability versions advertised by one Provider. Since 0.31. */
 #define AYNI_PROVIDER_CAPABILITY_COUNT_MAX 8u
 /* Maximum registered execution capability versions. Since 0.31. */
@@ -169,9 +167,11 @@ typedef struct ayni_task_call_result_v1 {
     uint64_t requires_seq;    /* Last result commit sequence; zero before terminal. */
     ayni_status_t status;     /* Classified result status. */
     ayni_reason_t reason;     /* Classified result cause. */
-    ayni_string_v1 text;      /* Borrowed only during decide; empty while pending/unknown. */
-    /* Since 0.37. Nonzero only for a completed TOOL_CALLS result that holds
-     * tool calls instead of text; read each with snapshot call_tool. */
+    /* Inline result body, borrowed only during decide; empty while pending/unknown and
+     * when body names it instead. UTF-8 text, or, when tool_call_count is nonzero, the
+     * tool-call list encoding read with ayni_tool_calls_read (since 0.54). */
+    ayni_string_v1 text;
+    /* Since 0.37. Nonzero only for a completed TOOL_CALLS result that holds tool calls. */
     uint32_t tool_call_count;
     uint32_t reserved; /* Written zero. */
     uint32_t effect;   /* AYNI_CALL_EFFECT_* evidence; UNKNOWN must not be retried. Since 0.45. */
@@ -182,12 +182,16 @@ typedef struct ayni_task_call_result_v1 {
     ayni_bytes_v1
         business_contract; /* Since 0.48. Original complete proof; not the current catalog. */
     ayni_model_usage_v1
-        model_usage; /* Since 0.50. Actual service statistics, never byte estimates. */
-    uint32_t mode;   /* Since 0.51. Original accepted FOREGROUND or MANAGED mode. */
+        model_usage;        /* Since 0.50. Actual service statistics, never byte estimates. */
+    uint32_t mode;          /* Since 0.51. Original accepted FOREGROUND or MANAGED mode. */
+    uint32_t mode_reserved; /* Since 0.54. Written zero. */
+    /* Since 0.54. The result body in the host body store, read and verified by the
+     * strategy; zero when the body is inline in text or absent (ADR-0096). */
+    ayni_body_ref_v1 body;
 } ayni_task_call_result_v1;
 
 /* Since 0.50. Caller-owned proposal view. Nodes point into this output; all
- * strings borrow the original immutable model result through decide only. */
+ * strings borrow the list body it was read from. */
 typedef struct ayni_task_tool_call_v1 {
     uint32_t struct_size;                                   /* Exact ABI layout. */
     uint32_t reserved;                                      /* Written zero. */
@@ -217,7 +221,7 @@ typedef struct ayni_call_contract_v1 {
     uint32_t input_format;  /* CALL_INPUT_VALUE; authority is derived from the normalized value. */
     uint32_t result_format; /* TEXT, TOOL_CALLS (MODEL), or VALUE Since 0.48. */
     uint32_t input_text_limit; /* Whole encoded value bytes, 0..CALL_INPUT_BYTES_MAX, Since 0.48. */
-    uint32_t result_text_limit; /* Complete TEXT/value/tool bytes, 0..CALL_TEXT_BYTES_MAX. */
+    uint32_t result_text_limit; /* Complete TEXT/value/tool bytes, 0..CALL_RESULT_BYTES_MAX. */
     uint32_t resource_count;    /* 0..CALL_RESOURCE_COUNT_MAX. */
     const ayni_call_resource_v1 *resources; /* Null only when resource_count is zero. */
     /* Since 0.43. Required for SUBSCRIPTION, null for every other form. Copied. */
@@ -307,33 +311,54 @@ typedef struct ayni_provider_result_v1 {
     ayni_reason_t reason;        /* Public cause; NONE when there is no finer classification. */
     ayni_call_effect_t effect;   /* Explicit knowledge, never inferred from HTTP status. */
     uint32_t query_result;       /* Zero for submit; QUERY_RESULT value for a query. */
-    ayni_string_v1 result;       /* Bounded UTF-8 text, empty for cancellation controls. */
-    uint32_t tool_call_count;    /* Since 0.37. Zero, or the size of tool_calls. */
-    uint32_t tool_reserved;      /* Since 0.37. Must be zero. */
+    ayni_string_v1 result;    /* Inline UTF-8 text within result_text_limit, empty for controls. */
+    uint32_t tool_call_count; /* Since 0.37. Zero, or the size of tool_calls. */
+    uint32_t tool_reserved;   /* Since 0.37. Must be zero. */
     const ayni_tool_call_v1 *tool_calls; /* Since 0.37. Null only when tool_call_count is 0. */
     ayni_value_v1
         value; /* Since 0.48. Structured payload; empty iff absent, exclusive with text/tools. */
     ayni_model_usage_v1
         model_usage; /* Since 0.50. Terminal MODEL only; NONE for other deliveries. */
+    /* Since 0.54 (ADR-0096). A COMPLETED MODEL result may give its body by reference
+     * instead of inline: result, tool_calls and value empty, tool_call_count the list's
+     * count (zero for text). The Provider writes the body (text, or the tool-call list
+     * encoding of ayni_tool_calls_write) and posts only once the store answered OK. */
+    ayni_body_ref_v1 body;
 } ayni_provider_result_v1;
 
-/* Pure producer sizing of a complete proposal list; no Schema or Kernel access.
- * Success writes its portable byte requirement; errors preserve out_size. Since 0.48. */
+/* Pure producer sizing of a complete proposal list and its optional assistant text;
+ * no Schema or Kernel access. Success writes its portable byte requirement; errors
+ * preserve out_size. Since 0.48; assistant_text since 0.54. */
 ayni_status_t ayni_tool_calls_measure(const ayni_tool_call_v1 *calls, uint32_t count,
-                                      uint32_t *out_size);
+                                      ayni_string_v1 assistant_text, uint32_t *out_size);
+/* Since 0.54. Writes the list encoding that ayni_tool_calls_measure sized: the body a
+ * Provider stores for a TOOL_CALLS result. BUFFER_TOO_SMALL sets out_size only. */
+ayni_status_t ayni_tool_calls_write(const ayni_tool_call_v1 *calls, uint32_t count,
+                                    ayni_string_v1 assistant_text, uint8_t *out, uint32_t capacity,
+                                    uint32_t *out_size);
+/* Since 0.54. Region for the two readers below, which decode argument trees. */
+ayni_status_t ayni_tool_calls_workspace_requirements(size_t *bytes, size_t *alignment);
+/* Since 0.54. Strict decode of a whole list: its count and assistant text, borrowing
+ * body. INVALID_ARGUMENT, preserving outputs, when body is not a valid list. */
+ayni_status_t ayni_tool_calls_read(const ayni_workspace_v1 *region, ayni_bytes_v1 body,
+                                   uint32_t *out_count, ayni_string_v1 *out_assistant_text);
+/* Since 0.54. One proposal of a valid list; strings borrow body, nodes live in out.
+ * NOT_FOUND past the end. Replaces the snapshot call_tool callback. */
+ayni_status_t ayni_tool_call_read(const ayni_workspace_v1 *region, ayni_bytes_v1 body,
+                                  uint32_t index, ayni_task_tool_call_v1 *out);
 
 /* Any non-ISR thread, including synchronous submission. Copies into capacity
  * reserved for the attempt, independently of storage/event queue pressure.
  * A tool list is checked and encoded here: counts, ids, non-singleton values,
  * duplicate fields, invalid UTF-8, or one on an attempt that takes no list,
  * return INVALID_ARGUMENT; a struct larger than this version's returns
- * UNSUPPORTED_VERSION (smaller, INVALID_ARGUMENT); a body over
- * CALL_TEXT_BYTES_MAX, or an encoding over the call's result_text_limit,
- * returns CAPACITY_EXCEEDED. Shape is checked before the attempt is found.
- * Stale/duplicate reliable posts return INVALID_STATE. Older progress is
- * ignored with OK. A successful terminal post ends the delivery borrow;
- * runtime still joins the producer before destroying Core/context storage.
- * Malformed/oversized posts return an error and keep the borrow outstanding.
+ * UNSUPPORTED_VERSION (smaller, INVALID_ARGUMENT); an inline body or encoding
+ * over the call's result_text_limit returns CAPACITY_EXCEEDED. A body reference
+ * is copied without reading it; only a COMPLETED MODEL result may carry one. Shape is checked
+ * before the attempt is found. Stale/duplicate reliable posts return INVALID_STATE. Older progress
+ * is ignored with OK. A successful terminal post ends the delivery borrow; runtime still joins the
+ * producer before destroying Core/context storage. Malformed/oversized posts return an error and
+ * keep the borrow outstanding.
  */
 ayni_status_t ayni_provider_post(ayni_provider_completion_t *completion,
                                  const ayni_provider_result_v1 *result);
@@ -372,7 +397,7 @@ typedef struct ayni_provider_request_v1 {
     ayni_string_v1 capability_id; /* Matched capability, not model-supplied endpoint. */
     ayni_string_v1 endpoint_id;   /* Trusted local endpoint token; never a URL. */
     ayni_scope_v1 arguments;      /* Complete concrete values actually authorized. */
-    ayni_string_v1 text;          /* Bounded UTF-8 business body, never credentials. */
+    ayni_string_v1 text;          /* Reserved since 0.48; empty. The business body is value. */
     /* Since 0.35. Borrowed through submit only; null for nonphysical I/O. Physical
      * Providers hand this permit to the gate: a local gate installs it before
      * acceptance returns; since 0.36 a remote one may receive it later, unless a
@@ -381,7 +406,10 @@ typedef struct ayni_provider_request_v1 {
     const ayni_execution_permit_v1 *execution_permit;
     /* Since 0.43. Non-null only for a subscription; copy during submit. */
     const ayni_subscription_open_v1 *subscription;
-    ayni_value_v1 value; /* Since 0.48. Normalized business tree borrowed through submit. */
+    /* Since 0.48. Normalized business tree borrowed through submit. Since 0.54 an EXTERNAL
+     * field may be a BODY reference: the Provider reads it from its body store and checks it
+     * with ayni_body_verify before use, refusing a mismatch (ADR-0096). */
+    ayni_value_v1 value;
 } ayni_provider_request_v1;
 
 /* All callbacks run on the owner thread, without reentry or blocking I/O.
@@ -514,10 +542,10 @@ typedef struct ayni_call_info_v1 {
     uint32_t cancel_requested; /* 1 after a committed request; does not mean stopped. */
     ayni_call_outcome_t cancel_result; /* Zero, CANNOT_CANCEL or CANCEL_UNKNOWN. */
     uint32_t input_bytes;              /* Retained complete canonical input length. */
-    uint32_t result_bytes;        /* Retained TEXT/VALUE bytes; proposals use tool_call_count. */
-    ayni_call_wait_t wait_reason; /* Derived from pending runtime ownership. */
-    uint32_t tool_call_count;     /* Since 0.37. Tool calls held instead of result text. */
-    uint64_t waited_us;           /* This boot's resource wait duration; zero outside a queue. */
+    uint32_t result_bytes;             /* Retained inline TEXT/VALUE bytes; see also body. */
+    ayni_call_wait_t wait_reason;      /* Derived from pending runtime ownership. */
+    uint32_t tool_call_count;          /* Since 0.37. Tool calls held instead of result text. */
+    uint64_t waited_us;      /* This boot's resource wait duration; zero outside a queue. */
     uint32_t query_revision; /* Starts at one; CAS increases once per accepted management query. */
     ayni_call_query_phase_t query_phase; /* Zero before the first owner query. */
     ayni_status_t query_status;        /* Last query diagnostic, independent of execution status. */
@@ -528,6 +556,7 @@ typedef struct ayni_call_info_v1 {
     uint32_t result_kind;     /* Since 0.48. Actual TEXT, TOOL_CALLS, VALUE or UNAVAILABLE. */
     uint32_t result_reserved; /* Since 0.48. Written zero. */
     ayni_model_usage_v1 model_usage; /* Since 0.50. Retained reported counts or explicit absence. */
+    ayni_body_ref_v1 body; /* Since 0.54. Result body by reference; zero when inline or absent. */
 } ayni_call_info_v1;
 
 /* Owner thread, outside callbacks. Fixed copied info may describe volatile facts;
@@ -538,7 +567,8 @@ ayni_status_t ayni_get_call(const ayni_kernel_t *kernel, uint64_t logical_call_i
  * pending/not-yet-durable, RESULT_UNKNOWN for abandoned tracking. BUFFER_TOO_SMALL
  * sets out_size only; other failures preserve outputs. No terminating NUL added.
  * VALUE returns portable encoded bytes, decoded with ayni_value_read.
- * A result of tool calls copies zero bytes; inspect tool_call_count instead. */
+ * A result of tool calls copies zero bytes; inspect tool_call_count instead. A result
+ * body by reference copies zero bytes; read info.body from the body store (since 0.54). */
 ayni_status_t ayni_copy_call_result(const ayni_kernel_t *kernel, uint64_t logical_call_id,
                                     char *buffer, uint32_t capacity, uint32_t *out_size);
 

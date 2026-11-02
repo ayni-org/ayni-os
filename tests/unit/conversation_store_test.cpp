@@ -1,5 +1,5 @@
 #include "strategy_workspace_fixture.h"
-// ADR-0085: normal Native SQLite append, paging, references and privacy replacement.
+// ADR-0096: the Native SQLite body store, its collection and privacy replacement.
 #include "../../runtime/native_node/conversation_store.h"
 #include "temp_directory.h"
 #include <ayni/model_messages.hpp>
@@ -9,7 +9,7 @@
 namespace {
 using ayni::runtime::ConversationStore;
 using ayni::runtime::SavedConversation;
-using History = ayni::strategies::Text<ayni::strategies::history_bytes_max>;
+using ayni::strategies::BodyRef;
 class ConversationDatabase : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -18,7 +18,6 @@ class ConversationDatabase : public ::testing::Test {
         state.record.id = 1;
         state.record.owner_instance_id = 2;
         commit();
-        port = store.history_port();
     }
     void TearDown() override { store.close(); }
     void commit(ConversationStore::Erasure erase = ConversationStore::Erasure::none,
@@ -54,80 +53,100 @@ class ConversationDatabase : public ::testing::Test {
         sqlite3_close(db);
         return result;
     }
-    void append(History &history, const std::string &text,
-                ayni::model::Role role = ayni::model::Role::user) {
-        ayni::model::Writer writer(history.bytes.data() + history.size,
-                                   static_cast<uint32_t>(history.bytes.size()) - history.size);
-        if (!history.size) {
-            writer.prefix();
-        }
-        writer.text(role, {text.data(), static_cast<uint32_t>(text.size())});
-        ayni_string_v1 result{};
-        ASSERT_TRUE(writer.finish(result));
-        history.size += result.size;
-    }
-    void save_history(uint64_t turn) {
-        uint64_t reference = 0;
-        ASSERT_EQ(await([&] { return port.save(port.context, 4, turn, state.record, reference); }),
+    BodyRef write(const std::string &text, uint64_t scope = 1) {
+        BodyRef ref{};
+        const auto &bodies = *store.waiting_bodies();
+        EXPECT_EQ(bodies.write(bodies.context, scope,
+                               {reinterpret_cast<const uint8_t *>(text.data()),
+                                static_cast<uint32_t>(text.size())},
+                               &ref),
                   AYNI_OK);
-        ASSERT_NE(reference, 0U);
-        state.record.history_ref = reference;
+        return ref;
+    }
+    ayni_status_t read(const BodyRef &ref, std::string &out) {
+        return ayni::strategies::Conversation::text(*store.bodies(), ref, out);
     }
     ayni::test::TempDirectory directory;
     ConversationStore store;
     SavedConversation state;
-    ayni::strategies::HistoryPort port;
 };
-TEST_F(ConversationDatabase, appends_messages_once_and_reads_views_across_sql_pages) {
-    constexpr int first_page_messages = 80;
-    for (int at = 0; at < first_page_messages; ++at) {
-        append(state.record.history, "message-" + std::to_string(at));
-    }
-    save_history(1);
-    const auto first = state.record.history_ref;
-    append(state.record.history, "new-message");
-    save_history(2);
-    EXPECT_NE(state.record.history_ref, first);
-    EXPECT_EQ(count("messages"), first_page_messages + 1);
-    EXPECT_EQ(count("views"), 2);
-    History loaded;
-    ASSERT_EQ(await([&] { return port.load(port.context, 4, state.record, loaded); }), AYNI_OK);
-    EXPECT_EQ(std::string(loaded.bytes.data(), loaded.size),
-              std::string(state.record.history.bytes.data(), state.record.history.size));
+TEST_F(ConversationDatabase, large_bodies_round_trip_once_and_survive_reopen) {
+    const std::string large(200 * 1024, 'h');
+    const auto &bodies = *store.bodies();
+    BodyRef ref{};
+    const ayni_bytes_v1 bytes{reinterpret_cast<const uint8_t *>(large.data()),
+                              static_cast<uint32_t>(large.size())};
+    // Asynchronous writes answer NOT_READY until the worker committed the row.
+    EXPECT_EQ(bodies.write(bodies.context, 1, bytes, &ref), AYNI_NOT_READY);
+    ASSERT_EQ(await([&] { return bodies.write(bodies.context, 1, bytes, &ref); }), AYNI_OK);
+    EXPECT_EQ(write(large).id, ref.id); // Identical bytes in one scope are one body.
+    state.record.history = ref;
+    commit();
+    EXPECT_EQ(count("bodies"), 1);
+    store.close();
+    SavedConversation reopened;
+    ASSERT_EQ(store.open(directory.path().c_str(), reopened), AYNI_OK);
+    EXPECT_EQ(reopened.record.history.id, ref.id);
+    std::string loaded;
+    ASSERT_EQ(read(reopened.record.history, loaded), AYNI_OK);
+    EXPECT_EQ(loaded, large);
     ayni::strategies::Encoded encoded;
     ASSERT_EQ(ayni::strategies::Conversation::begin(::ayni::test::conversation_workspace(),
-                                                    state.record, {"next", 4}, encoded),
+                                                    *store.waiting_bodies(), reopened.record,
+                                                    {"next", 4}, encoded),
               AYNI_OK);
-    EXPECT_LT(encoded.size, 1024U); // The external reference excludes complete message history.
-    commit();
+    EXPECT_LE(encoded.size, ayni::strategies::encoded_bytes_max); // References only.
 }
-TEST_F(ConversationDatabase, generation_erasure_rejects_old_cache_reads_and_late_writes) {
-    append(state.record.history, "private-generated-body", ayni::model::Role::context);
-    save_history(1);
-    const auto old = state.record;
-    History loaded;
-    ASSERT_EQ(await([&] { return port.load(port.context, 4, old, loaded); }), AYNI_OK);
+TEST_F(ConversationDatabase, idle_save_collects_bodies_the_record_no_longer_names) {
+    const auto first = write("first history");
+    state.record.history = first;
+    commit();
+    const auto intermediate = write("intermediate");
+    state.pending_goal = 9; // A turn in flight keeps every body of the conversation.
+    commit();
+    EXPECT_EQ(count("bodies"), 2);
+    const auto second = write("second history");
+    state.record.history = second;
+    state.pending_goal = 0;
+    commit();
+    EXPECT_EQ(count("bodies"), 1);
+    std::string loaded;
+    EXPECT_EQ(read(first, loaded), AYNI_NOT_FOUND);
+    EXPECT_EQ(read(intermediate, loaded), AYNI_NOT_FOUND);
+    ASSERT_EQ(read(second, loaded), AYNI_OK);
+    EXPECT_EQ(loaded, "second history");
+    const auto other = write("another scope", 7); // Other scopes belong to their own owners.
+    commit();
+    EXPECT_EQ(count("bodies"), 2);
+    store.bodies()->release(store.bodies()->context, &other);
+    commit();
+    EXPECT_EQ(count("bodies"), 1);
+}
+// A durable reference may still name a deleted body, so its identity is never handed out again.
+TEST_F(ConversationDatabase, released_newest_identity_is_not_reused_after_reopen) {
+    write("kept", 7);
+    const auto newest = write("released", 7);
+    commit();
+    store.bodies()->release(store.bodies()->context, &newest);
+    commit();
+    EXPECT_EQ(count("bodies"), 1);
+    store.close();
+    SavedConversation reopened;
+    ASSERT_EQ(store.open(directory.path().c_str(), reopened), AYNI_OK);
+    EXPECT_GT(write("after reopen", 7).id, newest.id);
+}
+TEST_F(ConversationDatabase, erasing_the_conversation_removes_every_body) {
+    state.record.summary_first = 1;
+    state.record.summary_last = 1;
+    state.record.last_round = 1;
+    state.record.summary = write("private generated summary");
+    state.record.history = write("private generated history");
+    commit();
+    EXPECT_EQ(count("bodies"), 2);
     ASSERT_EQ(ayni::strategies::Conversation::erase(::ayni::test::conversation_workspace(),
                                                     state.record, state.record),
               AYNI_OK);
     commit(ConversationStore::Erasure::all);
-    EXPECT_EQ(port.load(port.context, 4, old, loaded), AYNI_EXPIRED);
-    uint64_t reference = 0;
-    EXPECT_EQ(port.save(port.context, 4, 1, old, reference), AYNI_EXPIRED);
-    EXPECT_EQ(count("messages"), 0);
-    EXPECT_EQ(count("views"), 0);
-}
-TEST_F(ConversationDatabase, deleting_one_turn_preserves_other_independent_user_messages) {
-    append(state.record.history, "keep-user");
-    append(state.record.history, "derived-answer", ayni::model::Role::assistant);
-    save_history(1);
-    append(state.record.history, "forget-user");
-    save_history(2);
-    ASSERT_EQ(ayni::strategies::Conversation::erase(::ayni::test::conversation_workspace(),
-                                                    state.record, state.record),
-              AYNI_OK);
-    commit(ConversationStore::Erasure::turn, 2);
-    EXPECT_EQ(count("messages"), 1);
-    EXPECT_EQ(count("views"), 0);
+    EXPECT_EQ(count("bodies"), 0);
 }
 } // namespace

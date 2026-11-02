@@ -25,6 +25,9 @@ struct Config {
     PermitStart permit_start = PermitStart::at_submit;
     ayni_control_envelope_v1 limits{}; // Full measured local bounds, copied.
 };
+// Contract maxima of the action Call; the runtime sizes the Kernel's Call strides from them.
+inline constexpr uint32_t call_result_bytes = 64;
+uint32_t call_input_bytes(const Config &config);
 // One owner-thread executor, one action borrow and one independently controlled gate.
 // Runtime owns this component; neither Provider callbacks nor advance allocate.
 // A status read that answers NOT_FOUND also refuses that permit afterwards.

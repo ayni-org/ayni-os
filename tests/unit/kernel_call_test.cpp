@@ -308,6 +308,7 @@ class ManagedCall : public ::testing::Test {
                                              0,
                                              nullptr,
                                              {},
+                                             {},
                                              {}};
         EXPECT_EQ(ayni_provider_post(call.completion, &result), AYNI_OK);
         call.ended = true;
@@ -329,6 +330,7 @@ class ManagedCall : public ::testing::Test {
                                              0,
                                              0,
                                              nullptr,
+                                             {},
                                              {},
                                              {}};
         EXPECT_EQ(ayni_provider_post(query.completion, &result), AYNI_OK);
@@ -649,15 +651,6 @@ TEST_F(ManagedCall, callback_result_views_reject_bad_arguments_and_preserve_miss
             },
             result, AYNI_UNSUPPORTED_VERSION);
         EXPECT_EQ(result.outcome, 99U);
-        ayni_task_tool_call_v1 tool{};
-        tool.struct_size = sizeof(tool);
-        tool.reserved = 99;
-        check(
-            [&](const void *context, ayni_task_tool_call_v1 *out) {
-                return snapshot.call_tool(context, text("missing"), 0, out);
-            },
-            tool, AYNI_UNSUPPORTED_VERSION);
-        EXPECT_EQ(tool.reserved, 99U);
         ayni_subscription_info_v1 subscription{};
         subscription.struct_size = sizeof(subscription);
         subscription.phase = 99;
@@ -1496,6 +1489,7 @@ TEST_F(ManagedCall, progress_is_monotonic_and_duplicate_terminal_is_rejected) {
                                      0,
                                      nullptr,
                                      {},
+                                     {},
                                      {}};
     ASSERT_EQ(ayni_provider_post(call.completion, &progress), AYNI_OK);
     progress.sequence = 1;
@@ -1515,6 +1509,7 @@ TEST_F(ManagedCall, progress_is_monotonic_and_duplicate_terminal_is_rejected) {
                                             0,
                                             0,
                                             nullptr,
+                                            {},
                                             {},
                                             {}};
     EXPECT_EQ(ayni_provider_post(call.completion, &duplicate), AYNI_INVALID_STATE);
@@ -1789,6 +1784,7 @@ TEST_F(ManagedCall, provider_cannot_report_the_core_only_skipped_outcome) {
                                          0,
                                          0,
                                          nullptr,
+                                         {},
                                          {},
                                          {}};
     EXPECT_EQ(ayni_provider_post(call.completion, &result), AYNI_INVALID_ARGUMENT);

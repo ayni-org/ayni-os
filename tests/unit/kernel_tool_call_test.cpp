@@ -455,11 +455,10 @@ class ToolCalls : public ::testing::Test {
         }
         ayni_task_tool_call_v1 proposed{};
         proposed.struct_size = sizeof(proposed);
-        EXPECT_EQ(snapshot.call_tool(snapshot.call_context, text("plan"), plan.tool_call_count,
-                                     &proposed),
+        EXPECT_EQ(ayni::test::read_tool_call(plan, plan.tool_call_count, &proposed),
                   AYNI_NOT_FOUND);
         proposed.call.input_kind = 99; // Successful public read overwrites an old tagged view.
-        const auto status = snapshot.call_tool(snapshot.call_context, text("plan"), 0, &proposed);
+        const auto status = ayni::test::read_tool_call(plan, 0, &proposed);
         if (status != AYNI_OK) {
             return status;
         }
@@ -744,7 +743,8 @@ TEST_F(ToolCalls, strategy_requests_a_proposed_call_through_the_ordinary_checks)
     pump(20);
     EXPECT_EQ(planned.outcome, AYNI_CALL_COMPLETED);
     EXPECT_EQ(planned.tool_call_count, 1U);
-    EXPECT_EQ(planned.text.size, 0U);
+    EXPECT_GT(planned.text.size, 0U); // The inline list encoding (ADR-0096).
+    EXPECT_EQ(planned.body.id, 0U);
     EXPECT_EQ(proposal_binding, "timer");
     EXPECT_EQ(proposal_fields, 4U);
     const auto plan = call_info(planned.logical_call_id);

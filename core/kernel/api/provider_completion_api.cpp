@@ -61,6 +61,29 @@ void write_value(const void *context, uint8_t *out, uint32_t size) {
         std::memset(out, 0, size);
     }
 }
+
+// A body by reference names a completed MODEL result the Provider already made durable.
+// Its tool list, if any, stays in the body; the owner checks the contract (ADR-0096).
+bool by_reference(const ayni_provider_result_v1 &result) {
+    return result.body.id != 0U || result.body.digest != 0U || result.body.size != 0U ||
+           result.body.reserved != 0U;
+}
+ayni_status_t post_reference(ayni_provider_completion_t &completion,
+                             const ayni_provider_result_v1 &result,
+                             ayni::kernel::ProviderMessage &message) {
+    if (result.body.id == 0U || result.body.reserved != 0U ||
+        result.outcome != AYNI_CALL_COMPLETED || result.result.size != 0U ||
+        result.tool_calls != nullptr || result.tool_call_count > AYNI_CALL_TOOL_COUNT_MAX ||
+        result.value.node_count != 0U || result.value.nodes != nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    message.payload = {};
+    message.body_ref = result.body;
+    message.body_calls = result.tool_call_count;
+    message.body = result.tool_call_count != 0U ? ayni::work::CallResultKind::tool_calls
+                                                : ayni::work::CallResultKind::text;
+    return completion.pool->post({completion.index, result.attempt}, message);
+}
 } // namespace
 
 // The target is immutable for the pool lifetime. A reused slot is identified
@@ -92,6 +115,9 @@ extern "C" ayni_status_t ayni_provider_post(ayni_provider_completion_t *completi
         result->effect,
         result->query_result};
     message.model_usage = result->model_usage;
+    if (by_reference(*result)) {
+        return post_reference(*completion, *result, message);
+    }
     // This thread checks native proposal framing only. The harness handles
     // business arguments through a later ordinary authorized Call (ADR-0085).
     const MeasuredCalls measured_calls{result->tool_calls, result->tool_call_count, result->result};

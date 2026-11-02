@@ -16,7 +16,6 @@ class LiveProvider : public OpenaiFixture {
         config.base_url = base;
         config.model = model;
         config.key_environment = "AYNI_LLM_API_KEY";
-        config.text_max_bytes = result_limit;
         config.request_capacity = 1;
         config.max_output_tokens = 128;
         initialize(config);

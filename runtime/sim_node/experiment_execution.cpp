@@ -23,18 +23,26 @@ ayni_status_t requirements(void *, ayni_bytes_v1, const ayni_goal_requirement_si
         sizeof(required), 1, text("mock.turn"), {sizeof(ayni_scope_v1), 0, nullptr}};
     return sink->emit(sink->ctx, &required);
 }
-} // namespace
-Physical::Physical(World &world) : world_(world) {}
-bool Physical::configure() {
+providers::mock_execution::Config executor_config(World &world) {
     providers::mock_execution::Config config;
-    config.clock_context = &world_;
+    config.clock_context = &world;
     config.now_us = [](void *ctx) {
         return static_cast<World *>(ctx)->node.simulation()->now_us();
     };
     config.ticks_to_complete = long_running_samples;
     config.limits.count = 1;
     config.limits.fields[0] = {name("yaw"), name("mrad"), -turn_limit, turn_limit};
-    return world_.evidence.status("configure physical deployment", executor.configure(config));
+    return config;
+}
+} // namespace
+Physical::Physical(World &world) : world_(world) {}
+bool Physical::configure() {
+    return world_.evidence.status("configure physical deployment",
+                                  executor.configure(executor_config(world_)));
+}
+CallBytes Physical::call_bytes() const {
+    return {providers::mock_execution::call_input_bytes(executor_config(world_)),
+            providers::mock_execution::call_result_bytes};
 }
 // This complete finite registration is the composition root; it depends only on
 // public contracts and the existing executor. No physical rule enters Core.

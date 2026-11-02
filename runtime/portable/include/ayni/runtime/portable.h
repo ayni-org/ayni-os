@@ -46,6 +46,8 @@ class Profile {
     // Same scratch as strategies/codecs: owner only, outside tick/Session calls
     // and all active callbacks. It is not an independent concurrent region.
     const ayni_workspace_v1 *value_workspace() const;
+    // The conversations' body store (ADR-0096); reads may answer NOT_READY while files load.
+    const ayni_body_store_v1 *bodies() const;
     Submission submit(ayni_intent_kind_t, const void *, uint32_t revision = 0);
     bool command_pending() const; // One accepted command receipt still awaiting durability.
     ayni_status_t begin_shutdown();

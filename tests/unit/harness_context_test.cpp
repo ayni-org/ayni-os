@@ -5,69 +5,21 @@
 #include <memory>
 namespace {
 using namespace ayni::test;
-using History = policies::Text<policies::history_bytes_max>;
-// A bounded synchronous Host fixture. SQLite append/erasure is tested separately;
-// this lane verifies real Core Calls and policy sequencing without external I/O.
+// A bounded synchronous Host fixture. SQLite archive is tested separately; this lane verifies
+// real Core Calls and policy sequencing without external I/O.
 struct ContextMemory {
-    struct View {
-        History history;
-        uint64_t owner = 0, conversation = 0, generation = 0;
-    };
     struct Result {
         static constexpr uint32_t capacity = 1048576;
         std::array<char, capacity> json{};
         uint64_t call = 0, sequence = 0;
         uint32_t size = 0, outcome = 0, effect = 0;
     };
-    std::array<View, 16> views{};
     std::array<Result, 8> results{};
-    uint32_t view_count = 0, result_count = 0;
-    bool defer_completed_save_once = true;
-    policies::HistoryPort port() { return {this, ready, load, save, archive, chunk}; }
+    uint32_t result_count = 0;
+    policies::HistoryPort port() { return {this, ready, archive, chunk}; }
     static uint32_t ready(void *, uint64_t) {
         return 1;
     } // Simulates completion before Core checks ready.
-    static bool same(const History &a, const History &b) {
-        return a.size == b.size &&
-               (!a.size || !std::memcmp(a.bytes.data(), b.bytes.data(), a.size));
-    }
-    static ayni_status_t load(void *context, uint64_t, const policies::ConversationRecord &record,
-                              History &out) {
-        auto &self = *static_cast<ContextMemory *>(context);
-        if (!record.history_ref || record.history_ref > self.view_count) {
-            return AYNI_NOT_FOUND;
-        }
-        const auto &view = self.views[record.history_ref - 1];
-        if (view.owner != record.owner_instance_id || view.conversation != record.id ||
-            view.generation != record.generation) {
-            return AYNI_DENIED;
-        }
-        out = view.history;
-        return AYNI_OK;
-    }
-    static ayni_status_t save(void *context, uint64_t, uint64_t,
-                              const policies::ConversationRecord &record, uint64_t &reference) {
-        auto &self = *static_cast<ContextMemory *>(context);
-        for (uint32_t at = 0; at < self.view_count; ++at) {
-            const auto &view = self.views[at];
-            if (view.owner == record.owner_instance_id && view.conversation == record.id &&
-                view.generation == record.generation && same(view.history, record.history)) {
-                reference = at + 1U;
-                return AYNI_OK;
-            }
-        }
-        if (self.view_count == self.views.size()) {
-            return AYNI_CAPACITY_EXCEEDED;
-        }
-        auto &view = self.views[self.view_count++];
-        view = {record.history, record.owner_instance_id, record.id, record.generation};
-        reference = self.view_count;
-        if (self.defer_completed_save_once) {
-            self.defer_completed_save_once = false;
-            return AYNI_NOT_READY;
-        }
-        return AYNI_OK;
-    }
     static ayni_status_t archive(void *context, uint64_t, const policies::ConversationRecord &,
                                  const ayni_task_call_result_v1 &call,
                                  policies::ArchivedResult &out) {
@@ -101,7 +53,7 @@ struct ContextMemory {
         return AYNI_OK;
     }
     static ayni_status_t chunk(void *context, uint64_t, uint64_t reference, uint32_t offset,
-                               policies::Text<policies::prompt_bytes_max> &out, uint32_t maximum) {
+                               std::string &out, uint32_t maximum) {
         auto &self = *static_cast<ContextMemory *>(context);
         if (!reference || reference > self.result_count) {
             return AYNI_NOT_FOUND;
@@ -110,13 +62,12 @@ struct ContextMemory {
         if (offset > source.size) {
             return AYNI_INVALID_ARGUMENT;
         }
-        out = {};
-        out.size = std::min({maximum, source.size - offset, policies::prompt_bytes_max});
-        while (out.size && offset + out.size < source.size &&
-               (static_cast<unsigned char>(source.json[offset + out.size]) & 0xc0U) == 0x80U) {
-            --out.size;
+        auto size = std::min(maximum, source.size - offset);
+        while (size && offset + size < source.size &&
+               (static_cast<unsigned char>(source.json[offset + size]) & 0xc0U) == 0x80U) {
+            --size;
         }
-        std::memcpy(out.bytes.data(), source.json.data() + offset, out.size);
+        out.assign(source.json.data() + offset, size);
         return AYNI_OK;
     }
 };
@@ -132,6 +83,9 @@ TEST(ContextConfiguration, rejects_incomplete_archive_callbacks_and_history_life
                     text("Use tools.")};
     config.summary = {
         AYNI_POLICY_REQUEST_MODEL, text("summary"), 1, {sizeof(ayni_scope_v1), 0, nullptr}, {}};
+    config.limits = {5000, 1000, 2000, 1000};
+    ayni::runtime::MemoryBodies bodies;
+    config.bodies = bodies.store();
     const auto full = memory->port();
     auto rejects = [&](policies::HistoryPort incomplete) {
         config.history = incomplete;
@@ -147,34 +101,58 @@ TEST(ContextConfiguration, rejects_incomplete_archive_callbacks_and_history_life
     incomplete = full;
     incomplete.ready = nullptr;
     rejects(incomplete);
-    incomplete = full;
-    incomplete.load = nullptr;
-    rejects(incomplete);
-    incomplete = full;
-    incomplete.save = nullptr;
-    rejects(incomplete);
     config.history = full;
     policies::ToolLoop loop;
     EXPECT_EQ(loop.configure(config, ::ayni::test::loop_workspace()), AYNI_OK);
 }
+// The first ToolLoop body write is not yet durable; every later one is.
+struct DeferOnce {
+    const ayni_body_store_v1 *inner = nullptr;
+    bool deferred = false;
+    ayni_body_store_v1 store{sizeof(ayni_body_store_v1), 0, this, write, read, release};
+    static ayni_status_t write(void *context, uint64_t scope, ayni_bytes_v1 bytes,
+                               ayni_body_ref_v1 *out) {
+        auto &self = *static_cast<DeferOnce *>(context);
+        if (!self.deferred) {
+            self.deferred = true;
+            return AYNI_NOT_READY;
+        }
+        return self.inner->write(self.inner->context, scope, bytes, out);
+    }
+    static ayni_status_t read(void *context, const ayni_body_ref_v1 *ref, uint8_t *out,
+                              uint32_t capacity) {
+        const auto *inner = static_cast<DeferOnce *>(context)->inner;
+        return inner->read(inner->context, ref, out, capacity);
+    }
+    static void release(void *context, const ayni_body_ref_v1 *ref) {
+        const auto *inner = static_cast<DeferOnce *>(context)->inner;
+        inner->release(inner->context, ref);
+    }
+};
 class ContextHarness : public StrategiesFixture {
   protected:
-    ContextHarness() { history_port = storage.port(); }
+    ContextHarness() {
+        history_port = storage.port();
+        defer.inner = bodies.store();
+        body_store = &defer.store;
+    }
     void TearDown() override {
         StrategiesFixture::TearDown();
         EXPECT_EQ(work.node().stop_and_destroy(), AYNI_OK);
     }
     ContextMemory storage;
+    DeferOnce defer;
 };
-TEST_F(ContextHarness, completed_save_race_does_not_pause_or_repeat_a_model_call) {
+TEST_F(ContextHarness, body_write_not_yet_durable_does_not_pause_or_repeat_a_model_call) {
     const auto task = start();
     ASSERT_EQ(pending.size(), 1U);
     post(0, text("done"));
     pump();
     finish(task);
+    EXPECT_TRUE(defer.deferred);
     EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
     EXPECT_EQ(pending.size(), 1U);
-    EXPECT_NE(conversation.history_ref, 0U);
+    EXPECT_NE(conversation.history.id, 0U);
 }
 TEST_F(ContextHarness, oversized_executed_result_uses_chunk_summaries_and_keeps_known_facts) {
     const auto task = start("chat", "one operation", 32);

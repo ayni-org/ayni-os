@@ -34,5 +34,8 @@ ayni_status_t decode_value(ayni::foundation::Workspace &workspace, ayni_bytes_v1
 bool same_value(const ayni_value_v1 &left, const ayni_value_v1 &right);
 // Stronger persisted-value admission: object order and floating zero are canonical.
 bool canonical_value(const ayni_value_v1 &value);
+// Copies up to capacity BODY references of an admitted canonical encoding, in node order,
+// without a decode workspace; returns how many it copied (ADR-0096).
+uint32_t value_bodies(ayni_bytes_v1 body, ayni_body_ref_v1 *out, uint32_t capacity);
 } // namespace ayni::catalog
 #endif

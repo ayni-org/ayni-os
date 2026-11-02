@@ -7,7 +7,10 @@
 #ifndef AYNI_RUNTIME_COMMON_DEFAULT_CONFIG_H
 #define AYNI_RUNTIME_COMMON_DEFAULT_CONFIG_H
 
+#include <algorithm>
 #include <ayni/ayni.h>
+#include <ayni/calls.h>
+#include <initializer_list>
 
 namespace ayni::runtime {
 
@@ -44,6 +47,29 @@ inline ayni_config_v1 default_config() {
     // Each field not set here is a store that stays off at 0, or a limit
     // whose 0 takes its default.
     return config;
+}
+
+// The canonical input and result bytes one Call contract declares.
+struct CallBytes {
+    uint32_t input;
+    uint32_t result;
+};
+inline CallBytes call_bytes(const ayni_call_contract_v1 &contract) {
+    return {contract.input_text_limit, contract.result_text_limit};
+}
+// Sizes the Kernel's Call strides to the largest contracts the composition registers, so no
+// composition writes its own byte estimate. Model bodies travel by reference (ADR-0096). A
+// stride is at least one byte, because zero would select the 4 KiB default.
+template <class Contracts> void fit_call_bytes(ayni_config_v1 &config, const Contracts &contracts) {
+    config.call_input_max_bytes = 1;
+    config.call_result_max_bytes = 1;
+    for (const CallBytes &contract : contracts) {
+        config.call_input_max_bytes = std::max(config.call_input_max_bytes, contract.input);
+        config.call_result_max_bytes = std::max(config.call_result_max_bytes, contract.result);
+    }
+}
+inline void fit_call_bytes(ayni_config_v1 &config, std::initializer_list<CallBytes> contracts) {
+    fit_call_bytes<std::initializer_list<CallBytes>>(config, contracts);
 }
 
 } // namespace ayni::runtime

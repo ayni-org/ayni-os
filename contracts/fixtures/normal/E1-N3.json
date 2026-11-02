@@ -14,7 +14,7 @@
     "model_delay_us": "100000",
     "step_units": 64,
     "max_steps": 10000,
-    "model_hard_limit": 2
+    "max_turns": 2
   },
   "script": [
     {

@@ -5,12 +5,16 @@
 #include <ayni/host_authority.h>
 #include <ayni/memory.h>
 #include <ayni/resources.h>
+#include <ayni/runtime/common/default_config.h>
 #include <ayni/runtime/common/memory_capability.h>
 #include <cstring>
 namespace ayni::runtime::fixtures {
 namespace {
 constexpr uint32_t text_limit = 512;
 constexpr uint32_t request_timeout_ms = 10000;
+providers::mock::Config health_config() {
+    return {providers::mock::Variant::a, providers::mock::Service::health, 1, text_limit, {}};
+}
 ayni_string_v1 text(const char *s) {
     return {s, static_cast<uint32_t>(std::strlen(s))};
 }
@@ -71,7 +75,7 @@ Counter::Counter(const char *capability, Effect effect) {
                             request_timeout_ms,
                             AYNI_CALL_INPUT_VALUE,
                             AYNI_CALL_RESULT_TEXT,
-                            text_limit + 24,
+                            input_bytes(),
                             0,
                             1,
                             &resource_,
@@ -81,6 +85,9 @@ Counter::Counter(const char *capability, Effect effect) {
     input_schema_.max_count = text_limit;
     business_ = {{&input_schema_, 1}, {&result_schema_, 1}, 0, 0, nullptr};
     capability_.business = &business_;
+}
+uint32_t Counter::input_bytes() {
+    return text_value_bytes(text_limit);
 }
 ayni_provider_v1 Counter::describe() {
     auto out = initialized<ayni_provider_v1>();
@@ -186,6 +193,15 @@ const char *Profile::capability(const char *alias) {
     }
     return "";
 }
+void Profile::fit_call_bytes(ayni_config_v1 &config) {
+    const auto health = health_config();
+    runtime::fit_call_bytes(
+        config,
+        {{ModelProbe::call_input_bytes(), ModelProbe::call_result_bytes},
+         {Counter::input_bytes(), 0},
+         {providers::mock::subscription_input_bytes(), providers::mock::subscription_result_bytes},
+         {providers::mock::call_input_bytes(health), providers::mock::call_result_bytes(health)}});
+}
 ayni_status_t Profile::assemble(ayni_kernel_t *kernel, Clock clock, const Config &config,
                                 Provider provider, Strategy strategy) {
     kernel_ = kernel;
@@ -210,8 +226,7 @@ ayni_status_t Profile::assemble(ayni_kernel_t *kernel, Clock clock, const Config
         }
     }
     if (status == AYNI_OK) {
-        status = health_.configure(
-            {providers::mock::Variant::a, providers::mock::Service::health, 1, text_limit, {}});
+        status = health_.configure(health_config());
     }
     if (status == AYNI_OK) {
         ayni_provider_v1 offer{};

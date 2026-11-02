@@ -1,12 +1,15 @@
-// C-HVAL-001/002/003: outer values use public Host ports, independent of Core records.
+// C-HVAL-001/002/003/004: outer values use public Host ports, independent of Core records.
 // Normal close/reopen is within the explicit independent-consumption authorization.
 #include "storage_hosts.h"
 #include <array>
 #include <atomic>
 #include <ayni/hosts/native.h>
 #include <ayni/hosts/storage/file_value.h>
+#include <ayni/runtime/conversation/file_bodies.h>
 #include <chrono>
+#include <filesystem>
 #include <gtest/gtest.h>
+#include <string>
 namespace {
 using namespace ayni::hosts::storage;
 struct Answer {
@@ -116,5 +119,58 @@ TEST_F(FileValues, close_answers_an_accepted_value_and_old_ports_refuse_new_borr
     EXPECT_EQ(answers[0].result.status, AYNI_OK);
     EXPECT_EQ(port.submit(port.context, &request), AYNI_SUBMIT_REJECTED_NOT_RETAINED);
     EXPECT_EQ(host.value_store().submit, nullptr);
+}
+// Bodies go through the same value port, chunked over several files.
+class FileBodies : public FileValues {
+  protected:
+    template <class Done> bool until(Done done) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!done()) {
+            if (std::chrono::steady_clock::now() >= deadline) {
+                return false;
+            }
+            host.wait_for_wake(std::chrono::milliseconds(1));
+        }
+        return true;
+    }
+    std::size_t files() const {
+        std::size_t count = 0;
+        for (const auto &entry : std::filesystem::recursive_directory_iterator(directory.path())) {
+            count += entry.is_regular_file() ? 1U : 0U;
+        }
+        return count;
+    }
+};
+TEST_F(FileBodies, released_bodies_leave_no_files) {
+    const auto before = files();
+    ayni::runtime::FileBodies bodies, reopened;
+    ASSERT_EQ(bodies.configure(host.value_store()), AYNI_OK);
+    ASSERT_EQ(reopened.configure(host.value_store()), AYNI_OK);
+    std::string text(2 * file_value_bytes_max + 100, '\0');
+    for (std::size_t at = 0; at < text.size(); ++at) {
+        text[at] = static_cast<char>('a' + at % 26);
+    }
+    const ayni_bytes_v1 body{reinterpret_cast<const uint8_t *>(text.data()),
+                             static_cast<uint32_t>(text.size())};
+    const auto &store = *bodies.store();
+    ayni_body_ref_v1 ref{};
+    ayni_status_t status = AYNI_NOT_READY;
+    ASSERT_TRUE(until(
+        [&] { return (status = store.write(store.context, 7, body, &ref)) != AYNI_NOT_READY; }));
+    ASSERT_EQ(status, AYNI_OK);
+    EXPECT_EQ(files(), before + 3);
+    // A store without the cached copy loads the same body back from its files.
+    std::string out(text.size(), '\0');
+    const auto &other = *reopened.store();
+    ASSERT_TRUE(until([&] {
+        return (status = other.read(other.context, &ref, reinterpret_cast<uint8_t *>(out.data()),
+                                    static_cast<uint32_t>(out.size()))) != AYNI_NOT_READY;
+    }));
+    ASSERT_EQ(status, AYNI_OK);
+    EXPECT_EQ(out, text);
+    store.release(store.context, &ref);
+    ASSERT_TRUE(until([&] { return ayni::runtime::FileBodies::ready(&bodies, 0) != 0; }));
+    EXPECT_EQ(files(), before);
+    host.close_storage();
 }
 } // namespace

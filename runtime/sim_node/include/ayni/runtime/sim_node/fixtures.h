@@ -43,7 +43,7 @@ struct Config {
     uint64_t model_delay_us;
     uint32_t step_units;
     uint32_t max_steps;
-    uint32_t model_hard_limit;
+    uint32_t max_turns;
 };
 // Labels resolve only within a case; no field can name a URL, file or external service.
 struct Grant {

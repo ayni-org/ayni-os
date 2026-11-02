@@ -67,7 +67,7 @@ ayni_status_t normalize_call_contract(const CallContract &input, CallContract &o
         (input.effects & ~call_effect_mask) != 0U || !known_idempotency(input.idempotency) ||
         !known_query(input.query) || !known_cancel(input.cancel) || input.timeout_ms == 0U ||
         input.input_text_limit > AYNI_CALL_INPUT_BYTES_MAX ||
-        input.result_text_limit > call_text_limit_max ||
+        input.result_text_limit > AYNI_CALL_RESULT_BYTES_MAX ||
         input.resource_count > resource_group_max ||
         input.business_contract.size > AYNI_BUSINESS_CONTRACT_BYTES_MAX ||
         (input.business_contract.size != 0U && input.business_contract.data == nullptr)) {

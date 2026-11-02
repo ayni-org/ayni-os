@@ -4,7 +4,7 @@
 namespace ayni::kernel {
 ayni_status_t measure_task_limit_command(const TaskLimitCommand &input, uint32_t &size) {
     if (input.expected_revision == 0U || input.task_id == 0U || input.limit == 0U ||
-        input.limit > AYNI_TASK_MODEL_CALL_HARD_LIMIT_MAX) {
+        input.limit > AYNI_MAX_TURNS_MAX) {
         return AYNI_INVALID_ARGUMENT;
     }
     size = task_limit_command_size;
