@@ -387,7 +387,7 @@ ayni_status_t decode_rounds(ayni_string_v1 bytes, uint32_t count, uint64_t last_
         if (!take(word_bytes, size) || size > bytes.size - at) {
             return false;
         }
-        value.assign(bytes.data + at, size);
+        value.assign(bytes.data + at, static_cast<std::size_t>(size)); // Bounded by bytes.size.
         at += size;
         return true;
     };

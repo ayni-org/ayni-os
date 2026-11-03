@@ -15,6 +15,7 @@ constexpr std::size_t medium_bytes = 1024 * 1024;
 constexpr std::size_t erase_bytes = 4096;
 esp_partition_t partition{medium_bytes, false};
 std::vector<uint8_t> medium(medium_bytes, 0xff);
+std::size_t programmed_bytes = 0;
 #define CHECK(expression)                                                                          \
     do {                                                                                           \
         if (!(expression)) {                                                                       \
@@ -45,6 +46,7 @@ esp_err_t esp_partition_write(const esp_partition_t *, std::size_t at, const voi
         }
         medium[at + index] &= in[index];
     }
+    programmed_bytes += size;
     return ESP_OK;
 }
 esp_err_t esp_partition_erase_range(const esp_partition_t *, std::size_t at, std::size_t size) {
@@ -84,7 +86,14 @@ int main() {
         CHECK(files.open("replacement", Files::Mode::replace, next) == 0);
         const std::array<uint8_t, 3> old{{1, 2, 3}}, fresh{{4, 5, 6}};
         CHECK(files.write(first, 0, old.data(), old.size()) == 0);
-        CHECK(files.sync_file(first) == 0);
+        // A second read token observes the first token's buffered current bytes.
+        int reader = Files::invalid_handle;
+        CHECK(files.open("first", Files::Mode::read_existing_no_follow, reader) == 0);
+        std::array<uint8_t, 3> visible{};
+        std::size_t visible_bytes = 0;
+        CHECK(files.read(reader, 0, visible.data(), visible.size(), visible_bytes) == 0);
+        CHECK(visible_bytes == visible.size() && visible == old);
+        files.close(reader);
         CHECK(files.write(next, 0, fresh.data(), fresh.size()) == 0);
         CHECK(files.sync_file(next) == 0);
         CHECK(files.rename("replacement", "first") == 0);
@@ -185,6 +194,39 @@ int main() {
         std::array<uint8_t, payload.size()> journal{};
         CHECK(log.read_prefix(4, journal.data(), journal.size()).value == journal.size());
         CHECK(journal == payload);
+    }
+    // C-HOST-010/017: an ordinary large-log reopen preserves every inherited byte.
+    // Revalidation must write linearly rather than copy the LittleFS tail after each chunk.
+    constexpr std::size_t large_bytes = 192 * 1024, maximum_rewrite_factor = 4;
+    std::vector<uint8_t> large(large_bytes);
+    for (std::size_t at = 0; at < large.size(); ++at) {
+        large[at] = static_cast<uint8_t>(at);
+    }
+    {
+        LittleFiles files(false);
+        FileLog log(files);
+        CHECK(log.open("ayni_test", "large_log").status == FileLog::OpenStatus::ok);
+        CHECK(log.append(1, large.data(), large.size()).outcome == AYNI_WRITE_OK);
+    }
+    {
+        LittleFiles files(false);
+        FileLog log(files);
+        CHECK(log.open("ayni_test", "large_log").status == FileLog::OpenStatus::ok);
+        programmed_bytes = 0;
+        CHECK(log.fence(2).outcome == AYNI_FENCE_DRAINED);
+        std::printf("Large normal reopen programmed %zu bytes for %zu payload bytes\n",
+                    programmed_bytes, large.size());
+        CHECK(programmed_bytes <= maximum_rewrite_factor * large.size());
+        CHECK(log.append(2, payload.data(), payload.size()).outcome == AYNI_WRITE_OK);
+    }
+    {
+        LittleFiles files(false);
+        FileLog log(files);
+        CHECK(log.open("ayni_test", "large_log").status == FileLog::OpenStatus::ok);
+        std::vector<uint8_t> out(large.size() + payload.size());
+        CHECK(log.read_log(0, out.data(), out.size()).value == out.size());
+        CHECK(std::memcmp(out.data(), large.data(), large.size()) == 0);
+        CHECK(std::memcmp(out.data() + large.size(), payload.data(), payload.size()) == 0);
     }
     std::puts("ESP Files normal emulated medium passed; not ESP hardware evidence");
     return 0;

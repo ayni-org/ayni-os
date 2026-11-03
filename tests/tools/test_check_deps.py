@@ -201,6 +201,23 @@ class CheckDepsTest(unittest.TestCase):
         self.write("targets/simulator/main.cpp", "#include <ayni/hosts/native.h>\n")
         self.assert_single_violation("targets/ may not include <ayni/hosts/native.h>")
 
+    def test_independent_experiment_uses_public_sdk_but_cannot_import_core(self):
+        self.write("experiments/usb/speaker.h")
+        self.write("experiments/usb/main.cpp",
+                   '#include <ayni/ayni.h>\n#include <ayni/hosts/esp_idf.h>\n#include "speaker.h"\n')
+        self.assertEqual(self.violations(), [])
+        # A composition root may reuse the built-in strategy and its conversation store.
+        self.write("experiments/usb/history.h",
+                   "#include <ayni/hosts/storage/file_value.h>\n"
+                   "#include <ayni/runtime/conversation/file_bodies.h>\n"
+                   "#include <ayni/strategies/builtin.h>\n")
+        self.assertEqual(self.violations(), [])
+        self.write("experiments/usb/history.h", "#include <ayni/runtime/native_node.h>\n")
+        self.assert_single_violation("experiments/ may not include <ayni/runtime/native_node.h>")
+        self.write("experiments/usb/history.h", "")
+        self.write("experiments/usb/main.cpp", '#include "kernel/private.h"\n')
+        self.assert_single_violation("Core-internal header of core/kernel")
+
     def test_only_runtime_includes_hosts_across_components(self):
         self.write("runtime/native_node/node.cpp", "#include <ayni/hosts/native.h>\n")
         self.assertEqual(self.violations(), [])
