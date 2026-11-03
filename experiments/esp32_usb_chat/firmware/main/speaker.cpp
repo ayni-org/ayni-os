@@ -1,5 +1,6 @@
 #include "speaker.h"
 #include "transport.h"
+#include "wake.h"
 #include <algorithm>
 #include <array>
 #include <ayni/authority.h>
@@ -25,7 +26,7 @@ constexpr uint32_t minimum_hz = 100, maximum_hz = 4000, minimum_tone_ms = 50,
                    maximum_tone_ms = 3000;
 constexpr uint32_t synthesis_timeout_ms = 120000, write_timeout_ms = 200, maximum_text_bytes = 1024;
 constexpr float tau = 6.2831853071795864769F;
-constexpr uint32_t result_limit = 192;
+constexpr uint32_t result_limit = Speaker::result_bytes;
 ayni_string_v1 text(const char *s) {
     return {s, uint32_t(std::strlen(s))};
 }
@@ -141,7 +142,7 @@ ayni_status_t Speaker::configure(ayni_kernel_t *kernel) {
                        {sizeof(ayni_call_contract_v1), AYNI_CALL_UNARY, AYNI_CALL_TOOL, 0,
                         AYNI_CALL_NOT_IDEMPOTENT, AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_REQUEST, 0,
                         synthesis_timeout_ms, AYNI_CALL_INPUT_VALUE, AYNI_CALL_RESULT_TEXT,
-                        maximum_text_bytes + 256, result_limit, 1, &resource_, nullptr},
+                        input_bytes(), result_limit, 1, &resource_, nullptr},
                        &businesses_[at]};
         const ayni_capability_desc_v1 cap{sizeof(cap), version, text(capabilities[at]),
                                           0,           0,       nullptr};
@@ -220,14 +221,15 @@ ayni_status_t Speaker::configure(ayni_kernel_t *kernel) {
     }
     return rc;
 }
-ayni_schema_v1 Speaker::schema(ayni_string_v1 binding) const {
-    if (same(binding, "speaker.play_tone")) {
-        return businesses_[0].input;
-    }
-    if (same(binding, "speaker.speak_text")) {
-        return businesses_[1].input;
-    }
-    return {};
+// The speech input at its text limit, measured from its shape; the tone input is smaller.
+uint32_t Speaker::input_bytes() {
+    ayni::ValueBuilder<3> shape;
+    shape.object();
+    shape.text(1, {});
+    shape.unsigned_integer(2, 0);
+    shape.end();
+    ayni_value_v1 value{};
+    return shape.finish(value) == AYNI_OK ? ayni::encoded_bytes(value, maximum_text_bytes) : 0U;
 }
 bool Speaker::enqueue(Job job) {
     worker_->done.store(false, std::memory_order_release);
@@ -307,6 +309,7 @@ ayni_submit_result_t Speaker::cancel(void *ctx, ayni_attempt_ref_v1 attempt) {
     self.transfer_ = Transfer::failed;
     portEXIT_CRITICAL(&self.mutex_);
     self.transport_.send(Kind::audio_cancel, self.pending_->call, nullptr, 0);
+    wake_owner(); // An unqueued transfer fails on the owner's next advance.
     return AYNI_SUBMIT_ACCEPTED;
 }
 // A single immutable PCM lease: exact Call ID, ordered byte offsets, no partial playback.
@@ -510,6 +513,7 @@ void Speaker::run(void *ctx) {
         }
         worker.error = worker.play(job);
         worker.done.store(true, std::memory_order_release);
+        wake_owner(); // The owner posts the result; Core cannot see the worker.
     }
     xSemaphoreGive(worker.stopped);
     vTaskSuspend(nullptr);

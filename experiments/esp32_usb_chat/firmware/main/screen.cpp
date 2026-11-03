@@ -1,4 +1,5 @@
 #include "chat.h"
+#include "wake.h"
 #include <ayni/directory.h>
 #include <ayni/resources.h>
 #include <ayni/values.hpp>
@@ -12,6 +13,10 @@ ayni_string_v1 text(const char *s) {
 }
 constexpr uint32_t version = 1, text_field = 1, render_timeout_ms = 30000;
 } // namespace
+// The whole text field at its limit, measured from the contract's own shape (ADR-0095).
+uint32_t screen_input_bytes() {
+    return ayni::text_value_bytes(answer_bytes, text_field);
+}
 // The screen is a TOOL capability. The Mac is only its font/raster backend;
 // completion requires this device's actual LCD DMA completion, never a host claim.
 ayni_status_t Chat::configure_screen() {
@@ -38,7 +43,7 @@ ayni_status_t Chat::configure_screen() {
                           {sizeof(ayni_call_contract_v1), AYNI_CALL_UNARY, AYNI_CALL_TOOL, 0,
                            AYNI_CALL_IDEMPOTENT, AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_REQUEST, 0,
                            render_timeout_ms, AYNI_CALL_INPUT_VALUE, AYNI_CALL_RESULT_TEXT,
-                           answer_bytes + 64, 128, 1, &screen_resource_, nullptr},
+                           screen_input_bytes(), 128, 1, &screen_resource_, nullptr},
                           &screen_business_};
     if (rc == AYNI_OK) {
         rc = ayni_register_call_capability(kernel_, &screen_capability_);
@@ -137,6 +142,7 @@ ayni_submit_result_t Chat::cancel_screen(void *ctx, ayni_attempt_ref_v1 attempt)
     }
     if (self.screen_ == ScreenState::waiting) {
         self.screen_ = ScreenState::failed;
+        wake_owner(); // Inside ayni_step: the next tick posts the result without waiting.
     }
     return AYNI_SUBMIT_ACCEPTED;
 }

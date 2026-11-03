@@ -101,7 +101,7 @@ ayni_status_t ModelTools::decode(ayni_bytes_v1 payload) {
     }
     // The shared codec owns UTF-8, argument-tree, duplicate-ID and storage-size rules.
     uint32_t encoded = 0;
-    const auto rc = ayni_tool_calls_measure(calls_.data(), count, &encoded);
+    const auto rc = ayni_tool_calls_measure(calls_.data(), count, {}, &encoded);
     if (rc != AYNI_OK) {
         return rc;
     }

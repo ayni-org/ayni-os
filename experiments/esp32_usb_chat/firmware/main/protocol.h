@@ -3,11 +3,13 @@
 #include <cstddef>
 #include <cstdint>
 namespace usbchat {
-constexpr uint32_t wire_version = 3;
+constexpr uint32_t wire_version = 4;
 constexpr size_t header_bytes = 24;
 constexpr size_t screen_width = 240, screen_height = 320;
 constexpr size_t screen_bytes = screen_width * screen_height * sizeof(uint16_t);
-constexpr size_t input_bytes = 4096, answer_bytes = 4096, prompt_bytes = 16384;
+constexpr size_t input_bytes = 4096, answer_bytes = 4096;
+// A history summary may use all of the output budget; Chinese text can exceed answer_bytes.
+constexpr size_t summary_bytes = 8192;
 constexpr size_t tx_bytes = 32768, rx_bytes = screen_bytes;
 constexpr size_t packet_slots = 4;
 constexpr int serial_baud = 921600;
@@ -43,7 +45,8 @@ enum class Kind : uint8_t {
     motor_stop = 28,
     motor_power_off = 29,
     motor_heartbeat = 30,
-    motor_state = 31
+    motor_state = 31,
+    forget = 32 // Mac -> device: erase the conversation record ("clear context").
 };
 inline uint32_t get32(const uint8_t *p) {
     return uint32_t(p[0]) | (uint32_t(p[1]) << 8U) | (uint32_t(p[2]) << 16U) |

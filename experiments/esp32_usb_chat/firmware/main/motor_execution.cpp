@@ -1,5 +1,6 @@
 #include "motor_execution.h"
 #include "motor_contract.h"
+#include "wake.h"
 #include <algorithm>
 #include <ayni/values.hpp>
 #include <cstdio>
@@ -204,6 +205,7 @@ void MotorExecution::reject(const Pending &request, ayni_status_t cause) {
     const auto posted = ayni_provider_post(request.completion, &result);
     if (posted != AYNI_OK && posted != AYNI_INVALID_STATE) {
         worker_error_.store(posted, std::memory_order_release);
+        wake_owner();
     }
     trace("start-refused", cause);
 }

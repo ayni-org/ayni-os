@@ -206,6 +206,15 @@ class CheckDepsTest(unittest.TestCase):
         self.write("experiments/usb/main.cpp",
                    '#include <ayni/ayni.h>\n#include <ayni/hosts/esp_idf.h>\n#include "speaker.h"\n')
         self.assertEqual(self.violations(), [])
+        # A composition root may reuse the built-in strategy and its conversation store.
+        self.write("experiments/usb/history.h",
+                   "#include <ayni/hosts/storage/file_value.h>\n"
+                   "#include <ayni/runtime/conversation/file_bodies.h>\n"
+                   "#include <ayni/strategies/builtin.h>\n")
+        self.assertEqual(self.violations(), [])
+        self.write("experiments/usb/history.h", "#include <ayni/runtime/native_node.h>\n")
+        self.assert_single_violation("experiments/ may not include <ayni/runtime/native_node.h>")
+        self.write("experiments/usb/history.h", "")
         self.write("experiments/usb/main.cpp", '#include "kernel/private.h"\n')
         self.assert_single_violation("Core-internal header of core/kernel")
 

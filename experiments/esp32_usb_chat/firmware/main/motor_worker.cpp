@@ -1,5 +1,6 @@
 #include "motor_contract.h"
 #include "motor_execution.h"
+#include "wake.h"
 #include <algorithm>
 #include <ayni/values.hpp>
 #include <cstdio>
@@ -151,6 +152,7 @@ void MotorExecution::drain_inbox() {
                 const auto rc = ayni_executor_post(message.port.completion, &response);
                 if (rc != AYNI_OK && rc != AYNI_INVALID_STATE) {
                     worker_error_.store(rc);
+                    wake_owner();
                 }
             } else {
                 slot = message.port;
@@ -177,6 +179,7 @@ void MotorExecution::run() {
             accepting_.store(false, std::memory_order_release);
             stop_owner();
             worker_error_.store(rc, std::memory_order_release);
+            wake_owner(); // The owner reports the failure and stops.
         }
         publish_snapshot();
         if (closing_.load(std::memory_order_acquire) && close_owner()) {

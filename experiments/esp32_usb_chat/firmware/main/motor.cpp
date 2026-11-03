@@ -8,7 +8,8 @@
 #include <cstring>
 namespace usbchat {
 namespace {
-constexpr uint32_t version = 1, reply_bytes_max = 1024, input_bytes_max = 256;
+constexpr uint32_t version = 1, reply_bytes_max = motor_reply_bytes_max,
+                   input_bytes_max = motor_input_bytes_max;
 constexpr uint32_t motor1_field = 1, motor2_field = 2, duration_field = 3;
 constexpr uint32_t request_timeout_ms = 1000;
 constexpr const char *identities[] = {"motor.status", "motor.plan", "motor.run", "motor.stop"};
@@ -254,14 +255,6 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
         rc = checked("execution", ayni_register_execution_binding(kernel, &execution));
     }
     return rc;
-}
-ayni_schema_v1 Motor::schema(ayni_string_v1 binding) const {
-    for (uint32_t at = 0; at < offers_.size(); ++at) {
-        if (same(binding, identities[at])) {
-            return business_[at].input;
-        }
-    }
-    return {};
 }
 ayni_submit_result_t Motor::submit(void *ctx, const ayni_provider_request_v1 *request,
                                    ayni_provider_completion_t *completion) {

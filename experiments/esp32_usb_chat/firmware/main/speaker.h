@@ -13,6 +13,8 @@ class Speaker {
     static constexpr uint32_t maximum_pcm_bytes =
         pcm_rate * maximum_speech_ms / 1000 * sizeof(int16_t);
     static constexpr uint32_t default_volume = 80;
+    static constexpr uint32_t result_bytes = 192;
+    static uint32_t input_bytes(); // Largest canonical input of both contracts.
     explicit Speaker(Transport &transport) : transport_(transport) {}
     ayni_status_t configure(ayni_kernel_t *);
     // Owner-only readiness gate; retained Calls still drain/cancel while closed.
@@ -21,7 +23,6 @@ class Speaker {
     bool receive(Kind, uint64_t, const uint8_t *, size_t); // I/O task; bounded copy and ACK.
     bool close(); // After Core STOPPED: joins the audio worker, retains PCM with the I/O context.
     uint32_t stack_free_bytes() const;
-    ayni_schema_v1 schema(ayni_string_v1 binding) const;
 
   private:
     enum class Operation { tone, speech, quit };

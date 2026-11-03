@@ -1,5 +1,6 @@
 #include "transport.h"
 #include "speaker.h"
+#include "wake.h"
 #include <algorithm>
 #include <cstring>
 #include <driver/uart.h>
@@ -84,6 +85,7 @@ void Transport::dispatch() {
     case Kind::display:
     case Kind::cancel:
     case Kind::shutdown:
+    case Kind::forget:
     case Kind::configure:
     case Kind::model_tools:
     case Kind::render_info:
@@ -177,6 +179,7 @@ void Transport::consume(uint8_t byte) {
     if (body_used_ == body_size_) {
         dispatch();
         header_used_ = body_used_ = body_size_ = 0;
+        wake_owner(); // A queued packet, a display ACK or speaker PCM the owner advances.
     }
 }
 void Transport::run() {

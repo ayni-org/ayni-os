@@ -86,13 +86,19 @@ def restore():
     print('Original app/table restored. Ayni volume preserved; private NVS/bootloader untouched.')
 
 
+def erase_volume():
+    # Core schema 9 does not migrate an older log; this discards the whole Ayni volume only.
+    esptool('erase-region', VOLUME_OFFSET, VOLUME_SIZE)
+    print('Ayni volume erased; app, table, audio, demo_cfg and bootloader untouched.')
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['preflight','deploy','restore','reset'])
+    parser.add_argument('action', choices=['preflight','deploy','restore','reset','erase-volume'])
     parser.add_argument('--variant', choices=['stable', 'motor', 'probe'], default='stable',
                         help='Explicit build selection for deploy; stable is the validated screen/speaker build')
     args = parser.parse_args()
     if args.action != 'deploy' and args.variant != 'stable':
         parser.error('--variant applies only to deploy')
     {'preflight': preflight, 'deploy': lambda: deploy(args.variant), 'restore': restore,
-     'reset': lambda: esptool('chip-id')}[args.action]()
+     'reset': lambda: esptool('chip-id'), 'erase-volume': erase_volume}[args.action]()

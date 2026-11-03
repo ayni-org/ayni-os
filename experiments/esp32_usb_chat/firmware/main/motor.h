@@ -9,7 +9,6 @@ class Motor {
     explicit Motor(Transport &transport) : transport_(transport), execution_(transport) {}
     MotorExecution &execution() { return execution_; }
     ayni_status_t configure(ayni_kernel_t *);
-    ayni_schema_v1 schema(ayni_string_v1 binding) const;
 
   private:
     static ayni_submit_result_t submit(void *, const ayni_provider_request_v1 *,

@@ -1,4 +1,10 @@
-"""One USB connection and one immutable model config. Keys remain in process memory."""
+"""One USB connection and one immutable model config. Keys remain in process memory.
+
+The device owns the conversation: its built-in ToolLoop builds every model request, including
+the system instructions and earlier rounds, and keeps the record on flash. After a device reset
+only the earlier user inputs return, as historical data; answers and tool history are dropped.
+This bridge only forwards user text, adds the model name and key to each request, and returns
+the result."""
 import argparse
 import hashlib
 import json
@@ -18,25 +24,12 @@ from motor import MotorReview
 DEFAULT_URL = 'https://api.deepseek.com'
 DEFAULT_MODEL = 'deepseek-flash'
 ANSWER_LIMIT = 4096
-PROMPT_LIMIT = 16384
+SUMMARY_LIMIT = 8192 # A text-only history summary may use the whole output budget.
+INPUT_LIMIT = 4096
+OUTPUT_TOKEN_LIMIT = 8192
 HTTP_LIMIT = 131072
 TOOL_COUNT_LIMIT = 8
 TOOL_WIRE_LIMIT = 8192
-SYSTEM = ('你是运行在 ESP32-S3 上的 Ayni 助手。你必须调用系统的屏幕能力来显示给用户的完整回复。'
-          '先 ayni_list_capabilities，再 ayni_inspect_capability 查看精确绑定与用法，'
-          '最后用 ayni_call_capability 调用屏幕能力，arguments 中包含完整回复 text。'
-          '每轮最多提议 8 个工具调用，系统按提议顺序执行并返回真实工具结果；成功后用简短文字确认。'
-          '只有用户要求声音时，才发现并调用 speaker.play_tone 提示音或 speaker.speak_text 中文朗读。'
-          '扬声器默认音量 80%，可按用户要求指定 volume_percent；朗读内容应简短、最多 30 秒。'
-          '电机能力 motor.status 查询、motor.plan 仅计划；用户要求转动时发现并调用 motor.run。'
-          'motor.run 的两个百分比为 PWM 占空比 -90..90，零表示对应电机不动，时长 50..5000ms 且为5的倍数；'
-          '每次实际调用都必须等待 Mac 人工批准；结果只证明控制器输出结束，不证明轮速或距离。不要把 plan 当作已转动。'
-          '只能人工架空台架实验；不支持无人运动，停止链尚未完成硬件验证。'
-          '只有用户明确要求才可转动；速度与时间不得超出用户要求。两只分别测试应逐次调用，另一只设零。'
-          '拒绝、超时、取消或结果未知的动作不得自动重试。不要宣称达到实测转速、距离或角度。'
-          '如需停止可调用 motor.stop；该工具成功只代表停止请求已提交。'
-          '没有 shell，不要调用。屏幕中文正文 UTF-8 总长最多 4096 字节，不超过 1200 个汉字。')
-
 class Number(str):
     """An original JSON numeric lexeme, never a float intermediate."""
 
@@ -87,15 +80,6 @@ def tool_packet(call):
     return result
 
 
-def frame_messages(messages):
-    result = bytearray(b'\x1eAYNI-MESSAGES/1\n')
-    for message in messages:
-        raw = message['content'].encode()
-        result.extend(f"{message['role']} {len(raw)}\n".encode())
-        result.extend(raw)
-    return bytes(result)
-
-
 def tool_packets(calls):
     if not isinstance(calls, list) or not 0 < len(calls) <= TOOL_COUNT_LIMIT:
         raise ValueError('模型工具提议数量必须为 1..8；不会截断或执行部分提议')
@@ -126,7 +110,13 @@ def request_model(config, context):
         raise ValueError('API 地址必须是无凭据、无查询参数的 HTTPS 根地址')
     endpoint = config['url'].rstrip('/') + '/chat/completions'
     body = dict(context)
-    body.update(model=config['model'], stream=False, max_tokens=1800, parallel_tool_calls=False)
+    # The device chose the output budget inside its context window; refuse anything else.
+    limit = body.get('max_tokens')
+    if type(limit) is not int or not 0 < limit <= OUTPUT_TOKEN_LIMIT:
+        raise ValueError('设备模型请求的输出上限无效；不会发送')
+    body.update(model=config['model'], stream=False)
+    if 'tools' in body:
+        body['parallel_tool_calls'] = False
     if parsed.hostname == 'api.deepseek.com':
         body['thinking'] = {'type': 'disabled'}
     request = urllib.request.Request(endpoint, json.dumps(body, ensure_ascii=False).encode(),
@@ -151,8 +141,9 @@ def request_model(config, context):
     if message.get('tool_calls'):
         return MODEL_TOOLS, tool_packets(message['tool_calls'])
     answer = message.get('content')
-    if not isinstance(answer, str) or not answer or len(answer.encode()) > ANSWER_LIMIT:
-        raise ValueError('模型回复为空或超过 4096 字节；不会静默截断')
+    limit = ANSWER_LIMIT if 'tools' in body else SUMMARY_LIMIT
+    if not isinstance(answer, str) or not answer or len(answer.encode()) > limit:
+        raise ValueError(f'模型回复为空或超过 {limit} 字节；不会静默截断')
     return MODEL_TEXT, answer.encode()
 
 
@@ -172,7 +163,6 @@ class Bridge:
         self.write_lock = threading.Lock()
         self.completed = queue.Queue()
         self.current = None
-        self.history = []
         self.pending_user = None
         self.turn = 0
         self.ready = False
@@ -188,8 +178,6 @@ class Bridge:
         self.display_id = 0
         self.document_call = 0
         self.display_waiting = None
-        self.turn_screen_text = None
-        self.turn_screen_confirmed = False
         self.speech_results = queue.Queue()
         self.speech_synthesizing = None
         self.speech_cancelled = None
@@ -284,18 +272,18 @@ class Bridge:
     def user(self, text):
         if not self.ready or self.pending_user is not None or self.current is not None:
             raise ValueError('设备尚未就绪或上一轮尚未结束')
-        if not text.strip() or len(text.encode()) > 4096:
+        body = text.encode()
+        if not text.strip() or len(body) > INPUT_LIMIT:
             raise ValueError('输入不能为空且必须不超过 4096 字节')
-        messages = [{'role': 'system', 'content': SYSTEM}] + self.history + [{'role': 'user', 'content': text}]
-        body = frame_messages(messages)
-        if len(body) > PROMPT_LIMIT:
-            raise ValueError('会话已达到 16 KiB；请清空电脑端会话后继续')
         self.turn += 1
         self.pending_user = text
-        self.turn_screen_text = None
-        self.turn_screen_confirmed = False
         self.send(USER, self.turn, body)
         self.emit('busy', True)
+
+    def forget(self):
+        if not self.ready or self.pending_user is not None or self.current is not None:
+            raise ValueError('请等待当前任务结束')
+        self.send(FORGET, 0)
 
     def handle(self, kind, identity, payload):
         if kind == HELLO:
@@ -324,6 +312,9 @@ class Bridge:
                     self.motor_settings(self.config.get('motor_max_percent', 90))
                     self.motor_settings_sent = True
 
+            elif status.startswith('context clear'):
+                # The device erases its own record; nothing of it was ever kept here.
+                self.emit('status' if status == 'context cleared on device' else 'error', status)
             elif status.startswith('task held '):
                 # Held is still the same live Goal; the owner may cancel it.
                 self.emit('busy', True)
@@ -364,18 +355,24 @@ class Bridge:
             self.emit('status', 'ESP32 的 Ayni 已派发模型调用')
             def work():
                 try:
-                    if self.offline:
-                        count = sum(m['role'] == 'tool' for m in messages)
+                    if self.offline and 'tools' not in value:
+                        # A summary request asks for text only (the device compacts history).
+                        kind, answer = MODEL_TEXT, '离线检查摘要：此前各轮都是设备能力检查。'.encode()
+                    elif self.offline:
+                        # Earlier rounds stay in the request; count this turn's results only.
+                        last = max(at for at, m in enumerate(messages) if m['role'] == 'user')
+                        count = sum(m['role'] == 'tool' for m in messages[last:])
                         screen_text = '屏幕能力检查通过。' + chr(10)*2 + chr(10).join(f'第{i:02d}段：屏幕是 Ayni 能力，模型提议、Core 校验、设备执行。' for i in range(1,36))
                         plan = [('ayni_list_capabilities', {}),
                             ('ayni_inspect_capability', {'binding_id':'screen.show_text','binding_version':1}),
                             ('ayni_call_capability', {'binding_id':'screen.show_text','binding_version':1,'arguments':{'text':screen_text}})]
                         if self.speaker_check:
                             verified = []
+                            results = [m['content'] for m in messages[last:] if m['role'] == 'tool']
                             if self.batch_check and count == 7:
-                                verified = [m['content'] for m in messages if m['role'] == 'tool'][-3:-1]
+                                verified = results[-3:-1]
                             elif not self.batch_check and count in (3, 5):
-                                verified = [[m for m in messages if m['role'] == 'tool'][-1]['content']]
+                                verified = results[-1:]
                             for content in verified:
                                 facts = json.loads(content)
                                 if not (facts.get('played') is True and facts.get('volume_percent') == 80
@@ -428,8 +425,6 @@ class Bridge:
             if identity != self.turn or self.pending_user is None:
                 return
             answer = payload.decode('utf-8', 'strict')
-            remembered = self.turn_screen_text if self.turn_screen_confirmed else answer
-            self.history.extend([{'role': 'user', 'content': self.pending_user}, {'role': 'assistant', 'content': remembered}])
             self.pending_user = None
             self.emit('answer', answer)
             self.emit('busy', False)
@@ -439,8 +434,6 @@ class Bridge:
             # acknowledgements cannot complete the new Call because IDs differ.
             self.display_waiting = None
             self.document_call = identity
-            self.turn_screen_text = payload.decode('utf-8', 'strict')
-            self.turn_screen_confirmed = False
             self.emit('screen_text', payload.decode('utf-8', 'strict'))
             self.screen(payload.decode('utf-8', 'strict'))
         elif kind == SPEECH_REQUEST:
@@ -486,7 +479,6 @@ class Bridge:
         elif kind == DISPLAY_ACK:
             if identity == self.display_waiting:
                 self.display_waiting = None
-                self.turn_screen_confirmed = payload == b'\x01'
                 self.emit('display', {'page': self.page + 1, 'count': len(self.pages), 'ok': payload == b'\x01'})
 
     def poll(self):
@@ -610,10 +602,8 @@ def main():
                 elif action == 'page' and bridge:
                     bridge.show_page(command['index'])
                 elif action == 'clear' and bridge:
-                    if bridge.pending_user is not None:
-                        raise ValueError('请等待当前任务结束')
-                    bridge.history.clear()
-                    emit('status', '已清空电脑端后续请求的会话上下文；设备持久日志保留')
+                    bridge.forget()
+                    emit('status', '已请求设备清空会话上下文')
                 elif action == 'cancel' and bridge:
                     bridge.send(CANCEL, bridge.turn)
                 elif action == 'motor_settings' and bridge:

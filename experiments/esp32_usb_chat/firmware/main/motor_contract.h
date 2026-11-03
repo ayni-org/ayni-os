@@ -6,6 +6,8 @@ namespace usbchat {
 inline constexpr uint32_t motor_version = 1, motor_procedure_us = 60000000,
                           motor_sample_age_us = 100000, motor_poll_us = 20000;
 inline constexpr uint64_t motor_domain = 1;
+// Contract limits of the four motor tools; their inputs hold only integers.
+inline constexpr uint32_t motor_input_bytes_max = 256, motor_reply_bytes_max = 1024;
 inline constexpr const char *motor_fields[]{"motor1_percent", "motor2_percent", "duration_ms"};
 inline constexpr const char *motor_scene = "motor.manual-bench";
 inline ayni_string_v1 motor_text(const char *s) {

@@ -1,4 +1,6 @@
 #include "chat.h"
+#include "wake.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <esp_flash.h>
@@ -8,7 +10,11 @@
 #include <esp_timer.h>
 #include <new>
 namespace {
-constexpr uint32_t owner_stack_bytes = 96 * 1024, io_stack_bytes = 8192;
+constexpr uint32_t owner_stack_bytes = usbchat::owner_stack_capacity, io_stack_bytes = 8192;
+// The owner sleeps until a wake or Core's next deadline, never longer than idle_us: device and
+// model timeouts the composition checks itself are at most that late. A burst of ready work
+// still gives one tick away every burst_us so IDLE and the task watchdog run.
+constexpr uint64_t idle_us = 100000, hello_us = 1000000, burst_us = 20000, busy_us = 1000;
 StaticTask_t owner_tcb, io_tcb;
 StackType_t owner_stack[owner_stack_bytes / sizeof(StackType_t)],
     io_stack[io_stack_bytes / sizeof(StackType_t)];
@@ -16,6 +22,7 @@ void io(void *p) {
     static_cast<usbchat::Transport *>(p)->run();
 }
 void owner(void *) {
+    usbchat::owner_task.store(xTaskGetCurrentTaskHandle(), std::memory_order_release);
     uint32_t flash = 0;
     if (esp_flash_get_physical_size(nullptr, &flash) != ESP_OK || flash != 16 * 1024 * 1024 ||
         !esp_psram_is_initialized() || esp_psram_get_size() != 8 * 1024 * 1024) {
@@ -50,18 +57,23 @@ void owner(void *) {
     }
     auto *packet = new (packet_region) usbchat::Packet;
     bool configured = false, failed = false;
-    int64_t hello_at = 0;
+    uint64_t hello_at = 0, burst_at = uint64_t(esp_timer_get_time());
     for (;;) {
-        if (!configured && esp_timer_get_time() - hello_at > 1000000) {
-            const bool low = usbchat::MotorOutput::pins_disabled();
-            const char *hello =
-                low ? "AYNI USB CHAT/3; configure required; motor_pins=low"
-                    : "AYNI USB CHAT/3; motor pin readback abnormal; cut driver VIN";
-            if (!low) {
-                usbchat::MotorOutput::coast_pins();
+        auto now = uint64_t(esp_timer_get_time());
+        uint64_t wait_us = idle_us;
+        if (!configured) {
+            if (!hello_at || now - hello_at >= hello_us) {
+                const bool low = usbchat::MotorOutput::pins_disabled();
+                const char *hello =
+                    low ? "AYNI USB CHAT/4; configure required; motor_pins=low"
+                        : "AYNI USB CHAT/4; motor pin readback abnormal; cut driver VIN";
+                if (!low) {
+                    usbchat::MotorOutput::coast_pins();
+                }
+                transport->send(usbchat::Kind::hello, 0, hello, std::strlen(hello));
+                hello_at = now;
             }
-            transport->send(usbchat::Kind::hello, 0, hello, std::strlen(hello));
-            hello_at = esp_timer_get_time();
+            wait_us = hello_us - (now - hello_at);
         }
         while (transport->receive(*packet)) {
             if (!configured && packet->kind == usbchat::Kind::configure && packet->size == 16) {
@@ -80,17 +92,35 @@ void owner(void *) {
             }
         }
         if (configured && !failed) {
-            const auto rc = chat->tick();
-            // A worker join is asynchronous; BUSY keeps the owner alive for the next tick.
-            if (rc != AYNI_OK && rc != AYNI_BUSY) {
+            ayni_step_report_v1 report{};
+            bool again = false;
+            const auto rc = chat->tick(report, again);
+            now = uint64_t(esp_timer_get_time());
+            if (rc == AYNI_BUSY) {
+                wait_us = busy_us; // A worker join is asynchronous; poll it on the next tick.
+            } else if (rc != AYNI_OK) {
                 char s[64];
                 std::snprintf(s, sizeof(s), "kernel stopped/held=%ld", long(rc));
                 transport->send(usbchat::Kind::status, 0, s, std::strlen(s));
                 chat->stop_outputs();
                 failed = true;
+            } else if (report.more_ready || again) {
+                wait_us = 0;
+            } else if (report.next_deadline_us != UINT64_MAX) {
+                wait_us = report.next_deadline_us > now
+                              ? std::min(report.next_deadline_us - now, idle_us)
+                              : 0;
             }
         }
-        vTaskDelay(1);
+        if (!wait_us) {
+            if (now - burst_at >= burst_us) {
+                vTaskDelay(1);
+                burst_at = uint64_t(esp_timer_get_time());
+            }
+            continue;
+        }
+        usbchat::wait_for_wake(wait_us);
+        burst_at = uint64_t(esp_timer_get_time());
     }
 }
 } // namespace
