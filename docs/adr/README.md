@@ -151,3 +151,4 @@
 | [0094](0094-portable-runtime-and-independent-normal-program.md) | 共同会话运行时与独立正常程序 | 已接受范围；验证见 #123 | 独立SDK/平台接入 |
 | [0095](0095-token-settings-and-on-demand-buffers.md) | 七项运行设置与按需分配 | 已接受；部分取代 0085 决策 5 与 0090 | ToolLoop、Provider、组合根 |
 | [0096](0096-core-stores-body-references.md) | 正文存储与 Core 只存引用 | 已接受；部分取代 0054、0085、0090 的正文规定 | ABI0.54、schema9、Provider、组合根 |
+| [0097](0097-esp32-touch-wifi-voice-experiment.md) | 独立 ESP32 触屏 Wi-Fi 语音配置 | 已接受实验范围；完整实机验收未完成 | 独立实验、API、RC003-MS、Web 设置 |

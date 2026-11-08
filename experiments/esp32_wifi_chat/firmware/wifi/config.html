@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ayni 设备设置</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#0c131c;color:#e7edf5;font:16px system-ui,sans-serif}main{max-width:680px;margin:40px auto;padding:24px}h1{font-size:28px;margin:0 0 10px}.hint{color:#a9b6c8;line-height:1.6}fieldset{border:1px solid #344153;border-radius:12px;padding:20px;margin:24px 0}legend{padding:0 8px}label{display:block;margin:14px 0 6px}input{width:100%;padding:12px;border:1px solid #53637a;border-radius:6px;background:#141f2e;color:#fff;font:inherit}button{border:0;border-radius:8px;padding:14px 20px;background:#73d4bb;color:#071512;font:600 16px system-ui;cursor:pointer}button:disabled{opacity:.5;cursor:wait}#status{line-height:1.6;white-space:pre-wrap;min-height:48px}small{color:#a9b6c8}input[type=checkbox]{width:auto}
+</style>
+<main><h1>Ayni 设备设置</h1><p class="hint">配置保存在 ESP32。日常对话、遥控器配对和取消可在触屏操作，Mac 只需运行后台语音 API。</p>
+<form id="form" autocomplete="off">
+<fieldset><legend>Wi-Fi</legend><label for="ssid">网络名称（2.4 GHz）</label><input id="ssid" name="ssid" maxlength="32" required>
+<label for="password">网络密码</label><input id="password" type="password" autocomplete="new-password" maxlength="64" placeholder="留空保留已保存密码">
+<label><input id="open_wifi" type="checkbox"> 使用无密码网络</label></fieldset>
+<fieldset><legend>语音 API</legend><label for="speech_url">Mac 局域网 API 根地址</label><input id="speech_url" name="speech_url" placeholder="http://192.168.1.100:8000" maxlength="191" type="url" required><p><small>ASR / TTS 使用 HTTP，无密钥。请填写 Mac 的局域网地址。</small></p></fieldset>
+<fieldset><legend>对话模型</legend><label for="model_url">HTTPS API 根地址</label><input id="model_url" name="model_url" type="url" maxlength="191" required>
+<label for="model">模型名称</label><input id="model" name="model" maxlength="63" required>
+<label for="model_key">API Key</label><input id="model_key" type="password" autocomplete="new-password" maxlength="191" placeholder="粘贴新 Key；留空保留已保存值"><p><small id="key_state">正在读取设备状态…</small></p></fieldset>
+<button id="save">保存并重启设备</button><p id="status" role="status" aria-live="polite"></p>
+</form></main>
+<script>
+'use strict';
+const status=document.querySelector('#status'), form=document.querySelector('#form'), save=document.querySelector('#save');
+async function load(){try{const response=await fetch('/api/settings',{cache:'no-store'});if(!response.ok)throw Error('设备返回 HTTP '+response.status);const value=await response.json();for(const name of ['ssid','speech_url','model_url','model'])document.getElementById(name).value=value[name]||'';document.querySelector('#key_state').textContent=value.model_key_set?'模型 Key 已设置；页面不会读取原值。':'尚未设置模型 Key。';document.querySelector('#password').placeholder=value.password_set?'已设置，留空保留原密码':'此网络尚未保存密码';}catch(error){status.textContent='读取失败：'+error.message;save.disabled=true;}}
+form.addEventListener('submit',async event=>{event.preventDefault();save.disabled=true;status.textContent='正在保存配置…';const value={};for(const name of ['ssid','speech_url','model_url','model'])value[name]=document.getElementById(name).value.trim();const password=document.querySelector('#password'),key=document.querySelector('#model_key');if(document.querySelector('#open_wifi').checked)value.password='';else if(password.value)value.password=password.value;if(key.value)value.model_key=key.value;try{const response=await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});if(!response.ok)throw Error(response.status===409?'请先在触屏结束或取消当前对话。':'设备未保存配置（HTTP '+response.status+'）。');const result=await response.json();if(!result.saved)throw Error('设备未确认保存。');password.value='';key.value='';status.textContent='配置已保存。设备正在正常关闭当前会话并重启，请查看触屏。若更换 Wi-Fi，请在新网络下重新打开设备地址。';}catch(error){status.textContent=error.message;save.disabled=false;}});
+load();
+</script></html>
