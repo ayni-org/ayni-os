@@ -12,7 +12,7 @@ add_executable(ayni_wifi_checks codec_test.cpp nvs_stub.cpp
     ../../firmware/main/model_tools.cpp
     ../../firmware/wifi/model_codec.cpp
     ../../firmware/wifi/settings_codec.cpp ../../firmware/wifi/settings.cpp ../../firmware/wifi/capture.cpp
-    reply_test.cpp)
+    reply_test.cpp speech_stream_test.cpp pcm_buffer_test.cpp)
 target_include_directories(ayni_wifi_checks PRIVATE stubs ../../firmware/wifi ../../firmware/main)
 target_compile_definitions(ayni_wifi_checks PRIVATE CONFIG_AYNI_WIFI_CHAT=1)
 target_link_libraries(ayni_wifi_checks PRIVATE Ayni::Core Ayni::Strategies Ayni::Conversation yyjson GTest::gtest_main)

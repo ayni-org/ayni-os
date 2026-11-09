@@ -49,9 +49,9 @@ python device.py deploy
 
 - Core、公开 ABI0.54/schema9、内置 ToolLoop、Host 和 runtime 实现均未修改。Core 不等待网络、模型或播放。电机驱动在触屏准备时才分配硬件资源，GPIO38/39/40/41 启动保持低电平；本次不连接电机。
 - Host 固定 16 槽共享存储队列，外部文件最多 8 个在途请求，为日志/维护留余量。Core Call 32 槽、Task Step 64；不以 Flash 是否写满判断队列容量。
-- API 单 worker、3 个作业槽。总期限 70 秒包含排队和正文冷读；连接/单次上传最多 5 秒，读取按 1 秒轮询取消。无重定向、代理或请求自动重放。owner 和 API worker 均有 pthread 身份，满足 SDK FileBodies 的线程检查。
+- API 单 worker、3 个作业槽。模型、ASR及健康检查总期限70秒，流式TTS为330秒，均包含排队和正文冷读；连接/单次上传最多 5 秒，读取按 1 秒轮询取消。无重定向、代理或请求自动重放。owner 和 API worker 均有 pthread 身份，满足 SDK FileBodies 的线程检查。
 - 录音最长 30 秒、ATVV 压缩记录最多 256 KiB；整段完成后解码上传 WAV。超限、取消或异常结束整段拒绝，不提交半段录音。录音不落盘。
-- speaker.speak_text接收1–1024 UTF-8字节，必须获得完整16 kHz mono signed-16 PCM WAV且最多30秒；超限明确失败、不截断。模型据能力说明选择文本与调用，应用不自动分段朗读。最终模型文字最多8 KiB，屏幕文档能力另有4 KiB限制。
+- speaker.speak_text接收1–1024 UTF-8字节，使用原生24 kHz mono signed-16 PCM流，最多300秒；首段到达后边接收边播放。超限或中断停止本次输出，已发声部分不自动重试，不把部分播放记为成功。模型据能力说明选择文本与调用，应用不自动分段朗读。最终模型文字最多8 KiB，屏幕文档能力另有4 KiB限制。
 - 中文字体为 GNU Unifont 16.0.04，SIL OFL 许可见 fonts/；未覆盖字符显示替代符。
 
 ## 验证记录
@@ -71,3 +71,29 @@ python device.py deploy
 未开展新的故障、掉电、恢复、变异或耐久专项，也没有完整 Core CI/覆盖率结论。
 
 协议参考：[Google Voice over BLE v1.0](https://wangefan.github.io/linux_kernel_driver/resources/Google_Voice_over_BLE_spec_v1.0.pdf)、[MI-AO 协议记录](https://github.com/fanxeon/mi-ao/blob/main/docs/PROTOCOL.md)、IDF 官方 nimble_central_utils。协议资料不替代 RC003-MS 实机证据。
+
+## 2026-11-08 流式 TTS
+
+ESP32 使用 `POST /v1/audio/speech/stream`，请求示例：
+
+```json
+{"model":"qwen3-tts","input":"你好","response_format":"pcm","sample_rate":24000}
+```
+
+原 `/v1/audio/speech` 完整 WAV 接口保持不变，旧固件可继续使用它。新流式固件要求服务同时提供上述新端点；404、格式不符及断流明确失败，不自动回退或重播。Mac 服务代码和模型位于仓库外 `../asr_tts`。
+
+当前 `speaker.speech` Capability及 `speaker.speak_text` Binding升级为v2，声明300秒音频上限和330秒调用期限；配置、发现、工具视图和Grant查找使用同一版本。Core、ABI及存储schema不变，提示音仍为v1；旧工作按既有会话清理规则取消，不重演旧语音调用。回退须使用旧固件和仍保留的完整WAV端点。
+
+新端点返回 `application/x-ayni-pcm-stream`，HTTP 可分块；帧允许跨任意 TCP 分片。AYTS/1 固定头为16字节：ASCII `AYTS`、u32版本1、u32采样率24000、u32声道1；整数均为little-endian，样本为signed-16 little-endian。每条记录先发u32类型与u32载荷字节数，再发载荷：
+
+| 类型 | 载荷 |
+|---|---|
+| 1 音频 | 正偶数字节的PCM，每记录最多16384字节，总PCM最多14400000字节（300秒） |
+| 2 成功结束 | u32累计PCM字节数，须与已接收量完全相等且非零 |
+| 3 失败结束 | u32错误分类；1为推理/格式错误，2为生成token预算耗尽，3为300秒时长上限 |
+
+仅成功结束记录与完整HTTP结束同时成立，才把输入标为完整；之后还须I²S排空才回报能力成功。结束后的额外字节拒绝。部分PCM已送I²S后失败或取消为RESULT_UNKNOWN，不自动重试。生成器按0.32秒音频分块，沿用单MLX Broker；没有新增推理循环或Core接口。
+
+板端使用固定64 KiB PSRAM环形缓冲，不预分配整段300秒音频。生产者在锁内复制并发布，worker在同一锁内复制后消费，避免环绕覆盖正在播放的输入；缓冲满时零字节接收，API worker有界等待并检查取消/期限，通过TCP背压限制接收。接收约0.1秒音频即可开始播放。关闭接收且worker结束后擦除整个缓冲并释放，worker暂存也在完成后清除。48 kHz I²S把每个24 kHz样本重复两次；提示音仍按16 kHz生成。录音保持独立的16 kHz/30秒限制。Wi-Fi额外RF唤醒引用和40 MHz屏幕通信策略保持原值。
+
+提交前重新运行Native实验检查、正常部署脚本检查和ESP-IDF编译；实际结果随提交说明记录。此前仓库外记录的Python接口检查及真实长文本测试属于历史本机HTTP链路证据：完整WAV耗时8.51秒；两次流式首块分别0.68/0.19秒，约15.8秒音频分50块输出，块间最大间隔约0.15秒，拼接音频经ASR核对文字一致。原始资料未随本仓库交付，本次未重跑，不据此声明当前实机验收通过；实机连续出声、取消响应及主观效果仍待确认。

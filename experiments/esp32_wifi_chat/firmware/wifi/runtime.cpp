@@ -22,8 +22,8 @@
 #include <yyjson.h>
 namespace wifichat::wifi {
 namespace {
-constexpr int64_t redraw_us = 300000, transfer_us = 10000000;
-constexpr size_t audio_chunk = 8192, recent_stages = 3;
+constexpr int64_t redraw_us = 300000;
+constexpr size_t recent_stages = 3;
 constexpr int remote_candidates_top = 90, remote_candidate_pitch = 46;
 constexpr const char *labels[] = {"Wi-Fi 名称",      "Wi-Fi 密码",   "语音 API 地址",
                                   "模型 API 根地址", "模型 API Key", "模型名称"};
@@ -81,8 +81,6 @@ class Runtime {
     void configure();
     void cancel();
     void send(std::string_view text, uint64_t id = 0);
-    void audio_ack(const Packet &);
-    void release_speech();
     void save_restart();
     void web_changes();
     void begin_restart();
@@ -104,10 +102,6 @@ class Runtime {
     WebConfig web_{};
     bool web_started_ = false;
     Packet packet_{};
-    Api::Job *speech_ = nullptr;
-    const uint8_t *pcm_ = nullptr;
-    size_t pcm_bytes_ = 0, sent_ = 0;
-    int64_t speech_deadline_ = 0;
     bool storage_ok_ = false, touch_ok_ = false, configured_ = false;
     enum class Session { unconfigured, opening, ready, failed, closing };
     Session session_ = Session::unconfigured;
@@ -135,6 +129,7 @@ class Runtime {
     size_t stage_count_ = 0;
     uint32_t model_round_ = 0;
     std::string document_, transcript_, answer_, status_ = "请先在触屏设置 Wi-Fi 和 API";
+    std::string speech_error_; // Fixed backend diagnostic only, cleared for a new turn.
     std::string session_detail_ = "等待 Wi-Fi 和模型配置";
     std::array<char, 192> editing_{};
     std::array<wifi_ap_record_t, 8> networks_{};
@@ -249,15 +244,6 @@ void Runtime::configure() {
     }
 }
 
-void Runtime::release_speech() {
-    if (speech_) {
-        api_.release(speech_);
-    }
-    speech_ = nullptr;
-    pcm_ = nullptr;
-    pcm_bytes_ = sent_ = 0;
-    speech_deadline_ = 0;
-}
 void Runtime::cancel() {
     if (motor_.active()) {
         motor_.stop(transport_);
@@ -265,10 +251,6 @@ void Runtime::cancel() {
     remote_.cancel_recording();
     api_.cancel_all();
     work_ = busy() ? Work::cancelling : Work::idle;
-    if (speech_) {
-        transport_.post(Kind::audio_error, speech_->input.id, nullptr, 0);
-    }
-    release_speech();
     if (!transport_.post(Kind::cancel, turn_, nullptr, 0)) {
         message("取消队列已满，请再次点击取消");
     } else {
@@ -294,6 +276,7 @@ void Runtime::send(std::string_view text, uint64_t id) {
         return;
     }
     turn_ = id;
+    speech_error_.clear();
     work_ = Work::running;
     stage_count_ = 0;
     model_round_ = 0;
@@ -306,36 +289,6 @@ void Runtime::send(std::string_view text, uint64_t id) {
     page_ = Page::history;
     current_page_ = 0;
     message("已发送，Ayni 正在处理");
-}
-void Runtime::audio_ack(const Packet &packet) {
-    if (!speech_ || packet.id != speech_->input.id) {
-        return;
-    }
-    if (packet.size != sizeof(uint32_t) || get32(packet.body.data()) != sent_) {
-        transport_.post(Kind::audio_error, packet.id, nullptr, 0);
-        release_speech();
-        message("音频回执不匹配，未重试");
-        return;
-    }
-    if (sent_ == pcm_bytes_) {
-        if (!transport_.post(Kind::audio_end, packet.id, nullptr, 0)) {
-            message("音频结束提交失败");
-        }
-        release_speech();
-        return;
-    }
-    // packet_ is the UI's scratch after its ACK was read. post copies the chunk.
-    const auto count = std::min(audio_chunk, pcm_bytes_ - sent_);
-    put32(packet_.body.data(), sent_);
-    std::memcpy(packet_.body.data() + 4, pcm_ + sent_, count);
-    if (!transport_.post(Kind::audio_chunk, packet.id, packet_.body.data(), count + 4)) {
-        transport_.post(Kind::audio_error, packet.id, nullptr, 0);
-        release_speech();
-        message("音频分块提交失败，未重试");
-        return;
-    }
-    sent_ += count;
-    speech_deadline_ = esp_timer_get_time() + transfer_us;
 }
 void Runtime::packets() {
     while (transport_.take_output(packet_)) {
@@ -375,12 +328,6 @@ void Runtime::packets() {
             break;
         case Kind::audio_cancel:
             api_.cancel_speech(id);
-            if (speech_ && speech_->input.id == id) {
-                release_speech();
-            }
-            break;
-        case Kind::audio_ack:
-            audio_ack(packet_);
             break;
         case Kind::render_text: {
             stage("屏幕能力：正在显示文档");
@@ -421,9 +368,10 @@ void Runtime::packets() {
             } else if (body == "speaker tone dispatched") {
                 stage("扬声器提示音已派发");
             } else if (body == "speaker playback queued") {
-                stage("语音已接收，正在播放");
+                stage("收到首段语音，边接收边播放");
             } else if (body.find("task held") == 0) {
-                stage(std::string("任务已暂停：") + std::string(body));
+                stage(speech_error_.empty() ? std::string("任务已暂停：") + std::string(body)
+                                            : speech_error_ + "；任务已暂停，未重播");
             } else if (body.find("motor preparation failed") == 0) {
                 motor_.preparation_failed(transport_);
                 message("电机准备失败，请重启；未执行动作");
@@ -452,7 +400,6 @@ void Runtime::packets() {
                     }
                     api_.cancel_all();
                     remote_.cancel_recording();
-                    release_speech();
                     work_ = Work::idle;
                     const std::string detail = session_ == Session::opening
                                                    ? session_detail_ + "\n" + std::string(body)
@@ -484,7 +431,7 @@ void Runtime::packets() {
                 message("上下文已清空");
             } else if (body.find("context clear") == 0 ||
                        body.find("speaker playback failed") == 0) {
-                message(body);
+                message(speech_error_.empty() ? body : std::string_view(speech_error_));
             } else if (body == "speaker playback completed") {
                 stage("播放已完成，ToolLoop处理工具结果");
             }
@@ -526,31 +473,17 @@ void Runtime::results() {
                 message(job->error.data());
             }
         } else if (job->request == Request::speech) {
-            if (job->ok && !speech_ &&
-                pcm_wav(job->response, job->response_bytes, pcm_, pcm_bytes_)) {
-                stage("语音已生成，传输到扬声器");
-                speech_ = job;
-                sent_ = 0;
-                speech_deadline_ = esp_timer_get_time() + transfer_us;
-                uint8_t begin[8]{};
-                put32(begin, Speaker::pcm_rate);
-                put32(begin + 4, pcm_bytes_);
-                if (transport_.post(Kind::audio_begin, job->input.id, begin, sizeof(begin))) {
-                    continue;
-                }
-                speech_ = nullptr;
+            if (!job->ok) {
+                transport_.post(Kind::audio_error, job->input.id, nullptr, 0);
+                speech_error_.assign(job->error.data());
+                message(speech_error_);
+            } else {
+                stage("语音流接收完成，等待播放结束");
             }
-            transport_.post(Kind::audio_error, job->input.id, nullptr, 0);
-            message(job->error.data());
         } else {
             message(job->ok ? "语音 API 就绪" : job->error.data());
         }
         api_.release(job);
-    }
-    if (speech_ && esp_timer_get_time() >= speech_deadline_) {
-        transport_.post(Kind::audio_error, speech_->input.id, nullptr, 0);
-        release_speech();
-        message("音频传输超时，未重试");
     }
 }
 void Runtime::save_restart() {

@@ -1,6 +1,7 @@
 #pragma once
 #include "display.h"
 #include "protocol.h"
+#include "speech_profile.h"
 #include <array>
 #include <atomic>
 #include <ayni/bodies.h>
@@ -15,6 +16,7 @@ class Transport {
     bool initialize();
     bool send(Kind, uint64_t, const void *, size_t);
     bool receive(Packet &);
+    AudioWrite append_audio(uint64_t, uint32_t, const uint8_t *, size_t);
     // In-process backend boundary. Both queues copy and return immediately; only
     // a backend worker calls post/take_output. Audio retains the Speaker's lock.
     bool post(Kind, uint64_t, const void *, size_t);

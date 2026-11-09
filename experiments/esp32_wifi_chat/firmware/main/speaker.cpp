@@ -25,7 +25,9 @@ constexpr uint32_t block_samples = 256, dma_buffers = 4, dma_frames = 256,
                    audio_stack_bytes = 12288;
 constexpr uint32_t minimum_hz = 100, maximum_hz = 4000, minimum_tone_ms = 50,
                    maximum_tone_ms = 3000;
-constexpr uint32_t synthesis_timeout_ms = 120000, write_timeout_ms = 200, maximum_text_bytes = 1024;
+constexpr uint32_t synthesis_timeout_ms = SpeechProfile::timeout_ms,
+                   legacy_tone_timeout_ms = 120000, write_timeout_ms = 200,
+                   maximum_text_bytes = 1024;
 constexpr float tau = 6.2831853071795864769F;
 constexpr gpio_num_t speaker_bclk = GPIO_NUM_4, speaker_ws = GPIO_NUM_5, speaker_data = GPIO_NUM_6;
 constexpr uint32_t result_limit = Speaker::result_bytes;
@@ -74,12 +76,14 @@ struct Speaker::Worker {
     QueueHandle_t jobs = nullptr;
     SemaphoreHandle_t stopped = nullptr;
     std::array<int16_t, block_samples * repeat_samples * stereo_channels> output{};
+    std::array<int16_t, block_samples> input{};
     std::atomic<bool> done{false};
     esp_err_t error = ESP_OK;
     uint32_t accepted_samples = 0;
     bool drained = false;
     explicit Worker(Speaker &s) : owner(s) {}
     esp_err_t play(Job);
+    esp_err_t write_samples(Job, i2s_chan_handle_t);
 };
 bool Speaker::initialize() {
     if (worker_) {
@@ -88,8 +92,7 @@ bool Speaker::initialize() {
     void *memory = heap_caps_malloc(sizeof(Worker), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!memory) {
         heap_caps_free(memory);
-        heap_caps_free(pcm_);
-        pcm_ = nullptr;
+        heap_caps_free(pcm_.detach());
         return false;
     }
     worker_ = new (memory) Worker(*this);
@@ -111,8 +114,7 @@ bool Speaker::initialize() {
     worker_->~Worker();
     heap_caps_free(worker_);
     worker_ = nullptr;
-    heap_caps_free(pcm_);
-    pcm_ = nullptr;
+    heap_caps_free(pcm_.detach());
     return false;
 }
 void Speaker::status(const char *s) {
@@ -155,16 +157,18 @@ ayni_status_t Speaker::configure(ayni_kernel_t *kernel) {
     const char *capabilities[] = {"speaker.tone", "speaker.speech"};
     const char *bindings[] = {"speaker.play_tone", "speaker.speak_text"};
     for (uint32_t at = 0; at < 2; ++at) {
+        const auto capability_version = at == 0 ? version : SpeechProfile::capability_version;
         offers_[at] = {sizeof(ayni_call_capability_v1),
-                       version,
+                       capability_version,
                        text(capabilities[at]),
                        {sizeof(ayni_call_contract_v1), AYNI_CALL_UNARY, AYNI_CALL_TOOL, 0,
                         AYNI_CALL_NOT_IDEMPOTENT, AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_REQUEST, 0,
-                        synthesis_timeout_ms, AYNI_CALL_INPUT_VALUE, AYNI_CALL_RESULT_TEXT,
-                        input_bytes(), result_limit, 1, &resource_, nullptr},
+                        at == 0 ? legacy_tone_timeout_ms : synthesis_timeout_ms,
+                        AYNI_CALL_INPUT_VALUE, AYNI_CALL_RESULT_TEXT, input_bytes(), result_limit,
+                        1, &resource_, nullptr},
                        &businesses_[at]};
-        const ayni_capability_desc_v1 cap{sizeof(cap), version, text(capabilities[at]),
-                                          0,           0,       nullptr};
+        const ayni_capability_desc_v1 cap{
+            sizeof(cap), capability_version, text(capabilities[at]), 0, 0, nullptr};
         auto rc = ayni_register_capability(kernel, &cap);
         if (rc == AYNI_OK) {
             rc = ayni_register_call_capability(kernel, &offers_[at]);
@@ -196,12 +200,13 @@ ayni_status_t Speaker::configure(ayni_kernel_t *kernel) {
         rc = ayni_set_resource_health(kernel, slot.resource_id, AYNI_RESOURCE_ONLINE);
     }
     for (uint32_t at = 0; rc == AYNI_OK && at < 2; ++at) {
+        const auto capability_version = at == 0 ? version : SpeechProfile::capability_version;
         const ayni_binding_v1 binding{sizeof(binding),
-                                      version,
+                                      capability_version,
                                       text(bindings[at]),
                                       text(capabilities[at]),
-                                      version,
-                                      version,
+                                      capability_version,
+                                      provider_.version,
                                       provider_.provider_id,
                                       provider_.endpoint_id,
                                       {},
@@ -211,19 +216,19 @@ ayni_status_t Speaker::configure(ayni_kernel_t *kernel) {
         rc = ayni_register_binding(kernel, &binding);
         const ayni_tool_usage_v1 usage{
             sizeof(usage),
-            version,
+            binding.version,
             binding.binding_id,
-            version,
+            capability_version,
             text(capabilities[at]),
             text(at == 0 ? "Play a short local speaker notification tone when requested."
                          : "Speak text through the ESP32 speaker using the configured speech API."),
             text(at == 0 ? "frequency_hz 100..4000; duration_ms 50..3000; optional volume_percent "
                            "1..100, default 80."
                          : "Required text 1..1024 UTF-8 bytes; optional volume_percent 1..100, "
-                           "default 80. Synthesized audio must fit 30 seconds; no truncation."),
-            text(
-                "Success confirms all PCM drained through I2S and the channel stopped. It does not "
-                "prove a human heard sound. Unknown output must never be retried automatically."),
+                           "default 80. Native PCM streams while generating, up to 300 seconds."),
+            text("Success requires a complete audio stream, all PCM drained through I2S and the "
+                 "channel stopped. It does not "
+                 "prove a human heard sound. Unknown output must never be retried automatically."),
             text(at == 0 ? "{\"frequency_hz\":660,\"duration_ms\":300}"
                          : "{\"text\":\"你好，我是 Ayni。\"}"),
             0,
@@ -318,15 +323,15 @@ ayni_submit_result_t Speaker::cancel(void *ctx, ayni_attempt_ref_v1 attempt) {
     return AYNI_SUBMIT_ACCEPTED;
 }
 ayni_status_t Speaker::begin_speech(uint64_t id, std::string_view text) {
-    pcm_ = static_cast<int16_t *>(
-        heap_caps_malloc(maximum_pcm_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!pcm_) {
+    auto *storage = static_cast<uint8_t *>(
+        heap_caps_calloc(1, SpeechProfile::buffer_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!storage) {
         return AYNI_CAPACITY_EXCEEDED;
     }
     portENTER_CRITICAL(&mutex_);
     transfer_ = Transfer::begin;
     transfer_call_ = id;
-    expected_ = received_ = 0;
+    pcm_.attach(storage);
     portEXIT_CRITICAL(&mutex_);
     if (transport_.send(Kind::speech_request, id, text.data(), text.size())) {
         return AYNI_OK;
@@ -334,8 +339,7 @@ ayni_status_t Speaker::begin_speech(uint64_t id, std::string_view text) {
     portENTER_CRITICAL(&mutex_);
     transfer_ = Transfer::none;
     portEXIT_CRITICAL(&mutex_);
-    heap_caps_free(pcm_);
-    pcm_ = nullptr;
+    heap_caps_free(pcm_.detach());
     return AYNI_BUSY;
 }
 void Speaker::request_cancel() {
@@ -351,40 +355,39 @@ void Speaker::request_stop() {
         request_cancel();
     }
 }
-// A single immutable PCM lease: exact Call ID, ordered byte offsets, no partial playback.
+// Framing transitions share the ring lock with append/read. A successful end
+// closes input only after the API worker validated both AYTS and HTTP completion.
 bool Speaker::receive(Kind kind, uint64_t call, const uint8_t *data, size_t bytes) {
     bool okay = false;
-    uint32_t acknowledged = 0;
     portENTER_CRITICAL(&mutex_);
     if (call == transfer_call_ && transfer_ != Transfer::none && transfer_ != Transfer::failed) {
         if (kind == Kind::audio_begin && transfer_ == Transfer::begin && bytes == 8 &&
-            get32(data) == pcm_rate && get32(data + 4) > 0 &&
-            get32(data + 4) <= maximum_pcm_bytes && !(get32(data + 4) % sizeof(int16_t))) {
-            expected_ = get32(data + 4);
+            get32(data) == speech_rate && get32(data + 4) == maximum_pcm_bytes) {
             transfer_ = Transfer::data;
             okay = true;
-        } else if (kind == Kind::audio_chunk && transfer_ == Transfer::data && bytes > 4 &&
-                   get32(data) == received_ && bytes - 4 <= expected_ - received_) {
-            std::memcpy(reinterpret_cast<uint8_t *>(pcm_) + received_, data + 4, bytes - 4);
-            received_ += bytes - 4;
-            okay = true;
-            acknowledged = received_;
-        } else if (kind == Kind::audio_end && transfer_ == Transfer::data && !bytes &&
-                   received_ == expected_) {
+        } else if (kind == Kind::audio_end && transfer_ == Transfer::data && bytes == 4 &&
+                   pcm_.received() && get32(data) == pcm_.received()) {
             transfer_ = Transfer::ready;
             okay = true;
-            acknowledged = received_;
-        } else if (kind == Kind::audio_error) {
+        } else if (kind == Kind::audio_error && transfer_ != Transfer::ready) {
             transfer_ = Transfer::failed;
         }
     }
     portEXIT_CRITICAL(&mutex_);
-    if (okay && kind != Kind::audio_end) {
-        uint8_t response[sizeof(uint32_t)];
-        put32(response, acknowledged);
-        transport_.send(Kind::audio_ack, call, response, sizeof(response));
-    }
+    wake_owner();
     return okay;
+}
+AudioWrite Speaker::append_audio(uint64_t call, uint32_t offset, const uint8_t *data,
+                                 size_t bytes) {
+    portENTER_CRITICAL(&mutex_);
+    const auto result = call == transfer_call_ && transfer_ == Transfer::data && !cancel_.load()
+                            ? pcm_.append(offset, data, bytes)
+                            : AudioWrite::rejected;
+    portEXIT_CRITICAL(&mutex_);
+    if (result == AudioWrite::accepted) {
+        wake_owner();
+    }
+    return result;
 }
 ayni_status_t Speaker::advance() {
     if (!pending_) {
@@ -400,22 +403,20 @@ ayni_status_t Speaker::advance() {
         portEXIT_CRITICAL(&mutex_);
     }
     Transfer transfer;
-    uint32_t samples, volume = pending_->volume;
+    uint32_t available, volume = pending_->volume;
     portENTER_CRITICAL(&mutex_);
     transfer = transfer_;
-    samples = expected_ / sizeof(int16_t);
+    available = pcm_.available();
     portEXIT_CRITICAL(&mutex_);
-    if (!queued_ && pending_->operation == Operation::speech && transfer == Transfer::ready &&
+    if (!queued_ && pending_->operation == Operation::speech &&
+        (transfer == Transfer::data || transfer == Transfer::ready) &&
+        (available >= speech_rate * sizeof(int16_t) / 10 ||
+         (transfer == Transfer::ready && available)) &&
         !cancel_.load()) {
-        if (!enqueue({Operation::speech, 0, samples, volume})) {
+        if (!enqueue({Operation::speech, 0, 0, volume})) {
             return AYNI_BUSY;
         }
         status("speaker playback queued");
-        // Complete PCM is now a worker-only read lease. Late host chunks/errors
-        // cannot mutate it or replace an already observed playback result.
-        portENTER_CRITICAL(&mutex_);
-        transfer_ = Transfer::none;
-        portEXIT_CRITICAL(&mutex_);
     }
     const bool no_output = !queued_ && (transfer == Transfer::failed || cancel_.load());
     if (!no_output && (!queued_ || !worker_->done.load(std::memory_order_acquire))) {
@@ -430,9 +431,11 @@ ayni_status_t Speaker::advance() {
         result.status = AYNI_OK;
         result.effect = AYNI_CALL_EFFECT_COMPLETE;
         std::snprintf(facts, sizeof(facts),
-                      "{\"played\":true,\"samples\":%lu,\"sample_rate\":16000,\"volume_percent\":%"
+                      "{\"played\":true,\"samples\":%lu,\"sample_rate\":%lu,\"volume_percent\":%"
                       "lu,\"confirmed\":\"i2s-drained\"}",
                       static_cast<unsigned long>(worker_->accepted_samples),
+                      static_cast<unsigned long>(
+                          pending_->operation == Operation::speech ? speech_rate : pcm_rate),
                       static_cast<unsigned long>(volume));
         result.result = text(facts);
     } else if (no_output || !worker_->accepted_samples) {
@@ -453,10 +456,16 @@ ayni_status_t Speaker::advance() {
         queued_ = false;
         portENTER_CRITICAL(&mutex_);
         transfer_ = Transfer::none;
-        auto *released = pcm_;
-        pcm_ = nullptr;
+        auto *released = pcm_.detach();
         portEXIT_CRITICAL(&mutex_);
-        heap_caps_free(released); // Worker completion proves the PCM lease ended.
+        // No receiver can retain a pointer after the lock; worker completion ends reads.
+        if (released) {
+            volatile uint8_t *wipe = reinterpret_cast<uint8_t *>(released);
+            for (uint32_t at = 0; at < SpeechProfile::buffer_bytes; ++at) {
+                wipe[at] = 0;
+            }
+        }
+        heap_caps_free(released);
     }
     return posted == AYNI_BUSY ? AYNI_OK : posted;
 }
@@ -490,33 +499,8 @@ esp_err_t Speaker::Worker::play(Job job) {
         rc = i2s_channel_enable(tx);
         enabled = rc == ESP_OK;
     }
-    float phase = 0;
-    for (uint32_t at = 0; rc == ESP_OK && at < job.samples && !owner.cancel_.load();
-         at += block_samples) {
-        const auto count = std::min(block_samples, job.samples - at);
-        for (uint32_t n = 0; n < count; ++n) {
-            int32_t sample = 0;
-            if (job.operation == Operation::speech) {
-                sample = owner.pcm_[at + n];
-            } else {
-                sample = int32_t(std::sin(phase) * 32767.0F);
-                phase += tau * job.frequency / pcm_rate;
-                if (phase >= tau) {
-                    phase -= tau;
-                }
-            }
-            sample = sample * int32_t(job.volume) / 100;
-            for (uint32_t repeated = 0; repeated < repeat_samples * stereo_channels; ++repeated) {
-                output[n * repeat_samples * stereo_channels + repeated] = int16_t(sample);
-            }
-        }
-        size_t written = 0;
-        const size_t bytes = count * repeat_samples * stereo_channels * sizeof(int16_t);
-        rc = i2s_channel_write(tx, output.data(), bytes, &written, write_timeout_ms);
-        accepted_samples += written / (repeat_samples * stereo_channels * sizeof(int16_t));
-        if (rc == ESP_OK && written != bytes) {
-            rc = ESP_ERR_TIMEOUT;
-        }
+    if (rc == ESP_OK) {
+        rc = write_samples(job, tx);
     }
     // The driver leases each finished DMA buffer through its TX queue. Writing
     // more than one complete ring of zeros proves the preceding last PCM buffer
@@ -548,6 +532,64 @@ esp_err_t Speaker::Worker::play(Job job) {
     }
     return rc;
 }
+esp_err_t Speaker::Worker::write_samples(Job job, i2s_chan_handle_t tx) {
+    esp_err_t rc = ESP_OK;
+    float phase = 0;
+    const uint32_t repeat =
+        job.operation == Operation::speech ? output_rate / speech_rate : repeat_samples;
+    uint32_t at = 0;
+    while (rc == ESP_OK && !owner.cancel_.load()) {
+        uint32_t count = 0;
+        if (job.operation == Operation::speech) {
+            portENTER_CRITICAL(&owner.mutex_);
+            const auto state = owner.transfer_;
+            if (state == Transfer::failed || state == Transfer::none) {
+                portEXIT_CRITICAL(&owner.mutex_);
+                rc = ESP_FAIL;
+                break;
+            }
+            count = owner.pcm_.read(input.data(), block_samples);
+            portEXIT_CRITICAL(&owner.mutex_);
+            if (!count) {
+                if (state == Transfer::ready) {
+                    break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(5));
+                continue;
+            }
+        } else {
+            if (at == job.samples) {
+                break;
+            }
+            count = std::min(block_samples, job.samples - at);
+        }
+        for (uint32_t n = 0; n < count; ++n) {
+            int32_t sample = 0;
+            if (job.operation == Operation::speech) {
+                sample = input[n];
+            } else {
+                sample = int32_t(std::sin(phase) * 32767.0F);
+                phase += tau * job.frequency / pcm_rate;
+                if (phase >= tau) {
+                    phase -= tau;
+                }
+            }
+            sample = sample * int32_t(job.volume) / 100;
+            for (uint32_t repeated = 0; repeated < repeat * stereo_channels; ++repeated) {
+                output[n * repeat * stereo_channels + repeated] = int16_t(sample);
+            }
+        }
+        size_t written = 0;
+        const size_t bytes = count * repeat * stereo_channels * sizeof(int16_t);
+        rc = i2s_channel_write(tx, output.data(), bytes, &written, write_timeout_ms);
+        accepted_samples += written / (repeat * stereo_channels * sizeof(int16_t));
+        if (rc == ESP_OK && written != bytes) {
+            rc = ESP_ERR_TIMEOUT;
+        }
+        at += count;
+    }
+    return rc;
+}
 void Speaker::run(void *ctx) {
     auto &worker = *static_cast<Worker *>(ctx);
     Job job;
@@ -556,6 +598,8 @@ void Speaker::run(void *ctx) {
             break;
         }
         worker.error = worker.play(job);
+        worker.input.fill(0);
+        worker.output.fill(0);
         worker.done.store(true, std::memory_order_release);
         wake_owner(); // The owner posts the result; Core cannot see the worker.
     }

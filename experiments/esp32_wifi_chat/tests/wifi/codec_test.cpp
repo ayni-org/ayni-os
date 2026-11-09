@@ -135,6 +135,28 @@ TEST(WifiCapture, AudioWithoutCodecSynchronizationIsNotUploaded) {
     CaptureReader reader;
     EXPECT_FALSE(reader.initialize(encoded.data(), used));
 }
+TEST(WifiCapture, ThirtySecondRecordingLimitIsIndependentOfLongerSpeechPlayback) {
+    // ADR-0097: increasing TTS duration does not expand the ATVV recording contract.
+    constexpr uint32_t recording_bytes = 16000 * 30 * sizeof(int16_t);
+    std::vector<uint8_t> encoded(capture::capacity);
+    size_t used = capture::header_bytes;
+    const uint8_t initial[] = {0, 0, 0};
+    const std::array<uint8_t, capture::frame_bytes> audio{};
+    ASSERT_TRUE(capture::append(encoded.data(), encoded.size(), used, capture::sync, initial,
+                                sizeof(initial)));
+    for (uint32_t bytes = 0; bytes < recording_bytes; bytes += capture::pcm_bytes_per_frame) {
+        ASSERT_TRUE(capture::append(encoded.data(), encoded.size(), used, capture::audio,
+                                    audio.data(), audio.size()));
+    }
+    capture::finish(encoded.data(), used, recording_bytes);
+    CaptureReader reader;
+    ASSERT_TRUE(reader.initialize(encoded.data(), used));
+    EXPECT_EQ(reader.pcm_bytes(), recording_bytes);
+    ASSERT_TRUE(capture::append(encoded.data(), encoded.size(), used, capture::audio, audio.data(),
+                                audio.size()));
+    capture::finish(encoded.data(), used, recording_bytes + capture::pcm_bytes_per_frame);
+    EXPECT_FALSE(reader.initialize(encoded.data(), used));
+}
 TEST(WifiModel, CompleteTextUsesExistingPacketContract) {
     // Wi-Fi profile: final text and summaries retain the existing 4/8 KiB limits.
     Packet packet{};
