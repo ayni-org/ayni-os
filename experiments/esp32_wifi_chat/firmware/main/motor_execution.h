@@ -62,7 +62,9 @@ class MotorExecution {
         std::array<uint8_t, sizeof(uint32_t)> frame{};
     };
     static constexpr size_t inbox_slots = 8;
-    static constexpr uint32_t worker_stack_bytes = 24576, worker_priority = 7;
+    // Two-channel 5-second bench runs plus normal shutdown used 6156 bytes on IDF6.0.3.
+    // Keep 6132 bytes above that measured peak while restoring radio upload headroom.
+    static constexpr uint32_t worker_stack_bytes = 12288, worker_priority = 7;
     static constexpr uint32_t snapshot_limit_mask = 0xff, snapshot_mode_shift = 8,
                               snapshot_mode_mask = 0xf, snapshot_busy = 1u << 12;
     ayni_status_t initialize_owner();
