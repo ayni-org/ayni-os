@@ -14,6 +14,8 @@ namespace wifichat {
 class MotorExecution {
   public:
     explicit MotorExecution(Transport &transport) : transport_(transport) {}
+    // Owner-only before Host startup fragments internal RAM; does not acquire hardware.
+    ayni_status_t reserve_control_stack();
     ayni_status_t initialize();
     ayni_executor_v1 ports();
     ayni_submit_result_t submit(const ayni_provider_request_v1 *, ayni_provider_completion_t *);

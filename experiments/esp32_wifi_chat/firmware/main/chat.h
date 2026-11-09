@@ -2,6 +2,7 @@
 #include "history.h"
 #include "model_tools.h"
 #include "motor.h"
+#include "motor_check.h"
 #include "speaker.h"
 #include "transport.h"
 #include "value_queue.h"
@@ -21,6 +22,9 @@ class Chat {
   public:
     explicit Chat(Transport &transport)
         : transport_(transport), speaker_(transport), motor_(transport) {}
+    // Owner startup before the UI/radios: reserve contiguous control/audio stacks.
+    // The audio worker stays idle; motor hardware/worker still require local preparation.
+    ayni_status_t reserve_control_memory();
     ayni_status_t initialize(const char *route);
     // Advances the devices, steps Core once and moves the session on. report is that step's
     // report; again is set when this tick changed state the step has not seen yet.
@@ -45,7 +49,9 @@ class Chat {
     ayni_status_t configure();
     ayni_status_t configure_model();
     ayni_status_t configure_strategy();
-    ayni_status_t command(ayni_intent_kind_t, const void *, uint64_t * = nullptr, uint32_t = 0);
+    ayni_status_t configure_motor_check();
+    ayni_status_t command(ayni_intent_kind_t, const void *, uint64_t * = nullptr, uint32_t = 0,
+                          ayni_reason_t * = nullptr);
     ayni_status_t receipt();
     ayni_status_t settle_session(uint64_t durable_seq, bool &settled);
     ayni_status_t prepare(const ayni_kernel_info_v1 &);
@@ -61,6 +67,7 @@ class Chat {
     Transport &transport_;
     Speaker speaker_;
     Motor motor_;
+    MotorCheck motor_check_; // Local manual checks share Core/PermitGate, without model calls.
     ayni::hosts::esp_idf::Host *host_ = nullptr; // Internal RAM, outlives Kernel/producers.
     ayni_kernel_t *kernel_ = nullptr;
     void *arena_ = nullptr;

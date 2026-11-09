@@ -41,19 +41,26 @@ void *owner(void *) {
     auto *transport = new (region) wifichat::Transport;
     esp_log_level_set(
         "*", ESP_LOG_NONE); // Only explicit, redacted diagnostics are emitted after this point.
-    if (!transport->initialize() ||
-        !xTaskCreateStatic(io, "chat-io", io_stack_bytes, transport, 3, io_stack, &io_tcb)) {
+    if (!transport->initialize()) {
         vTaskSuspend(nullptr);
     }
     // The composition's large protocol lanes use PSRAM; its Host is separately internal.
     auto *chat_region =
         heap_caps_malloc(sizeof(wifichat::Chat), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!chat_region) {
-        const char s[] = "chat allocation failed";
-        transport->send(wifichat::Kind::status, 0, s, sizeof(s) - 1);
+        std::puts("chat allocation failed");
         vTaskSuspend(nullptr);
     }
     auto *chat = new (chat_region) wifichat::Chat(*transport);
+    // Reserve large internal blocks before the UI task starts Wi-Fi/BLE and TLS.
+    // This does not arm motion or start its worker. Initialization failures remain explicit.
+    const auto reserved = chat->reserve_control_memory();
+    if (reserved != AYNI_OK) {
+        std::printf("device control memory reservation failed=%ld\n", long(reserved));
+    }
+    if (!xTaskCreateStatic(io, "chat-io", io_stack_bytes, transport, 3, io_stack, &io_tcb)) {
+        vTaskSuspend(nullptr);
+    }
     auto *packet_region =
         heap_caps_malloc(sizeof(wifichat::Packet), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!packet_region) {
