@@ -96,7 +96,8 @@ class Chat {
     ayni::strategies::Encoded parameters_{}; // Goal parameters, then the final checkpoint.
     enum class Forget { none, requested, saving };
     Forget forget_ = Forget::none;
-    // Session teardown cancels experiment Goals before Kernel/Host shutdown.
+    // Normal close cancels experiment Goals; confirmed rebuild quiesces API
+    // borrows first, then uses public shutdown without needing spare Goal slots.
     // stopped means Kernel/resources are gone and the terminal report is waiting
     // for transport capacity; it is never announced before actual teardown.
     enum class Closing { open, quiescing, cancel_work, kernel, stopped };
