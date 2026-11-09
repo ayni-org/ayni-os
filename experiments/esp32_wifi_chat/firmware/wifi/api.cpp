@@ -134,9 +134,11 @@ bool Api::submit(Request kind, uint64_t id, const void *data, size_t bytes, uint
     if (bytes) {
         std::memcpy(job.input.body.data(), data, bytes);
     }
+    outstanding_.fetch_add(1, std::memory_order_acq_rel);
     if (xQueueSend(waiting_, &slot, 0) == pdTRUE) {
         return true;
     }
+    outstanding_.fetch_sub(1, std::memory_order_acq_rel);
     job.audio = nullptr;
     job.audio_bytes = 0;
     xQueueSend(free_, &slot, 0);
@@ -188,6 +190,7 @@ void *Api::work(void *context) {
         job.audio_bytes = 0;
         // Every queued slot reserves one result slot, so this cannot block on UI work.
         xQueueSend(self.done_, &index, portMAX_DELAY);
+        self.outstanding_.fetch_sub(1, std::memory_order_acq_rel);
     }
 }
 bool Api::http(Job &job, const char *url, const char *content_type, const void *prefix,

@@ -52,6 +52,7 @@ class Chat {
     ayni_status_t converse(const ayni_kernel_info_v1 &);
     ayni_status_t present_reply();
     void end_turn(const char *);
+    void wait_for(const char *phase, const char *label, ayni_status_t);
     void status(uint64_t, const char *);
     void publish_model();
     void publish_proposals();            // Best-effort UI metadata, never execution approval.
@@ -83,7 +84,12 @@ class Chat {
     enum class Turn { idle, preparing_input, input, running, saving, answer, reply_done };
     Turn turn_state_ = Turn::idle;
     std::string input_, answer_;
-    const char *reply_end_ = nullptr; // Static status text, valid only in reply_done.
+    std::array<char, 192> terminal_text_{}; // Owned error text until the terminal queue accepts it.
+    const char *reply_end_ = nullptr; // Static or terminal_text_, valid throughout reply_done.
+    struct PreparationWait {
+        const char *phase = nullptr; // None, or an internal static phase name (never user text).
+        uint64_t next_trace_us = 0;  // Monotonic microseconds, only valid with phase.
+    } preparation_wait_;
     uint64_t turn_started_ = 0;
     uint64_t reply_deadline_ = 0; // Deadline for final-text queue admission only.
     uint32_t model_requests_ = 0; // Metadata only, includes any context-compaction calls.
@@ -93,7 +99,7 @@ class Chat {
     // Session teardown cancels experiment Goals before Kernel/Host shutdown.
     // stopped means Kernel/resources are gone and the terminal report is waiting
     // for transport capacity; it is never announced before actual teardown.
-    enum class Closing { open, cancel_work, kernel, stopped };
+    enum class Closing { open, quiescing, cancel_work, kernel, stopped };
     Closing closing_ = Closing::open;
     char route_[32]{};
     // The model service: tool-calling turns and text-only summaries, one slot, one destination.
