@@ -1,0 +1,5 @@
+menu "Ayni independent experiment"
+config AYNI_WIFI_CHAT
+    bool "Touchscreen, Wi-Fi API and BLE remote profile"
+    default n
+endmenu
