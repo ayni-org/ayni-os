@@ -5,6 +5,8 @@ namespace wifichat::wifi {
 // Ephemeral ATVV records. Keeping ADPCM until HTTP upload bounds a 30-second
 // recording to 256 KiB instead of retaining a second 960 KiB PCM allocation.
 namespace capture {
+constexpr uint32_t sample_rate = 16000, maximum_seconds = 30;
+constexpr uint32_t maximum_pcm_bytes = sample_rate * maximum_seconds * sizeof(int16_t);
 constexpr size_t capacity = 256 * 1024, header_bytes = 12, record_bytes = 3;
 constexpr size_t frame_bytes = 120, frame_samples = frame_bytes * 2;
 constexpr size_t sync_bytes = 3, pcm_bytes_per_frame = frame_samples * sizeof(int16_t);

@@ -1,5 +1,6 @@
 // Experiment-owned speaker Provider. Core owns Calls/authority; this owns I2S and PCM.
 #pragma once
+#include "pcm_buffer.h"
 #include "protocol.h"
 #include <atomic>
 #include <ayni/calls.h>
@@ -11,9 +12,9 @@ namespace wifichat {
 class Transport;
 class Speaker {
   public:
-    static constexpr uint32_t pcm_rate = 16000, maximum_speech_ms = 30000;
-    static constexpr uint32_t maximum_pcm_bytes =
-        pcm_rate * maximum_speech_ms / 1000 * sizeof(int16_t);
+    static constexpr uint32_t pcm_rate = 16000, speech_rate = SpeechProfile::rate,
+                              maximum_speech_ms = SpeechProfile::maximum_seconds * 1000;
+    static constexpr uint32_t maximum_pcm_bytes = SpeechProfile::maximum_bytes;
     static constexpr uint32_t default_volume = 80;
     static constexpr uint32_t result_bytes = 192;
     static uint32_t input_bytes(); // Largest canonical input of both contracts.
@@ -25,7 +26,9 @@ class Speaker {
     // Owner-only readiness gate; retained Calls still drain/cancel while closed.
     void set_accepting(bool accepting) { accepting_ = accepting; }
     ayni_status_t advance(); // Owner only; never waits for I2S, synthesis or network I/O.
-    bool receive(Kind, uint64_t, const uint8_t *, size_t); // I/O task; bounded copy and ACK.
+    bool receive(Kind, uint64_t, const uint8_t *,
+                 size_t); // API worker; locked framing transitions.
+    AudioWrite append_audio(uint64_t, uint32_t, const uint8_t *, size_t);
     bool close(); // After Core STOPPED: joins the audio worker, retains PCM with the I/O context.
     uint32_t stack_free_bytes() const;
     // Owner-only stop for teardown/fenced sessions; still completes through Core.
@@ -57,13 +60,12 @@ class Speaker {
     void status(const char *);
     Transport &transport_;
     Worker *worker_ = nullptr; // Internal RAM; freed only after proven legacy-kernel task join.
-    int16_t *pcm_ = nullptr;   // PSRAM lease from speech start through I2S completion/cancellation.
+    PcmBuffer pcm_; // Locked ring metadata; its PSRAM lease lasts through worker completion.
     std::optional<Pending> pending_; // Sole owner-thread completion borrow.
     std::atomic<bool> cancel_{false};
     portMUX_TYPE mutex_ = portMUX_INITIALIZER_UNLOCKED;
     Transfer transfer_ = Transfer::none; // Guarded by mutex_, owner + I/O task only.
     uint64_t transfer_call_ = 0;
-    uint32_t expected_ = 0, received_ = 0;
     bool queued_ = false;    // Owner only, exactly one worker submission per accepted Call.
     bool accepting_ = false; // Composition opens after session cleanup, closes before teardown.
     uint32_t final_stack_free_ = 0;

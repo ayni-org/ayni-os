@@ -2,6 +2,7 @@
 #include "../main/harness.h"
 #include "../main/speaker.h"
 #include "model_codec.h"
+#include "speech_stream.h"
 #include <algorithm>
 #include <ayni/model_messages.hpp>
 #include <cstdio>
@@ -13,6 +14,7 @@
 #include <esp_pthread.h>
 #include <esp_timer.h>
 #include <lwip/sockets.h>
+#include <new>
 #include <pthread.h>
 #include <string>
 #include <yyjson.h>
@@ -20,9 +22,14 @@ namespace wifichat::wifi {
 namespace {
 constexpr size_t json_limit = 32768, wav_overhead_limit = 16384;
 constexpr int64_t request_us = 70000000;
+constexpr int64_t request_budget_us(Request request) {
+    return request == Request::speech ? int64_t(SpeechProfile::timeout_ms) * 1000 : request_us;
+}
 constexpr size_t worker_stack = 12288, network_chunk = 2048;
 constexpr int io_slice_ms = 5000, read_poll_ms = 1000;
 constexpr size_t upload_frames = 4;
+static_assert(Speaker::speech_rate == SpeechStream::rate &&
+              Speaker::maximum_pcm_bytes == SpeechStream::max_pcm_bytes);
 void erase_free(uint8_t *data, size_t bytes) {
     if (!data) {
         return;
@@ -53,55 +60,7 @@ bool endpoint(const char *root, const char *path, char *out, size_t capacity) {
     return written > 0 && size_t(written) < capacity;
 }
 } // namespace
-bool pcm_wav(const uint8_t *raw, size_t bytes, const uint8_t *&pcm, size_t &pcm_bytes) {
-    if (!raw || bytes < 44 || std::memcmp(raw, "RIFF", 4) || std::memcmp(raw + 8, "WAVE", 4) ||
-        get32(raw + 4) != bytes - 8) {
-        return false;
-    }
-    bool format = false;
-    const uint8_t *samples = nullptr;
-    size_t size = 0;
-    for (size_t at = 12; at < bytes;) {
-        if (bytes - at < 8) {
-            return false;
-        }
-        const auto length = get32(raw + at + 4);
-        const auto *tag = raw + at;
-        at += 8;
-        if (length > bytes - at) {
-            return false;
-        }
-        if (!std::memcmp(tag, "fmt ", 4)) {
-            if (format || length != 16 || raw[at] != 1 || raw[at + 1] || raw[at + 2] != 1 ||
-                raw[at + 3] || get32(raw + at + 4) != Speaker::pcm_rate ||
-                get32(raw + at + 8) != Speaker::pcm_rate * 2 || raw[at + 12] != 2 || raw[at + 13] ||
-                raw[at + 14] != 16 || raw[at + 15]) {
-                return false;
-            }
-            format = true;
-        } else if (!std::memcmp(tag, "data", 4)) {
-            if (samples) {
-                return false;
-            }
-            samples = raw + at;
-            size = length;
-        }
-        at += length;
-        if (length & 1U) {
-            if (at == bytes) {
-                return false;
-            }
-            ++at;
-        }
-    }
-    if (!format || !samples || !size || size % 2 || size > Speaker::maximum_pcm_bytes) {
-        return false;
-    }
-    pcm = samples;
-    pcm_bytes = size;
-    return true;
-}
-bool Api::initialize(const Settings &settings, const Transport &transport) {
+bool Api::initialize(const Settings &settings, Transport &transport) {
     transport_ = &transport;
     if (started_ || free_ || waiting_ || done_) {
         return false;
@@ -169,7 +128,7 @@ bool Api::submit(Request kind, uint64_t id, const void *data, size_t bytes, uint
     job.ok = false;
     job.error.fill(0);
     job.generation = generation_.load(std::memory_order_acquire);
-    job.deadline = esp_timer_get_time() + request_us;
+    job.deadline = esp_timer_get_time() + request_budget_us(kind);
     job.audio = audio;
     job.audio_bytes = audio_bytes;
     if (bytes) {
@@ -220,7 +179,8 @@ void *Api::work(void *context) {
         std::printf(
             "wifi api request=%u ok=%u current=%u elapsed_ms=%lld error=%s\n",
             unsigned(job.request), unsigned(job.ok), unsigned(self.current(job)),
-            static_cast<long long>((esp_timer_get_time() - job.deadline + request_us) / 1000),
+            static_cast<long long>(
+                (esp_timer_get_time() - job.deadline + request_budget_us(job.request)) / 1000),
             job.error.data());
         std::fill(self.request_body_.begin(), self.request_body_.end(), 0);
         erase_free(job.audio, job.audio_bytes);
@@ -232,7 +192,8 @@ void *Api::work(void *context) {
 }
 bool Api::http(Job &job, const char *url, const char *content_type, const void *prefix,
                size_t prefix_bytes, const void *body, size_t body_bytes, const void *suffix,
-               size_t suffix_bytes, size_t response_limit, CaptureReader *capture) {
+               size_t suffix_bytes, size_t response_limit, CaptureReader *capture,
+               SpeechStream *stream) {
     if (std::strncmp(url, "https://", 8) == 0 && std::time(nullptr) < 1700000000) {
         std::snprintf(job.error.data(), job.error.size(), "等待网络校时后重试");
         return false;
@@ -345,11 +306,11 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
     if (!ok && status >= 100 && status <= 599 && status != 200) {
         std::snprintf(job.error.data(), job.error.size(), "API HTTP %d；不会自动重试", status);
     }
-    // Complete-WAV serving supplies Content-Length. Allocate its actual length,
-    // rather than reserving 30 seconds for even a one-second response.
+    // Buffered JSON responses use Content-Length when supplied. Speech bypasses
+    // this allocation and copies validated frames into the bounded playback ring.
     const size_t capacity =
         length > 0 && length <= int64_t(response_limit) ? size_t(length) : response_limit;
-    if (ok) {
+    if (ok && !stream) {
         stage = "响应体";
         job.response = static_cast<uint8_t *>(
             heap_caps_malloc(capacity + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -358,7 +319,26 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
             ok = false;
         }
     }
-    while (ok && alive()) {
+    if (stream && ok) {
+        stage = "语音流";
+        std::array<uint8_t, network_chunk> chunk{};
+        while (ok && alive()) {
+            const int got =
+                esp_http_client_read(client, reinterpret_cast<char *>(chunk.data()), chunk.size());
+            if (got == -ESP_ERR_HTTP_EAGAIN) {
+                continue;
+            }
+            if (got <= 0) {
+                ok = got == 0 && esp_http_client_is_complete_data_received(client);
+                break;
+            }
+            job.response_bytes += size_t(got);
+            ok = job.response_bytes <= response_limit && stream->feed(chunk.data(), size_t(got));
+        }
+        std::fill(chunk.begin(), chunk.end(), 0);
+        ok = ok && stream->complete();
+    }
+    while (!stream && ok && alive()) {
         // fetch_headers may already have parsed and cached the whole body.
         // Parser completion is not proof that the application drained that cache.
         if (length > 0 && job.response_bytes == size_t(length)) {
@@ -423,7 +403,7 @@ void Api::perform(Job &job) {
     const char *root =
         job.request == Request::model ? settings_.model_url.data() : settings_.speech_url.data();
     const char *path = job.request == Request::model       ? "/chat/completions"
-                       : job.request == Request::speech    ? "/v1/audio/speech"
+                       : job.request == Request::speech    ? "/v1/audio/speech/stream"
                        : job.request == Request::recognize ? "/v1/audio/transcriptions"
                                                            : "/readyz";
     if (!endpoint(root, path, url.data(), url.size())) {
@@ -530,19 +510,74 @@ void Api::speech(Job &job, const char *url) {
     ayni::json::Writer out(request_body_.data(), request_body_.size());
     out.raw("{\"model\":\"qwen3-tts\",\"input\":");
     out.string(input);
-    out.raw(",\"response_format\":\"wav\",\"sample_rate\":16000}");
+    out.raw(",\"response_format\":\"pcm\",\"sample_rate\":24000}");
     size_t size = 0;
     if (!out.finish(size)) {
         std::snprintf(job.error.data(), job.error.size(), "朗读请求超限");
         return;
     }
-    const uint8_t *pcm = nullptr;
-    size_t bytes = 0;
+    ModelBuffer storage(sizeof(SpeechStream));
+    if (!storage.data) {
+        std::snprintf(job.error.data(), job.error.size(), "语音流解析内存不足");
+        return;
+    }
+    struct Delivery {
+        Transport &transport;
+        Api &api;
+        Job &job;
+        uint64_t call;
+        uint32_t offset = 0;
+    } delivery{*transport_, *this, job, job.input.id};
+    auto sink = [](void *context, bool begin, const uint8_t *pcm, size_t bytes) {
+        auto &d = *static_cast<Delivery *>(context);
+        if (begin) {
+            uint8_t header[8];
+            put32(header, SpeechStream::rate);
+            put32(header + 4, SpeechStream::max_pcm_bytes);
+            return d.transport.post(Kind::audio_begin, d.call, header, sizeof(header));
+        }
+        while (bytes) {
+            const auto count = std::min(network_chunk, bytes);
+            while (true) {
+                if (!d.api.current(d.job) || esp_timer_get_time() >= d.job.deadline) {
+                    return false;
+                }
+                const auto accepted = d.transport.append_audio(d.call, d.offset, pcm, count);
+                if (accepted == AudioWrite::accepted) {
+                    break;
+                }
+                if (accepted == AudioWrite::rejected) {
+                    return false;
+                }
+                vTaskDelay(
+                    pdMS_TO_TICKS(5)); // full accepted zero bytes; wait, never replay output.
+            }
+            d.offset += count;
+            pcm += count;
+            bytes -= count;
+        }
+        return true;
+    };
+    auto *stream = new (storage.data) SpeechStream(sink, &delivery);
     job.ok = http(job, url, "application/json", nullptr, 0, request_body_.data(), size, nullptr, 0,
-                  Speaker::maximum_pcm_bytes + wav_overhead_limit) &&
-             pcm_wav(job.response, job.response_bytes, pcm, bytes);
-    if (!job.ok && !*job.error.data()) {
-        std::snprintf(job.error.data(), job.error.size(), "语音响应不是完整的 16 kHz PCM WAV");
+                  SpeechStream::max_pcm_bytes + wav_overhead_limit, nullptr, stream);
+    if (job.ok) {
+        uint8_t total[sizeof(uint32_t)];
+        put32(total, stream->received());
+        job.ok = transport_->post(Kind::audio_end, job.input.id, total, sizeof(total));
+    }
+    if (!job.ok && stream->error()) {
+        std::snprintf(job.error.data(), job.error.size(),
+                      stream->error() == 3 ? "语音达到300秒上限；部分播放停止，未重播"
+                      : stream->error() == 2 ? "语音生成预算耗尽；部分播放停止，未重播"
+                                             : "语音生成流异常；部分播放停止，未重播");
+    }
+    stream->~SpeechStream();
+    if (!job.ok) {
+        transport_->post(Kind::audio_error, job.input.id, nullptr, 0);
+        if (!*job.error.data()) {
+            std::snprintf(job.error.data(), job.error.size(), "语音流中断；已播放部分不会重试");
+        }
     }
 }
 void Api::recognize(Job &job, const char *url) {
@@ -567,8 +602,8 @@ void Api::recognize(Job &job, const char *url) {
     put32(wav + 16, 16);
     wav[20] = 1;
     wav[22] = 1;
-    put32(wav + 24, Speaker::pcm_rate);
-    put32(wav + 28, Speaker::pcm_rate * 2);
+    put32(wav + 24, capture::sample_rate);
+    put32(wav + 28, capture::sample_rate * 2);
     wav[32] = 2;
     wav[34] = 16;
     std::memcpy(wav + 36, "data", 4);

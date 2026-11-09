@@ -93,6 +93,11 @@ bool Transport::post(Kind kind, uint64_t id, const void *body, size_t bytes) {
     wake_owner();
     return true;
 }
+AudioWrite Transport::append_audio(uint64_t call, uint32_t offset, const uint8_t *data,
+                                   size_t bytes) {
+    auto *speaker = speaker_.load(std::memory_order_acquire);
+    return speaker ? speaker->append_audio(call, offset, data, bytes) : AudioWrite::rejected;
+}
 bool Transport::paint(uint64_t call, const uint8_t *pixels, size_t bytes) {
     return call && call == display_call_.load(std::memory_order_acquire) &&
            display_.paint(pixels, bytes);

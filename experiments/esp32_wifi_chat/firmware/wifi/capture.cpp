@@ -4,7 +4,7 @@
 #include <cstring>
 namespace wifichat::wifi {
 namespace {
-constexpr uint32_t magic = 0x31565441, maximum_pcm_bytes = 16000 * 30 * sizeof(int16_t);
+constexpr uint32_t magic = 0x31565441;
 // Standard IMA ADPCM tables; ATVV sends each byte's high nibble first.
 constexpr int steps[] = {
     7,     8,     9,     10,    11,    12,    13,    14,    16,    17,    19,   21,    23,
@@ -73,7 +73,7 @@ bool CaptureReader::initialize(const uint8_t *data, size_t bytes) {
         if (value.kind == capture::sync) {
             synced = true;
         } else {
-            if (!synced || decoded > maximum_pcm_bytes - capture::pcm_bytes_per_frame) {
+            if (!synced || decoded > capture::maximum_pcm_bytes - capture::pcm_bytes_per_frame) {
                 return false;
             }
             decoded += capture::pcm_bytes_per_frame;

@@ -1,5 +1,4 @@
 #include "remote.h"
-#include "../main/speaker.h"
 #include "capture.h"
 #include <algorithm>
 #include <cstdio>
@@ -20,7 +19,8 @@ void ble_store_config_init(void);
 }
 namespace wifichat::wifi {
 namespace {
-constexpr int64_t capture_us = 30000000, extend_us = 2000000, setup_us = 20000000;
+constexpr int64_t capture_us = int64_t(capture::maximum_seconds) * 1000000, extend_us = 2000000,
+                  setup_us = 20000000;
 constexpr int64_t mic_ack_us = 3000000;
 constexpr size_t frame_bytes = 120;
 // One selected remote, bounded full GATT database. The initial 40-entry pools
@@ -739,7 +739,7 @@ void Remote::append_audio(const uint8_t *data, size_t bytes) {
     const auto frames = bytes / capture::frame_bytes;
     const auto pcm_bytes = frames * capture::pcm_bytes_per_frame;
     bool valid = bytes && bytes % capture::frame_bytes == 0 &&
-                 pcm_bytes <= Speaker::maximum_pcm_bytes - decoded_bytes_;
+                 pcm_bytes <= capture::maximum_pcm_bytes - decoded_bytes_;
     // An ATT notification may coalesce complete frames; record each codec frame.
     for (size_t frame = 0; valid && frame < frames; ++frame) {
         valid = capture::append(buffer_, capture::capacity, used_, capture::audio,

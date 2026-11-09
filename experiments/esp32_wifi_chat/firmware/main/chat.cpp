@@ -378,7 +378,7 @@ ayni_status_t Chat::configure_strategy() {
     const ayni_tool_ref_v1 tools[] = {
         {text("screen.show_text"), version, AYNI_TOOL_ROLE_CAPABILITY},
         {text("speaker.play_tone"), version, AYNI_TOOL_ROLE_CAPABILITY},
-        {text("speaker.speak_text"), version, AYNI_TOOL_ROLE_CAPABILITY},
+        {text("speaker.speak_text"), SpeechProfile::capability_version, AYNI_TOOL_ROLE_CAPABILITY},
         {text("motor.status"), motor_version, AYNI_TOOL_ROLE_CAPABILITY},
         {text("motor.plan"), motor_version, AYNI_TOOL_ROLE_CAPABILITY},
         {text("motor.run"), motor_version, AYNI_TOOL_ROLE_CAPABILITY},
@@ -896,8 +896,9 @@ ayni_status_t Chat::prepare(const ayni_kernel_info_v1 &info) {
         }
         const auto wanted = text(grant_capabilities[grant_]);
         const auto wanted_version =
-            std::string_view(wanted.data, wanted.size).substr(0, 6) == "motor." ? motor_version
-                                                                                : version;
+            same(wanted, "speaker.speech") ? SpeechProfile::capability_version
+            : std::string_view(wanted.data, wanted.size).substr(0, 6) == "motor." ? motor_version
+                                                                                  : version;
         for (uint32_t at = 0; at < count; ++at) {
             auto existing = sized<ayni_grant_info_v1>();
             rc = ayni_get_grant(kernel_, ids[at], &existing);
