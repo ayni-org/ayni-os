@@ -17,6 +17,7 @@
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
 #include <new>
+#include <string>
 namespace wifichat {
 namespace {
 constexpr uint32_t version = 1, output_rate = 48000, stereo_channels = 2,
@@ -214,6 +215,16 @@ ayni_status_t Speaker::configure(ayni_kernel_t *kernel) {
                                       0,
                                       nullptr};
         rc = ayni_register_binding(kernel, &binding);
+        // Playback remains a unary call while PCM streams internally. Give the model
+        // its invocation contract in discovered usage, rather than a system instruction.
+        std::string input_usage =
+            "UNARY foreground call: use operation=\"invoke\" or omit operation. "
+            "operation=\"start\" is unsupported. This call completes after playback ends. ";
+        input_usage +=
+            at == 0 ? "frequency_hz 100..4000; duration_ms 50..3000; optional volume_percent "
+                      "1..100, default 80."
+                    : "Required text 1..1024 UTF-8 bytes; optional volume_percent 1..100, "
+                      "default 80. Native PCM streams while generating, up to 300 seconds.";
         const ayni_tool_usage_v1 usage{
             sizeof(usage),
             binding.version,
@@ -222,10 +233,7 @@ ayni_status_t Speaker::configure(ayni_kernel_t *kernel) {
             text(capabilities[at]),
             text(at == 0 ? "Play a short local speaker notification tone when requested."
                          : "Speak text through the ESP32 speaker using the configured speech API."),
-            text(at == 0 ? "frequency_hz 100..4000; duration_ms 50..3000; optional volume_percent "
-                           "1..100, default 80."
-                         : "Required text 1..1024 UTF-8 bytes; optional volume_percent 1..100, "
-                           "default 80. Native PCM streams while generating, up to 300 seconds."),
+            text(input_usage.c_str()),
             text("Success requires a complete audio stream, all PCM drained through I2S and the "
                  "channel stopped. It does not "
                  "prove a human heard sound. Unknown output must never be retried automatically."),

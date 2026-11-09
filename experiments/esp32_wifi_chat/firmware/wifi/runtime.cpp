@@ -201,6 +201,11 @@ void Runtime::tool_outline(std::string_view body) {
                 label += "查看能力说明";
             } else if (function == ayni::model::call_function) {
                 label += "调用能力";
+                auto *operation = yyjson_obj_get(item, "operation");
+                if (yyjson_is_str(operation) && yyjson_get_len(operation) <= 6) {
+                    label += ' ';
+                    label.append(yyjson_get_str(operation), yyjson_get_len(operation));
+                }
             } else {
                 label += "使用工具";
             }

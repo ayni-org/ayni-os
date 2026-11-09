@@ -67,12 +67,13 @@ void Chat::trace(const char *phase) const {
                         (uint64_t(esp_timer_get_time()) - turn_started_) / 1000));
     }
 }
-// Only protocol identities, never tool arguments or assistant/user text, cross
+// Only protocol identities/modes, never business arguments or assistant/user text, cross
 // this progress lane. The UI labels them as proposals until a Provider reports work.
 void Chat::publish_proposals() {
     std::array<char, tool_outline_bytes> buffer{};
     size_t used = 0;
     if (model_tools_.outline(buffer.data(), buffer.size(), used) == AYNI_OK) {
+        std::printf("wifi tools outline=%.*s\n", int(used), buffer.data());
         transport_.send(Kind::tool_outline, turn_, buffer.data(), used);
     }
 }
