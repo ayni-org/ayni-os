@@ -1,102 +1,174 @@
-# Ayni
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/ayni-logo-inverse.svg">
+    <img src="docs/assets/ayni-logo.svg" alt="Ayni" width="420">
+  </picture>
+</p>
 
-中文 · [English](README.en.md)
+<p align="center">
+  <strong>Agent 共用系统，能力按需接入。</strong>
+</p>
 
-**通用原生 AgentOS：多个 Agent 共用任务、授权、资源、调用与恢复机制，通过公开契约使用宿主提供的能力。**
+<p align="center">
+  <a href="https://github.com/RobotSe7en/ayni/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/RobotSe7en/ayni/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="docs/development.md"><img alt="C++17" src="https://img.shields.io/badge/Core-C%2B%2B17-blue"></a>
+  <a href="include/ayni/ayni.h"><img alt="C99 API" src="https://img.shields.io/badge/API-C99-blue"></a>
+</p>
 
-> 仓库已交付 M1 的 Native Core、模拟器与 C/C++ SDK（实验性 ABI 0.52、storage schema 8）：单一助理 CLI、文本/工具调用、记忆与日历、授权及恢复，电脑 E1～E4 证据见 [Core Alpha 报告](reports/core/m1-core-alpha.md)。安全关键分支现行目标统一为 ≥80%（ADR-0088），历史测量事实保留；存储兼容待决项已由 schema 3 的严格拒绝规则关闭（ADR-0082、#106）。M2 暂缓；完整 MA-038、ESP32 存储/实机与真实模型多轮试用仍待后续安排。AP-04/AP-06 资源映射与共用软件应用已具备软件基础验收证据，最终提交 CI 与交付状态见 #117 及[当前报告](reports/core/foundation-acceptance.md)。本文其余内容描述设计目标，构建方法见 [开发指南](docs/development.md)，使用方法见 [CLI 说明](targets/native_cli/README.md) 和 [公开示例](examples/README.md)。
+<p align="center">
+  <a href="#快速开始">快速开始</a> |
+  <a href="#架构">架构</a> |
+  <a href="#文档">文档</a> |
+  <a href="examples/README.md">示例</a> |
+  <a href="README.en.md">English</a>
+</p>
 
-AP-02/AP-03 已交付；AP-05 实现固定四工具内的同 Task 长操作/订阅控制、软件 Provider 和样本来源校验，正常验证与独立复审见 [#116](https://github.com/RobotSe7en/ayni/pull/116)（ADR-0086）。当前路线是先完成基础通用能力，再开展 ESP32-S3、Linux 系统等实验；宿主无需具备语音、视觉、运动或特定设备。具体工作包、依赖和完成条件见[基础能力实施与实验计划](docs/architecture/foundation-and-experiment-plan.md)，完整设计见 [Ayni 实施计划](docs/ayni_v1.0.md)。统一助理是应用样例，ESP32-S3 及其外设是实验组合。
+**Ayni** 是通用原生 AgentOS。在宿主操作系统之上，它为多个 Agent 提供共用的任务、授权、资源、调用、记忆与恢复机制，通过公开契约接入软件、模型服务或设备能力。
 
-## 架构方向
+可移植 C++17 Core 管理系统状态，规则与 ToolLoop 决定如何推进工作，Host 和 Provider 提供异步服务。桌面助理与 ESP32-S3 触屏实验复用这套基础；具体应用、模型和外设由部署选择。
 
-Ayni 根据自身的任务、授权、资源与恢复需求设计架构，面向桌面与受限环境提供可移植 C++17 Core、C99 兼容 API 和 C++ 封装。基础开发使用 Native/Sim 与软件能力；基础完成后再独立验证 ESP32-S3、Linux 等实际平台，实验所用设备和能力按需选择。
+> **当前状态：** 通用基础与独立源码 SDK 已交付，Native/Sim 软件验证见[基础报告](reports/core/foundation-acceptance.md)和[独立接入报告](reports/core/independent-consumption.md)。当前实验性 C ABI 为 **0.54**，Core storage schema 为 **9**（[ADR-0096](docs/adr/0096-core-stores-body-references.md)）。ESP32 触屏 Wi-Fi/语音实验独立推进；完整硬件停止链与耐久验收仍未完成。
 
-Ayni 的领域契约是任务、权限与执行语义的权威；ROS 2、MHS、MCP 等外部协议通过适配层接入，字段变化优先由适配层消化，新的执行语义按版本化契约演进，必要时调整 Core。
+## 核心理念
+
+**1. 多个 Agent，共用一套系统机制。**
+Kernel 统一持有 Agent、Goal、Task、授权、资源和恢复状态，由单一逻辑所有者通过有界 `step` 推进。模型、网络、存储和设备 I/O 在异步边界执行。
+
+**2. 能力具有可校验的契约。**
+能力声明类型化输入、结构结果、版本及执行属性。可信配置注册能力，Task 按权限发现和查看目录，通过 Binding 选择具体实现；发现能力不会自动获得执行权限。
+
+**3. 执行权由本机治理。**
+模型提出调用建议，Kernel 检查主体、Grant、参数与资源。记忆默认私有，共享与外发须明确授权。当前权限保证覆盖可信内置代码使用的受管理入口，任意原生代码的强隔离仍属后续工作。
+
+**4. 持久接受与副作用有明确边界。**
+持久接受回复与副作用派发受到提交屏障约束；结果不确定进入 `RESULT_UNKNOWN`，通过权威查询或人工处理。恢复重建状态，不盲目重演旧动作。
+
+**5. 容量与生命周期显式管理。**
+队列、任务、上下文和存储都有容量约束；调用支持 unary、action、subscription，明确取消、超时、背压与释放。长期目标和单次任务分别管理。
+
+**6. 同一 Core，按部署组合能力。**
+C99 API、C++17 封装和源码 SDK 支持独立工程接入，`runtime/` 选择并装配 Host、Provider 与应用。纯软件部署即可运行；启用物理执行能力时，另须满足许可、联锁与独立停止契约。
+
+## 快速开始
+
+以下使用 Linux Native 开发环境与 Mock 模型，无需 API Key。已验证工具链、依赖版本及其他构建方式见[开发指南](docs/development.md)。
+
+### 构建并启动
+
+准备 C++17 工具链、CMake、Ninja、Python、libcurl 和 SQLite 开发包：
+
+```sh
+sudo apt-get install -y build-essential cmake ninja-build python3 git \
+    libcurl4-openssl-dev libsqlite3-dev
+
+git clone https://github.com/RobotSe7en/ayni.git
+cd ayni
+
+# 先检查可用内存、swap、CPU 和其他任务，再按资源预算调整并行度。
+export CMAKE_BUILD_PARALLEL_LEVEL=2
+export CTEST_PARALLEL_LEVEL=2
+
+cmake --preset native-debug
+cmake --build --preset native-debug --target ayni
+./build/native/targets/native_cli/ayni --mock
+```
+
+首次配置会下载锁定版本的依赖；离线配置方法见开发指南。CLI 默认使用用户私有配置和数据目录。
+
+### 完成一次对话
+
+首次运行尚无授权。在 CLI 中为 Mock 对话授予模型与摘要权限，再输入文字：
+
+```text
+/grant model
+/wait
+/grant summary
+/wait
+你好
+/wait
+/conversation
+/quit
+```
+
+`/wait` 等待当前可推进的工作与保存完成，`/quit` 正常关闭。真实模型通过 OpenAI-compatible Provider 接入；配置文件、环境变量密钥、权限和其他命令见 [CLI 说明](targets/native_cli/README.md)。
+
+### 运行公开示例
+
+```sh
+cmake --build --preset native-debug --target \
+    ayni_example_new_hardware ayni_example_new_model \
+    ayni_example_new_strategy ayni_example_composite_workflow \
+    ayni_example_managed_operations
+ctest --preset native-debug -R '^Examples\.'
+```
+
+示例覆盖模拟硬件接入、loopback 模型服务、新策略、组合工作流和受管长操作；均无需真实模型凭据或设备。完整说明见[公开 SDK 与接入示例](examples/README.md)。
+
+## 架构
 
 ![Ayni 架构](docs/assets/ayni-architecture.svg)
 
-| 层级 | 职责与函数抽象 |
+图中包含规划中的扩展；实现与验证范围以公开契约和交付报告为准。
+
+| 层级 | 职责 |
 |---|---|
-| 应用、Coordinator、策略与 Skills | 提醒、观察等业务语义；路由用户请求、选择 Agent、组合有界工作流；规则、Tool Loop 和规划器均位于 Kernel 之上 |
-| C API / SDK | 提交类型化意图或命令、查询快照、注册目标类型与能力；封装保持同一套权限、错误和生命周期语义 |
-| 共享 Kernel 服务 | 按不变量属主分为八个模块，第二级按实体命名：`kernel`（入口、编排与输出门控）、`work`（Agent/Goal/Task、调用与动作账本）、`authority`（主体、Grant、Scene）、`resources`（准入、租期与许可）、`knowledge`（观察、记忆与上下文）、`catalog`、`durability`、`foundation` |
-| 异步执行与平台服务 | Host 提供时钟、存储、网络和生命周期；Provider 承担模型、感知、媒体及动作 |
-| 物理执行时的本地控制与停止 | 声明相应执行能力时，控制器在已准入包络内凭短租约许可执行，独立停止链包含硬件失能；无执行器的宿主无需装配 |
-| OS、驱动与硬件 | 使用现有操作系统调度；Driver 按需接入硬件；物理停止链的时钟、中断与硬件超时在对应实验中实测 |
+| 应用与策略 | 助理、软件工作流、目标类型、规则与 ToolLoop，定义业务行为和工作推进方式 |
+| C API / C++ SDK | 提交类型化命令、查询快照、注册能力，保持统一的权限、错误和生命周期语义 |
+| 共享 Kernel | `kernel`、`work`、`authority`、`resources`、`knowledge`、`catalog`、`durability`、`foundation`，各自持有对应不变量 |
+| Host 与 Provider | Host 提供时钟、存储和生命周期等平台服务；Provider 实现模型、软件作业、事件流或设备调用 |
+| 本地控制与停止 | 为启用的物理执行能力校验许可、限值与联锁，提供独立停止路径；实际停止保证须有硬件证据 |
+| 宿主 OS 与驱动 | 负责线程调度、系统 I/O 和具体硬件访问 |
 
-Skill 是应用层可复用工作流；Capability 是系统可校验的执行契约；Provider 实现执行接口；Driver 完成硬件访问。扩展业务、模型或硬件应通过注册和适配接入，改变授权、恢复或资源语义时仍需版本与契约测试。
+`runtime/` 是组合根，选择部署并装配具体组件。Core 保持平台无关；业务策略、网络、模型 SDK 和驱动留在边界。Skill 表达可复用工作流，Capability 声明执行契约，Provider 实现能力，Driver 访问硬件。
 
-## Core 负责什么
+ABI、管理/设备协议与存储 schema 独立演进。0.x ABI 次版本须完全匹配；当前存储拒绝不支持的旧 schema 并保留原目录，迁移与回退边界见[开发指南](docs/development.md)。
 
-Kernel 持有 Agent 实例、Goal/Task、授权、动作记录、资源和记忆的逻辑状态。每台设备只有一个逻辑状态所有者，通过有界事件与 `step` 推进；网络、Flash、模型调用和设备操作采用异步接口。
+## 项目结构
 
-核心设计约束包括：
+```text
+core/              可移植 Kernel，按状态与不变量属主拆分
+include/ayni/      公开 C API、C++ 封装与草案接口
+contracts/         版本化契约与测试追踪矩阵
+strategies/        规则、ToolLoop 等工作推进策略
+applications/      助理、软件工作流和验证应用
+hosts/             Native、Sim、ESP-IDF 平台服务与共用存储
+providers/         模型、软件作业、Shell、呈现等能力实现
+runtime/           部署选择、组件装配与共同运行时
+control/, safety/  受许可执行与独立停止机制
+targets/           Native CLI、模拟器和固件入口
+experiments/       独立平台与应用实验
+examples/          公开 SDK 接入示例
+tests/             单元、契约、集成与独立消费者验证
+docs/, reports/    设计、ADR、开发说明与验证证据
+```
 
-- 跨触发游标、任务、预算和动作记录定义一致的提交与恢复边界；持久接受回复、对外事件与副作用派发只在其提交进入持久前缀后释放。存储写失败时进入受限栅栏，停止新输出与许可续租，并复用重启恢复路径。
-- 副作用请求先持久化可能派发屏障；结果不确定进入 `RESULT_UNKNOWN`，通过查询或人工处理，恢复时不盲目重演。
-- 统一检查主体、Grant、参数、资源、运行限制、观察新鲜度与期限；模型输出只提供建议，执行权由本机 Kernel 管理。
-- 接入受管物理执行器时，只凭控制域 authority-owner 签发、需主动续租的短租约许可运行；撤销、重启、校准失效、急停复位与网络分区使旧许可失效，最坏停止上限分项实测。
-- 媒体、队列、上下文、任务和存储均有容量上限；资源占用、取消、超时与停止需要明确的释放或隔离状态。
+## 实现与路线
 
-业务完成条件、规划策略、模型推理、感知算法、编解码、TLS 和电机闭环分别放在应用、Host、Provider 或 Driver。首版使用可信内置代码，权限保证覆盖受管理入口；ESP32 上的任意原生代码隔离需后续单独验证。模型、VLA 与外部消息是不可信数据；纯函数策略接口不是安全边界；ROS、MHS、MCP 适配器以权限受限的进程运行，执行端许可是最后防线。
-
-## 助理应用样例的已确定语义
-
-以下约束适用于已选的助理应用及其启用能力，不要求所有 Ayni 部署都提供该应用或外设。
-
-1. **公共档案**：统一助理具有公共档案，按 Agent 授权访问；各 Agent 的私有记忆继续默认私有，共享须明确授权。
-2. **单一所有者**：v0.1 只有一个设备所有者。按键语音沿用已有授权；新增权限等敏感操作须在已绑定管理端确认。
-3. **暂停助理**：保留已接受提醒；暂停新的自主观察、反思和运动，并收敛相关在途工作。暂停、取消与紧急停止分别表达。
-4. **忘记**：删除使相关记忆不可再使用，并使引用它的在途结果和派生内容失效；已外发给模型的数据仍受上游保留政策约束。
-5. **提醒完成**：按用户选定的方式成功呈现后才完成，普通提醒无需用户确认；仅创建通知记录或将输出加入队列不代表成功，失败保持待处理。
-
-原轮式助理计划中的局域网网页、按键语音、视觉和短动作，保留为可选实验/应用组合。选择该组合时仍须满足已有授权、隐私、硬件预算和停止验收；不再将整套设备体验作为通用 AgentOS 的发布前提。
-
-## 三类版本契约
-
-| 契约 | 兼容边界 |
+| 范围 | 状态与证据 |
 |---|---|
-| Core—Host / 原生 SDK | ABI 主/次版本、结构大小与功能位（0.x 次版本须完全匹配）；不跨 ABI 传递 STL、异常或 OS 句柄 |
-| 管理与设备协议 | 协议主/次版本、能力版本与功能协商；领域语义统一，认证与本机授权逐次校验 |
-| 持久化格式 | Schema、记录与迁移版本；迁移、损坏恢复和固件回滚共同验证 |
+| Native Core、模拟器、C/C++ SDK | 已交付；历史 E1～E4 验证见 [Core Alpha Native 报告](reports/core/m1-core-alpha.md) |
+| 通用能力基础 | 类型化输入/结果、发现与绑定、多实例资源映射、长操作与订阅已交付，见[基础报告](reports/core/foundation-acceptance.md) |
+| 独立源码 SDK 与共同应用 | 已交付；只读隔离导入、Native 共同程序及最小正常重开通过，ESP32-S3 独立编译/链接通过，见[独立接入报告](reports/core/independent-consumption.md) |
+| ESP32 触屏 Wi-Fi/语音 | 独立实验已实施；完整 128K 上下文峰值、60 秒电机动作与通用硬件停止链仍未验收，见[实验说明](experiments/esp32_wifi_chat/README.md) |
+| 后续平台与扩展 | Linux 系统集成、视觉、OTA、MCP/ROS/MHS、跨节点及完整 MA-038 按独立条件安排，见[实施计划](docs/ayni_v1.0.md) |
 
-三类版本独立演进，以领域契约和一致性用例保持对应；当前实验性 C ABI 为 0.49，storage schema 为 5，功能与验证见 [M1 进度](reports/core/m1-progress.md)；尚未实现的接口保持草案状态。消息 ID、操作 ID 与本机请求代际各司其职，每种消息只有一个幂等键；节点认证之外还须证明节点到调用主体的绑定，协议不作通用“恰好执行一次”承诺。
+Native/Sim、固件编译、实机功能与耐久结果分别记录。各平台按所需能力独立实验；Linux 不依赖 ESP32 或 ROS。最新交接入口见 [M1 进度](reports/core/m1-progress.md)。
 
-## 可选具身 Profile 与协议适配
+## 文档
 
-执行许可、控制会话、停止上限与运动结果阶段约束启用的物理执行能力。可选 `EMBODIMENT_V1` 在其上增加机器人专用的时空、状态、轨迹与模型候选类型，按特性协商，沿用三类版本契约；纯软件宿主无需物理控制栈，普通部署也无需依赖 ROS。
+- [开发指南](docs/development.md)：工具链、依赖、构建、测试与 CI。
+- [Native CLI](targets/native_cli/README.md)：对话、权限、模型、记忆与提醒。
+- [公开示例](examples/README.md)与[独立工程接入](tests/portability/README.md)：扩展能力、替换实现和复用 SDK。
+- [公开契约](contracts/README.md)与[测试追踪](contracts/traceability.md)：接口保证及验证范围。
+- [基础与实验计划](docs/architecture/foundation-and-experiment-plan.md)、[完整实施计划](docs/ayni_v1.0.md)与 [ADR](docs/adr/README.md)：设计、顺序和决策依据。
+- [Logo 资源](docs/assets/ayni-logo.svg)：[反白 SVG](docs/assets/ayni-logo-inverse.svg) · [原始 PNG](docs/assets/ayni-logo.png)。
 
-| 契约 | 规划边界 |
-|---|---|
-| 观察与机器人状态 | 明确 frame、时间域/代际、单位、校准版本及 `RobotState`；tf2、URDF、感知与坐标变换实现留在 Provider/桥接侧 |
-| 控制权与本地执行 | `ControlAuthority` 在基础执行许可之上声明控制模式与命令接口；代际、命令序号与最大年龄在执行端校验，本地控制会话有界并受 interlock 约束，实时闭环由本地控制器执行 |
-| 运动结果与模型 | `MotionOutcome` 的已接受、已执行、停止确认与目标验证阶段属于基础契约，Profile 补充位姿、关节等验证证据；VLA 输出仅为候选，只能在已准入的控制会话内经执行端许可与包络校验后执行 |
+## 参与与致谢
 
-ROS 2 Bridge 位于 Core 外，将 Topic/Service/Action 分别映射到 `subscription/unary/action`，导入与导出均走原有受管理入口。Bridge 保存 ROS goal UUID 与 Ayni 调用身份的映射；ROS 接收、取消响应及 QoS 本身不赋予持久去重、授权或物理停止保证。选择该适配时须验证 DDS-Security、Ayni Grant、资源及恢复语义，支持范围按版本和子集声明。Linux 系统实验不要求 ROS，也不依赖 ESP32；ROS、跨节点和 micro-ROS 各自按需求及条件安排。
+贡献前请阅读 [AGENTS.md](AGENTS.md) 与[开发流程](docs/workflow.md)。契约或兼容语义变化应同步相关 ADR、测试与文档；凭据通过运行时配置。
 
-截至 2026-10-18，MHS（Model Hardware Standard）仍为研究预览，见[官方介绍](https://www.anthropic.com/news/model-hardware-standard-research-preview)与[预览入口](https://www.modelhardwarestandard.com/)。在确切可实施规范、合法访问、许可及验证夹具可得并经评估后才安排适配；使用 SDK 时另行锁定版本，不声明当前兼容。导入/导出须经过同一授权、Schema 和执行入口，不允许生成任意代码直接部署到 MCU；MHS 代码文件只接受可转换为有界 Procedure 数据的子集。
+README 的组织参考 [dagent](https://github.com/RobotSe7en/dagent)。架构图的视觉表达参考 [AIOS](https://github.com/agiresearch/AIOS)，组件和契约依据 Ayni 自身设计；更多研究资料见实施计划附录。引用表示研究与致谢，不代表集成、兼容或上游背书。
 
-## 实施路线与验证
+## 许可证
 
-| 阶段 | 目标与门槛 |
-|---|---|
-| 已有 M0/M1 基线 | Native Core、模拟器、SDK、E1～E4 及 AP-00/AP-01 的实际证据；不代表全部基础通用能力已完成 |
-| 基础通用能力 | AP-02 输入/结果、AP-03 注册发现、AP-04 多实例验证、AP-05 长操作/订阅、AP-06 SDK/应用复用，完成相关契约与回归 |
-| 平台实验 | 基础门槛通过后，独立开展 ESP32-S3、Linux 系统及其他 Host 实验；选择各自最小能力组合，分别报告资源、运行与限制 |
-| 可选能力与应用实验 | 按需接入语音、视觉、运动、设备管理、OTA、轮式助理或用户试用；相应保证与验收仍适用 |
-| 可选协议与跨节点扩展 | MCP/ROS/MHS、peer、完整 MA-038、更多系统及隔离，按实际需求和独立条件交付 |
-
-E1 验证多个 Agent 共用系统服务；E2 验证动作关键阶段重启；E3 验证重启后替换模型或兼容策略；E4 验证有界组合、订阅依赖与语义升级/回滚。基础开发持续运行 Native/Sim 夹具和现有回归；基础完成后的平台实验按共同契约及所选能力复核，真实 OTA、设备和耐久各有独立证据。
-
-计划接入示例包括 `new_hardware`、`new_model`、`new_strategy` 与 `composite_workflow`；新组合应用应复用公开接口完成，无需修改 Kernel 源码。
-
-R1 是独立的扩展一致性套件。R1.a 验证 Profile 的 Mock 契约，R1.b 验证所选 ROS Bridge/模拟接入，R1.c 以 MHS 的规格、访问、许可及夹具为前提。未启用扩展不阻断基础完成；声明支持时仍须通过相应 R1，不能用平台或 Mock 结果替代真实设备证据。
-
-构建、模拟、系统集成、实机功能和长稳结果分别报告。当前 Linux Native/Sim E1～E4 及 SDK 证据见 [M1 进度](reports/core/m1-progress.md)和 [Core Alpha 报告](reports/core/m1-core-alpha.md)；后续基础接口、Linux 系统集成及 ESP32 实验仍待交付。计划中未注明已实现的命令、目录和 API 均为待实现入口。
-
-## 参与与上游致谢
-
-贡献前请阅读 [AGENTS.md](AGENTS.md) 与 [实施计划](docs/ayni_v1.0.md)。契约、迁移和重大语义调整需要相应 ADR（见 [docs/adr/](docs/adr/README.md)）与验证证据；代码、日志和公开固件不得包含私有媒体、厂商 Key 或可复用设备凭据。
-
-架构图的视觉表达参考 [AIOS](https://github.com/agiresearch/AIOS)；组件、分层与契约依据 Ayni 自身设计。感谢计划附录所列的持久执行、设备、协议和嵌入式项目。引用表示研究和致谢，不代表已集成、兼容或获得上游背书。项目许可证尚未确定；依赖选择与任何源码复用前需审查对应许可。
+项目许可证尚未确定，将在首次公开发布前决定；依赖和源码复用按各自许可证审查。
