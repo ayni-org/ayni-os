@@ -67,12 +67,13 @@ void Chat::trace(const char *phase) const {
                         (uint64_t(esp_timer_get_time()) - turn_started_) / 1000));
     }
 }
-// Only protocol identities, never tool arguments or assistant/user text, cross
+// Only protocol identities/modes, never business arguments or assistant/user text, cross
 // this progress lane. The UI labels them as proposals until a Provider reports work.
 void Chat::publish_proposals() {
     std::array<char, tool_outline_bytes> buffer{};
     size_t used = 0;
     if (model_tools_.outline(buffer.data(), buffer.size(), used) == AYNI_OK) {
+        std::printf("wifi tools outline=%.*s\n", int(used), buffer.data());
         transport_.send(Kind::tool_outline, turn_, buffer.data(), used);
     }
 }
@@ -539,6 +540,14 @@ ayni_status_t Chat::command(ayni_intent_kind_t kind, const void *body, uint64_t 
     auto out = sized<ayni_intent_result_v1>();
     auto error = sized<ayni_error_v1>();
     rc = ayni_submit_intent(kernel_, &intent, &out, &error);
+    if (rc != AYNI_OK && rc != AYNI_BUSY) {
+        std::printf("wifi intent kind=%lu status=%ld reason=%lu object_kind=%lu object_id=%llu\n",
+                    static_cast<unsigned long>(kind), long(rc),
+                    static_cast<unsigned long>(error.reason),
+                    static_cast<unsigned long>(error.object.kind),
+                    static_cast<unsigned long long>(error.object.id));
+        diagnostics();
+    }
     if (rc == AYNI_OK) {
         progress_ = true;
         if (out.phase != AYNI_INTENT_DURABLE) {
@@ -551,6 +560,37 @@ ayni_status_t Chat::command(ayni_intent_kind_t kind, const void *body, uint64_t 
     return rc;
 }
 void Chat::incoming(const Packet &p) {
+    if (p.kind == Kind::maintenance_stop) {
+        // Keep file ports alive while the API worker exits its borrowed reads.
+        announced_ = false;
+        // A late UI request must not reopen shutdown, especially after destroy
+        // while the reliable STOPPED report is still waiting for queue space.
+        if (kernel_ && closing_ == Closing::open) {
+            closing_ = Closing::quiescing;
+        }
+        stop_outputs();
+        return;
+    }
+    if (p.kind == Kind::maintenance_shutdown) {
+        // User-confirmed state rebuild discards this run after STOPPED. Public
+        // shutdown does not require a spare command/Goal slot to cancel work.
+        announced_ = false;
+        stop_outputs();
+        if (!kernel_ || closing_ == Closing::stopped || closing_ == Closing::kernel) {
+            return; // Already closing/closed; keep the original STOPPED report authoritative.
+        }
+        const auto code = ayni_begin_shutdown(kernel_);
+        if (code == AYNI_OK) {
+            closing_ = Closing::kernel;
+            progress_ = true;
+        } else {
+            char detail[80];
+            std::snprintf(detail, sizeof(detail), "reset shutdown failed status=%ld; no erase",
+                          long(code));
+            status(0, detail);
+        }
+        return;
+    }
     if (p.kind == Kind::cancel && turn_state_ != Turn::idle) {
         reply_intent_ = ReplyIntent::cancelled;
     }
@@ -599,6 +639,7 @@ void Chat::incoming(const Packet &p) {
         model_requests_ = 0;
         reply_intent_ = ReplyIntent::present;
         hold_reported_ = false;
+        preparation_wait_ = {};
         turn_state_ = Turn::preparing_input;
         progress_ = true;
         status(turn_, "accepted");
@@ -711,12 +752,33 @@ void Chat::diagnostics() {
     };
     uint64_t ids[call_slots]{};
     uint32_t count = 0;
+    const auto goal_status = ayni_list_objects(kernel_, AYNI_OBJECT_GOAL, ids, call_slots, &count);
+    std::printf("wifi capacity goal_status=%ld goals=%lu/%lu tasks_max=%lu calls_max=%lu\n",
+                long(goal_status), static_cast<unsigned long>(count),
+                static_cast<unsigned long>(goal_slots), static_cast<unsigned long>(task_slots),
+                static_cast<unsigned long>(call_slots));
+    if (goal_status == AYNI_OK) {
+        for (uint32_t at = 0; at < count; ++at) {
+            auto goal = sized<ayni_goal_info_v1>();
+            if (ayni_get_goal(kernel_, ids[at], &goal) == AYNI_OK) {
+                std::printf("wifi goal id=%llu state=%lu task=%llu wait=%lu\n",
+                            static_cast<unsigned long long>(goal.goal_id),
+                            static_cast<unsigned long>(goal.lifecycle),
+                            static_cast<unsigned long long>(goal.last_task_id),
+                            static_cast<unsigned long>(goal.wait_reason));
+            }
+        }
+    }
     append("session metadata (no message bodies): rounds=%llu",
            static_cast<unsigned long long>(history_.rounds()));
     if (ayni_list_objects(kernel_, AYNI_OBJECT_TASK, ids, call_slots, &count) == AYNI_OK) {
         for (uint32_t at = 0; at < count; ++at) {
             auto task = sized<ayni_task_info_v1>();
             if (ayni_get_task(kernel_, ids[at], &task) == AYNI_OK) {
+                std::printf("wifi task id=%llu state=%lu hold=%ld/%lu\n",
+                            static_cast<unsigned long long>(task.task_id),
+                            static_cast<unsigned long>(task.lifecycle), long(task.hold_status),
+                            static_cast<unsigned long>(task.hold_reason));
                 append("\n task=%llu state=%lu hold=%ld/%lu", (unsigned long long)task.task_id,
                        (unsigned long)task.lifecycle, (long)task.hold_status,
                        (unsigned long)task.hold_reason);
@@ -729,6 +791,12 @@ void Chat::diagnostics() {
             if (ayni_get_call(kernel_, ids[at], &call) != AYNI_OK) {
                 continue;
             }
+            std::printf("wifi call id=%llu task=%llu phase=%lu outcome=%lu status=%ld effect=%lu\n",
+                        static_cast<unsigned long long>(call.logical_call_id),
+                        static_cast<unsigned long long>(call.task_id),
+                        static_cast<unsigned long>(call.phase),
+                        static_cast<unsigned long>(call.outcome), long(call.status),
+                        static_cast<unsigned long>(call.effect));
             append("\n call=%llu task=%llu phase=%lu outcome=%lu status=%ld reason=%lu effect=%lu "
                    "wait=%lu",
                    (unsigned long long)call.logical_call_id, (unsigned long long)call.task_id,
@@ -761,6 +829,14 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
     auto audio = speaker_.advance();
     if (audio != AYNI_OK && audio != AYNI_BUSY) {
         return audio;
+    }
+    if (turn_state_ == Turn::reply_done) {
+        // Drain the retained terminal before shutdown can release History's file port.
+        // A full UI queue defers this tick, rather than losing the only end-of-turn notice.
+        const auto terminal = present_reply();
+        if (terminal != AYNI_OK || turn_state_ == Turn::reply_done) {
+            return terminal;
+        }
     }
     auto info = sized<ayni_kernel_info_v1>();
     auto rc = ayni_get_kernel_info(kernel_, &info);
@@ -846,6 +922,9 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
 }
 // Session, Grants, Scene and the conversation record, then the cleanup of restored work.
 ayni_status_t Chat::prepare(const ayni_kernel_info_v1 &info) {
+    if (closing_ == Closing::quiescing) {
+        return AYNI_OK;
+    }
     if (!session_) {
         const ayni_session_desc_v1 desc{sizeof(desc), AYNI_CHANNEL_MANAGEMENT, principal, version,
                                         0};
@@ -970,9 +1049,31 @@ ayni_status_t Chat::prepare(const ayni_kernel_info_v1 &info) {
     }
     return AYNI_OK;
 }
+void Chat::wait_for(const char *phase, const char *label, ayni_status_t code) {
+    const auto now = uint64_t(esp_timer_get_time());
+    if (preparation_wait_.phase != phase) {
+        preparation_wait_ = {phase, 0};
+        status(turn_, label);
+    }
+    if (now >= preparation_wait_.next_trace_us) {
+        std::printf("wifi preparation phase=%s status=%ld pending=%llu goal=%llu elapsed_ms=%llu\n",
+                    phase, long(code), static_cast<unsigned long long>(pending_command_),
+                    static_cast<unsigned long long>(goal_),
+                    static_cast<unsigned long long>((now - turn_started_) / 1000));
+        constexpr uint64_t trace_period_us = 2000000;
+        preparation_wait_.next_trace_us = now + trace_period_us;
+    }
+}
 void Chat::end_turn(const char *message) {
     if (message) {
-        status(turn_, message);
+        // Errors often use a stack-local buffer. Retain a copy and reopen input
+        // only after the same reliable terminal lane as successful replies accepts it.
+        std::snprintf(terminal_text_.data(), terminal_text_.size(), "%s", message);
+        std::printf("wifi terminal %s\n", terminal_text_.data());
+        reply_end_ = terminal_text_.data();
+        turn_state_ = Turn::reply_done;
+        progress_ = true;
+        return;
     }
     history_.abandon(); // Drops the input body; the next turn starts from the saved record.
     std::printf(
@@ -996,12 +1097,14 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
         // values remain available to retained Calls and conversation references.
         const auto status = bodies_.reset_idle();
         if (status == AYNI_BUSY) {
+            wait_for("body_cleanup", "preparing input: waiting for body cleanup", status);
             return AYNI_OK;
         }
         if (status != AYNI_OK) {
             end_turn("turn failed: body cache unavailable; no automatic retry");
             return AYNI_OK;
         }
+        trace("body_cache_ready");
         turn_state_ = Turn::input;
         progress_ = true;
     }
@@ -1041,11 +1144,14 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
     }
     if (turn_state_ == Turn::input) {
         const ayni_string_v1 user{input_.data(), static_cast<uint32_t>(input_.size())};
+        const char *failure_stage = "input storage";
         auto rc = history_.begin(user, parameters_);
         if (rc == AYNI_NOT_READY || rc == AYNI_BUSY) {
+            wait_for("input_body", "preparing input: waiting for input storage", rc);
             return AYNI_OK; // The input body is still being stored.
         }
         if (rc == AYNI_OK) {
+            failure_stage = "goal creation";
             auto body = sized<ayni_goal_create_v1>();
             body.goal_type_version = version;
             body.goal_type_id = text(strategy_id);
@@ -1053,13 +1159,17 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
             body.parameters = parameters_.view();
             body.trigger = AYNI_TRIGGER_ONCE;
             rc = command(AYNI_INTENT_GOAL_CREATE, &body, &goal_);
+            if (rc == AYNI_OK || rc == AYNI_BUSY) {
+                wait_for("goal_create", "preparing input: creating task", rc);
+            }
             if (rc == AYNI_BUSY) {
                 return AYNI_OK;
             }
         }
         if (rc != AYNI_OK) {
-            char error[64];
-            std::snprintf(error, sizeof(error), "input error=%ld", long(rc));
+            char error[96];
+            std::snprintf(error, sizeof(error), "turn failed: %s status=%ld; no automatic retry",
+                          failure_stage, long(rc));
             end_turn(error);
             return AYNI_OK;
         }

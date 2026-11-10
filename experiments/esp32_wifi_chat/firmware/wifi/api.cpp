@@ -59,6 +59,34 @@ bool endpoint(const char *root, const char *path, char *out, size_t capacity) {
         std::snprintf(out, capacity, "%.*s%s", int(normalized.size()), normalized.data(), path);
     return written > 0 && size_t(written) < capacity;
 }
+// Observe the last local tool error without retaining its message, user text or tool arguments.
+void trace_tool_status(ayni_string_v1 context) {
+    ayni_string_v1 instructions{}, messages{};
+    if (ayni::model::split_instructions(context, instructions, messages) != AYNI_OK) {
+        return;
+    }
+    ayni::model::Reader reader(messages);
+    ayni::model::Message message;
+    ayni_string_v1 last{};
+    while (reader.next(message)) {
+        if (message.role == ayni::model::Role::tool) {
+            last = message.text;
+        }
+    }
+    if (!reader.finished() || !last.size || last.size > json_limit) {
+        return;
+    }
+    auto *doc = yyjson_read(last.data, last.size, 0);
+    if (!doc) {
+        return;
+    }
+    auto *status = yyjson_obj_get(yyjson_obj_get(yyjson_doc_get_root(doc), "error"), "status");
+    if (yyjson_is_int(status)) {
+        std::printf("wifi tool result_status=%lld\n",
+                    static_cast<long long>(yyjson_get_sint(status)));
+    }
+    yyjson_doc_free(doc);
+}
 } // namespace
 bool Api::initialize(const Settings &settings, Transport &transport) {
     transport_ = &transport;
@@ -134,9 +162,11 @@ bool Api::submit(Request kind, uint64_t id, const void *data, size_t bytes, uint
     if (bytes) {
         std::memcpy(job.input.body.data(), data, bytes);
     }
+    outstanding_.fetch_add(1, std::memory_order_acq_rel);
     if (xQueueSend(waiting_, &slot, 0) == pdTRUE) {
         return true;
     }
+    outstanding_.fetch_sub(1, std::memory_order_acq_rel);
     job.audio = nullptr;
     job.audio_bytes = 0;
     xQueueSend(free_, &slot, 0);
@@ -188,6 +218,7 @@ void *Api::work(void *context) {
         job.audio_bytes = 0;
         // Every queued slot reserves one result slot, so this cannot block on UI work.
         xQueueSend(self.done_, &index, portMAX_DELAY);
+        self.outstanding_.fetch_sub(1, std::memory_order_acq_rel);
     }
 }
 bool Api::http(Job &job, const char *url, const char *content_type, const void *prefix,
@@ -459,6 +490,7 @@ void Api::model(Job &job, const char *url) {
         return;
     }
     const ayni_string_v1 context{reinterpret_cast<const char *>(framed.data), reference.size};
+    trace_tool_status(context);
     const auto encode = [&](ayni::json::Writer &out) {
         out.raw("{\"model\":");
         out.string(std::string_view(settings_.model.data()));

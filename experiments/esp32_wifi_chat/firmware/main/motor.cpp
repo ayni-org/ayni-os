@@ -161,8 +161,13 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
             "Request latched local motor output stop. Reconnection with driver power off is "
             "required to rearm."};
         constexpr const char *parameters[]{
-            "Empty object.",
+            "UNARY: use operation=\"invoke\" or omit operation; start is unsupported. Empty "
+            "object.",
+            "UNARY: use operation=\"invoke\" or omit operation; start is unsupported. "
             "Required integer motor1_percent and motor2_percent: -90..90; duration_ms: 50..60000.",
+            "ACTION: operation=\"invoke\" waits for completion. operation=\"start\" starts a "
+            "managed action; use its operation_ref to read/wait/cancel. Acceptance is not "
+            "completion. "
             "Required integers motor1_percent and motor2_percent: -90..90; duration_ms: 50..60000, "
             "multiple of 5. "
             "Zero coasts a motor; both zero is invalid (use motor.stop). Positive D0/D2 PWM, "
@@ -172,7 +177,9 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
             "No per-action approval after local preparation; do not retry "
             "expired or "
             "unknown actions.",
-            "Empty object. This tool is not an independent hardware stop; the touchscreen stop "
+            "UNARY: use operation=\"invoke\" or omit operation; start is unsupported. Empty "
+            "object. "
+            "This tool is not an independent hardware stop; the touchscreen stop "
             "button "
             "bypasses model execution."};
         const ayni_tool_field_usage_v1 descriptions[]{
@@ -196,6 +203,9 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
                        "Target, wheel distance and RPM remain unverified. Manual raised-wheel "
                        "bench only; "
                        "external watchdog/reset-disable are not verified."
+                 : at == 3
+                     ? "Confirms the stop request was submitted, not shaft standstill or driver "
+                       "power-off. Query motor.status for local controller state."
                      : "Configured wiring/supply are not electrical measurements. A plan does "
                        "not move motors."),
             text(at == 1 || at == 2

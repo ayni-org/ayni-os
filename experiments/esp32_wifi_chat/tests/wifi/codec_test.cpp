@@ -8,6 +8,7 @@
 #include "settings_codec.h"
 #include "value_queue.h"
 #include <ayni/strategies/builtin.h>
+#include <ayni/values_json.hpp>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <memory>
@@ -275,7 +276,7 @@ TEST(WifiMotor, ModelCommandsAcceptSixtySecondsAndRetainFinitePwmLimits) {
     EXPECT_EQ(motor_duties(50, -40), (std::array<uint32_t, 4>{50, 0, 0, 40}));
 }
 
-TEST(WifiModel, ProgressOutlineDisclosesOnlyFunctionAndBindingIdentity) {
+TEST(WifiModel, ProgressOutlineDisclosesOnlyProtocolMetadata) {
     // ADR-0097: execution progress is metadata, not private tool arguments or assistant prose.
     const std::string response =
         R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":"private-assistant-text","tool_calls":[{"id":"call-1","type":"function","function":{"name":"ayni_call_capability","arguments":"{\"binding_id\":\"speaker.speak_text\",\"binding_version\":1,\"arguments\":{\"text\":\"private-media-text\"}}"}}]}}]})";
@@ -291,8 +292,9 @@ TEST(WifiModel, ProgressOutlineDisclosesOnlyFunctionAndBindingIdentity) {
     std::array<char, tool_outline_bytes> out{};
     size_t used = 0;
     ASSERT_EQ(tools->outline(out.data(), out.size(), used), AYNI_OK);
-    EXPECT_EQ(std::string_view(out.data(), used),
-              R"([{"function":"ayni_call_capability","binding":"speaker.speak_text"}])");
+    EXPECT_EQ(
+        std::string_view(out.data(), used),
+        R"([{"function":"ayni_call_capability","binding":"speaker.speak_text","operation":"invoke"}])");
     std::array<char, 1> too_small{};
     EXPECT_EQ(tools->outline(too_small.data(), too_small.size(), used), AYNI_BUFFER_TOO_SMALL);
 }
@@ -310,6 +312,12 @@ TEST(WifiModel, ProgressOutlineNeverPromotesNestedBusinessFieldsOrUnknownTools) 
         const char *proposal :
         {R"({"id":"1","type":"function","function":{"name":"ayni_call_capability","arguments":"{\"arguments\":{\"binding_id\":\"private-nested\"}}"}})",
          R"({"id":"1","type":"function","function":{"name":"ayni_list_capabilities","arguments":"{\"binding_id\":\"private-list-data\"}"}})",
+         R"({"id":"1","type":"function","function":{"name":"ayni_list_capabilities","arguments":"{\"binding_version\":7070707}"}})",
+         R"({"id":"1","type":"function","function":{"name":"private-function-data","arguments":"{\"binding_version\":7070707}"}})",
+         R"({"id":"1","type":"function","function":{"name":"ayni_call_capability","arguments":"{\"arguments\":{\"binding_version\":7171717}}"}})",
+         R"({"id":"1","type":"function","function":{"name":"ayni_call_capability","arguments":"{\"arguments\":{\"operation\":\"start\"}}"}})",
+         R"({"id":"1","type":"function","function":{"name":"private-function-data","arguments":"{\"operation\":\"start\"}"}})",
+         R"({"id":"1","type":"function","function":{"name":"ayni_call_capability","arguments":"{\"operation\":\"private-operation-text\"}"}})",
          R"({"id":"1","type":"function","function":{"name":"private-function-data","arguments":"{\"binding_id\":\"private-root-data\"}"}})",
          R"({"id":"1","type":"function","function":{"name":"ayni_inspect_capability","arguments":"{\"binding_id\":\"private invalid\"}"}})"}) {
         const std::string response =
@@ -324,5 +332,40 @@ TEST(WifiModel, ProgressOutlineNeverPromotesNestedBusinessFieldsOrUnknownTools) 
         const std::string_view outline(out.data(), used);
         EXPECT_EQ(outline.find("private"), outline.npos);
         EXPECT_NE(outline.find("\"binding\":\"\""), outline.npos);
+        EXPECT_EQ(outline.find("7070707"), outline.npos);
+        EXPECT_EQ(outline.find("7171717"), outline.npos);
+        EXPECT_EQ(outline.find("\"operation\":\"start\""), outline.npos);
+    }
+}
+
+TEST(WifiModel, ProgressRetainsTheRootProtocolOperationAfterTheBinding) {
+    // ADR-0097: UI distinguishes invoke/start without disclosing private business input.
+    size_t bytes = 0, alignment = 0;
+    ASSERT_EQ(ayni::strategies::ToolLoop::workspace_requirements(&bytes, &alignment), AYNI_OK);
+    std::vector<uint64_t> storage((bytes + sizeof(uint64_t) - 1) / sizeof(uint64_t));
+    const ayni_workspace_v1 workspace{sizeof(workspace), 0, storage.data(),
+                                      storage.size() * sizeof(uint64_t)};
+    auto packet = std::make_unique<Packet>();
+    auto tools = std::make_unique<ModelTools>();
+    for (const auto mode : {"invoke", "start", "read", "wait", "cancel", "close"}) {
+        const std::string arguments =
+            std::string(
+                R"({"binding_id":"speaker.speak_text","binding_version":2,"arguments":{"text":"private-media"},"operation":")") +
+            mode + R"("})";
+        std::array<char, 1024> response{};
+        ayni::json::Writer json(response.data(), response.size());
+        json.raw(
+            R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"1","type":"function","function":{"name":"ayni_call_capability","arguments":)");
+        json.string(arguments);
+        json.raw(R"(}}]}}]})");
+        size_t used = 0;
+        ASSERT_TRUE(json.finish(used));
+        ASSERT_TRUE(decode_model({response.data(), used}, true, *packet));
+        ASSERT_EQ(tools->decode({packet->body.data(), packet->size}, workspace), AYNI_OK);
+        std::array<char, tool_outline_bytes> outline{};
+        ASSERT_EQ(tools->outline(outline.data(), outline.size(), used), AYNI_OK);
+        const std::string_view metadata(outline.data(), used);
+        EXPECT_NE(metadata.find(std::string("\"operation\":\"") + mode + '"'), metadata.npos);
+        EXPECT_EQ(metadata.find("private"), metadata.npos);
     }
 }

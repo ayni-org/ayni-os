@@ -10,7 +10,7 @@ class ModelTools {
     ayni_status_t decode(ayni_bytes_v1, const ayni_workspace_v1 &);
     const ayni_tool_call_v1 *calls() const { return calls_.data(); }
     uint32_t count() const { return count_; }
-    // JSON progress identities only: protocol function and binding ID. No other
+    // JSON progress metadata: function, binding and fixed operation enum. No business
     // argument value or assistant text crosses this UI lane; no execution approval.
     ayni_status_t outline(char *out, size_t capacity, size_t &written) const;
     ayni_string_v1 assistant() const { return assistant_; }

@@ -1,10 +1,12 @@
 #include "runtime.h"
 #include "../main/speaker.h"
+#include "../main/turn_status.h"
 #include "../main/wake.h"
 #include "api.h"
 #include "canvas.h"
 #include "motor_panel.h"
 #include "remote.h"
+#include "reset_worker.h"
 #include "station.h"
 #include "touch.h"
 #include "web_config.h"
@@ -49,6 +51,7 @@ enum class Page {
     motor,
     networks,
     confirm_clear,
+    maintenance,
     confirm_forget,
     confirm_peer
 };
@@ -58,6 +61,8 @@ class Runtime {
     void run();
 
   private:
+    enum class Restart { none, settings, rebuild };
+    bool restarting() const { return restart_ != Restart::none; }
     void packets();
     void stage(std::string_view text);
     void tool_outline(std::string_view body);
@@ -84,6 +89,10 @@ class Runtime {
     void save_restart();
     void web_changes();
     void begin_restart();
+    void begin_rebuild();
+    void stop_for_restart();
+    void reset_progress();
+    void draw_maintenance();
     void message(std::string_view text) {
         if (status_ == text) {
             return;
@@ -103,7 +112,7 @@ class Runtime {
     bool web_started_ = false;
     Packet packet_{};
     bool storage_ok_ = false, touch_ok_ = false, configured_ = false;
-    enum class Session { unconfigured, opening, ready, failed, closing };
+    enum class Session { unconfigured, opening, ready, failed, closing, stopped };
     Session session_ = Session::unconfigured;
     bool ready() const { return session_ == Session::ready; }
     void session_status(Session state, std::string_view detail) {
@@ -117,7 +126,9 @@ class Runtime {
     Work work_ = Work::idle; // A new user turn cannot overlap recognition or cancellation.
     bool busy() const { return work_ == Work::running || work_ == Work::cancelling; }
     bool recognizing() const { return work_ == Work::recognizing; }
-    bool api_started_ = false, api_failed_ = false, dirty_ = true, restarting_ = false;
+    bool api_started_ = false, api_failed_ = false, dirty_ = true;
+    Restart restart_ = Restart::none;
+    ResetWorker reset_;
     std::array<char, 17> route_{}; // Frozen with Api's active settings, separate from the UI draft.
     bool shifted_ = false, symbols_ = false, was_connected_ = false;
     Page page_ = Page::conversation;
@@ -190,6 +201,11 @@ void Runtime::tool_outline(std::string_view body) {
                 label += "查看能力说明";
             } else if (function == ayni::model::call_function) {
                 label += "调用能力";
+                auto *operation = yyjson_obj_get(item, "operation");
+                if (yyjson_is_str(operation) && yyjson_get_len(operation) <= 6) {
+                    label += ' ';
+                    label.append(yyjson_get_str(operation), yyjson_get_len(operation));
+                }
             } else {
                 label += "使用工具";
             }
@@ -204,7 +220,7 @@ void Runtime::tool_outline(std::string_view body) {
     yyjson_doc_free(doc);
 }
 void Runtime::configure() {
-    if (configured_ || api_failed_ || restarting_ || !storage_ok_ || !station_.connected()) {
+    if (configured_ || api_failed_ || restarting() || !storage_ok_ || !station_.connected()) {
         return;
     }
     if (!api_started_) {
@@ -259,7 +275,7 @@ void Runtime::cancel() {
 }
 void Runtime::send(std::string_view text, uint64_t id) {
     if (!ready() || !station_.connected() || busy() || recognizing() || text.empty() ||
-        text.size() > input_bytes || restarting_) {
+        text.size() > input_bytes || restarting()) {
         message("会话未就绪、忙碌或输入超限，未发送");
         return;
     }
@@ -307,7 +323,7 @@ void Runtime::packets() {
             }
             break;
         case Kind::model_request:
-            if (!api_started_ || work_ != Work::running ||
+            if (!api_started_ || restarting() || work_ != Work::running ||
                 !api_.submit(Request::model, id, body.data(), body.size())) {
                 transport_.post(Kind::model_error, id, nullptr, 0);
             } else {
@@ -319,7 +335,7 @@ void Runtime::packets() {
             }
             break;
         case Kind::speech_request:
-            if (!api_started_ || work_ != Work::running ||
+            if (!api_started_ || restarting() || work_ != Work::running ||
                 !api_.submit(Request::speech, id, body.data(), body.size())) {
                 transport_.post(Kind::audio_error, id, nullptr, 0);
             } else {
@@ -378,13 +394,20 @@ void Runtime::packets() {
             } else if (body == "ready") {
                 session_status(Session::ready, "Ayni 就绪");
                 resources("ready");
-            } else if (body == "reply completed") {
+            } else if (body == "accepted") {
+                stage("Ayni已接收，准备对话");
+            } else if (body == "preparing input: waiting for body cleanup") {
+                stage("正在收尾上一轮资源");
+            } else if (body == "preparing input: waiting for input storage") {
+                stage("正在保存本次输入");
+            } else if (body == "preparing input: creating task") {
+                stage("正在创建对话任务");
+            } else if (turn_status(body) == TurnStatus::complete) {
                 if (id == turn_) {
                     work_ = Work::idle;
                     message("本轮已完成；可继续输入");
                 }
-            } else if (body.find("turn failed") != body.npos ||
-                       body.find("input refused") != body.npos) {
+            } else if (turn_status(body) == TurnStatus::failed) {
                 if (id == turn_) {
                     work_ = Work::idle;
                 }
@@ -394,7 +417,9 @@ void Runtime::packets() {
                        body.find("stopped/held") != body.npos) {
                 // Preserve the specific initialization/storage cause when the
                 // owner subsequently reports its generic stopped/held status.
-                if (session_ != Session::failed) {
+                // The owner emits a generic NOT_READY after its reliable STOPPED
+                // notice. It cannot override the confirmed close needed for rebuild.
+                if (session_ != Session::failed && session_ != Session::stopped) {
                     if (motor_.active()) {
                         motor_.stop(transport_);
                     }
@@ -406,13 +431,17 @@ void Runtime::packets() {
                                                    : std::string(body);
                     session_status(Session::failed, detail);
                 }
+            } else if (body.find("reset shutdown failed") == 0) {
+                message(body);
             } else if (body.find("stopped; reset board") == 0) {
                 static_cast<void>(station_.close_radio()); // Failure is logged; no false release.
-                if (session_ == Session::failed) {
+                if (restart_ == Restart::rebuild) {
+                    session_status(Session::stopped, "Core及存储已关闭，准备重建实验数据");
+                } else if (session_ == Session::failed) {
                     session_detail_ += "\n会话已关闭；请复位设备重开，数据已保留";
                     dirty_ = true;
                     message("存储异常已关闭会话，请复位重开；无需擦除数据");
-                } else if (restarting_) {
+                } else if (restarting()) {
                     esp_restart();
                 } else {
                     session_status(Session::closing, "Ayni 已关闭");
@@ -497,7 +526,7 @@ void Runtime::save_restart() {
     }
     begin_restart();
 }
-void Runtime::begin_restart() {
+void Runtime::stop_for_restart() {
     if (!station_.close_radio()) {
         message("RF唤醒引用释放失败，重启后重新初始化");
     }
@@ -506,16 +535,55 @@ void Runtime::begin_restart() {
     }
     api_.cancel_all();
     remote_.cancel_recording();
-    restarting_ = true;
-    // Give the browser its confirmed save response before touching the network.
-    restart_at_ = esp_timer_get_time() + 1000000;
+    restart_at_ = esp_timer_get_time() + (restart_ == Restart::settings ? 1000000 : 1);
+}
+void Runtime::begin_restart() {
+    restart_ = Restart::settings;
+    stop_for_restart();
     message("配置已保存，等待 Ayni 正常关闭后重启");
+}
+void Runtime::begin_rebuild() {
+    if (!ready()) {
+        message("请等待会话就绪；未能正常关闭时不会重建");
+        return;
+    }
+    if (!transport_.post(Kind::maintenance_stop, 0, nullptr, 0)) {
+        message("停止请求队列已满，未开始重建，请重试");
+        return;
+    }
+    restart_ = Restart::rebuild;
+    work_ = Work::cancelling;
+    stop_for_restart();
+    message("正在停止输出和网络请求，随后关闭会话");
+}
+void Runtime::reset_progress() {
+    if (restart_ != Restart::rebuild || session_ != Session::stopped || !api_.idle()) {
+        return;
+    }
+    if (reset_.state() == ResetWorker::State::idle) {
+        const auto status = reset_.start_after_shutdown();
+        std::printf("wifi reset start status=%d\n", int(status));
+    }
+    if (reset_.state() == ResetWorker::State::done) {
+        std::printf("wifi reset complete; configuration and pairing partitions preserved\n");
+        esp_restart();
+    } else if (reset_.state() == ResetWorker::State::failed) {
+        char error[96];
+        std::snprintf(error, sizeof(error), "重建失败 code=%d，请复位；不会自动重试",
+                      int(reset_.error()));
+        message(error);
+    } else {
+        char progress[80];
+        std::snprintf(progress, sizeof(progress), "正在重建任务与会话 %lu%%，请勿断电",
+                      static_cast<unsigned long>(reset_.percent()));
+        message(progress);
+    }
 }
 void Runtime::web_changes() {
     if (!web_started_) {
         return;
     }
-    web_.editable((!configured_ || ready()) && !busy() && !recognizing() && !restarting_ &&
+    web_.editable((!configured_ || ready()) && !busy() && !recognizing() && !restarting() &&
                   remote_snapshot_.state != Remote::State::recording);
     WebConfig::Patch patch{};
     if (!web_.take(patch)) {
@@ -528,7 +596,7 @@ void Runtime::web_changes() {
                           patch.change.values.field(i));
         }
     }
-    const bool idle = (!configured_ || ready()) && !busy() && !recognizing() && !restarting_ &&
+    const bool idle = (!configured_ || ready()) && !busy() && !recognizing() && !restarting() &&
                       remote_snapshot_.state != Remote::State::recording;
     const bool saved =
         idle && esp_timer_get_time() < patch.deadline && candidate.valid() && candidate.save();
@@ -545,7 +613,7 @@ void Runtime::web_changes() {
     }
 }
 void Runtime::tap(int x, int y) {
-    if (restarting_) {
+    if (restarting()) {
         return;
     }
     dirty_ = true;
@@ -571,6 +639,15 @@ void Runtime::tap(int x, int y) {
     case Page::conversation:
     case Page::history:
         tap_home(x, y);
+        break;
+    case Page::maintenance:
+        if (y >= 278) {
+            page_ = Page::history;
+        } else if (y >= 186 && y < 222) {
+            page_ = Page::confirm_clear;
+        } else if (y >= 228 && y < 268) {
+            begin_rebuild();
+        }
         break;
     case Page::settings:
         tap_settings(x, y);
@@ -620,7 +697,7 @@ void Runtime::tap_home(int x, int y) {
         if (x < 60) {
             cancel();
         } else if (x < 120) {
-            page_ = Page::confirm_clear;
+            page_ = Page::maintenance;
         } else if (x < 180 && current_page_) {
             --current_page_;
         } else if (x >= 180 && current_page_ + 1 < pages_) {
@@ -776,6 +853,9 @@ void Runtime::draw() {
     case Page::history:
         draw_home();
         break;
+    case Page::maintenance:
+        draw_maintenance();
+        break;
     case Page::settings:
         draw_settings();
         break;
@@ -832,10 +912,23 @@ void Runtime::draw_home() {
     for (int i = 0; i < 4; ++i) {
         canvas_.button(i * 60, 252, 58, 30, navigation[i]);
     }
-    const char *buttons[] = {"取消", "清空", "上页", "下页"};
+    const char *buttons[] = {"取消", "清理", "上页", "下页"};
     for (int i = 0; i < 4; ++i) {
         canvas_.button(i * 60, 286, 58, 30, buttons[i]);
     }
+}
+void Runtime::draw_maintenance() {
+    if (restarting()) {
+        canvas_.document(status_ + "\n\n重建期间请勿断电。", 0, 40, 270);
+        return;
+    }
+    canvas_.label(8, 30, "清理任务与会话");
+    canvas_.document("仅清对话：保留任务记录。\n重建：删除任务、会话和实验历史。\n保留Wi-"
+                     "Fi、模型Key和遥控器配对。\n确认后先停止输出，再重建。",
+                     0, 54, 180);
+    canvas_.button(8, 186, 224, 34, "仅清空对话");
+    canvas_.button(8, 228, 224, 40, "确认重建任务与会话");
+    canvas_.button(8, 278, 224, 36, "返回");
 }
 void Runtime::draw_settings() {
     for (size_t i = 0; i < Settings::field_count; ++i) {
@@ -977,25 +1070,33 @@ void Runtime::run() {
                 message(remote.message.data());
             }
         }
-        if (motor_.tick(transport_, ready() && connected && !restarting_, now)) {
+        if (motor_.tick(transport_, ready() && connected && !restarting(), now)) {
             dirty_ = true;
         }
         web_changes();
-        if (restart_at_ && now >= restart_at_) {
+        if (restart_at_ && now >= restart_at_ && api_.idle()) {
             if (!configured_) {
-                esp_restart();
-            }
-            if (transport_.post(Kind::shutdown, 0, nullptr, 0)) {
+                if (restart_ == Restart::settings) {
+                    esp_restart();
+                }
+            } else if (transport_.post(restart_ == Restart::rebuild ? Kind::maintenance_shutdown
+                                                                    : Kind::shutdown,
+                                       0, nullptr, 0)) {
+                if (restart_ == Restart::rebuild) {
+                    std::printf("wifi reset api=idle; shutdown requested\n");
+                }
                 restart_at_ = 0;
             }
         }
-        remote_.allow_recording(ready() && connected && !busy() && !recognizing() && !restarting_ &&
-                                remote_snapshot_.state == Remote::State::ready &&
+        reset_progress();
+        remote_.allow_recording(ready() && connected && !busy() && !recognizing() &&
+                                !restarting() && remote_snapshot_.state == Remote::State::ready &&
                                 page_ != Page::keyboard);
         uint8_t *recording = nullptr;
         size_t bytes = 0;
         if (remote_.take_audio(recording, bytes)) {
-            if (ready() && connected && !busy() && !recognizing() && !restarting_ && api_started_ &&
+            if (ready() && connected && !busy() && !recognizing() && !restarting() &&
+                api_started_ &&
                 api_.submit(Request::recognize, ++next_id_, nullptr, 0, recording, bytes)) {
                 work_ = Work::recognizing;
                 message("松键录音完成，正在 ASR 转写");

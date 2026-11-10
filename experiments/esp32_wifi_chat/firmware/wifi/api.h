@@ -29,6 +29,8 @@ class Api {
     bool initialize(const Settings &settings, Transport &transport);
     bool submit(Request kind, uint64_t id, const void *data = nullptr, size_t bytes = 0,
                 uint8_t *audio = nullptr, size_t audio_bytes = 0);
+    // UI may close borrowed stores when true; completed results can still own buffers.
+    bool idle() const { return outstanding_.load(std::memory_order_acquire) == 0; }
     Job *result();
     void release(Job *);
     void cancel_all() { generation_.fetch_add(1, std::memory_order_acq_rel); }
@@ -51,6 +53,7 @@ class Api {
     QueueHandle_t free_ = nullptr, waiting_ = nullptr, done_ = nullptr;
     std::array<Job, slots> jobs_{};
     std::atomic<uint32_t> generation_{1};
+    std::atomic<uint32_t> outstanding_{0}; // Accepted jobs until worker I/O/borrows have ended.
     std::atomic<uint64_t> speech_cancel_{0};
     bool started_ = false; // Detached pthread has boot lifetime; settings remain frozen.
 };
