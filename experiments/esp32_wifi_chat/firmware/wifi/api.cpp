@@ -5,6 +5,7 @@
 #include "speech_stream.h"
 #include <algorithm>
 #include <ayni/model_messages.hpp>
+#include <ayni/providers/model_protocol.h>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -491,24 +492,21 @@ void Api::model(Job &job, const char *url) {
     }
     const ayni_string_v1 context{reinterpret_cast<const char *>(framed.data), reference.size};
     trace_tool_status(context);
+    ayni::providers::model_protocol::RequestOptions options;
+    options.model = settings_.model.data();
+    options.max_output_tokens = harness::max_output_tokens;
+    options.result_format = tools_allowed ? AYNI_CALL_RESULT_TOOL_CALLS : AYNI_CALL_RESULT_TEXT;
+    if (std::strstr(settings_.model_url.data(), "https://api.deepseek.com") ==
+        settings_.model_url.data()) {
+        options.extra_parameters =
+            tools_allowed ? R"({"parallel_tool_calls":false,"thinking":{"type":"disabled"}})"
+                          : R"({"thinking":{"type":"disabled"}})";
+    } else if (tools_allowed) {
+        options.extra_parameters = R"({"parallel_tool_calls":false})";
+    }
+    const ayni::providers::model_protocol::Protocol codec;
     const auto encode = [&](ayni::json::Writer &out) {
-        out.raw("{\"model\":");
-        out.string(std::string_view(settings_.model.data()));
-        out.raw(",\"stream\":false,\"max_tokens\":");
-        out.unsigned_number(harness::max_output_tokens);
-        if (tools_allowed) {
-            out.raw(",\"parallel_tool_calls\":false");
-        }
-        if (std::strstr(settings_.model_url.data(), "https://api.deepseek.com") ==
-            settings_.model_url.data()) {
-            out.raw(",\"thinking\":{\"type\":\"disabled\"}");
-        }
-        out.raw(",");
-        const auto status =
-            tools_allowed ? ayni::model::write_context(out, context, ayni::model::Mode::assistant)
-                          : ayni::model::write_context(out, context, ayni::model::Mode::text);
-        out.raw("}");
-        return status;
+        return codec.write_request(out, options, context);
     };
     auto measured = ayni::json::Writer::measuring();
     size_t size = 0;

@@ -658,7 +658,7 @@ struct Provider::Impl {
         wipe(slot.input);
         wipe(slot.request);
         wipe(slot.response);
-        wipe(slot.answer.body);
+        slot.answer.body.reset();
         wipe(slot.answer_body);
         slot.input_ref = {};
         active.fetch_sub(1);

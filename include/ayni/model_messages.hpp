@@ -104,6 +104,13 @@ inline void write_functions(json::Writer &out) {
     out.raw("]");
 }
 enum class Role { system, user, assistant, tool, calls, context };
+// Provider continuation belongs to exactly one assistant frame. Both views are empty for
+// legacy frames; otherwise codec is a nonempty format identity and data is opaque UTF-8.
+// It is never a system message or execution authority.
+struct Continuation {
+    ayni_string_v1 codec{};
+    ayni_string_v1 data{};
+};
 struct Function {
     ayni_string_v1 id{};        // Opaque nonempty protocol ID, never an Ayni operation identity.
     ayni_string_v1 name{};      // Proposed native function name, including unknown names.
@@ -115,6 +122,7 @@ struct Message {
     ayni_string_v1 tool_id{}; // Nonempty only for a tool response.
     uint32_t count = 0;       // 1..CALL_TOOL_COUNT_MAX for calls, zero otherwise.
     std::array<Function, AYNI_CALL_TOOL_COUNT_MAX> functions{};
+    Continuation continuation{}; // Only assistant/calls; lifetime is the input frame's.
 };
 // One exclusive framed UTF-8 lane. Append publishes no partial successful frame.
 class Writer {
@@ -127,10 +135,19 @@ class Writer {
         : data_(grow ? grow(context, used) : nullptr), capacity_(UINT32_MAX), used_(used),
           ok_(data_ != nullptr), context_(context), grow_(grow) {}
     void prefix() { raw(messages_prefix); }
-    void text(Role role, ayni_string_v1 content) {
+    void text(Role role, ayni_string_v1 content, Continuation continuation = {}) {
         if (role != Role::system && role != Role::user && role != Role::assistant &&
             role != Role::context) {
             ok_ = false;
+            return;
+        }
+        if (continuation.codec.size || continuation.data.size) {
+            if (role != Role::assistant || !continuation.codec.size || !continuation.data.size) {
+                ok_ = false;
+                return;
+            }
+            raw("assistant.v2 ");
+            assistant_body(content, continuation);
             return;
         }
         raw(role == Role::system    ? "system "
@@ -150,10 +167,19 @@ class Writer {
         raw(id);
         raw(content);
     }
-    void calls(uint32_t count, ayni_string_v1 text = {}) {
-        raw("calls ");
+    void calls(uint32_t count, ayni_string_v1 text = {}, Continuation continuation = {}) {
+        const bool extended = continuation.codec.size || continuation.data.size;
+        if (extended && (!continuation.codec.size || !continuation.data.size)) {
+            ok_ = false;
+            return;
+        }
+        raw(extended ? "calls.v2 " : "calls ");
         number(count);
         raw(" ");
+        if (extended) {
+            assistant_body(text, continuation);
+            return;
+        }
         number(text.size);
         raw("\n");
         raw(text);
@@ -169,6 +195,19 @@ class Writer {
         raw(call.id);
         raw(call.name);
         raw(call.arguments);
+    }
+    // Re-emit a validated frame, keeping continuation attached to its original group.
+    void message(const Message &message) {
+        if (message.role == Role::calls) {
+            calls(message.count, message.text, message.continuation);
+            for (uint32_t at = 0; at < message.count; ++at) {
+                function(message.functions[at]);
+            }
+        } else if (message.role == Role::tool) {
+            tool(message.tool_id, message.text);
+        } else {
+            text(message.role, message.text, message.continuation);
+        }
     }
     void raw(ayni_string_v1 value) {
         if (!ok_ || value.size > capacity_ - used_ || (value.size && !value.data)) {
@@ -187,12 +226,30 @@ class Writer {
     void raw(std::string_view value) {
         raw(ayni_string_v1{value.data(), static_cast<uint32_t>(value.size())});
     }
+    // One length-delimited section for request envelopes, using the same number writer.
+    void section(ayni_string_v1 bytes) {
+        number(bytes.size);
+        raw("\n");
+        raw(bytes);
+    }
     bool finish(ayni_string_v1 &out) const {
         out = {data_, used_};
         return ok_;
     }
 
   private:
+    // Version 2 assistant bodies own the sole lengths for text/codec/continuation bytes.
+    void assistant_body(ayni_string_v1 text, Continuation continuation) {
+        number(text.size);
+        raw(" ");
+        number(continuation.codec.size);
+        raw(" ");
+        number(continuation.data.size);
+        raw("\n");
+        raw(text);
+        raw(continuation.codec);
+        raw(continuation.data);
+    }
     void number(uint32_t n) {
         char digits[sizeof("4294967295") - 1];
         auto end = std::to_chars(digits, digits + sizeof(digits), n);
@@ -226,9 +283,11 @@ class Reader {
         Message message;
         const auto role = token(' ');
         uint32_t bytes = 0;
-        if (role == "calls") {
+        if (role == "calls" || role == "calls.v2") {
             message.role = Role::calls;
-            if (!number(' ', message.count) || !number('\n', bytes) || !take(bytes, message.text) ||
+            if (!number(' ', message.count) ||
+                !(role == "calls.v2" ? assistant_body(message)
+                                     : number('\n', bytes) && take(bytes, message.text)) ||
                 !message.count || message.count > message.functions.size()) {
                 return fail();
             }
@@ -250,6 +309,11 @@ class Reader {
             if (!number(' ', id) || !number('\n', bytes) || !id ||
                 id > AYNI_MODEL_TOOL_ID_BYTES_MAX || !take(id, message.tool_id) ||
                 !take(bytes, message.text)) {
+                return fail();
+            }
+        } else if (role == "assistant.v2") {
+            message.role = Role::assistant;
+            if (!assistant_body(message)) {
                 return fail();
             }
         } else {
@@ -275,6 +339,15 @@ class Reader {
     uint32_t remaining_bytes() const { return static_cast<uint32_t>(remaining_.size()); }
 
   private:
+    bool assistant_body(Message &message) {
+        uint32_t text = 0, codec = 0, data = 0;
+        return number(' ', text) && number(' ', codec) && number('\n', data) && codec && data &&
+                       codec <= AYNI_CATALOG_ID_MAX_BYTES && take(text, message.text) &&
+                       take(codec, message.continuation.codec) &&
+                       take(data, message.continuation.data)
+                   ? true
+                   : fail();
+    }
     bool fail() {
         ok_ = false;
         return false;
@@ -309,9 +382,82 @@ class Reader {
     std::string_view remaining_; // Unconsumed immutable source, empty only at exact end.
     bool ok_ = true;             // Sticky malformed frame status.
 };
+// Versioned request-only tool definitions. History remains AYNI-MESSAGES/1; this envelope is
+// never appended to it. Empty definitions select the legacy fixed function set.
+inline constexpr std::string_view request_prefix = "\x1e"
+                                                   "AYNI-MODEL-REQUEST/1\n";
+inline void write_request_frame(Writer &out, ayni_string_v1 definitions, ayni_string_v1 messages) {
+    out.raw(request_prefix);
+    out.section(definitions);
+    out.raw(messages);
+}
+// Failure preserves outputs. Raw definitions are produced by trusted SDK catalog projection;
+// their wire shape is validated at the model adapter, not inferred from conversation data.
+inline ayni_status_t split_request(ayni_string_v1 input, ayni_string_v1 &messages,
+                                   ayni_string_v1 &definitions) {
+    std::string_view bytes(input.data, input.size);
+    if (bytes.substr(0, request_prefix.size()) != request_prefix) {
+        messages = input;
+        definitions = {};
+        return AYNI_OK;
+    }
+    bytes.remove_prefix(request_prefix.size());
+    const auto end = bytes.find('\n');
+    if (end == std::string_view::npos || !end || (end > 1 && bytes.front() == '0')) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    uint32_t size = 0;
+    const auto parsed = std::from_chars(bytes.data(), bytes.data() + end, size);
+    if (parsed.ec != std::errc{} || parsed.ptr != bytes.data() + end) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    bytes.remove_prefix(end + 1);
+    if (size > bytes.size() || ayni_validate_utf8({bytes.data(), size}) != AYNI_OK) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    definitions = {bytes.data(), size};
+    bytes.remove_prefix(size);
+    messages = {bytes.data(), static_cast<uint32_t>(bytes.size())};
+    return AYNI_OK;
+}
+// Legacy TEXT preserves existing consumers; FRAMED carries assistant text and an optional
+// provider continuation using the message codec. The composition selects the same encoding
+// for Provider and strategy; ordinary model text can never choose the encoding.
+enum class ReplyEncoding { text, framed };
+inline constexpr std::string_view reply_prefix = "\x1e"
+                                                 "AYNI-MODEL-REPLY/1\n";
+inline void write_reply_frame(Writer &out, ayni_string_v1 text, Continuation continuation = {}) {
+    out.raw(reply_prefix);
+    out.prefix();
+    out.text(Role::assistant, text, continuation);
+}
+inline ayni_status_t read_reply_frame(ayni_string_v1 input, ReplyEncoding encoding,
+                                      ayni_string_v1 &text, Continuation &continuation) {
+    if (encoding == ReplyEncoding::text) {
+        text = input;
+        continuation = {};
+        return AYNI_OK;
+    }
+    std::string_view bytes(input.data, input.size);
+    if (encoding != ReplyEncoding::framed || bytes.substr(0, reply_prefix.size()) != reply_prefix) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    bytes.remove_prefix(reply_prefix.size());
+    Reader reader({bytes.data(), static_cast<uint32_t>(bytes.size())});
+    Message message;
+    if (!reader.next(message) || message.role != Role::assistant || !reader.finished()) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    text = message.text;
+    continuation = message.continuation;
+    return AYNI_OK;
+}
 // This one projection serves transport and exact escaped context measurement.
 // Requires complete ordered tool groups before another message or model egress.
 enum class Completeness { complete, partial }; // Partial is local measurement only; no egress.
+// Explicit canonical projection is for summaries and non-Chat wire adapters. Chat egress
+// rejects unsupported continuation rather than silently dropping required provider state.
+enum class Continuations { reject, canonical };
 // Renders one already-paired assistant proposal; group validation stays in write_messages.
 inline void write_calls_message(json::Writer &out, const Message &message) {
     out.raw("{\"role\":\"assistant\",\"content\":");
@@ -361,7 +507,8 @@ inline void write_text_message(json::Writer &out, const Message &message) {
 }
 // Owns the sole matching state: a new message requires a complete preceding tool group.
 inline ayni_status_t write_messages(json::Writer &out, ayni_string_v1 input,
-                                    Completeness completeness = Completeness::complete) {
+                                    Completeness completeness = Completeness::complete,
+                                    Continuations continuations = Continuations::reject) {
     Reader reader(input);
     Message message;
     std::array<ayni_string_v1, AYNI_CALL_TOOL_COUNT_MAX> pending{};
@@ -369,6 +516,9 @@ inline ayni_status_t write_messages(json::Writer &out, ayni_string_v1 input,
     bool first = true;
     out.raw("[");
     while (reader.next(message)) {
+        if (message.continuation.codec.size && continuations == Continuations::reject) {
+            return AYNI_UNSUPPORTED;
+        }
         if (pending_count && message.role != Role::tool) {
             return AYNI_INVALID_ARGUMENT;
         }
@@ -415,14 +565,23 @@ inline ayni_status_t write_messages(json::Writer &out, ayni_string_v1 input,
 enum class Mode { assistant, text };
 inline ayni_status_t write_context(json::Writer &out, ayni_string_v1 input, Mode mode,
                                    Completeness completeness = Completeness::complete) {
+    ayni_string_v1 messages{}, definitions{};
+    const auto framed = split_request(input, messages, definitions);
+    if (framed != AYNI_OK) {
+        return framed;
+    }
     out.raw("\"messages\":");
-    const auto status = write_messages(out, input, completeness);
+    const auto status = write_messages(out, messages, completeness);
     if (status != AYNI_OK) {
         return status;
     }
     if (mode == Mode::assistant) {
         out.raw(",\"tools\":");
-        write_functions(out);
+        if (definitions.size) {
+            out.raw({definitions.data, definitions.size});
+        } else {
+            write_functions(out);
+        }
     }
     return AYNI_OK;
 }

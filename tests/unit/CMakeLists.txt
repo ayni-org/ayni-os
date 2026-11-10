@@ -130,6 +130,10 @@ target_link_libraries(ayni_openai_provider_tests PRIVATE ayni_core ayni_core_int
     ayni_openai_protocol_fixture ayni_runtime_common
     ayni_host_sim ayni_provider_mock ayni_provider_openai_compat ayni_warnings GTest::gtest_main)
 gtest_discover_tests(ayni_openai_provider_tests)
+add_executable(ayni_model_protocol_tests model_protocol_test.cpp)
+target_link_libraries(ayni_model_protocol_tests PRIVATE ayni_model_protocol yyjson
+    ayni_warnings GTest::gtest_main)
+gtest_discover_tests(ayni_model_protocol_tests)
 
 # No CTest registration: this executable sends billed requests only when invoked
 # manually with --live and runtime environment configuration (ADR-0055).
