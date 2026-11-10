@@ -22,6 +22,8 @@ class Speaker {
     // Hold BCLK/WS/DIN low so an idle MAX98357A cannot clock coupled noise.
     static esp_err_t park_outputs();
     explicit Speaker(Transport &transport) : transport_(transport) {}
+    // Owner-only startup: idle worker/stack allocation, no I2S or audible output.
+    bool initialize();
     ayni_status_t configure(ayni_kernel_t *);
     // Owner-only readiness gate; retained Calls still drain/cancel while closed.
     void set_accepting(bool accepting) { accepting_ = accepting; }
@@ -53,7 +55,6 @@ class Speaker {
                                        ayni_provider_completion_t *);
     static ayni_submit_result_t cancel(void *, ayni_attempt_ref_v1);
     static void run(void *);
-    bool initialize();
     bool enqueue(Job);
     ayni_status_t begin_speech(uint64_t id, std::string_view text);
     void request_cancel();

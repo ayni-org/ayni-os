@@ -19,6 +19,7 @@
 #include <esp_system.h>
 #include <esp_timer.h>
 #include <new>
+#include <optional>
 #include <psa/crypto.h>
 #include <string>
 #include <yyjson.h>
@@ -85,6 +86,7 @@ class Runtime {
     void draw_home();
     void configure();
     void cancel();
+    void start_motor_check(uint32_t motor);
     void send(std::string_view text, uint64_t id = 0);
     void save_restart();
     void web_changes();
@@ -124,7 +126,10 @@ class Runtime {
     }
     enum class Work { idle, recognizing, running, cancelling };
     Work work_ = Work::idle; // A new user turn cannot overlap recognition or cancellation.
-    bool busy() const { return work_ == Work::running || work_ == Work::cancelling; }
+    std::optional<uint64_t> motor_check_id_; // Present until the reliable check terminal arrives.
+    bool busy() const {
+        return motor_check_id_.has_value() || work_ == Work::running || work_ == Work::cancelling;
+    }
     bool recognizing() const { return work_ == Work::recognizing; }
     bool api_started_ = false, api_failed_ = false, dirty_ = true;
     Restart restart_ = Restart::none;
@@ -266,12 +271,32 @@ void Runtime::cancel() {
     }
     remote_.cancel_recording();
     api_.cancel_all();
+    if (motor_check_id_) {
+        transport_.post(Kind::cancel, *motor_check_id_, nullptr, 0);
+        message("正在停止自检，不会自动重试");
+        return;
+    }
     work_ = busy() ? Work::cancelling : Work::idle;
     if (!transport_.post(Kind::cancel, turn_, nullptr, 0)) {
         message("取消队列已满，请再次点击取消");
     } else {
         message("正在取消，不会自动重试");
     }
+}
+void Runtime::start_motor_check(uint32_t motor) {
+    if (!ready() || busy() || recognizing() || restarting()) {
+        message("请先结束当前回合");
+        return;
+    }
+    uint8_t body[sizeof(uint32_t)];
+    put32(body, motor);
+    const auto id = ++next_id_;
+    if (!transport_.post(Kind::motor_check, id, body, sizeof(body))) {
+        message("自检队列已满，未执行");
+        return;
+    }
+    motor_check_id_ = id;
+    message("已提交本地自检，无需模型");
 }
 void Runtime::send(std::string_view text, uint64_t id) {
     if (!ready() || !station_.connected() || busy() || recognizing() || text.empty() ||
@@ -312,6 +337,27 @@ void Runtime::packets() {
         const std::string_view body(reinterpret_cast<const char *>(packet_.body.data()),
                                     packet_.size);
         switch (packet_.kind) {
+        case Kind::motor_check_state: {
+            MotorCheckNotice notice;
+            if (!motor_check_id_ || id != *motor_check_id_ ||
+                !MotorCheckNotice::decode(packet_.body.data(), packet_.size, notice)) {
+                break;
+            }
+            const bool terminal = notice.phase == MotorCheckNotice::Phase::completed ||
+                                  notice.phase == MotorCheckNotice::Phase::failed ||
+                                  notice.phase == MotorCheckNotice::Phase::cancelled;
+            if (terminal) {
+                if (notice.phase != MotorCheckNotice::Phase::completed) {
+                    motor_.stop(transport_);
+                }
+                motor_check_id_.reset();
+            }
+            motor_.test_notice(notice);
+            message(notice.phase == MotorCheckNotice::Phase::failed ? "电机自检失败，详情见电机页"
+                    : terminal ? "自检已结束，详情见电机页"
+                               : "电机自检中，可随时停止");
+            break;
+        }
         case Kind::tool_outline:
             if (id == turn_) {
                 tool_outline(body);
@@ -389,8 +435,8 @@ void Runtime::packets() {
                 stage(speech_error_.empty() ? std::string("任务已暂停：") + std::string(body)
                                             : speech_error_ + "；任务已暂停，未重播");
             } else if (body.find("motor preparation failed") == 0) {
-                motor_.preparation_failed(transport_);
-                message("电机准备失败，请重启；未执行动作");
+                motor_.preparation_failed(transport_, body);
+                message("电机初始化失败，详情见电机页");
             } else if (body == "ready") {
                 session_status(Session::ready, "Ayni 就绪");
                 resources("ready");
@@ -426,6 +472,7 @@ void Runtime::packets() {
                     api_.cancel_all();
                     remote_.cancel_recording();
                     work_ = Work::idle;
+                    motor_check_id_.reset();
                     const std::string detail = session_ == Session::opening
                                                    ? session_detail_ + "\n" + std::string(body)
                                                    : std::string(body);
@@ -464,7 +511,7 @@ void Runtime::packets() {
             } else if (body == "speaker playback completed") {
                 stage("播放已完成，ToolLoop处理工具结果");
             }
-            if (body.find("metrics ") == 0) {
+            if (body.find("metrics ") == 0 || body.find("motor stage=") == 0) {
                 std::printf("%.*s\n", int(body.size()), body.data());
             }
             break;
@@ -661,12 +708,16 @@ void Runtime::tap(int x, int y) {
     case Page::remote:
         tap_remote(x, y);
         break;
-    case Page::motor:
-        if (motor_.tap(transport_, x, y, ready() && station_.connected()) ==
-            MotorPanel::Tap::back) {
+    case Page::motor: {
+        const auto action = motor_.tap(
+            transport_, x, y, ready() && station_.connected() && !busy() && !recognizing());
+        if (action == MotorPanel::Tap::back) {
             page_ = Page::history;
+        } else if (action == MotorPanel::Tap::test_first ||
+                   action == MotorPanel::Tap::test_second) {
+            start_motor_check(action == MotorPanel::Tap::test_first ? 0 : 1);
         }
-        break;
+    } break;
     default:
         tap_confirmation(x, y);
         break;

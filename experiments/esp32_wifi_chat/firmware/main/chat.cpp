@@ -86,6 +86,12 @@ void Chat::status(uint64_t id, const char *message) {
     }
     transport_.send(Kind::status, id, message, std::strlen(message));
 }
+ayni_status_t Chat::reserve_control_memory() {
+    const auto motor = motor_.execution().reserve_control_stack();
+    // Audio acquires I2S only while playing. Reserving its idle worker now keeps its
+    // contiguous stack/buffers from competing with the later Host allocation.
+    return speaker_.initialize() ? motor : AYNI_CAPACITY_EXCEEDED;
+}
 ayni_status_t Chat::initialize(const char *route) {
     if (!route || std::strlen(route) != 16 || kernel_) {
         return AYNI_INVALID_ARGUMENT;
@@ -210,9 +216,48 @@ ayni_status_t Chat::configure() {
         rc = check("motor", motor_.configure(kernel_));
     }
     if (rc == AYNI_OK) {
+        rc = check("motor check", configure_motor_check());
+    }
+    if (rc == AYNI_OK) {
         transport_.attach_speaker(&speaker_);
     }
     return rc;
+}
+ayni_status_t Chat::configure_motor_check() {
+    MotorCheck::Owner owner;
+    owner.context = this;
+    owner.ready = [](const void *context) {
+        const auto &self = *static_cast<const Chat *>(context);
+        return self.announced_ && self.closing_ == Closing::open &&
+               self.turn_state_ == Turn::idle && self.forget_ == Forget::none;
+    };
+    owner.submit = [](void *context, ayni_intent_kind_t kind, const void *body, uint64_t *id,
+                      uint32_t revision) {
+        MotorCheck::SubmitResult result;
+        result.status =
+            static_cast<Chat *>(context)->command(kind, body, id, revision, &result.reason);
+        return result;
+    };
+    owner.stop = [](void *context) {
+        static_cast<Chat *>(context)->transport_.request_motor_stop();
+    };
+    owner.notify = [](void *context, uint64_t id, const MotorCheckNotice &notice) {
+        auto &self = *static_cast<Chat *>(context);
+        std::array<uint8_t, MotorCheckNotice::wire_bytes> bytes{};
+        notice.encode(bytes.data());
+        const bool sent =
+            self.transport_.send(Kind::motor_check_state, id, bytes.data(), bytes.size());
+        if (sent) {
+            std::printf("motor check request=%llu motor=%lu phase=%lu status=%ld reason=%lu\n",
+                        static_cast<unsigned long long>(id),
+                        static_cast<unsigned long>(notice.motor + 1),
+                        static_cast<unsigned long>(notice.phase), long(notice.status),
+                        static_cast<unsigned long>(notice.reason));
+        }
+        return sent;
+    };
+    auto status = motor_check_.configure(owner);
+    return status == AYNI_OK ? motor_check_.install(kernel_) : status;
 }
 // Two model capabilities on one Provider and one slot: tool-calling turns for the ToolLoop and
 // text-only summaries for its compaction. Both egress to this boot's fixed destination.
@@ -524,7 +569,10 @@ ayni_status_t Chat::receipt() {
     return rc;
 }
 ayni_status_t Chat::command(ayni_intent_kind_t kind, const void *body, uint64_t *id,
-                            uint32_t revision) {
+                            uint32_t revision, ayni_reason_t *reason) {
+    if (reason) {
+        *reason = AYNI_REASON_NONE;
+    }
     auto rc = receipt();
     if (rc != AYNI_OK) {
         return rc;
@@ -540,6 +588,9 @@ ayni_status_t Chat::command(ayni_intent_kind_t kind, const void *body, uint64_t 
     auto out = sized<ayni_intent_result_v1>();
     auto error = sized<ayni_error_v1>();
     rc = ayni_submit_intent(kernel_, &intent, &out, &error);
+    if (reason) {
+        *reason = error.reason;
+    }
     if (rc != AYNI_OK && rc != AYNI_BUSY) {
         std::printf("wifi intent kind=%lu status=%ld reason=%lu object_kind=%lu object_id=%llu\n",
                     static_cast<unsigned long>(kind), long(rc),
@@ -560,6 +611,28 @@ ayni_status_t Chat::command(ayni_intent_kind_t kind, const void *body, uint64_t 
     return rc;
 }
 void Chat::incoming(const Packet &p) {
+    if (p.kind == Kind::motor_check) {
+        auto code = AYNI_INVALID_ARGUMENT;
+        if (p.size == sizeof(uint32_t)) {
+            code = motor_check_.request(get32(p.body.data()), p.id);
+        }
+        if (code != AYNI_OK) {
+            MotorCheckNotice failed{MotorCheckNotice::Phase::failed,
+                                    p.size == sizeof(uint32_t) &&
+                                            get32(p.body.data()) < MotorCheck::type_count
+                                        ? get32(p.body.data())
+                                        : 0,
+                                    code, AYNI_REASON_NONE};
+            std::array<uint8_t, MotorCheckNotice::wire_bytes> bytes{};
+            failed.encode(bytes.data());
+            transport_.send(Kind::motor_check_state, p.id, bytes.data(), bytes.size());
+        }
+        progress_ = true;
+        return;
+    }
+    if (p.kind == Kind::cancel || p.kind == Kind::shutdown || p.kind == Kind::maintenance_stop) {
+        motor_check_.cancel();
+    }
     if (p.kind == Kind::maintenance_stop) {
         // Keep file ports alive while the API worker exits its borrowed reads.
         announced_ = false;
@@ -599,7 +672,11 @@ void Chat::incoming(const Packet &p) {
         if (p.kind == Kind::motor_settings) {
             const auto status = motor_.execution().initialize();
             if (status != AYNI_OK) {
-                this->status(0, "motor preparation failed; restart before retry");
+                char detail[96];
+                std::snprintf(detail, sizeof(detail),
+                              "motor preparation failed status=%ld; restart before retry",
+                              long(status));
+                this->status(0, detail);
                 return;
             }
             transport_.set_motor_active(true);
@@ -628,8 +705,9 @@ void Chat::incoming(const Packet &p) {
                p.id == screen_call_) {
         screen_ = p.size == 1 && p.body[0] == 1 ? ScreenState::painted : ScreenState::failed;
     } else if (p.kind == Kind::user) {
-        if (!announced_ || turn_state_ != Turn::idle || forget_ != Forget::none ||
-            closing_ != Closing::open || !history_.ready() || !p.size || p.size > input_bytes) {
+        if (!announced_ || turn_state_ != Turn::idle || motor_check_.active() ||
+            forget_ != Forget::none || closing_ != Closing::open || !history_.ready() || !p.size ||
+            p.size > input_bytes) {
             status(p.id, "input refused: not ready/busy/over limit");
             return;
         }
@@ -656,8 +734,8 @@ void Chat::incoming(const Packet &p) {
         progress_ = true;
         status(p.id, "cancel queued; waiting for current command receipt");
     } else if (p.kind == Kind::forget) {
-        if (!announced_ || turn_state_ != Turn::idle || forget_ != Forget::none ||
-            closing_ != Closing::open) {
+        if (!announced_ || turn_state_ != Turn::idle || motor_check_.active() ||
+            forget_ != Forget::none || closing_ != Closing::open) {
             status(p.id, "context clear refused: device busy");
             return;
         }
@@ -691,9 +769,13 @@ ayni_status_t Chat::settle_session(uint64_t durable_seq, bool &settled) {
         if (rc != AYNI_OK) {
             return rc;
         }
-        if (goal.owner_instance_id != instance_ || goal.goal_type_version != version ||
-            (goal.goal_type_id_size != sizeof(strategy_id) - 1 ||
-             std::memcmp(goal.goal_type_id, strategy_id, sizeof(strategy_id) - 1))) {
+        const bool chat_goal =
+            goal.goal_type_version == version &&
+            goal.goal_type_id_size == sizeof(strategy_id) - 1 &&
+            !std::memcmp(goal.goal_type_id, strategy_id, sizeof(strategy_id) - 1);
+        const bool check_goal =
+            MotorCheck::owns({goal.goal_type_id, goal.goal_type_id_size}, goal.goal_type_version);
+        if (goal.owner_instance_id != instance_ || (!chat_goal && !check_goal)) {
             continue;
         }
         if (goal.lifecycle == AYNI_GOAL_PROPOSED || goal.lifecycle == AYNI_GOAL_ACTIVE ||
@@ -914,6 +996,9 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
         return AYNI_OK;
     }
     rc = prepare(info);
+    if (rc == AYNI_OK) {
+        motor_check_.tick(kernel_, instance_, info.durable_seq);
+    }
     if (rc == AYNI_OK && announced_) {
         rc = converse(info);
     }

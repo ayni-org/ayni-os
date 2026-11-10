@@ -74,6 +74,8 @@ esp_err_t MotorOutput::initialize() {
     }
     if (rc != ESP_OK) {
         close();
+        // Keep the initialization cause even if partial-resource cleanup also reports an error.
+        last_error_ = rc;
         state_ = State::fault;
         return rc;
     }

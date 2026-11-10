@@ -9,6 +9,22 @@
 #include <esp_timer.h>
 #include <type_traits>
 namespace wifichat {
+ayni_status_t MotorExecution::reserve_control_stack() {
+    if (initialization_ != Initialization::unattempted || mode_ == Mode::closed ||
+        closing_.load(std::memory_order_acquire)) {
+        return AYNI_NOT_READY;
+    }
+    const auto caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    if (!worker_stack_) {
+        worker_stack_ = static_cast<StackType_t *>(heap_caps_malloc(worker_stack_bytes, caps));
+    }
+    const auto code = worker_stack_ ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
+    std::printf("motor init stage=stack-reserve status=%ld internal_free=%zu "
+                "internal_largest=%zu stack_bytes=%lu\n",
+                long(code), heap_caps_get_free_size(caps), heap_caps_get_largest_free_block(caps),
+                static_cast<unsigned long>(worker_stack_bytes));
+    return code;
+}
 // Startup owns SDK resources until this succeeds; then ownership passes to the worker.
 ayni_status_t MotorExecution::initialize() {
     if (initialization_ == Initialization::ready && worker_) {
@@ -19,38 +35,54 @@ ayni_status_t MotorExecution::initialize() {
         return AYNI_NOT_READY;
     }
     initialization_ = Initialization::failed;
-    auto rc = initialize_owner();
-    if (rc != AYNI_OK) {
-        const bool cleaned = close_owner();
-        return cleaned ? rc : AYNI_INTERNAL;
-    }
-    static_assert(std::is_trivially_copyable<Message>::value, "inbox messages own plain copies");
     const auto caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
-    inbox_tcb_ = static_cast<StaticQueue_t *>(heap_caps_malloc(sizeof(StaticQueue_t), caps));
-    inbox_storage_ = static_cast<uint8_t *>(heap_caps_malloc(inbox_slots * sizeof(Message), caps));
-    worker_tcb_ = static_cast<StaticTask_t *>(heap_caps_malloc(sizeof(StaticTask_t), caps));
-    worker_stack_ = static_cast<StackType_t *>(heap_caps_malloc(worker_stack_bytes, caps));
-    if (!inbox_tcb_ || !inbox_storage_ || !worker_tcb_ || !worker_stack_) {
+    const auto trace_init = [&](const char *stage, ayni_status_t code, esp_err_t sdk) {
+        std::printf("motor init stage=%s status=%ld sdk=%ld internal_free=%zu internal_largest=%zu "
+                    "inbox_bytes=%zu stack_bytes=%lu gate_bytes=%zu\n",
+                    stage, long(code), long(sdk), heap_caps_get_free_size(caps),
+                    heap_caps_get_largest_free_block(caps), inbox_slots * sizeof(Message),
+                    static_cast<unsigned long>(worker_stack_bytes), gate_bytes_);
+    };
+    const auto abort_init = [&](const char *stage, ayni_status_t code) {
+        trace_init(stage, code, output_ ? output_->last_error() : ESP_OK);
         const bool cleaned = close_owner();
         release_worker_storage();
-        return cleaned ? AYNI_CAPACITY_EXCEEDED : AYNI_INTERNAL;
+        return cleaned ? code : AYNI_INTERNAL;
+    };
+    trace_init("begin", AYNI_OK, ESP_OK);
+    // The owner reserved this contiguous block before Host startup; preparation stays
+    // hardware-only.
+    if (!worker_stack_) {
+        return abort_init("stack", AYNI_CAPACITY_EXCEEDED);
+    }
+    auto rc = initialize_owner();
+    if (rc != AYNI_OK) {
+        return abort_init("driver-or-gate", rc);
+    }
+    static_assert(std::is_trivially_copyable<Message>::value, "inbox messages own plain copies");
+    inbox_tcb_ = static_cast<StaticQueue_t *>(heap_caps_malloc(sizeof(StaticQueue_t), caps));
+    // Only owner/control tasks copy these messages; no ISR touches this bulk storage.
+    // Queue control, worker stack, Gate and RMT source buffers remain in internal RAM.
+    inbox_storage_ = static_cast<uint8_t *>(
+        heap_caps_malloc(inbox_slots * sizeof(Message), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    worker_tcb_ = static_cast<StaticTask_t *>(heap_caps_malloc(sizeof(StaticTask_t), caps));
+    if (!inbox_tcb_ || !inbox_storage_ || !worker_tcb_ || !worker_stack_) {
+        return abort_init("inbox-allocation", AYNI_CAPACITY_EXCEEDED);
     }
     inbox_ = xQueueCreateStatic(inbox_slots, sizeof(Message), inbox_storage_, inbox_tcb_);
     if (!inbox_) {
-        const bool cleaned = close_owner();
-        release_worker_storage();
-        return cleaned ? AYNI_CAPACITY_EXCEEDED : AYNI_INTERNAL;
+        return abort_init("inbox-create", AYNI_CAPACITY_EXCEEDED);
     }
     inbox_open_.store(true, std::memory_order_release);
     worker_ = xTaskCreateStatic(worker_entry, "motor-control", worker_stack_bytes, this,
                                 worker_priority, worker_stack_, worker_tcb_);
     if (!worker_) {
         inbox_open_.store(false, std::memory_order_release);
-        const bool cleaned = close_owner();
-        release_worker_storage();
-        return cleaned ? AYNI_CAPACITY_EXCEEDED : AYNI_INTERNAL;
+        return abort_init("worker-create", AYNI_CAPACITY_EXCEEDED);
     }
     initialization_ = Initialization::ready;
+    // Driver ownership has passed to the worker; startup must no longer inspect it.
+    trace_init("ready", AYNI_OK, ESP_OK);
     return AYNI_OK;
 }
 bool MotorExecution::send(const Message &message) {
@@ -225,7 +257,11 @@ bool MotorExecution::close() {
     inbox_open_.store(false, std::memory_order_release);
     accepting_.store(false, std::memory_order_release);
     if (!worker_) {
-        return initialization_ == Initialization::unattempted || close_owner();
+        if (!close_owner()) {
+            return false;
+        }
+        release_worker_storage(); // Also releases a reserved stack when never prepared.
+        return true;
     }
     closing_.store(true, std::memory_order_release);
     if (!worker_stopped_.load(std::memory_order_acquire) || eTaskGetState(worker_) != eSuspended) {

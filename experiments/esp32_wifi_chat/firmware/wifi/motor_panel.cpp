@@ -43,6 +43,14 @@ MotorPanel::Tap MotorPanel::tap(Transport &transport, int x, int y, bool healthy
             return Tap::back;
         }
         stop(transport);
+    } else if (y >= 238 && y < 266) {
+        if (!healthy || !armed_ || latched_) {
+            message_ = "请先准备电机并结束当前回合";
+        } else if (limit_ < MotorCheck::percent) {
+            message_ = "测试固定50%，当前上限不足；未执行";
+        } else {
+            return x < 120 ? Tap::test_first : Tap::test_second;
+        }
     } else if (y >= 190 && y < 232) {
         if (!healthy || latched_) {
             message_ = "会话未就绪或已停止；请重启后重新准备";
@@ -76,8 +84,22 @@ void MotorPanel::draw(Canvas &canvas) const {
     canvas.button(0, 146, 116, 38, std::string("减小 · ") + label);
     canvas.button(122, 146, 116, 38, "增大上限");
     canvas.button(0, 190, 238, 42, "已断电、架空，准备电机");
-    canvas.label(8, 238, "对话中直接要求操作电机");
+    canvas.button(0, 238, 116, 28, "测试1 50% 5秒");
+    canvas.button(122, 238, 116, 28, "测试2 50% 5秒");
     canvas.button(0, 270, 116, 44, "返回");
     canvas.button(122, 270, 116, 44, "停止");
+}
+void MotorPanel::test_notice(const MotorCheckNotice &notice) {
+    char text[160];
+    const char *phase = notice.phase == MotorCheckNotice::Phase::queued    ? "等待执行"
+                        : notice.phase == MotorCheckNotice::Phase::running ? "自检执行中"
+                        : notice.phase == MotorCheckNotice::Phase::completed
+                            ? "测试完成，输出已停止"
+                        : notice.phase == MotorCheckNotice::Phase::cancelled ? "测试已取消"
+                                                                             : "自检失败";
+    std::snprintf(text, sizeof(text), "电机%lu %s\nstatus=%ld reason=%lu",
+                  static_cast<unsigned long>(notice.motor + 1), phase, long(notice.status),
+                  static_cast<unsigned long>(notice.reason));
+    message_ = text;
 }
 } // namespace wifichat::wifi

@@ -1,6 +1,7 @@
 #pragma once
 #include "motor_plan.h"
 #include <ayni/control.h>
+#include <ayni/values.h>
 #include <cstring>
 namespace wifichat {
 inline constexpr uint32_t motor_version = 2, motor_procedure_us = 65000000,
@@ -28,5 +29,24 @@ inline ayni_control_envelope_v1 motor_limits() {
         range.maximum = at == 2 ? motor_plan_duration_ms_max : motor_percent_max;
     }
     return limits;
+}
+// The same closed machine input is registered by Motor and checked by native consumers.
+inline std::array<ayni_schema_node_v1, 4> motor_run_schema() {
+    std::array<ayni_schema_node_v1, 4> nodes{};
+    nodes[0].kind = AYNI_VALUE_OBJECT;
+    nodes[0].subtree_end = nodes.size();
+    const auto limits = motor_limits();
+    for (uint32_t at = 0; at < limits.count; ++at) {
+        auto &node = nodes[at + 1];
+        node.kind = AYNI_VALUE_I64;
+        node.field_id = at + 1;
+        node.subtree_end = at + 2;
+        node.flags = AYNI_SCHEMA_REQUIRED;
+        node.name = motor_text(motor_fields[at]);
+        node.unit = motor_text(at == limits.count - 1 ? "ms" : "percent");
+        node.min_i64 = limits.fields[at].minimum;
+        node.max_i64 = limits.fields[at].maximum;
+    }
+    return nodes;
 }
 } // namespace wifichat

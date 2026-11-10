@@ -32,8 +32,8 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
         }
         return rc;
     };
-    // Register contracts at boot; hardware/worker resources are acquired only
-    // after the operator enters the local motor preparation flow.
+    // Register contracts at boot; hardware and the running worker are acquired only
+    // after local preparation. The composition reserves the control stack before Host startup.
     status_input_.kind = AYNI_VALUE_OBJECT;
     status_input_.subtree_end = 1;
     result_.kind = AYNI_VALUE_TEXT;
@@ -62,15 +62,10 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
     business_[0] = {{&status_input_, 1}, {&result_, 1}, 0, 0, nullptr};
     business_[1] = {
         {plan_input_.data(), uint32_t(plan_input_.size())}, {&result_, 1}, 0, 0, nullptr};
-    run_input_ = plan_input_;
-    const auto limits = motor_limits();
+    run_input_ = motor_run_schema();
     std::array<ayni_authority_field_desc_v1, 3> fields{};
     for (uint32_t at = 0; at < fields.size(); ++at) {
         auto &node = run_input_[at + 1];
-        node.kind = AYNI_VALUE_I64;
-        node.min_u64 = node.max_u64 = 0;
-        node.min_i64 = limits.fields[at].minimum;
-        node.max_i64 = limits.fields[at].maximum;
         auto &field = fields[at];
         field.struct_size = sizeof(field);
         field.field_id = at + 1;

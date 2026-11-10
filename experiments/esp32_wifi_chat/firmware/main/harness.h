@@ -9,7 +9,9 @@ inline constexpr uint64_t context_window_tokens = 128 * 1024;
 inline constexpr uint32_t model_body_bytes = 768 * 1024;
 inline constexpr uint64_t max_output_tokens = 1800;
 inline constexpr uint64_t compact_target_tokens = 4096;
-inline constexpr uint64_t tool_result_max_tokens = 1024;
+// User-selected per-tool result budget, including complete machine contracts and reply framing.
+// ToolLoop still bounds each result by the remaining context; schemas are never truncated.
+inline constexpr uint64_t tool_result_max_tokens = 4096;
 // Model turns before Core pauses a Task; room for discovery, inspection,
 // managed-operation waits, a final answer and context compaction.
 inline constexpr uint32_t max_turns = 12;

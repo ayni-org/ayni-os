@@ -47,7 +47,9 @@ enum class Kind : uint8_t {
     forget = 32,
     tool_outline = 34,
     maintenance_stop = 36,
-    maintenance_shutdown = 37
+    maintenance_shutdown = 37,
+    motor_check = 38,
+    motor_check_state = 39
 };
 // A bounded in-process lane; network protocols are owned by their adapters.
 struct Packet {
