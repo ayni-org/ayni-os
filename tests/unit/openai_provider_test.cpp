@@ -811,3 +811,76 @@ TEST(OpenaiConfiguration, rejects_unsafe_urls_and_missing_key_without_starting_i
     EXPECT_EQ(provider.pending(), 0U);
 }
 } // namespace
+
+#include "model_wire_fixture.h"
+namespace {
+using WireApi = ayni::providers::model_protocol::Api;
+class OpenaiWireMatrix : public ayni::test::OpenaiFixture,
+                         public ::testing::WithParamInterface<std::tuple<WireApi, bool, bool>> {};
+TEST_P(OpenaiWireMatrix, NativeHttpPublishesOneStoredCompleteReply) {
+    // ADR-0098: the real curl worker consumes the shared codec for every API/mode.
+    const auto [api, streaming, tools] = GetParam();
+    std::string preview;
+    std::thread::id preview_thread;
+    configure_protocol = [&](Config &config) {
+        config.api = api;
+        config.stream = streaming;
+        config.reply_encoding = ayni::model::ReplyEncoding::framed;
+        config.preview = {&preview, [](void *context, std::string_view value) {
+                              static_cast<std::string *>(context)->append(value);
+                          }};
+        if (streaming) {
+            config.preview = {&preview_thread, [](void *context, std::string_view) {
+                                  *static_cast<std::thread::id *>(context) =
+                                      std::this_thread::get_id();
+                              }};
+        }
+    };
+    const auto body =
+        streaming                   ? ayni::test::model_wire::stream_answer(api, tools)
+        : api == WireApi::responses ? ayni::test::model_wire::responses_answer(tools)
+        : tools
+            ? R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":"你好","tool_calls":[{"id":"call_1","type":"function","function":{"name":"ayni_call_capability","arguments":"{}"}}]}}],"usage":{"prompt_tokens":30,"completion_tokens":4,"total_tokens":34}})"
+            : R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"你好"}}],"usage":{"prompt_tokens":30,"completion_tokens":4,"total_tokens":34}})";
+    start(body);
+    create();
+    wait_done();
+    ASSERT_EQ(seen_result.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_NE(seen_result.body.id, 0U);
+    EXPECT_EQ(seen_result.tool_call_count, tools ? 1U : 0U);
+    EXPECT_EQ(seen_result.model_usage.input_tokens, 30U);
+    ayni_string_v1 text_value{};
+    ayni::model::Continuation state;
+    ASSERT_EQ(ayni::model::read_reply_frame({reply.data(), uint32_t(reply.size())},
+                                            ayni::model::ReplyEncoding::framed, text_value, state),
+              AYNI_OK);
+    EXPECT_EQ(std::string_view(text_value.data, text_value.size), "你好");
+    EXPECT_NE(state.codec.size, 0U);
+    EXPECT_EQ(server->requests(), 1U);
+    EXPECT_NE(server->request().find(api == WireApi::responses ? "POST /responses HTTP/1.1"
+                                                               : "POST /chat/completions HTTP/1.1"),
+              std::string::npos);
+    if (streaming) {
+        EXPECT_NE(preview_thread, owner_thread);
+        EXPECT_NE(preview_thread, std::thread::id{});
+    }
+}
+INSTANTIATE_TEST_SUITE_P(LocalHttp, OpenaiWireMatrix,
+                         ::testing::Combine(::testing::Values(WireApi::chat_completions,
+                                                              WireApi::responses),
+                                            ::testing::Bool(), ::testing::Bool()));
+} // namespace
+
+namespace {
+TEST_F(OpenaiProvider, StreamingHttpErrorKeepsClassificationWithoutPublishingVendorData) {
+    // C-PROV-004/ADR-0098: ordinary HTTP JSON errors are not SSE and have no preview.
+    configure_protocol = [](Config &config) { config.stream = true; };
+    start(R"({"error":{"message":"fixture-vendor-detail"}})", 401);
+    create();
+    wait_done();
+    EXPECT_EQ(seen_result.status, AYNI_DENIED);
+    EXPECT_EQ(seen_result.outcome, AYNI_CALL_FAILED);
+    EXPECT_EQ(reply.find("fixture-vendor-detail"), std::string::npos);
+    EXPECT_EQ(server->requests(), 1U);
+}
+} // namespace

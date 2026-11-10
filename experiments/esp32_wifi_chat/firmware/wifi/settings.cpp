@@ -18,8 +18,11 @@ constexpr size_t record_header = 8, record_body = layout.ssid.size() + layout.pa
                                                   layout.speech_url.size() +
                                                   layout.model_url.size() +
                                                   layout.model_key.size() + layout.model.size();
-constexpr size_t record_bytes = record_header + record_body + sizeof(uint32_t);
-constexpr uint32_t record_magic = 0x41594331, record_version = 1;
+constexpr size_t legacy_record_bytes = record_header + record_body + sizeof(uint32_t);
+constexpr size_t options_bytes =
+    layout.api_type.size() + layout.stream.size() + layout.output_limit.size();
+constexpr size_t record_bytes = legacy_record_bytes + options_bytes;
+constexpr uint32_t record_magic = 0x41594331, legacy_record_version = 1, record_version = 2;
 } // namespace
 char *Settings::field(size_t index) {
     switch (index) {
@@ -33,14 +36,41 @@ char *Settings::field(size_t index) {
         return model_url.data();
     case 4:
         return model_key.data();
-    default:
+    case 5:
         return model.data();
+    case 6:
+        return api_type.data();
+    case 7:
+        return stream.data();
+    default:
+        return output_limit.data();
     }
 }
 size_t Settings::capacity(size_t index) const {
     const size_t sizes[] = {ssid.size(),      password.size(),  speech_url.size(),
-                            model_url.size(), model_key.size(), model.size()};
+                            model_url.size(), model_key.size(), model.size(),
+                            api_type.size(),  stream.size(),    output_limit.size()};
     return index < std::size(sizes) ? sizes[index] : 0;
+}
+ayni::providers::model_protocol::Api Settings::model_api() const {
+    return std::strcmp(api_type.data(), "responses") == 0
+               ? ayni::providers::model_protocol::Api::responses
+               : ayni::providers::model_protocol::Api::chat_completions;
+}
+ayni::providers::model_protocol::ChatTokenLimit Settings::model_token_limit() const {
+    return std::strcmp(output_limit.data(), "max_completion_tokens") == 0
+               ? ayni::providers::model_protocol::ChatTokenLimit::max_completion_tokens
+               : ayni::providers::model_protocol::ChatTokenLimit::max_tokens;
+}
+bool Settings::model_streaming() const {
+    return std::strcmp(stream.data(), "true") == 0;
+}
+bool Settings::model_options_valid() const {
+    return (std::strcmp(api_type.data(), "chat_completions") == 0 ||
+            std::strcmp(api_type.data(), "responses") == 0) &&
+           (std::strcmp(stream.data(), "true") == 0 || std::strcmp(stream.data(), "false") == 0) &&
+           (std::strcmp(output_limit.data(), "max_tokens") == 0 ||
+            std::strcmp(output_limit.data(), "max_completion_tokens") == 0);
 }
 bool Settings::valid() const {
     // Plain HTTP speech is the user's LAN-only deployment choice. Never send
@@ -57,7 +87,8 @@ bool Settings::valid() const {
         const char *authority = std::strstr(s, "://");
         return authority && authority[3] && authority[3] != '/' && authority[3] != ':';
     };
-    return network_valid() && clean(speech_url.data()) && clean(model_url.data()) &&
+    return model_options_valid() && network_valid() && clean(speech_url.data()) &&
+           clean(model_url.data()) &&
            (std::strncmp(speech_url.data(), "http://", 7) == 0 ||
             std::strncmp(speech_url.data(), "https://", 8) == 0) &&
            std::strncmp(model_url.data(), "https://", 8) == 0 && *model_key.data() &&
@@ -88,14 +119,17 @@ bool Settings::load() {
     if (rc == ESP_ERR_NVS_NOT_FOUND) {
         return true;
     }
-    if (rc != ESP_OK || size != record.size() || get32(record.data()) != record_magic ||
-        get32(record.data() + 4) != record_version ||
-        get32(record.data() + record.size() - 4) != checksum(record.data(), record.size() - 4)) {
+    const auto version = get32(record.data() + sizeof(uint32_t));
+    const bool legacy = version == legacy_record_version && size == legacy_record_bytes;
+    if (rc != ESP_OK || (!legacy && (size != record.size() || version != record_version)) ||
+        get32(record.data()) != record_magic ||
+        get32(record.data() + size - sizeof(uint32_t)) !=
+            checksum(record.data(), size - sizeof(uint32_t))) {
         return false;
     }
     Settings candidate{};
     size_t at = record_header;
-    for (size_t i = 0; i < field_count; ++i) {
+    for (size_t i = 0; i < (legacy ? legacy_field_count : field_count); ++i) {
         const auto bytes = capacity(i);
         if (!std::memchr(record.data() + at, 0, bytes)) {
             return false;
@@ -103,13 +137,16 @@ bool Settings::load() {
         std::memcpy(candidate.field(i), record.data() + at, bytes);
         at += bytes;
     }
+    if (!candidate.model_options_valid()) {
+        return false;
+    }
     *this = candidate;
     std::fill(record.begin(), record.end(), 0);
     return true;
 }
 bool Settings::save() const {
     // Wi-Fi can be provisioned first, before a browser supplies the model key.
-    if (!network_valid()) {
+    if (!network_valid() || !model_options_valid()) {
         return false;
     }
     nvs_handle_t store = 0;
@@ -120,7 +157,8 @@ bool Settings::save() const {
     put32(record.data(), record_magic);
     put32(record.data() + 4, record_version);
     const char *values[] = {ssid.data(),      password.data(),  speech_url.data(),
-                            model_url.data(), model_key.data(), model.data()};
+                            model_url.data(), model_key.data(), model.data(),
+                            api_type.data(),  stream.data(),    output_limit.data()};
     size_t at = record_header;
     for (size_t i = 0; i < field_count; ++i) {
         std::memcpy(record.data() + at, values[i], std::strlen(values[i]) + 1);

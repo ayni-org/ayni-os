@@ -367,3 +367,33 @@ TEST(ContextEstimate, counts_unicode_characters_and_rounds_the_selected_ratio_up
     EXPECT_EQ(bytes - projected.characters(), 7U); // Two three-byte and one four-byte code points.
 }
 } // namespace
+
+namespace {
+class SmallResultBudget : public ContextHarness {
+  protected:
+    SmallResultBudget() { limits.tool_result_max_tokens = 600; }
+};
+TEST_F(SmallResultBudget, SummaryEnvelopeStillObeysThePerToolResultBudget) {
+    // ADR-0098: a normal summary within O can exceed R; keep the completed original and hold.
+    const auto task = start("chat", "one operation", 32);
+    propose(0, 1);
+    const std::string original(2200, 'r');
+    post(1, {original.data(), uint32_t(original.size())});
+    pump();
+    ASSERT_EQ(pending.back().capability, "summary");
+    const std::string summary(1200, 's'); // 900 estimated tokens fits O=1000, exceeds R=600.
+    uint32_t chunks = 0;
+    while (work.task(task).lifecycle != AYNI_TASK_PAUSED && chunks++ < 16) {
+        ASSERT_EQ(pending.back().capability, "summary");
+        post(uint32_t(pending.size() - 1), {summary.data(), uint32_t(summary.size())});
+        pump();
+    }
+    EXPECT_EQ(work.task(task).hold_status, AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(std::count_if(pending.begin(), pending.end(),
+                            [](const auto &p) { return p.capability == "echo"; }),
+              1);
+    ASSERT_GE(storage.result_count, 2U);
+    EXPECT_EQ(storage.results[1].outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(storage.results[1].effect, AYNI_CALL_EFFECT_COMPLETE);
+}
+} // namespace

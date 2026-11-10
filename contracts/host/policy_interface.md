@@ -90,3 +90,20 @@ ABI 0.40 的 `snapshot.memory` 是决定期间的借用视图，实际来源、�
 ToolLoop 通过完整 ready/load/save 生命周期引用 Native 历史；archive/result_chunk 必须成对且依赖该生命周期，缺项在 configure 拒绝。Host 回调只复制有界工作并返回 NOT_READY；SQL 在 worker 执行。候选消息视图完成后，才请求 Core 持久保存小引用。已完成结果在被摘要前完整归档；摘要失败保留原文与真实执行结论。
 
 输入 token 预算为配置窗口减输出预留，75% 触发、50% 为目标；保留最新完整工具组。优先 Chat usage，预检与缺省统计按序列化消息/工具/结构的 Unicode 字符数×0.75 向上取整；历史前缀不变时采用实测前缀+新增估值。压缩清除统计锚点。估值不写成服务 usage，字节缓冲另有限制，超限明确拒绝。正常证据：`ContextHarness.body_write_not_yet_durable_does_not_pause_or_repeat_a_model_call`、`ContextHarness.oversized_executed_result_uses_chunk_summaries_and_keeps_known_facts`、`ContextHarness.declared_summary_failure_pauses_without_changing_the_executed_result`、`ContextEstimate.counts_unicode_characters_and_rounds_the_selected_ratio_up`、`ContextConfiguration.rejects_incomplete_archive_callbacks_and_history_lifecycle`。
+
+## 请求工具与续传补充（ADR-0098，C-POLICY-004/005/006/012）
+
+ToolLoop默认保留发现方式；可选preloaded只读取当前Task获准公共目录，在快照借用期内复制
+完整Schema/说明。定义只放在本次请求封套，不累积进历史；实际调用仍走原规范化、授权、
+Scene和PermitGate。preloaded必须注入真实协议Projection，使主请求、部分组、工具回复、结果
+余量及两类摘要共用出站投影计量；预置Schema不能截断或摘要替代。
+
+FRAMED回复由部署显式选择；History/UI只展示规范回答。规范摘要不包含opaque续传，压缩、
+权限失效和清空与其所属历史组一起移除续传，保护最新工具往返。turn格式6改变摘要游标含义，
+保留格式5reader；会话记录仍为5。旧二进制须拒绝新turn，不能从头重执。服务usage与估算分开，
+注入投影不复用旧Chat字符锚点。
+正常证据：`SharedModelLoop.PreloadedToolsUseTheRealLoopAndNeverAccumulateInHistory`、
+`SharedModelLoop.CanonicalCompactionDoesNotDiscloseOpaqueContinuationToSummary`、
+`SmallResultBudget.SummaryEnvelopeStillObeysThePerToolResultBudget`、
+`PreloadedConfiguration.RequiresTheServingProtocolsProjection`。来源/撤权仍由原Core检查，
+本补充不新增权限、不启动新恢复或故障专项。

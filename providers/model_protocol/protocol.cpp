@@ -17,14 +17,15 @@ using ::ayni::json::Writer;
 using detail::parse;
 // Statistics describe the serving model, not a local approximation. A malformed
 // optional usage object cannot erase an otherwise known model completion.
-ayni_model_usage_v1 decode_usage(yyjson_val *root) {
+ayni_model_usage_v1 decode_usage(yyjson_val *root, Api api) {
     auto *usage = yyjson_obj_get(root, "usage");
     if (!usage || yyjson_is_null(usage)) {
         return {};
     }
     const ayni_model_usage_v1 invalid{AYNI_MODEL_USAGE_INVALID, 0, 0, 0, 0};
-    auto *input = yyjson_obj_get(usage, "prompt_tokens");
-    auto *output = yyjson_obj_get(usage, "completion_tokens");
+    auto *input = yyjson_obj_get(usage, api == Api::responses ? "input_tokens" : "prompt_tokens");
+    auto *output =
+        yyjson_obj_get(usage, api == Api::responses ? "output_tokens" : "completion_tokens");
     auto *total = yyjson_obj_get(usage, "total_tokens");
     if (!yyjson_is_uint(input) || !yyjson_is_uint(output) || !yyjson_is_uint(total)) {
         return invalid;
@@ -112,17 +113,23 @@ ayni_status_t decode_arguments(yyjson_val *value, ayni_string_v1 name, Answer &a
     node.subtree_end = count;
     return AYNI_OK;
 }
-ayni_status_t decode_tool(yyjson_val *call, size_t at, Answer &answer, char *pool,
-                          size_t pool_size) {
-    if (!yyjson_equals_str(yyjson_obj_get(call, "type"), "function")) {
+ayni_status_t decode_tool(yyjson_val *call, size_t at, Answer &answer, char *pool, size_t pool_size,
+                          Api api) {
+    if (!yyjson_equals_str(yyjson_obj_get(call, "type"),
+                           api == Api::responses ? "function_call" : "function")) {
         return AYNI_INVALID_ARGUMENT;
     }
-    auto *function = yyjson_obj_get(call, "function");
+    auto *function = api == Api::responses ? call : yyjson_obj_get(call, "function");
     auto *args = yyjson_obj_get(function, "arguments");
+    auto *status = yyjson_obj_get(call, "status");
+    if (api == Api::responses && status && !yyjson_equals_str(status, "completed")) {
+        return AYNI_INVALID_ARGUMENT;
+    }
     auto &decoded = answer.calls[at];
     decoded = {};
     decoded.struct_size = sizeof(decoded);
-    if (!copy_body(yyjson_obj_get(call, "id"), answer, decoded.protocol_id) ||
+    if (!copy_body(yyjson_obj_get(call, api == Api::responses ? "call_id" : "id"), answer,
+                   decoded.protocol_id) ||
         decoded.protocol_id.size == 0 || decoded.protocol_id.size > AYNI_MODEL_TOOL_ID_BYTES_MAX ||
         !copy_body(yyjson_obj_get(function, "name"), answer, decoded.function_name) ||
         decoded.function_name.size == 0 || decoded.function_name.size > AYNI_CATALOG_ID_MAX_BYTES ||
@@ -181,10 +188,25 @@ bool Buffer::resize(size_t size) {
     return true;
 }
 
+Answer::~Answer() {
+    clear();
+}
+void Answer::clear() {
+    body.reset();
+    for (auto *value : {&continuation, &reply}) {
+        volatile char *bytes = value->data();
+        for (size_t at = 0; at < value->size(); ++at) {
+            bytes[at] = 0;
+        }
+        std::string{}.swap(*value);
+    }
+    used = 0;
+    result = {};
+}
 void Answer::fail(ayni_status_t status, ayni_reason_t reason) {
-    result.outcome = AYNI_CALL_FAILED;
+    result.outcome = status == AYNI_RESULT_UNKNOWN ? AYNI_CALL_ABANDONED : AYNI_CALL_FAILED;
     result.status = status;
-    result.reason = reason;
+    result.reason = status == AYNI_RESULT_UNKNOWN ? AYNI_REASON_NONE : reason;
     // Invalid model output does not establish whether egress/billing occurred.
     result.effect = AYNI_CALL_EFFECT_UNKNOWN;
     result.result = {};
@@ -192,114 +214,17 @@ void Answer::fail(ayni_status_t status, ayni_reason_t reason) {
     result.tool_calls = nullptr;
     result.body = {};
 }
-namespace {
-ayni_status_t write_extra(Writer &out, std::string_view input) {
-    constexpr size_t extra_bytes_max = 4096;
-    if (input.empty()) {
-        return AYNI_OK;
-    }
-    if (input.size() > extra_bytes_max) {
-        return AYNI_CAPACITY_EXCEEDED;
-    }
-    Buffer pool;
-    const auto pool_size = yyjson_read_max_memory_usage(input.size(), 0);
-    if (!pool.resize(pool_size)) {
-        return AYNI_CAPACITY_EXCEEDED;
-    }
-    ayni_status_t status = AYNI_OK;
-    auto doc =
-        parse(const_cast<char *>(input.data()), input.size(), pool.data(), pool_size, status);
-    auto *root = doc ? yyjson_doc_get_root(doc.get()) : nullptr;
-    if (!yyjson_is_obj(root)) {
-        return status != AYNI_OK ? status : AYNI_INVALID_ARGUMENT;
-    }
-    for (const auto key : {"model", "messages", "input", "tools", "stream", "max_tokens",
-                           "max_output_tokens", "store", "previous_response_id", "conversation"}) {
-        if (yyjson_obj_get(root, key)) {
-            return AYNI_INVALID_ARGUMENT;
-        }
-    }
-    if (yyjson_obj_size(root)) {
-        const auto begin = input.find('{') + 1;
-        const auto end = input.rfind('}');
-        out.raw(",");
-        out.raw(input.substr(begin, end - begin));
-    }
-    return AYNI_OK;
-}
-ayni_status_t write_request_impl(const RequestOptions &config, ayni_string_v1 input, Writer &out) {
-    if (config.model.empty() || config.model.size() > UINT32_MAX || !config.max_output_tokens ||
-        (config.result_format != AYNI_CALL_RESULT_TEXT &&
-         config.result_format != AYNI_CALL_RESULT_TOOL_CALLS)) {
-        return AYNI_INVALID_ARGUMENT;
-    }
-    out.raw("{\"model\":");
-    out.string(config.model);
-    out.raw(",\"max_tokens\":");
-    out.number(config.max_output_tokens);
-    out.raw(",\"stream\":false,");
-    if (std::string_view(input.data, input.size).substr(0, model::messages_prefix.size()) ==
-        model::messages_prefix) {
-        const auto status = model::write_context(out, input,
-                                                 config.result_format == AYNI_CALL_RESULT_TOOL_CALLS
-                                                     ? model::Mode::assistant
-                                                     : model::Mode::text);
-        if (status != AYNI_OK) {
-            return status;
-        }
-    } else {
-        ayni_string_v1 instructions{}, data{};
-        const auto status = model::split_instructions(input, instructions, data);
-        if (status != AYNI_OK) {
-            return status;
-        }
-        out.raw("\"messages\":[");
-        if (instructions.size) {
-            out.raw("{\"role\":\"system\",\"content\":");
-            out.string(instructions);
-            out.raw("},");
-        }
-        out.raw("{\"role\":\"user\",\"content\":");
-        out.string(data);
-        out.raw("}]");
-        if (config.result_format == AYNI_CALL_RESULT_TOOL_CALLS) {
-            out.raw(",\"tools\":");
-            model::write_functions(out);
-        }
-    }
-    const auto extra = write_extra(out, config.extra_parameters);
-    out.raw("}");
-    return extra;
-}
-} // namespace
-ayni_status_t Protocol::encode(const RequestOptions &config, ayni_string_v1 input,
-                               std::string &request) const {
-    auto measure = Writer::measuring();
-    auto status = write_request_impl(config, input, measure);
-    size_t size = 0;
-    if (status != AYNI_OK || !measure.finish(size)) {
-        return status != AYNI_OK ? status : AYNI_CAPACITY_EXCEEDED;
-    }
-    request.assign(size, '\0');
-    Writer out(request.data(), request.size());
-    status = write_request_impl(config, input, out);
-    size_t written = 0;
-    return status != AYNI_OK                        ? status
-           : out.finish(written) && written == size ? AYNI_OK
-                                                    : AYNI_INTERNAL;
-}
-ayni_status_t Protocol::write_request(Writer &out, const RequestOptions &options,
-                                      ayni_string_v1 input) const {
-    return write_request_impl(options, input, out);
-}
-
-// Only an explicitly finished singleton choice is business evidence. Protocol
-// metadata can be ignored after bounded validation, but arguments must be exact.
 void Protocol::decode(char *buffer, size_t size, Answer &answer) const {
+    decode(RequestOptions{}, buffer, size, answer);
+}
+void Protocol::decode(const RequestOptions &options, char *buffer, size_t size,
+                      Answer &answer) const {
     // Every decoded string is a piece of this response, copied at most twice (a tool's raw
     // arguments and their parsed strings), so the body never grows during decode.
-    answer.used = 0;
-    answer.result.model_usage = {};
+    const auto attempt = answer.result.attempt;
+    answer.clear();
+    answer.result.struct_size = sizeof(answer.result);
+    answer.result.attempt = attempt;
     answer.fail(AYNI_INVALID_ARGUMENT, AYNI_REASON_MODEL_OUTPUT);
     if (size > UINT32_MAX / 2U) {
         answer.fail(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_MODEL_OUTPUT);
@@ -315,7 +240,8 @@ void Protocol::decode(char *buffer, size_t size, Answer &answer) const {
     }
     ayni_status_t parsed = AYNI_OK;
     bool invalid_usage = false;
-    auto doc = parse(buffer, size, outer_pool.data(), pool_size, parsed, false, &invalid_usage);
+    auto doc = parse(buffer, size, outer_pool.data(), pool_size, parsed, false, &invalid_usage,
+                     envelope_depth_max, envelope_array_max);
     if (!doc) {
         answer.fail(parsed, AYNI_REASON_MODEL_OUTPUT);
         return;
@@ -323,7 +249,93 @@ void Protocol::decode(char *buffer, size_t size, Answer &answer) const {
     auto *root = yyjson_doc_get_root(doc.get());
     answer.result.model_usage = invalid_usage
                                     ? ayni_model_usage_v1{AYNI_MODEL_USAGE_INVALID, 0, 0, 0, 0}
-                                    : decode_usage(root);
+                                    : decode_usage(root, options.api);
+    if (options.api == Api::responses) {
+        if (yyjson_equals_str(yyjson_obj_get(root, "status"), "failed") ||
+            yyjson_equals_str(yyjson_obj_get(root, "status"), "incomplete")) {
+            answer.fail(AYNI_RESULT_UNKNOWN, AYNI_REASON_NONE);
+            return;
+        }
+        if (options.reply_encoding != model::ReplyEncoding::framed ||
+            !yyjson_equals_str(yyjson_obj_get(root, "status"), "completed") ||
+            !yyjson_is_arr(yyjson_obj_get(root, "output"))) {
+            return;
+        }
+        auto *items = yyjson_obj_get(root, "output");
+        uint32_t count = 0;
+        std::string text;
+        size_t at, item_count;
+        yyjson_val *item;
+        yyjson_arr_foreach(items, at, item_count, item) {
+            auto *type = yyjson_obj_get(item, "type");
+            if (yyjson_equals_str(type, "function_call")) {
+                if (count == AYNI_CALL_TOOL_COUNT_MAX) {
+                    answer.fail(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_MODEL_OUTPUT);
+                    return;
+                }
+                const auto status = decode_tool(item, count, answer, arguments_pool.data(),
+                                                pool_size, Api::responses);
+                if (status != AYNI_OK) {
+                    answer.fail(status, AYNI_REASON_MODEL_OUTPUT);
+                    return;
+                }
+                for (uint32_t before = 0; before < count; ++before) {
+                    if (std::string_view(answer.calls[before].protocol_id.data,
+                                         answer.calls[before].protocol_id.size) ==
+                        std::string_view(answer.calls[count].protocol_id.data,
+                                         answer.calls[count].protocol_id.size)) {
+                        return;
+                    }
+                }
+                ++count;
+            } else if (yyjson_equals_str(type, "message")) {
+                if (!detail::append_response_text(item, text)) {
+                    return;
+                }
+            } else if (!detail::valid_reasoning(item)) {
+                return; // Unsupported output must not be silently discarded or reinterpreted.
+            }
+        }
+        if (text.size() > answer.body.size() - answer.used || (!count && text.empty())) {
+            return;
+        }
+        std::memcpy(answer.body.data() + answer.used, text.data(), text.size());
+        answer.result.result = {answer.body.data() + answer.used,
+                                static_cast<uint32_t>(text.size())};
+        answer.used += text.size();
+        answer.result.tool_call_count = count;
+        answer.result.tool_calls = count ? answer.calls.data() : nullptr;
+        const auto write = [&](Writer &out) {
+            out.raw("{\"model\":");
+            out.string(options.model);
+            out.raw(",\"scope\":");
+            out.string(options.continuation_scope);
+            out.raw(",\"output\":");
+            detail::write_json(out, items);
+            out.raw("}");
+        };
+        auto measure = Writer::measuring();
+        write(measure);
+        size_t bytes = 0;
+        if (!measure.finish(bytes)) {
+            answer.fail(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_MODEL_OUTPUT);
+            return;
+        }
+        answer.continuation.resize(bytes);
+        Writer out(answer.continuation.data(), bytes);
+        write(out);
+        if (!out.finish(bytes)) {
+            answer.fail(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_MODEL_OUTPUT);
+            return;
+        }
+        answer.result.outcome = AYNI_CALL_COMPLETED;
+        answer.result.status = AYNI_OK;
+        answer.result.reason = AYNI_REASON_NONE;
+        answer.result.effect = AYNI_CALL_EFFECT_COMPLETE;
+        return;
+    }
+    // Only an explicitly finished singleton choice is business evidence. Stream accumulation
+    // reaches this same validation only after its terminal marker and successful HTTP EOF.
     auto *choices = yyjson_obj_get(root, "choices");
     if (!yyjson_is_arr(choices) || yyjson_arr_size(choices) != 1) {
         return;
@@ -358,8 +370,9 @@ void Protocol::decode(char *buffer, size_t size, Answer &answer) const {
             return;
         }
         for (size_t at = 0; at < count; ++at) {
-            const auto status = decode_tool(yyjson_arr_get(calls, at), at, answer,
-                                            arguments_pool.data(), pool_size);
+            const auto status =
+                decode_tool(yyjson_arr_get(calls, at), at, answer, arguments_pool.data(), pool_size,
+                            Api::chat_completions);
             if (status != AYNI_OK) {
                 answer.fail(status, AYNI_REASON_MODEL_OUTPUT);
                 return;
@@ -367,6 +380,29 @@ void Protocol::decode(char *buffer, size_t size, Answer &answer) const {
         }
         answer.result.tool_call_count = static_cast<uint32_t>(count);
         answer.result.tool_calls = answer.calls.data();
+    }
+    if (options.reply_encoding == model::ReplyEncoding::framed) {
+        const auto write = [&](Writer &out) {
+            out.raw("{\"model\":");
+            out.string(options.model);
+            out.raw(",\"scope\":");
+            out.string(options.continuation_scope);
+            out.raw("}");
+        };
+        auto measured = Writer::measuring();
+        write(measured);
+        size_t bytes = 0;
+        if (!measured.finish(bytes)) {
+            answer.fail(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_MODEL_OUTPUT);
+            return;
+        }
+        answer.continuation.resize(bytes);
+        Writer out(answer.continuation.data(), bytes);
+        write(out);
+        if (!out.finish(bytes)) {
+            answer.fail(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_MODEL_OUTPUT);
+            return;
+        }
     }
     answer.result.outcome = AYNI_CALL_COMPLETED;
     answer.result.status = AYNI_OK;

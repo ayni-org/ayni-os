@@ -32,6 +32,7 @@ ayni_authority_value_set_v1 tokens(ayni_authority_value_kind_t kind, const ayni_
 }
 class OpenaiFixture : public ::testing::Test {
   protected:
+    std::function<void(Config &)> configure_protocol;
     void start(const std::string &body, int http = 200, unsigned delay_ms = 0,
                uint32_t max_output_tokens = 1024, uint32_t timeout_ms = 1500,
                const std::string &headers = {}) {
@@ -45,6 +46,9 @@ class OpenaiFixture : public ::testing::Test {
         config.max_output_tokens = max_output_tokens;
         config.timeout_ms = timeout_ms;
         config.result_format = model_result_format;
+        if (configure_protocol) {
+            configure_protocol(config);
+        }
         initialize(config);
     }
     void initialize(Config config) {

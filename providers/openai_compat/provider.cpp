@@ -139,6 +139,9 @@ struct Provider::Impl {
         bool cancel_control = false;    // Ready answer must publish this before its terminal.
         CURL *easy = nullptr;
         Answer answer;
+        std::unique_ptr<model_protocol::Stream> stream;
+        ayni_status_t stream_status = AYNI_OK; // Worker feed error survives curl WRITE_ERROR.
+
         ~Slot() {
             if (easy) {
                 curl_easy_cleanup(easy);
@@ -251,7 +254,7 @@ struct Provider::Impl {
         while (url.back() == '/') {
             url.pop_back();
         }
-        url += "/chat/completions";
+        url += model_protocol::path(config.api);
         multi = curl_multi_init();
         if (!multi) {
             return AYNI_CAPACITY_EXCEEDED;
@@ -396,6 +399,18 @@ struct Provider::Impl {
             return 0;
         }
         const size_t size = width * count;
+        if (slot.stream) {
+            long http = 0;
+            if (curl_easy_getinfo(slot.easy, CURLINFO_RESPONSE_CODE, &http) != CURLE_OK) {
+                return 0;
+            }
+            if (http != 200) {
+                return size;
+            } // Error bodies are vendor data, never SSE or preview.
+            slot.stream_status = slot.stream->feed({data, size});
+            return slot.stream_status == AYNI_OK ? size : 0;
+        }
+
         if (slot.response.size() + size > slot.response.capacity()) {
             // Grow by doubling into a fresh buffer and wipe the old one, so no private copy
             // is left behind in freed memory.
@@ -484,24 +499,12 @@ struct Provider::Impl {
         }
         auto status = AYNI_OK;
         try {
-            if (result.tool_call_count && slot.answer_body.empty()) {
-                uint32_t size = 0;
-                status = ayni_tool_calls_write(result.tool_calls, result.tool_call_count,
-                                               result.result, nullptr, 0, &size);
-                if (status == AYNI_BUFFER_TOO_SMALL) {
-                    slot.answer_body.resize(size);
-                    status = ayni_tool_calls_write(
-                        result.tool_calls, result.tool_call_count, result.result,
-                        reinterpret_cast<uint8_t *>(slot.answer_body.data()), size, &size);
-                }
+            if (slot.answer_body.empty()) {
+                status = model_protocol::encode_answer(request_options(config), slot.answer,
+                                                       slot.answer_body);
             }
-            // Text is written straight from the decoded answer, which lives until publication.
-            const ayni_bytes_v1 bytes =
-                result.tool_call_count
-                    ? ayni_bytes_v1{reinterpret_cast<const uint8_t *>(slot.answer_body.data()),
-                                    static_cast<uint32_t>(slot.answer_body.size())}
-                    : ayni_bytes_v1{reinterpret_cast<const uint8_t *>(result.result.data),
-                                    result.result.size};
+            const ayni_bytes_v1 bytes{reinterpret_cast<const uint8_t *>(slot.answer_body.data()),
+                                      static_cast<uint32_t>(slot.answer_body.size())};
             ayni_body_ref_v1 ref{};
             if (status == AYNI_OK) {
                 status =
@@ -532,6 +535,8 @@ struct Provider::Impl {
         slot.answer.fail(AYNI_INTERNAL, AYNI_REASON_NONE);
         wipe(slot.response);
         slot.response_overflow = false;
+        slot.stream_status = AYNI_OK;
+        slot.stream.reset();
         slot.phase.store(Phase::ready);
         const auto remaining =
             std::chrono::duration_cast<std::chrono::milliseconds>(slot.deadline - Clock::now())
@@ -554,6 +559,15 @@ struct Provider::Impl {
             slot.answer.fail(encoded, AYNI_REASON_NONE);
             slot.answer.result.effect = AYNI_CALL_EFFECT_NONE;
             return;
+        }
+        if (config.stream) {
+            slot.stream.reset(new (std::nothrow) model_protocol::Stream(
+                request_options(config), slot.response_limit, config.preview));
+            if (!slot.stream || slot.stream->status() != AYNI_OK) {
+                slot.answer.fail(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE);
+                slot.answer.result.effect = AYNI_CALL_EFFECT_NONE;
+                return;
+            }
         }
         if (!setup(slot, static_cast<long>(remaining)) ||
             curl_multi_add_handle(multi, slot.easy) != CURLM_OK) {
@@ -595,7 +609,11 @@ struct Provider::Impl {
             return;
         }
         if (code != CURLE_OK) {
-            abandon(slot);
+            if (slot.stream_status != AYNI_OK) {
+                slot.answer.fail(slot.stream_status, AYNI_REASON_MODEL_OUTPUT);
+            } else {
+                abandon(slot);
+            }
             return;
         }
         long http = 0;
@@ -608,7 +626,12 @@ struct Provider::Impl {
                        http_rate_limit = 429, http_server_error = 500;
         if (http == http_ok) {
             try {
-                protocol.decode(slot.response.data(), slot.response.size(), slot.answer);
+                if (slot.stream) {
+                    slot.stream->finish(slot.answer);
+                } else {
+                    protocol.decode(request_options(config), slot.response.data(),
+                                    slot.response.size(), slot.answer);
+                }
             } catch (const std::bad_alloc &) {
                 slot.answer.fail(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_MODEL_OUTPUT);
             }
@@ -658,7 +681,8 @@ struct Provider::Impl {
         wipe(slot.input);
         wipe(slot.request);
         wipe(slot.response);
-        slot.answer.body.reset();
+        slot.answer.clear();
+        slot.stream.reset();
         wipe(slot.answer_body);
         slot.input_ref = {};
         active.fetch_sub(1);
@@ -779,6 +803,12 @@ ayni_status_t Provider::configure(const Config &config) {
         return AYNI_INVALID_ARGUMENT;
     }
     try {
+        std::string probe;
+        const auto validated =
+            model_protocol::Protocol{}.encode(request_options(config), {"", 0}, probe);
+        if (validated != AYNI_OK) {
+            return validated;
+        }
         auto created = std::make_unique<Impl>(config);
         const auto status = created->initialize();
         if (status != AYNI_OK) {

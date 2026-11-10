@@ -128,7 +128,7 @@ gtest_discover_tests(ayni_unit_tests)
 add_executable(ayni_openai_provider_tests openai_provider_test.cpp)
 target_link_libraries(ayni_openai_provider_tests PRIVATE ayni_core ayni_core_internal
     ayni_openai_protocol_fixture ayni_runtime_common
-    ayni_host_sim ayni_provider_mock ayni_provider_openai_compat ayni_warnings GTest::gtest_main)
+    ayni_host_sim ayni_provider_mock ayni_provider_openai_compat yyjson ayni_warnings GTest::gtest_main)
 gtest_discover_tests(ayni_openai_provider_tests)
 add_executable(ayni_model_protocol_tests model_protocol_test.cpp)
 target_link_libraries(ayni_model_protocol_tests PRIVATE ayni_model_protocol yyjson
@@ -141,9 +141,9 @@ add_executable(ayni_openai_smoke EXCLUDE_FROM_ALL ../manual/openai_smoke.cpp)
 target_link_libraries(ayni_openai_smoke PRIVATE ayni_core ayni_core_internal ayni_runtime_common
     ayni_host_sim ayni_provider_mock ayni_provider_openai_compat ayni_warnings GTest::gtest)
 
-add_executable(ayni_strategies_tests strategies_test.cpp conversation_test.cpp harness_context_test.cpp managed_operations_test.cpp)
+add_executable(ayni_strategies_tests shared_model_loop_test.cpp strategies_test.cpp conversation_test.cpp harness_context_test.cpp managed_operations_test.cpp)
 target_link_libraries(ayni_strategies_tests PRIVATE ayni_core ayni_core_internal ayni_runtime_common
-    ayni_host_sim ayni_strategies ayni_provider_software ayni_warnings GTest::gtest_main)
+    ayni_host_sim ayni_strategies ayni_model_protocol yyjson ayni_provider_software ayni_warnings GTest::gtest_main)
 gtest_discover_tests(ayni_strategies_tests)
 
 add_executable(ayni_native_assistant_tests native_assistant_test.cpp kernel_query_test.cpp conversation_store_test.cpp)

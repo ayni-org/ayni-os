@@ -506,7 +506,8 @@ inline void write_text_message(json::Writer &out, const Message &message) {
     out.raw("}");
 }
 // Owns the sole matching state: a new message requires a complete preceding tool group.
-inline ayni_status_t write_messages(json::Writer &out, ayni_string_v1 input,
+template <class Emit>
+inline ayni_status_t visit_messages(ayni_string_v1 input, Emit emit,
                                     Completeness completeness = Completeness::complete,
                                     Continuations continuations = Continuations::reject) {
     Reader reader(input);
@@ -514,16 +515,12 @@ inline ayni_status_t write_messages(json::Writer &out, ayni_string_v1 input,
     std::array<ayni_string_v1, AYNI_CALL_TOOL_COUNT_MAX> pending{};
     uint32_t pending_count = 0;
     bool first = true;
-    out.raw("[");
     while (reader.next(message)) {
         if (message.continuation.codec.size && continuations == Continuations::reject) {
             return AYNI_UNSUPPORTED;
         }
         if (pending_count && message.role != Role::tool) {
             return AYNI_INVALID_ARGUMENT;
-        }
-        if (!first) {
-            out.raw(",");
         }
         first = false;
         if (message.role == Role::calls) {
@@ -538,7 +535,7 @@ inline ayni_status_t write_messages(json::Writer &out, ayni_string_v1 input,
                 pending[at] = id;
             }
             pending_count = message.count;
-            write_calls_message(out, message);
+
         } else {
             if (message.role == Role::tool) {
                 uint32_t found = 0;
@@ -552,13 +549,38 @@ inline ayni_status_t write_messages(json::Writer &out, ayni_string_v1 input,
                 }
                 pending[found] = pending[--pending_count];
             }
-            write_text_message(out, message);
+        }
+        const auto status = emit(message);
+        if (status != AYNI_OK) {
+            return status;
         }
     }
-    out.raw("]");
     return reader.finished() && !first && (!pending_count || completeness == Completeness::partial)
                ? AYNI_OK
                : AYNI_INVALID_ARGUMENT;
+}
+inline ayni_status_t write_messages(json::Writer &out, ayni_string_v1 input,
+                                    Completeness completeness = Completeness::complete,
+                                    Continuations continuations = Continuations::reject) {
+    bool first = true;
+    out.raw("[");
+    const auto status = visit_messages(
+        input,
+        [&](const Message &message) {
+            if (!first) {
+                out.raw(",");
+            }
+            first = false;
+            if (message.role == Role::calls) {
+                write_calls_message(out, message);
+            } else {
+                write_text_message(out, message);
+            }
+            return AYNI_OK;
+        },
+        completeness, continuations);
+    out.raw("]");
+    return status;
 }
 // Context fields share this exact projection with the transport; model name,
 // HTTP options and output-token limits are outside the context budget.
@@ -618,6 +640,44 @@ inline ayni_status_t estimate_input(ayni_string_v1 input, Mode mode, TokenEstima
     }
     estimate = {estimate_tokens(measured.characters()), measured.characters()};
     return AYNI_OK;
+}
+// Optional SDK projection port. Both callbacks share the serving protocol's writers; the
+// borrowed context lives through strategy destruction and is immutable during a decision.
+struct Projection {
+    void *context = nullptr; // Null is allowed when callbacks require no state.
+    ayni_status_t (*context_writer)(void *, json::Writer &, ayni_string_v1, Mode,
+                                    Completeness) = nullptr; // Null selects legacy Chat projection.
+    // Writes the matching reply envelope for the same protocol, including its separator.
+    // Null selects legacy Chat measurement; configure requires both callbacks or neither.
+    void (*reply_writer)(void *, json::Writer &, ayni_string_v1, ayni_string_v1) = nullptr;
+};
+inline ayni_status_t estimate_input(const Projection &projection, ayni_string_v1 input, Mode mode,
+                                    TokenEstimate &estimate,
+                                    Completeness completeness = Completeness::complete) {
+    if (!projection.context_writer) {
+        return estimate_input(input, mode, estimate, completeness);
+    }
+    auto measured = json::Writer::measuring();
+    const auto status =
+        projection.context_writer(projection.context, measured, input, mode, completeness);
+    size_t bytes = 0;
+    if (status != AYNI_OK) {
+        return status;
+    }
+    if (!measured.finish(bytes)) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    estimate = {estimate_tokens(measured.characters()), measured.characters()};
+    return AYNI_OK;
+}
+inline uint64_t estimate_tool_reply(const Projection &projection, ayni_string_v1 id,
+                                    ayni_string_v1 content) {
+    if (!projection.reply_writer) {
+        return estimate_tool_reply(id, content);
+    }
+    auto measured = json::Writer::measuring();
+    projection.reply_writer(projection.context, measured, id, content);
+    return estimate_tokens(measured.characters());
 }
 } // namespace ayni::model
 #endif

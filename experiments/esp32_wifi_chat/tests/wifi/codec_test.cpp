@@ -164,8 +164,10 @@ TEST(WifiModel, CompleteTextUsesExistingPacketContract) {
     ASSERT_TRUE(decode_model(
         R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"你好"}}]})",
         false, packet));
-    EXPECT_EQ(packet.kind, Kind::model_text);
-    EXPECT_EQ(std::string(reinterpret_cast<char *>(packet.body.data()), packet.size), "你好");
+    EXPECT_EQ(packet.kind, Kind::model_result);
+    EXPECT_EQ(std::string(reinterpret_cast<char *>(packet.body.data() + model_result_header_bytes),
+                          packet.size - model_result_header_bytes),
+              "你好");
 }
 TEST(WifiModel, IncompleteAndAmbiguousResponsesAreNotBusinessSuccess) {
     Packet packet{};
@@ -243,14 +245,17 @@ TEST(WifiModel, ActionToolsRoundTripThroughPublicSdkWithOwnedArguments) {
     auto packet = std::make_unique<Packet>();
     EXPECT_FALSE(decode_model(response, false, *packet));
     ASSERT_TRUE(decode_model(response, true, *packet));
-    ASSERT_EQ(packet->kind, Kind::model_tools);
+    ASSERT_EQ(packet->kind, Kind::model_result);
     size_t bytes = 0, alignment = 0;
     ASSERT_EQ(ayni::strategies::ToolLoop::workspace_requirements(&bytes, &alignment), AYNI_OK);
     std::vector<uint64_t> storage((bytes + sizeof(uint64_t) - 1) / sizeof(uint64_t));
     const ayni_workspace_v1 workspace{sizeof(workspace), 0, storage.data(),
                                       storage.size() * sizeof(uint64_t)};
     auto tools = std::make_unique<ModelTools>();
-    ASSERT_EQ(tools->decode({packet->body.data(), packet->size}, workspace), AYNI_OK);
+    ASSERT_EQ(tools->decode({packet->body.data() + model_result_header_bytes,
+                             packet->size - uint32_t(model_result_header_bytes)},
+                            workspace),
+              AYNI_OK);
     response.clear();
     packet.reset();
     ASSERT_EQ(tools->count(), 1U);
@@ -288,7 +293,10 @@ TEST(WifiModel, ProgressOutlineDisclosesOnlyProtocolMetadata) {
     const ayni_workspace_v1 workspace{sizeof(workspace), 0, storage.data(),
                                       storage.size() * sizeof(uint64_t)};
     auto tools = std::make_unique<ModelTools>();
-    ASSERT_EQ(tools->decode({packet->body.data(), packet->size}, workspace), AYNI_OK);
+    ASSERT_EQ(tools->decode({packet->body.data() + model_result_header_bytes,
+                             packet->size - uint32_t(model_result_header_bytes)},
+                            workspace),
+              AYNI_OK);
     std::array<char, tool_outline_bytes> out{};
     size_t used = 0;
     ASSERT_EQ(tools->outline(out.data(), out.size(), used), AYNI_OK);
@@ -325,7 +333,10 @@ TEST(WifiModel, ProgressOutlineNeverPromotesNestedBusinessFieldsOrUnknownTools) 
                 R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[)") +
             proposal + R"(]}}]})";
         ASSERT_TRUE(decode_model(response, true, *packet));
-        ASSERT_EQ(tools->decode({packet->body.data(), packet->size}, workspace), AYNI_OK);
+        ASSERT_EQ(tools->decode({packet->body.data() + model_result_header_bytes,
+                                 packet->size - uint32_t(model_result_header_bytes)},
+                                workspace),
+                  AYNI_OK);
         std::array<char, tool_outline_bytes> out{};
         size_t used = 0;
         ASSERT_EQ(tools->outline(out.data(), out.size(), used), AYNI_OK);
@@ -361,11 +372,112 @@ TEST(WifiModel, ProgressRetainsTheRootProtocolOperationAfterTheBinding) {
         size_t used = 0;
         ASSERT_TRUE(json.finish(used));
         ASSERT_TRUE(decode_model({response.data(), used}, true, *packet));
-        ASSERT_EQ(tools->decode({packet->body.data(), packet->size}, workspace), AYNI_OK);
+        ASSERT_EQ(tools->decode({packet->body.data() + model_result_header_bytes,
+                                 packet->size - uint32_t(model_result_header_bytes)},
+                                workspace),
+                  AYNI_OK);
         std::array<char, tool_outline_bytes> outline{};
         ASSERT_EQ(tools->outline(outline.data(), outline.size(), used), AYNI_OK);
         const std::string_view metadata(outline.data(), used);
         EXPECT_NE(metadata.find(std::string("\"operation\":\"") + mode + '"'), metadata.npos);
         EXPECT_EQ(metadata.find("private"), metadata.npos);
     }
+}
+
+TEST(WifiSettings, ApiAndStreamingOptionsPersistWithoutChangingSavedSecrets) {
+    // ADR-0098: one atomic versioned configuration, loaded by the next boot.
+    reset_nvs();
+    Settings first;
+    ASSERT_TRUE(first.load());
+    std::strcpy(first.ssid.data(), "example");
+    std::strcpy(first.model_key.data(), "fixture-key");
+    std::strcpy(first.api_type.data(), "responses");
+    std::strcpy(first.stream.data(), "true");
+    std::strcpy(first.output_limit.data(), "max_completion_tokens");
+    ASSERT_TRUE(first.save());
+    Settings reopened;
+    ASSERT_TRUE(reopened.load());
+    EXPECT_STREQ(reopened.api_type.data(), "responses");
+    EXPECT_STREQ(reopened.stream.data(), "true");
+    EXPECT_STREQ(reopened.output_limit.data(), "max_completion_tokens");
+    EXPECT_STREQ(reopened.model_key.data(), "fixture-key");
+    SettingsPatch patch;
+    EXPECT_FALSE(parse_settings_patch(R"({"api_type":"guess"})", patch));
+    EXPECT_FALSE(parse_settings_patch(R"({"stream":"yes"})", patch));
+    EXPECT_TRUE(parse_settings_patch(R"({"api_type":"responses","stream":"true"})", patch));
+}
+TEST(WifiSettings, LegacySettingsRetainChatNonStreamingDefaults) {
+    // ADR-0098: v1 snapshots remain readable; no factory reset or credential migration.
+    reset_nvs();
+    Settings first;
+    std::strcpy(first.ssid.data(), "legacy-network");
+    std::strcpy(first.model_key.data(), "legacy-key");
+    constexpr size_t header = 8;
+    std::vector<uint8_t> record(header, 0);
+    put32(record.data(), 0x41594331);
+    put32(record.data() + 4, 1);
+    for (size_t at = 0; at < Settings::legacy_field_count; ++at) {
+        const size_t begin = record.size();
+        record.resize(begin + first.capacity(at), 0);
+        std::memcpy(record.data() + begin, first.field(at), std::strlen(first.field(at)));
+    }
+    const auto payload = record.size();
+    record.resize(payload + sizeof(uint32_t));
+    put32(record.data() + payload, checksum(record.data(), payload));
+    nvs_handle_t store = 0;
+    ASSERT_EQ(nvs_open("ayni_wifi", NVS_READWRITE, &store), ESP_OK);
+    ASSERT_EQ(nvs_set_blob(store, "settings", record.data(), record.size()), ESP_OK);
+    ASSERT_EQ(nvs_commit(store), ESP_OK);
+    nvs_close(store);
+    Settings loaded;
+    ASSERT_TRUE(loaded.load());
+    EXPECT_STREQ(loaded.ssid.data(), "legacy-network");
+    EXPECT_STREQ(loaded.model_key.data(), "legacy-key");
+    EXPECT_STREQ(loaded.api_type.data(), "chat_completions");
+    EXPECT_STREQ(loaded.stream.data(), "false");
+    EXPECT_STREQ(loaded.output_limit.data(), "max_tokens");
+}
+TEST(WifiModel, ResponsesStoredReplyKeepsContinuationAndUsageOutOfVisibleText) {
+    // ADR-0098: the ESP queue carries the same selected reply encoding as Native.
+    using namespace ayni::providers::model_protocol;
+    RequestOptions options;
+    options.model = "fixture";
+    options.api = Api::responses;
+    options.continuation_scope = "route";
+    options.reply_encoding = ayni::model::ReplyEncoding::framed;
+    const std::string response =
+        R"({"status":"completed","output":[{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"opaque"},{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"visible"}]}],"usage":{"input_tokens":21,"output_tokens":3,"total_tokens":24}})";
+    auto packet = std::make_unique<Packet>();
+    ASSERT_TRUE(decode_model(response, true, *packet, options));
+    ASSERT_EQ(packet->kind, Kind::model_result);
+    EXPECT_EQ(get32(packet->body.data()), 0U);
+    EXPECT_EQ(get64(packet->body.data() + 8), 21U);
+    ayni_string_v1 text_value;
+    ayni::model::Continuation state;
+    ASSERT_EQ(ayni::model::read_reply_frame(
+                  {reinterpret_cast<const char *>(packet->body.data() + model_result_header_bytes),
+                   packet->size - uint32_t(model_result_header_bytes)},
+                  options.reply_encoding, text_value, state),
+              AYNI_OK);
+    EXPECT_EQ(std::string_view(text_value.data, text_value.size), "visible");
+    EXPECT_NE(std::string_view(state.data.data, state.data.size).find("opaque"),
+              std::string_view::npos);
+}
+
+TEST(WifiModel, CompleteOutputRefusalKeepsSharedStatusReasonAndEffect) {
+    // C-PROV-004/ADR-0098: a complete malformed output is a classified refusal, not transport
+    // UNKNOWN.
+    Packet packet;
+    EXPECT_FALSE(decode_model(
+        R"({"choices":[{"finish_reason":"length","message":{"role":"assistant","content":"partial"}}]})",
+        true, packet));
+    ASSERT_EQ(packet.kind, Kind::model_error);
+    ASSERT_EQ(packet.size, model_result_header_bytes);
+    EXPECT_EQ(get32(packet.body.data() + 32), AYNI_CALL_FAILED);
+    EXPECT_EQ(static_cast<int32_t>(get32(packet.body.data() + 36)), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(get32(packet.body.data() + 40), AYNI_REASON_MODEL_OUTPUT);
+    EXPECT_EQ(get32(packet.body.data() + 44), AYNI_CALL_EFFECT_UNKNOWN);
+    model_failure(packet, AYNI_RESULT_UNKNOWN, AYNI_REASON_MODEL_OUTPUT);
+    EXPECT_EQ(get32(packet.body.data() + 32), AYNI_CALL_ABANDONED);
+    EXPECT_EQ(get32(packet.body.data() + 40), AYNI_REASON_NONE);
 }

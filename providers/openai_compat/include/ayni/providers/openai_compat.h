@@ -1,8 +1,9 @@
-// Native non-streaming Chat Completions adapter (ADR-0055). No Core-private dependency.
+// Native Chat Completions/Responses adapter (ADR-0055, ADR-0098). No Core-private dependency.
 #ifndef AYNI_PROVIDERS_OPENAI_COMPAT_H
 #define AYNI_PROVIDERS_OPENAI_COMPAT_H
 #include <ayni/bodies.h>
 #include <ayni/calls.h>
+#include <ayni/providers/model_protocol.h>
 #include <memory>
 #include <string>
 
@@ -16,7 +17,7 @@ inline constexpr uint32_t call_result_bytes_max = 0;
 inline constexpr uint32_t request_capacity_max = 8, timeout_ms_max = 300000;
 // Trusted startup configuration, copied by configure. No secret value belongs here.
 struct Config {
-    std::string base_url; // HTTPS API root, optionally with /v1; appends /chat/completions.
+    std::string base_url; // HTTPS API root, optionally with /v1; appends the selected API path.
     std::string model;
     std::string key_environment; // Name only; Provider reads its value once at configure.
     std::string provider_id = "openai.compat";
@@ -24,8 +25,9 @@ struct Config {
     std::string destination_id = "openai.remote";
     uint32_t request_capacity = 1; // 1..8 concurrent requests; fixed at configure.
     uint32_t timeout_ms = 30000;   // From submit, including the local queue; 1..300000 ms.
-    // Sent as max_tokens, positive. Buffers grow with each request and its response; the
-    // response is refused past what this many output tokens can need (ADR-0095).
+    // Positive; selected API/chat_token_limit chooses the wire field. Buffers grow with each
+    // request and its response; the response is refused past what this many output tokens can need
+    // (ADR-0095).
     uint32_t max_output_tokens = 1024;
     // TEXT declares openai.text and offers no tools (conversation summaries);
     // TOOL_CALLS preserves openai.chat. Other formats are rejected.
@@ -33,6 +35,12 @@ struct Config {
     // Required. Request bodies are read and verified here, and each answer (text, or the
     // tool-call list encoding) is written here before it is posted. Outlives close.
     const ayni_body_store_v1 *bodies = nullptr;
+    model_protocol::Api api = model_protocol::Api::chat_completions;
+    bool stream = false;
+    model_protocol::ChatTokenLimit chat_token_limit = model_protocol::ChatTokenLimit::max_tokens;
+    model::ReplyEncoding reply_encoding = model::ReplyEncoding::text;
+    std::string extra_parameters;      // Explicit service extensions; cannot override wire fields.
+    model_protocol::Preview preview{}; // I/O worker callback; tentative text only.
 };
 // Owner-thread configure/describe/close and callbacks; one internal I/O worker.
 // submit copies an inline body or a body reference without I/O or waiting. The worker reads

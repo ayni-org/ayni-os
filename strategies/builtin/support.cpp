@@ -231,7 +231,7 @@ ayni_status_t result(const ayni_task_snapshot_v1 &snapshot, ayni_string_v1 key,
 }
 ayni_status_t model_result(Workspace &workspace, const ayni_body_store_v1 &bodies,
                            const ayni_task_snapshot_v1 &snapshot, ayni_string_v1 key,
-                           ModelResult &out) {
+                           ModelResult &out, model::ReplyEncoding encoding) {
     auto status = result(snapshot, key, out.call);
     auto &call = out.call;
     if (status != AYNI_OK || call.outcome != AYNI_CALL_COMPLETED) {
@@ -247,8 +247,7 @@ ayni_status_t model_result(Workspace &workspace, const ayni_body_store_v1 &bodie
         call.body = {};
     }
     if (!call.tool_call_count) {
-        call.text = bytes;
-        return AYNI_OK;
+        return model::read_reply_frame(bytes, encoding, call.text, out.continuation);
     }
     uint32_t count = 0;
     ayni_string_v1 assistant{};
@@ -262,8 +261,7 @@ ayni_status_t model_result(Workspace &workspace, const ayni_body_store_v1 &bodie
         return status != AYNI_OK ? status : AYNI_INVALID_ARGUMENT;
     }
     out.list = bytes;
-    call.text = assistant;
-    return AYNI_OK;
+    return model::read_reply_frame(assistant, encoding, call.text, out.continuation);
 }
 ayni_status_t read_proposal(Workspace &workspace, ayni_string_v1 list, uint32_t index,
                             ayni_task_tool_call_v1 &out) {

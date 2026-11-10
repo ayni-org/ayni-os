@@ -10,7 +10,8 @@ using namespace detail;
 constexpr uint32_t record_magic = 0x434E5941U; // AYNC, little endian.
 constexpr uint32_t turn_magic = 0x544E5941U;   // AYNT.
 constexpr uint32_t bits_per_byte = 8;
-constexpr uint32_t conversation_format = 5; // Texts are body references (ADR-0096).
+constexpr uint32_t conversation_format = 5;   // Texts are body references (ADR-0096).
+constexpr uint32_t canonical_turn_format = 6; // Canonical summary offsets (ADR-0098).
 constexpr uint32_t word_bytes = 4;
 constexpr uint32_t wide_bytes = 8;
 
@@ -200,24 +201,32 @@ bool valid_history(const std::string &history) {
     }
     return reader.finished();
 }
-ayni_status_t header(Decoder &reader, uint32_t expected) {
+ayni_status_t header(Decoder &reader, uint32_t expected, uint32_t *version = nullptr) {
     uint32_t magic = 0, format = 0;
     reader.u32(magic);
     reader.u32(format);
     if (magic != expected) {
         return AYNI_INVALID_ARGUMENT;
     }
-    return format == conversation_format ? AYNI_OK : AYNI_UNSUPPORTED_VERSION;
+    if (version) {
+        *version = format;
+    }
+    return format == conversation_format ||
+                   (expected == turn_magic && format == canonical_turn_format)
+               ? AYNI_OK
+               : AYNI_UNSUPPORTED_VERSION;
 }
 
 // Decodes references and control state only; no body is read.
 ayni_status_t decode_turn(ayni_bytes_v1 bytes, Turn &out) {
     Decoder reader(bytes);
-    const auto status = header(reader, turn_magic);
+    uint32_t format = 0;
+    const auto status = header(reader, turn_magic, &format);
     if (status != AYNI_OK) {
         return status;
     }
     Turn parsed;
+    parsed.canonical_summary = format == canonical_turn_format;
     uint32_t done = 0;
     reader.u32(done);
     reader.u64(parsed.base_revision);
@@ -234,7 +243,7 @@ ayni_status_t decode_turn(ayni_bytes_v1 bytes, Turn &out) {
         parsed.group_start > parsed.record.history.size ||
         parsed.compact_prefix > parsed.record.history.size ||
         parsed.history_summary.offset > parsed.history_summary.next ||
-        parsed.history_summary.next > parsed.compact_prefix ||
+        (!parsed.canonical_summary && parsed.history_summary.next > parsed.compact_prefix) ||
         parsed.result_summary.offset > parsed.result_summary.next ||
         parsed.result_summary.next > parsed.archived_result.json_bytes) {
         return AYNI_INVALID_ARGUMENT;
@@ -259,7 +268,7 @@ ayni_status_t encode_turn(const Turn &turn, uint8_t *data, uint32_t capacity, ui
     }
     Encoder writer(data, capacity);
     writer.u32(turn_magic);
-    writer.u32(conversation_format);
+    writer.u32(turn.canonical_summary ? canonical_turn_format : conversation_format);
     writer.u32(turn.done ? 1U : 0U);
     writer.u64(turn.base_revision);
     writer.u64(turn.memory_id);

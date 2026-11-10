@@ -26,6 +26,12 @@ class Api {
         bool ok = false;
         std::array<char, 128> error{};
     };
+    struct ModelPreview {
+        uint64_t id = 0;
+        uint32_t generation = 0, size = 0;
+        std::array<char, answer_bytes> text{};
+    };
+    bool take_preview(ModelPreview &);
     bool initialize(const Settings &settings, Transport &transport);
     bool submit(Request kind, uint64_t id, const void *data = nullptr, size_t bytes = 0,
                 uint8_t *audio = nullptr, size_t audio_bytes = 0);
@@ -46,11 +52,13 @@ class Api {
     bool http(Job &, const char *url, const char *content_type, const void *prefix,
               size_t prefix_bytes, const void *body, size_t body_bytes, const void *suffix,
               size_t suffix_bytes, size_t response_limit, CaptureReader *capture = nullptr,
-              SpeechStream *stream = nullptr);
+              SpeechStream *stream = nullptr,
+              ayni::providers::model_protocol::Stream *model_stream = nullptr);
     Settings settings_{};
     Transport *transport_ = nullptr;                   // Stable boot-lifetime body-store access.
     std::array<char, tx_bytes + 1024> request_body_{}; // One worker, bounded JSON/multipart prefix.
-    QueueHandle_t free_ = nullptr, waiting_ = nullptr, done_ = nullptr;
+    QueueHandle_t free_ = nullptr, waiting_ = nullptr, done_ = nullptr, previews_ = nullptr;
+    ModelPreview preview_snapshot_{}; // Worker-owned, latest snapshot queue never blocks.
     std::array<Job, slots> jobs_{};
     std::atomic<uint32_t> generation_{1};
     std::atomic<uint32_t> outstanding_{0}; // Accepted jobs until worker I/O/borrows have ended.

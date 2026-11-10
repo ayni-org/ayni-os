@@ -2,6 +2,7 @@
 #pragma once
 #include <array>
 #include <ayni/bodies.h>
+#include <ayni/providers/model_protocol.h>
 #include <cstddef>
 #include <cstdint>
 namespace wifichat {
@@ -16,6 +17,22 @@ constexpr uint32_t owner_stack_capacity = 96 * 1024;
 constexpr size_t body_reference_bytes = 24; // id, digest, size and reserved, little endian.
 constexpr size_t model_request_bytes = body_reference_bytes + sizeof(uint32_t);
 constexpr size_t tool_outline_bytes = 2048;
+// Frozen non-secret selection shared by protocol measurement and the HTTP worker.
+struct ModelSelection {
+    std::array<char, 17> route{};
+    std::array<char, 64> model{};
+    std::array<char, 192> scope{};
+    ayni::providers::model_protocol::Api api =
+        ayni::providers::model_protocol::Api::chat_completions;
+    ayni::providers::model_protocol::ChatTokenLimit chat_token_limit =
+        ayni::providers::model_protocol::ChatTokenLimit::max_tokens;
+};
+namespace model_result_fields {
+inline constexpr size_t count = 0, usage_kind = 4, input_tokens = 8, output_tokens = 16,
+                        total_tokens = 24, outcome = 32, status = 36, reason = 40, effect = 44;
+inline constexpr size_t bytes = 48;
+} // namespace model_result_fields
+inline constexpr size_t model_result_header_bytes = model_result_fields::bytes;
 enum class Kind : uint8_t {
     hello = 1,
     user = 2,
@@ -49,7 +66,8 @@ enum class Kind : uint8_t {
     maintenance_stop = 36,
     maintenance_shutdown = 37,
     motor_check = 38,
-    motor_check_state = 39
+    motor_check_state = 39,
+    model_result = 40
 };
 // A bounded in-process lane; network protocols are owned by their adapters.
 struct Packet {
@@ -73,6 +91,33 @@ inline void put32(uint8_t *p, uint32_t n) {
 inline void put64(uint8_t *p, uint64_t n) {
     put32(p, uint32_t(n));
     put32(p + sizeof(uint32_t), uint32_t(n >> 32U));
+}
+// One reader/writer owns this experiment's result metadata layout. Raw model text and
+// continuation stay in the following body; status metadata contains no vendor message.
+inline void write_model_result_header(uint8_t *header, const ayni_provider_result_v1 &result) {
+    using namespace model_result_fields;
+    put32(header + count, result.tool_call_count);
+    put32(header + usage_kind, result.model_usage.kind);
+    put64(header + input_tokens, result.model_usage.input_tokens);
+    put64(header + output_tokens, result.model_usage.output_tokens);
+    put64(header + total_tokens, result.model_usage.total_tokens);
+    put32(header + outcome, result.outcome);
+    put32(header + status, static_cast<uint32_t>(result.status));
+    put32(header + reason, result.reason);
+    put32(header + effect, result.effect);
+}
+inline ayni_provider_result_v1 read_model_result_header(const uint8_t *header) {
+    using namespace model_result_fields;
+    ayni_provider_result_v1 result{};
+    result.struct_size = sizeof(result);
+    result.tool_call_count = get32(header + count);
+    result.model_usage = {get32(header + usage_kind), 0, get64(header + input_tokens),
+                          get64(header + output_tokens), get64(header + total_tokens)};
+    result.outcome = get32(header + outcome);
+    result.status = static_cast<int32_t>(get32(header + status));
+    result.reason = get32(header + reason);
+    result.effect = get32(header + effect);
+    return result;
 }
 inline void put_body_reference(uint8_t *p, const ayni_body_ref_v1 &ref) {
     put64(p, ref.id);

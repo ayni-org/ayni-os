@@ -88,3 +88,22 @@ HTTP 分类与非法参数、列表数量/编码上限由 `OpenaiHttpError`、`O
 取消先发表 CANCEL_UNKNOWN，再 ABANDONED 归还借用；HTTP/模型错误的 effect 为 UNKNOWN，
 不能由错误码推断从未外发或未计费。正常排空后，组合根须 join worker 才能释放上下文。
 独立手动 DeepSeek 验证见 [#75](https://github.com/RobotSe7en/ayni/pull/75)；它不代替新的故障/恢复专项或完整 E1–E4。
+
+## 共用模型协议补充（ADR-0098，C-PROV-004/006/011）
+
+可选ModelProtocol支持Chat Completions/Responses及SSE；Core ABI0.54与schema9不变。
+默认旧TEXT消费者继续Chat非流式。Responses必须使用显式FRAMED回复，Provider与策略匹配编码；
+旧工具列表assistant_text或TEXT正文承载版本化回复，历史assistant/calls的v2帧绑定续传。
+有序output Items、reasoning/encrypted_content与规范回答/调用一同从完成响应生成；续传的API、
+model、目的地不匹配明确拒绝，不能丢弃或把用户文字解释成Provider状态。
+
+只有完整协议终态和HTTP完成后才交付执行提议；arguments.done、预览或部分参数均无执行权。
+预览在传输worker调用，借用至返回，不得阻塞、重入Core或调用工具。中断/未知保持
+ABANDONED/RESULT_UNKNOWN且不重试；已知HTTP及模型输出拒绝保留classified status/reason。
+无效可选usage不抹掉已完成回答。结果移交后擦除并释放本次累计器/续传工作副本。
+正常证据：`ModelMatrix.TextToolsUsageAndWireProjectionAgree`、
+`OpenaiWireMatrix.NativeHttpPublishesOneStoredCompleteReply`、
+`ModelProtocol.ResponsesArgumentDeltasFinishWithOrderedItemsAndSemanticObjectEquality`、
+`ModelProtocol.OptionalAmbiguousUsageNeverDiscardsAnOtherwiseCompletedStream`、
+`WifiModel.CompleteOutputRefusalKeepsSharedStatusReasonAndEffect`。
+这些是本地协议/HTTP检查，不代表线上厂商、硬件或新增故障/恢复验证。

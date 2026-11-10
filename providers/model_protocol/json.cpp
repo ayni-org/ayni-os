@@ -34,9 +34,10 @@ bool depth_valid(const char *data, size_t size, uint32_t maximum_depth) {
 }
 
 enum class ShapeRegion { body, response, usage };
-ayni_status_t validate_shape(yyjson_val *value, ShapeRegion region, bool &invalid_usage) {
+ayni_status_t validate_shape(yyjson_val *value, ShapeRegion region, bool &invalid_usage,
+                             uint32_t maximum_array) {
     if (yyjson_is_arr(value)) {
-        if (yyjson_arr_size(value) > json_container_max) {
+        if (yyjson_arr_size(value) > maximum_array) {
             return AYNI_CAPACITY_EXCEEDED;
         }
         size_t i, count;
@@ -44,7 +45,7 @@ ayni_status_t validate_shape(yyjson_val *value, ShapeRegion region, bool &invali
         yyjson_arr_foreach(value, i, count, child) {
             const auto status = validate_shape(
                 child, region == ShapeRegion::usage ? ShapeRegion::usage : ShapeRegion::body,
-                invalid_usage);
+                invalid_usage, maximum_array);
             if (status != AYNI_OK) {
                 return status;
             }
@@ -60,6 +61,8 @@ ayni_status_t validate_shape(yyjson_val *value, ShapeRegion region, bool &invali
                 region == ShapeRegion::usage ||
                         (region == ShapeRegion::response && yyjson_equals_str(key, "usage"))
                     ? ShapeRegion::usage
+                : region == ShapeRegion::response && yyjson_equals_str(key, "response")
+                    ? ShapeRegion::response // Native SSE response envelope.
                     : ShapeRegion::body;
             // Ambiguity in optional usage is local to accounting. Response and
             // argument identities remain strict; capacity checks still walk all data.
@@ -69,7 +72,7 @@ ayni_status_t validate_shape(yyjson_val *value, ShapeRegion region, bool &invali
                 }
                 invalid_usage = true;
             }
-            const auto status = validate_shape(child, child_region, invalid_usage);
+            const auto status = validate_shape(child, child_region, invalid_usage, maximum_array);
             if (status != AYNI_OK) {
                 return status;
             }
@@ -79,7 +82,8 @@ ayni_status_t validate_shape(yyjson_val *value, ShapeRegion region, bool &invali
 }
 } // namespace
 Document parse(char *data, size_t size, char *pool, size_t pool_size, ayni_status_t &status,
-               bool raw_numbers, bool *invalid_usage, uint32_t maximum_depth) {
+               bool raw_numbers, bool *invalid_usage, uint32_t maximum_depth,
+               uint32_t maximum_array) {
     status = AYNI_INVALID_ARGUMENT;
     yyjson_alc allocator{};
     if (!depth_valid(data, size, maximum_depth) ||
@@ -93,7 +97,7 @@ Document parse(char *data, size_t size, char *pool, size_t pool_size, ayni_statu
         bool ignored = false;
         status = validate_shape(yyjson_doc_get_root(doc.get()),
                                 invalid_usage ? ShapeRegion::response : ShapeRegion::body,
-                                invalid_usage ? *invalid_usage : ignored);
+                                invalid_usage ? *invalid_usage : ignored, maximum_array);
         if (status != AYNI_OK) {
             doc.reset();
         }
@@ -101,6 +105,36 @@ Document parse(char *data, size_t size, char *pool, size_t pool_size, ayni_statu
     return doc;
 }
 
+bool append_response_text(yyjson_val *message, std::string &text) {
+    if (!yyjson_equals_str(yyjson_obj_get(message, "role"), "assistant") ||
+        !yyjson_equals_str(yyjson_obj_get(message, "status"), "completed") ||
+        !yyjson_is_arr(yyjson_obj_get(message, "content"))) {
+        return false;
+    }
+    size_t at, count;
+    yyjson_val *part;
+    yyjson_arr_foreach(yyjson_obj_get(message, "content"), at, count, part) {
+        auto *type = yyjson_obj_get(part, "type");
+        const bool refusal = yyjson_equals_str(type, "refusal");
+        if (!refusal && !yyjson_equals_str(type, "output_text")) {
+            return false;
+        }
+        auto *value = yyjson_obj_get(part, refusal ? "refusal" : "text");
+        if (!yyjson_is_str(value)) {
+            return false;
+        }
+        text.append(yyjson_get_str(value), yyjson_get_len(value));
+    }
+    return true;
+}
+bool valid_reasoning(yyjson_val *item) {
+    auto *encrypted = yyjson_obj_get(item, "encrypted_content");
+    return yyjson_equals_str(yyjson_obj_get(item, "type"), "reasoning") &&
+           yyjson_is_str(yyjson_obj_get(item, "id")) &&
+           yyjson_get_len(yyjson_obj_get(item, "id")) &&
+           yyjson_is_arr(yyjson_obj_get(item, "summary")) &&
+           (!encrypted || yyjson_is_null(encrypted) || yyjson_is_str(encrypted));
+}
 void write_json(ayni::json::Writer &out, yyjson_val *value) {
     if (yyjson_is_obj(value)) {
         out.raw("{");

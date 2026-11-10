@@ -92,10 +92,12 @@ ayni_status_t Chat::reserve_control_memory() {
     // contiguous stack/buffers from competing with the later Host allocation.
     return speaker_.initialize() ? motor : AYNI_CAPACITY_EXCEEDED;
 }
-ayni_status_t Chat::initialize(const char *route) {
+ayni_status_t Chat::initialize(const ModelSelection &selection) {
+    const auto *route = selection.route.data();
     if (!route || std::strlen(route) != 16 || kernel_) {
         return AYNI_INVALID_ARGUMENT;
     }
+    selection_ = selection;
     std::snprintf(route_, sizeof(route_), "model.%s", route);
     destination_ = text(route_);
     void *host_memory =
@@ -408,6 +410,14 @@ ayni_status_t Chat::configure_strategy() {
                      harness::compact_target_tokens, harness::tool_result_max_tokens};
     config.bodies = bodies_.store();
     config.history = {&bodies_, BodyCache::ready, nullptr, nullptr};
+    config.tool_exposure = ayni::strategies::ToolExposure::preloaded;
+    config.reply_encoding = config.summary_reply_encoding = ayni::model::ReplyEncoding::framed;
+    protocol_options_.model = selection_.model.data();
+    protocol_options_.continuation_scope = selection_.scope.data();
+    protocol_options_.api = selection_.api;
+    protocol_options_.chat_token_limit = selection_.chat_token_limit;
+    protocol_options_.reply_encoding = ayni::model::ReplyEncoding::framed;
+    config.projection = ayni::providers::model_protocol::Protocol::projection(protocol_options_);
     auto status = loop_.configure(config, &workspace_);
     if (status != AYNI_OK) {
         return status;
@@ -505,6 +515,7 @@ ayni_submit_result_t Chat::submit_model(void *ctx, const ayni_provider_request_v
     self.call_ = request->logical_call_id;
     self.deadline_ = request->deadline_us;
     self.summary_ = summary;
+    self.model_failure_ = {};
     self.model_ = ModelState::waiting;
     ++self.model_requests_;
     self.trace("model_requested");
@@ -535,18 +546,40 @@ void Chat::publish_model() {
         result.outcome = AYNI_CALL_COMPLETED;
         result.status = AYNI_OK;
         result.effect = AYNI_CALL_EFFECT_COMPLETE;
-        if (model_ == ModelState::tools) {
-            result.tool_call_count = model_tools_.count();
-            result.tool_calls = model_tools_.calls();
-            result.result = model_tools_.assistant();
-        } else {
-            result.result = {model_text_.data(), uint32_t(model_text_size_)};
+        const auto *store = bodies_.store();
+        ayni_body_ref_v1 ref{};
+        const auto stored = store->write(store->context, call_,
+                                         {reinterpret_cast<const uint8_t *>(model_answer_.data()),
+                                          static_cast<uint32_t>(model_answer_.size())},
+                                         &ref);
+        if (stored == AYNI_NOT_READY) {
+            return;
         }
+        if (stored != AYNI_OK) {
+            model_failure_ = {};
+            model_failure_.struct_size = sizeof(model_failure_);
+            model_failure_.outcome =
+                stored == AYNI_RESULT_UNKNOWN ? AYNI_CALL_ABANDONED : AYNI_CALL_FAILED;
+            model_failure_.status = stored;
+            model_failure_.effect = AYNI_CALL_EFFECT_UNKNOWN;
+            model_ = ModelState::failed;
+            return;
+        }
+        result.body = ref;
+        result.tool_call_count = model_tool_count_;
+        result.model_usage = model_usage_;
     } else {
-        // The HTTP request may already have billed/sent data. Cancellation cannot prove otherwise.
-        result.outcome = AYNI_CALL_ABANDONED;
-        result.status = AYNI_RESULT_UNKNOWN;
-        result.effect = AYNI_CALL_EFFECT_UNKNOWN;
+        if (model_failure_.struct_size) {
+            result.outcome = model_failure_.outcome;
+            result.status = model_failure_.status;
+            result.reason = model_failure_.reason;
+            result.effect = model_failure_.effect;
+        } else {
+            // No complete classified terminal survived: disconnect/cancellation may have billed.
+            result.outcome = AYNI_CALL_ABANDONED;
+            result.status = AYNI_RESULT_UNKNOWN;
+            result.effect = AYNI_CALL_EFFECT_UNKNOWN;
+        }
     }
     if (ayni_provider_post(completion_, &result) == AYNI_OK) {
         trace("model_result_posted");
@@ -554,6 +587,8 @@ void Chat::publish_model() {
         completion_ = nullptr;
         call_ = deadline_ = 0;
         summary_ = false;
+        std::fill(model_answer_.begin(), model_answer_.end(), 0);
+        model_answer_.clear();
     }
 }
 ayni_status_t Chat::receipt() {
@@ -684,19 +719,28 @@ void Chat::incoming(const Packet &p) {
         motor_.execution().receive(p.kind, p.id, p.body.data(), p.size);
         return;
     }
-    if ((p.kind == Kind::model_text || p.kind == Kind::model_error ||
-         p.kind == Kind::model_tools) &&
+    if ((p.kind == Kind::model_result || p.kind == Kind::model_error) &&
         model_ == ModelState::waiting && p.id == call_) {
-        if (p.kind == Kind::model_tools && !summary_ &&
-            model_tools_.decode({p.body.data(), p.size}, workspace_) == AYNI_OK) {
-            model_ = ModelState::tools;
-            publish_proposals();
-        } else if (p.kind == Kind::model_text && p.size && p.size <= summary_bytes) {
-            std::memcpy(model_text_.data(), p.body.data(), p.size);
-            model_text_size_ = p.size;
-            model_ = ModelState::text;
-        } else {
-            model_ = ModelState::failed;
+        model_ = ModelState::failed;
+        if (p.kind == Kind::model_error && p.size == model_result_header_bytes) {
+            model_failure_ = read_model_result_header(p.body.data());
+        }
+        if (p.kind == Kind::model_result && p.size > model_result_header_bytes &&
+            p.size <= tx_bytes) {
+            const auto metadata = read_model_result_header(p.body.data());
+            const auto count = metadata.tool_call_count;
+            const ayni_bytes_v1 bytes{p.body.data() + model_result_header_bytes,
+                                      p.size - static_cast<uint32_t>(model_result_header_bytes)};
+            if (count <= AYNI_CALL_TOOL_COUNT_MAX && (!summary_ || !count) &&
+                (!count || model_tools_.decode(bytes, workspace_) == AYNI_OK)) {
+                model_tool_count_ = count;
+                model_usage_ = metadata.model_usage;
+                model_answer_.assign(reinterpret_cast<const char *>(bytes.data), bytes.size);
+                model_ = count ? ModelState::tools : ModelState::text;
+                if (count) {
+                    publish_proposals();
+                }
+            }
         }
     } else if (p.kind == Kind::render_info && screen_ == ScreenState::waiting &&
                p.id == screen_call_ && p.size == sizeof(uint32_t)) {
