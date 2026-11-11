@@ -151,7 +151,7 @@
 
 ## 交接状态（2026-11-11）
 
-- **独立平台实验：** 用户另选Web OTA与内存修复一起部署；实施与正常更新结果见[ADR-0099](../../docs/adr/0099-esp32-web-ota.md)，不扩大故障回退专项。触屏Wi-Fi/RC003-MS语音及原电机能力迁入独立实验目录，USB入口撤除，继续复用内置ToolLoop和公开SDK；Core不改。128K完整峰值、60秒带电动作及停止链仍待另行实证，见[ADR-0097](../../docs/adr/0097-esp32-touch-wifi-voice-experiment.md)。
+- **独立平台实验：** 用户另选Web OTA与内存修复一起部署，USB安装及一次Wi-Fi双槽切换/启动确认通过；实施与正常更新结果见[ADR-0099](../../docs/adr/0099-esp32-web-ota.md)，不扩大故障回退专项。触屏Wi-Fi/RC003-MS语音及原电机能力迁入独立实验目录，USB入口撤除，继续复用内置ToolLoop和公开SDK；Core不改。128K完整峰值、60秒带电动作及停止链仍待另行实证，见[ADR-0097](../../docs/adr/0097-esp32-touch-wifi-voice-experiment.md)。
 
 - **已交付：** AP-02～AP-06 基础软件见 #112～#117及[基础报告](foundation-acceptance.md)。独立源码SDK、低栈工作区、共用存储、Native/ESP Host、文件值、共同运行时和独立程序已随 #118～#123 合并，ABI0.53/schema8；所需代码完成。历史M1 Native/Sim证据见[Core Alpha Native报告](m1-core-alpha.md)。
 - **当前模型协议：** 共用Chat/Responses、SSE、请求工具预置与ESP设置已随#132合并，继续原ToolLoop，见ADR-0098。用户随后授权的ESP实机复核见[实验记录](../../experiments/esp32_wifi_chat/WIFI.md#2026-11-11-拉取后实机复核)；Chat流式可选null字段修正在`fix/esp32-model-stream-null-deltas`，语音转写、控制信号及回合收尾已通过，朗读与线上Responses仍待验证。PR及合并由用户处理。
