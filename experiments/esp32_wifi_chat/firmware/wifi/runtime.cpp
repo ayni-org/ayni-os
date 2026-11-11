@@ -35,8 +35,8 @@ std::string_view keyboard_keys(bool symbols) {
     return symbols ? "!@#$%^&*()_+-=[]{}:<>?~`|\\\"' ABCDEFGHIJK"
                    : "qwertyuiopasdfghjkl;zxcvbnm,./0123456789";
 }
-void resources(const char *stage) {
-    std::printf(
+void resources(DiagnosticLog &log, const char *stage) {
+    log.record(
         "wifi resources %s internal_free=%zu psram_free=%zu psram_largest=%zu io_stack_free=%lu\n",
         stage, heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
         heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
@@ -124,16 +124,20 @@ class Runtime {
         session_detail_.assign(detail);
         message(detail);
         // This is boot/session metadata, never model output or a transcript.
-        std::printf("wifi session=%u %.*s\n", unsigned(state), int(detail.size()), detail.data());
+        transport_.diagnostics().record("wifi session=%u %.*s\n", unsigned(state),
+                                        int(detail.size()), detail.data());
     }
     enum class Work { idle, recognizing, running, cancelling };
     Work work_ = Work::idle; // A new user turn cannot overlap recognition or cancellation.
     std::optional<uint64_t> motor_check_id_; // Present until the reliable check terminal arrives.
     bool busy() const {
-        return motor_check_id_.has_value() || work_ == Work::running || work_ == Work::cancelling;
+        return capacity_ != Capacity::idle || motor_check_id_.has_value() ||
+               work_ == Work::running || work_ == Work::cancelling;
     }
     bool recognizing() const { return work_ == Work::recognizing; }
     bool api_started_ = false, api_failed_ = false, dirty_ = true;
+    enum class Capacity { idle, template_turn, loop_turn, measuring };
+    Capacity capacity_ = Capacity::idle; // UI-owned synthetic turn, then API scratch test.
     Restart restart_ = Restart::none;
     ResetWorker reset_;
     ModelSelection selection_{};
@@ -300,6 +304,10 @@ void Runtime::cancel() {
     remote_.cancel_recording();
     api_.cancel_all();
     clear_preview();
+    if (capacity_ == Capacity::measuring) {
+        message("正在取消容量测试");
+        return; // No Core goal or physical operation belongs to this synthetic test.
+    }
     if (motor_check_id_) {
         transport_.post(Kind::cancel, *motor_check_id_, nullptr, 0);
         message("正在停止自检，不会自动重试");
@@ -399,8 +407,14 @@ void Runtime::packets() {
             }
             break;
         case Kind::model_request:
+        case Kind::template_model_request:
             if (!api_started_ || restarting() || work_ != Work::running ||
-                !api_.submit(Request::model, id, body.data(), body.size())) {
+                (packet_.kind == Kind::template_model_request &&
+                 capacity_ != Capacity::template_turn && capacity_ != Capacity::loop_turn) ||
+                !api_.submit(packet_.kind == Kind::template_model_request
+                                 ? Request::template_capture
+                                 : Request::model,
+                             id, body.data(), body.size())) {
                 transport_.post(Kind::model_error, id, nullptr, 0);
             } else {
                 clear_preview();
@@ -464,6 +478,10 @@ void Runtime::packets() {
             } else if (body == "speaker playback queued") {
                 stage("收到首段语音，边接收边播放");
             } else if (body.find("task held") == 0) {
+                if (capacity_ == Capacity::template_turn || capacity_ == Capacity::loop_turn) {
+                    transport_.post(Kind::cancel, turn_, nullptr, 0);
+                    work_ = Work::cancelling;
+                }
                 stage(speech_error_.empty() ? std::string("任务已暂停：") + std::string(body)
                                             : speech_error_ + "；任务已暂停，未重播");
             } else if (body.find("motor preparation failed") == 0) {
@@ -471,7 +489,7 @@ void Runtime::packets() {
                 message("电机初始化失败，详情见电机页");
             } else if (body == "ready") {
                 session_status(Session::ready, "Ayni 就绪");
-                resources("ready");
+                resources(transport_.diagnostics(), "ready");
             } else if (body == "accepted") {
                 stage("Ayni已接收，准备对话");
             } else if (body == "preparing input: waiting for body cleanup") {
@@ -483,9 +501,26 @@ void Runtime::packets() {
             } else if (turn_status(body) == TurnStatus::complete) {
                 if (id == turn_) {
                     work_ = Work::idle;
-                    message("本轮已完成；可继续输入");
+                    if (capacity_ == Capacity::template_turn) {
+                        if (api_.submit(Request::capacity, ++next_id_)) {
+                            capacity_ = Capacity::measuring;
+                            message("正在测量合成上下文；不调用模型、不修改会话");
+                        } else {
+                            capacity_ = Capacity::idle;
+                            message("容量测试队列不可用，未开始");
+                        }
+                    } else if (capacity_ == Capacity::loop_turn) {
+                        capacity_ = Capacity::idle;
+                        message("完整ToolLoop容量样本已完成；结果见Web日志");
+                    } else {
+                        message("本轮已完成；可继续输入");
+                    }
                 }
             } else if (turn_status(body) == TurnStatus::failed) {
+                if (id == turn_ &&
+                    (capacity_ == Capacity::template_turn || capacity_ == Capacity::loop_turn)) {
+                    capacity_ = Capacity::idle;
+                }
                 if (id == turn_) {
                     work_ = Work::idle;
                 }
@@ -563,6 +598,14 @@ void Runtime::results() {
     std::fill(preview_packet_.text.begin(), preview_packet_.text.end(), 0);
     preview_packet_.size = 0;
     while (auto *job = api_.result()) {
+        if (job->request == Request::capacity) {
+            capacity_ = Capacity::idle;
+            message(!api_.current(*job) ? "容量测试已取消；不完整结果见Web日志"
+                    : job->ok           ? "容量测试完成；结果见Web实时日志"
+                                        : job->error.data());
+            api_.release(job);
+            continue;
+        }
         if (!api_.current(*job)) {
             if (job->request == Request::model && active_model_ == job->input.id) {
                 clear_preview();
@@ -570,7 +613,7 @@ void Runtime::results() {
             api_.release(job);
             continue;
         }
-        if (job->request == Request::model) {
+        if (job->request == Request::model || job->request == Request::template_capture) {
             if (active_model_ == job->input.id) {
                 clear_preview();
             }
@@ -679,8 +722,24 @@ void Runtime::web_changes() {
     if (!web_started_) {
         return;
     }
-    web_.editable((!configured_ || ready()) && !busy() && !recognizing() && !restarting() &&
-                  remote_snapshot_.state != Remote::State::recording);
+    const bool editable = (!configured_ || ready()) && !busy() && !recognizing() && !restarting() &&
+                          remote_snapshot_.state != Remote::State::recording;
+    web_.editable(editable);
+    if (const auto probe = web_.take_probe()) {
+        uint8_t size[sizeof(uint32_t)];
+        const bool full_loop = probe != UINT32_MAX;
+        put32(size, full_loop ? probe : 0);
+        if (editable && ready() && api_started_ && api_.idle() &&
+            transport_.post(Kind::context_template, ++next_id_, size, sizeof(size))) {
+            turn_ = next_id_;
+            capacity_ = full_loop ? Capacity::loop_turn : Capacity::template_turn;
+            work_ = Work::running;
+            web_.editable(false);
+            message("正在取得真实工具模板；不调用云端模型、不保存对话");
+        } else {
+            transport_.diagnostics().record("wifi probe rejected: device not idle/ready\n");
+        }
+    }
     WebConfig::Patch patch{};
     if (!web_.take(patch)) {
         return;
@@ -1153,7 +1212,7 @@ void Runtime::run() {
         message("Wi-Fi 初始化失败");
     }
     if (storage_ok_) {
-        web_started_ = web_.initialize(settings_);
+        web_started_ = web_.initialize(settings_, transport_.diagnostics());
         if (!web_started_) {
             message("Web 配置服务启动失败");
         }
@@ -1168,7 +1227,7 @@ void Runtime::run() {
             message("Wi-Fi 连接未启动，请检查设置");
         }
     }
-    resources("startup");
+    resources(transport_.diagnostics(), "startup");
     int64_t drawn = 0;
     for (;;) {
         const auto now = esp_timer_get_time();
@@ -1252,7 +1311,7 @@ void Runtime::run() {
                 dirty_ = true;
             }
             if (first_frame) {
-                resources("first-frame");
+                resources(transport_.diagnostics(), "first-frame");
             }
             drawn = now;
         }

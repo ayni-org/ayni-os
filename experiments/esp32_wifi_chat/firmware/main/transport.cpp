@@ -4,9 +4,11 @@
 #include "wake.h"
 #include <algorithm>
 #include <cstring>
+#include <esp_random.h>
 #include <esp_timer.h>
 namespace wifichat {
 bool Transport::initialize() {
+    diagnostics_.initialize(esp_random(), [] { return uint64_t(esp_timer_get_time()) / 1000; });
     free_ = xQueueCreate(packet_slots, sizeof(uint32_t));
     output_ = xQueueCreate(packet_slots, sizeof(uint32_t));
     input_ = xQueueCreate(packet_slots, sizeof(uint32_t));

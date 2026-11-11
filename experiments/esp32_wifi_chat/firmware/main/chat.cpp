@@ -1,6 +1,7 @@
 #include "chat.h"
 #include "configuration.h"
 #include "motor_contract.h"
+#include "synthetic_history.h"
 #include "wake.h"
 #include <algorithm>
 #include <ayni/bodies.h>
@@ -16,6 +17,7 @@
 #include <new>
 namespace wifichat {
 namespace {
+constexpr uint64_t probe_record_id = UINT64_C(0x43545850524f4245);
 constexpr uint32_t version = 1, step_units = 32, step_us = 4000;
 constexpr uint64_t presentation_wait_us = UINT64_C(120) * 1000000;
 constexpr uint64_t principal = 1, command_range = UINT64_C(1) << 32;
@@ -61,10 +63,11 @@ uint32_t model_input_bytes(ayni_string_v1 destination) {
 }
 void Chat::trace(const char *phase) const {
     if (turn_) {
-        std::printf("wifi turn phase=%s model_requests=%lu elapsed_ms=%llu\n", phase,
-                    static_cast<unsigned long>(model_requests_),
-                    static_cast<unsigned long long>(
-                        (uint64_t(esp_timer_get_time()) - turn_started_) / 1000));
+        transport_.diagnostics().record(
+            "wifi turn phase=%s model_requests=%lu elapsed_ms=%llu\n", phase,
+            static_cast<unsigned long>(model_requests_),
+            static_cast<unsigned long long>((uint64_t(esp_timer_get_time()) - turn_started_) /
+                                            1000));
     }
 }
 // Only protocol identities/modes, never business arguments or assistant/user text, cross
@@ -82,7 +85,7 @@ void Chat::status(uint64_t id, const char *message) {
         !std::strncmp(message, "model registration ", 19) ||
         !std::strncmp(message, "strategy registration", 21) ||
         !std::strncmp(message, "stage:", 6) || !std::strncmp(message, "Ayni ABI ", 9)) {
-        std::printf("wifi init %s\n", message);
+        transport_.diagnostics().record("wifi init %s\n", message);
     }
     transport_.send(Kind::status, id, message, std::strlen(message));
 }
@@ -157,9 +160,10 @@ ayni_status_t Chat::initialize(const ModelSelection &selection) {
         return AYNI_CAPACITY_EXCEEDED;
     }
     workspace_ = {sizeof(workspace_), 0, region, region_bytes};
-    std::printf("wifi init arena=%zu workspace=%zu internal_free=%zu psram_free=%zu\n", bytes,
-                region_bytes, heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-                heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    transport_.diagnostics().record(
+        "wifi init arena=%zu workspace=%zu internal_free=%zu psram_free=%zu\n", bytes, region_bytes,
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+        heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     auto ports = host_->table();
     ports.bodies = bodies_.store(); // Core releases the bodies it stops naming.
     rc = ayni_create(&c, &ports, arena_, bytes, &kernel_);
@@ -250,11 +254,11 @@ ayni_status_t Chat::configure_motor_check() {
         const bool sent =
             self.transport_.send(Kind::motor_check_state, id, bytes.data(), bytes.size());
         if (sent) {
-            std::printf("motor check request=%llu motor=%lu phase=%lu status=%ld reason=%lu\n",
-                        static_cast<unsigned long long>(id),
-                        static_cast<unsigned long>(notice.motor + 1),
-                        static_cast<unsigned long>(notice.phase), long(notice.status),
-                        static_cast<unsigned long>(notice.reason));
+            self.transport_.diagnostics().record(
+                "motor check request=%llu motor=%lu phase=%lu status=%ld reason=%lu\n",
+                static_cast<unsigned long long>(id), static_cast<unsigned long>(notice.motor + 1),
+                static_cast<unsigned long>(notice.phase), long(notice.status),
+                static_cast<unsigned long>(notice.reason));
         }
         return sent;
     };
@@ -506,8 +510,8 @@ ayni_submit_result_t Chat::submit_model(void *ctx, const ayni_provider_request_v
     std::array<uint8_t, model_request_bytes> encoded{};
     put_body_reference(encoded.data(), ref);
     put32(encoded.data() + body_reference_bytes, summary ? 0 : 1);
-    if (!self.transport_.send(Kind::model_request, request->logical_call_id, encoded.data(),
-                              encoded.size())) {
+    const auto kind = self.probe_.has_value() ? Kind::template_model_request : Kind::model_request;
+    if (!self.transport_.send(kind, request->logical_call_id, encoded.data(), encoded.size())) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     self.completion_ = completion;
@@ -627,11 +631,11 @@ ayni_status_t Chat::command(ayni_intent_kind_t kind, const void *body, uint64_t 
         *reason = error.reason;
     }
     if (rc != AYNI_OK && rc != AYNI_BUSY) {
-        std::printf("wifi intent kind=%lu status=%ld reason=%lu object_kind=%lu object_id=%llu\n",
-                    static_cast<unsigned long>(kind), long(rc),
-                    static_cast<unsigned long>(error.reason),
-                    static_cast<unsigned long>(error.object.kind),
-                    static_cast<unsigned long long>(error.object.id));
+        transport_.diagnostics().record(
+            "wifi intent kind=%lu status=%ld reason=%lu object_kind=%lu object_id=%llu\n",
+            static_cast<unsigned long>(kind), long(rc), static_cast<unsigned long>(error.reason),
+            static_cast<unsigned long>(error.object.kind),
+            static_cast<unsigned long long>(error.object.id));
         diagnostics();
     }
     if (rc == AYNI_OK) {
@@ -748,14 +752,30 @@ void Chat::incoming(const Packet &p) {
     } else if (p.kind == Kind::display_ack && screen_ == ScreenState::waiting &&
                p.id == screen_call_) {
         screen_ = p.size == 1 && p.body[0] == 1 ? ScreenState::painted : ScreenState::failed;
-    } else if (p.kind == Kind::user) {
+    } else if (p.kind == Kind::user || p.kind == Kind::context_template) {
+        const bool probe = p.kind == Kind::context_template;
         if (!announced_ || turn_state_ != Turn::idle || motor_check_.active() ||
-            forget_ != Forget::none || closing_ != Closing::open || !history_.ready() || !p.size ||
-            p.size > input_bytes) {
+            forget_ != Forget::none || closing_ != Closing::open || !history_.ready() ||
+            (!probe && (!p.size || p.size > input_bytes))) {
             status(p.id, "input refused: not ready/busy/over limit");
             return;
         }
-        input_.assign(reinterpret_cast<const char *>(p.body.data()), p.size);
+        probe_.reset();
+        if (probe) {
+            if ((p.size != 0 && p.size != sizeof(uint32_t)) ||
+                (p.size &&
+                 get32(p.body.data()) > harness::model_body_bytes / SyntheticHistory::han.size())) {
+                status(p.id, "input refused: invalid diagnostic size");
+                return;
+            }
+            probe_.emplace();
+            probe_->characters = p.size ? get32(p.body.data()) : 0;
+            transport_.diagnostics().record("wifi probe template_begin history_rounds=%llu\n",
+                                            static_cast<unsigned long long>(history_.rounds()));
+            input_ = "synthetic context diagnostic";
+        } else {
+            input_.assign(reinterpret_cast<const char *>(p.body.data()), p.size);
+        }
         turn_ = p.id;
         turn_started_ = uint64_t(esp_timer_get_time());
         model_requests_ = 0;
@@ -879,19 +899,20 @@ void Chat::diagnostics() {
     uint64_t ids[call_slots]{};
     uint32_t count = 0;
     const auto goal_status = ayni_list_objects(kernel_, AYNI_OBJECT_GOAL, ids, call_slots, &count);
-    std::printf("wifi capacity goal_status=%ld goals=%lu/%lu tasks_max=%lu calls_max=%lu\n",
-                long(goal_status), static_cast<unsigned long>(count),
-                static_cast<unsigned long>(goal_slots), static_cast<unsigned long>(task_slots),
-                static_cast<unsigned long>(call_slots));
+    transport_.diagnostics().record(
+        "wifi capacity goal_status=%ld goals=%lu/%lu tasks_max=%lu calls_max=%lu\n",
+        long(goal_status), static_cast<unsigned long>(count),
+        static_cast<unsigned long>(goal_slots), static_cast<unsigned long>(task_slots),
+        static_cast<unsigned long>(call_slots));
     if (goal_status == AYNI_OK) {
         for (uint32_t at = 0; at < count; ++at) {
             auto goal = sized<ayni_goal_info_v1>();
             if (ayni_get_goal(kernel_, ids[at], &goal) == AYNI_OK) {
-                std::printf("wifi goal id=%llu state=%lu task=%llu wait=%lu\n",
-                            static_cast<unsigned long long>(goal.goal_id),
-                            static_cast<unsigned long>(goal.lifecycle),
-                            static_cast<unsigned long long>(goal.last_task_id),
-                            static_cast<unsigned long>(goal.wait_reason));
+                transport_.diagnostics().record("wifi goal id=%llu state=%lu task=%llu wait=%lu\n",
+                                                static_cast<unsigned long long>(goal.goal_id),
+                                                static_cast<unsigned long>(goal.lifecycle),
+                                                static_cast<unsigned long long>(goal.last_task_id),
+                                                static_cast<unsigned long>(goal.wait_reason));
             }
         }
     }
@@ -901,10 +922,11 @@ void Chat::diagnostics() {
         for (uint32_t at = 0; at < count; ++at) {
             auto task = sized<ayni_task_info_v1>();
             if (ayni_get_task(kernel_, ids[at], &task) == AYNI_OK) {
-                std::printf("wifi task id=%llu state=%lu hold=%ld/%lu\n",
-                            static_cast<unsigned long long>(task.task_id),
-                            static_cast<unsigned long>(task.lifecycle), long(task.hold_status),
-                            static_cast<unsigned long>(task.hold_reason));
+                transport_.diagnostics().record("wifi task id=%llu state=%lu hold=%ld/%lu\n",
+                                                static_cast<unsigned long long>(task.task_id),
+                                                static_cast<unsigned long>(task.lifecycle),
+                                                long(task.hold_status),
+                                                static_cast<unsigned long>(task.hold_reason));
                 append("\n task=%llu state=%lu hold=%ld/%lu", (unsigned long long)task.task_id,
                        (unsigned long)task.lifecycle, (long)task.hold_status,
                        (unsigned long)task.hold_reason);
@@ -917,12 +939,12 @@ void Chat::diagnostics() {
             if (ayni_get_call(kernel_, ids[at], &call) != AYNI_OK) {
                 continue;
             }
-            std::printf("wifi call id=%llu task=%llu phase=%lu outcome=%lu status=%ld effect=%lu\n",
-                        static_cast<unsigned long long>(call.logical_call_id),
-                        static_cast<unsigned long long>(call.task_id),
-                        static_cast<unsigned long>(call.phase),
-                        static_cast<unsigned long>(call.outcome), long(call.status),
-                        static_cast<unsigned long>(call.effect));
+            transport_.diagnostics().record(
+                "wifi call id=%llu task=%llu phase=%lu outcome=%lu status=%ld effect=%lu\n",
+                static_cast<unsigned long long>(call.logical_call_id),
+                static_cast<unsigned long long>(call.task_id),
+                static_cast<unsigned long>(call.phase), static_cast<unsigned long>(call.outcome),
+                long(call.status), static_cast<unsigned long>(call.effect));
             append("\n call=%llu task=%llu phase=%lu outcome=%lu status=%ld reason=%lu effect=%lu "
                    "wait=%lu",
                    (unsigned long long)call.logical_call_id, (unsigned long long)call.task_id,
@@ -1021,7 +1043,7 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
                       static_cast<unsigned long>(info.restriction),
                       static_cast<unsigned long long>(info.boot_epoch),
                       static_cast<unsigned long long>(info.durable_seq));
-        std::printf("wifi storage %s\n", detail);
+        transport_.diagnostics().record("wifi storage %s\n", detail);
         status(0, detail);
         // The public shutdown contract also accepts FENCED. Keep stepping to
         // cancel Providers and drain borrowed I/O before closing the Host;
@@ -1185,10 +1207,11 @@ void Chat::wait_for(const char *phase, const char *label, ayni_status_t code) {
         status(turn_, label);
     }
     if (now >= preparation_wait_.next_trace_us) {
-        std::printf("wifi preparation phase=%s status=%ld pending=%llu goal=%llu elapsed_ms=%llu\n",
-                    phase, long(code), static_cast<unsigned long long>(pending_command_),
-                    static_cast<unsigned long long>(goal_),
-                    static_cast<unsigned long long>((now - turn_started_) / 1000));
+        transport_.diagnostics().record(
+            "wifi preparation phase=%s status=%ld pending=%llu goal=%llu elapsed_ms=%llu\n", phase,
+            long(code), static_cast<unsigned long long>(pending_command_),
+            static_cast<unsigned long long>(goal_),
+            static_cast<unsigned long long>((now - turn_started_) / 1000));
         constexpr uint64_t trace_period_us = 2000000;
         preparation_wait_.next_trace_us = now + trace_period_us;
     }
@@ -1198,14 +1221,18 @@ void Chat::end_turn(const char *message) {
         // Errors often use a stack-local buffer. Retain a copy and reopen input
         // only after the same reliable terminal lane as successful replies accepts it.
         std::snprintf(terminal_text_.data(), terminal_text_.size(), "%s", message);
-        std::printf("wifi terminal %s\n", terminal_text_.data());
+        transport_.diagnostics().record("wifi terminal %s\n", terminal_text_.data());
         reply_end_ = terminal_text_.data();
         turn_state_ = Turn::reply_done;
         progress_ = true;
         return;
     }
     history_.abandon(); // Drops the input body; the next turn starts from the saved record.
-    std::printf(
+    if (probe_.has_value()) {
+        bodies_.collect(probe_record_id, {}); // No diagnostic checkpoint becomes chat history.
+    }
+    probe_.reset();
+    transport_.diagnostics().record(
         "wifi turn model_requests=%lu elapsed_ms=%llu\n",
         static_cast<unsigned long>(model_requests_),
         static_cast<unsigned long long>((uint64_t(esp_timer_get_time()) - turn_started_) / 1000));
@@ -1218,6 +1245,69 @@ void Chat::end_turn(const char *message) {
     cancel_requested_ = false;
     turn_state_ = Turn::idle;
     progress_ = true;
+}
+ayni_status_t Chat::probe_input(ayni_string_v1 user, ayni::strategies::Encoded &parameters) {
+    auto &probe = *probe_;
+    ayni::strategies::ConversationRecord record{};
+    record.id = probe_record_id;
+    record.owner_instance_id = instance_;
+    if (probe.characters && !probe.history_ref.id) {
+        if (!probe.history) {
+            const auto bytes =
+                ayni::model::messages_prefix.size() +
+                SyntheticHistory::room(SyntheticHistory::Corpus::han, probe.characters);
+            // The isolated test must refuse before forcing the SDK's STL working copies
+            // into OOM. Reserve for cached history, policy copies and both request lanes;
+            // this conservative test guard is not the application's context-window limit.
+            constexpr size_t history_copies = 6, codec_headroom = 128 * 1024;
+            constexpr size_t internal_headroom = 16 * 1024;
+            const auto psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            const auto internal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+            const auto required = history_copies * bytes + codec_headroom;
+            if (required > psram || internal < internal_headroom) {
+                transport_.diagnostics().record(
+                    "wifi probe preflight characters=%lu required_psram=%llu available_psram=%zu "
+                    "internal_free=%zu status=%ld\n",
+                    static_cast<unsigned long>(probe.characters),
+                    static_cast<unsigned long long>(required), psram, internal,
+                    long(AYNI_CAPACITY_EXCEEDED));
+                return AYNI_CAPACITY_EXCEEDED;
+            }
+            probe.history.reset(new (std::nothrow) wifi::ModelBuffer(bytes));
+            if (!probe.history || !probe.history->data) {
+                transport_.diagnostics().record(
+                    "wifi probe history_memory characters=%lu status=%ld\n",
+                    static_cast<unsigned long>(probe.characters), long(AYNI_CAPACITY_EXCEEDED));
+                return AYNI_CAPACITY_EXCEEDED;
+            }
+            ayni::model::Writer out(reinterpret_cast<char *>(probe.history->data), uint32_t(bytes));
+            out.prefix();
+            SyntheticHistory::append(out, SyntheticHistory::Corpus::han, probe.characters);
+            ayni_string_v1 history{};
+            if (!out.finish(history)) {
+                return AYNI_CAPACITY_EXCEEDED;
+            }
+            probe.history_bytes = history.size;
+            transport_.diagnostics().record(
+                "wifi probe loop_begin characters=%lu history_bytes=%lu\n",
+                static_cast<unsigned long>(probe.characters),
+                static_cast<unsigned long>(history.size));
+        }
+        const auto *store = bodies_.store();
+        const auto status =
+            store->write(store->context, probe_record_id,
+                         {probe.history->data, probe.history_bytes}, &probe.history_ref);
+        if (status != AYNI_OK) {
+            return status;
+        }
+        probe.history.reset(); // FileBodies owns its real cached copy, just as for user history.
+    }
+    if (probe.history_ref.id) {
+        record.history = probe.history_ref;
+        record.last_round = 1; // Synthetic prior messages; no real conversation record is changed.
+    }
+    return ayni::strategies::Conversation::begin(&workspace_, *bodies_.store(), record, user,
+                                                 parameters);
 }
 // One user turn: durable input body, Goal, completed Task, durable record, then the answer.
 ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
@@ -1274,7 +1364,12 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
     if (turn_state_ == Turn::input) {
         const ayni_string_v1 user{input_.data(), static_cast<uint32_t>(input_.size())};
         const char *failure_stage = "input storage";
-        auto rc = history_.begin(user, parameters_);
+        auto rc = AYNI_OK;
+        if (probe_.has_value()) {
+            rc = probe_input(user, parameters_);
+        } else {
+            rc = history_.begin(user, parameters_);
+        }
         if (rc == AYNI_NOT_READY || rc == AYNI_BUSY) {
             wait_for("input_body", "preparing input: waiting for input storage", rc);
             return AYNI_OK; // The input body is still being stored.
@@ -1332,6 +1427,20 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
             return rc;
         }
         if (task.lifecycle == AYNI_TASK_COMPLETED && task.commit_seq <= info.durable_seq) {
+            if (probe_.has_value()) {
+                transport_.diagnostics().record(
+                    "wifi probe loop_complete characters=%lu model_requests=%lu\n",
+                    static_cast<unsigned long>(probe_->characters),
+                    static_cast<unsigned long>(model_requests_));
+                transport_.diagnostics().record(
+                    "wifi probe template_complete history_rounds=%llu\n",
+                    static_cast<unsigned long long>(history_.rounds()));
+                goal_ = 0;
+                reply_end_ = "reply completed";
+                turn_state_ = Turn::reply_done;
+                progress_ = true;
+                return AYNI_OK; // Diagnostic model reply is deliberately not saved or shown.
+            }
             rc = ayni_copy_task_checkpoint(kernel_, task.task_id, parameters_.bytes.data(),
                                            static_cast<uint32_t>(parameters_.bytes.size()),
                                            &parameters_.size);
@@ -1359,8 +1468,12 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
             char message[96];
             std::snprintf(message, sizeof(message), "task held status=%ld reason=%lu",
                           long(task.hold_status), static_cast<unsigned long>(task.hold_reason));
+            transport_.diagnostics().record("wifi held status=%ld reason=%lu\n",
+                                            long(task.hold_status),
+                                            static_cast<unsigned long>(task.hold_reason));
             status(turn_, message);
             hold_reported_ = true;
+            diagnostics(); // Capture the same held call before a later reset loses the trace.
         }
         return AYNI_OK;
     }

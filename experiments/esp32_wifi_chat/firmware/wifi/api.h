@@ -1,6 +1,7 @@
 #pragma once
 #include "../main/transport.h"
 #include "capture.h"
+#include "context_probe.h"
 #include "settings.h"
 #include <array>
 #include <atomic>
@@ -8,7 +9,7 @@
 #include <freertos/task.h>
 namespace wifichat::wifi {
 class SpeechStream;
-enum class Request { model, speech, recognize, health };
+enum class Request { model, speech, recognize, health, capacity, template_capture };
 // Three owned job slots, one worker. Queues contain indices, never large packets
 // or borrowed pointers. Results retain a slot until the UI explicitly releases it.
 class Api {
@@ -49,13 +50,16 @@ class Api {
     void model(Job &, const char *url);
     void speech(Job &, const char *url);
     void recognize(Job &, const char *url);
+    void capacity(Job &);
+    ayni::providers::model_protocol::RequestOptions model_options(bool tools_allowed) const;
     bool http(Job &, const char *url, const char *content_type, const void *prefix,
               size_t prefix_bytes, const void *body, size_t body_bytes, const void *suffix,
               size_t suffix_bytes, size_t response_limit, CaptureReader *capture = nullptr,
               SpeechStream *stream = nullptr,
               ayni::providers::model_protocol::Stream *model_stream = nullptr);
     Settings settings_{};
-    Transport *transport_ = nullptr;                   // Stable boot-lifetime body-store access.
+    ContextProbe context_probe_;     // API worker only; trusted template, no conversation messages.
+    Transport *transport_ = nullptr; // Stable boot-lifetime body-store access.
     std::array<char, tx_bytes + 1024> request_body_{}; // One worker, bounded JSON/multipart prefix.
     QueueHandle_t free_ = nullptr, waiting_ = nullptr, done_ = nullptr, previews_ = nullptr;
     ModelPreview preview_snapshot_{}; // Worker-owned, latest snapshot queue never blocks.

@@ -83,6 +83,7 @@ void MotorExecution::trace(const char *stage, ayni_status_t status) {
         pending_ && pending_->last_sample_us ? (long long)(now() - pending_->last_sample_us)
                                              : -1LL);
     if (count > 0 && size_t(count) < sizeof(message)) {
+        transport_.diagnostics().capture({message, size_t(count)});
         transport_.send(Kind::status, current_permit_, message, size_t(count));
     }
 }

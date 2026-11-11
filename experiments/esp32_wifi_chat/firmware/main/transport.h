@@ -1,4 +1,5 @@
 #pragma once
+#include "diagnostic_log.h"
 #include "display.h"
 #include "protocol.h"
 #include "speech_profile.h"
@@ -14,6 +15,7 @@ class Speaker;
 class Transport {
   public:
     bool initialize();
+    DiagnosticLog &diagnostics() { return diagnostics_; }
     bool send(Kind, uint64_t, const void *, size_t);
     bool receive(Packet &);
     AudioWrite append_audio(uint64_t, uint32_t, const uint8_t *, size_t);
@@ -35,6 +37,7 @@ class Transport {
     void request_motor_stop() { motor_stop_.store(true, std::memory_order_release); }
 
   private:
+    DiagnosticLog diagnostics_;
     Display display_;
     std::atomic<bool> motor_active_{false};
     std::atomic<bool> motor_stop_{false}; // Stop bypasses bounded message queues.

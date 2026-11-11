@@ -1,6 +1,7 @@
 #include "api.h"
 #include "../main/harness.h"
 #include "../main/speaker.h"
+#include "model_buffer.h"
 #include "model_codec.h"
 #include "speech_stream.h"
 #include <algorithm>
@@ -32,29 +33,6 @@ constexpr int io_slice_ms = 5000, read_poll_ms = 1000;
 constexpr size_t upload_frames = 4;
 static_assert(Speaker::speech_rate == SpeechStream::rate &&
               Speaker::maximum_pcm_bytes == SpeechStream::max_pcm_bytes);
-void erase_free(uint8_t *data, size_t bytes) {
-    if (!data) {
-        return;
-    }
-    volatile uint8_t *p = data;
-    for (size_t at = 0; at < bytes; ++at) {
-        p[at] = 0;
-    }
-    heap_caps_free(data);
-}
-struct ModelBuffer {
-    uint8_t *data = nullptr;
-    size_t size = 0;
-    explicit ModelBuffer(size_t bytes) : size(bytes) {
-        data = static_cast<uint8_t *>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    }
-    ~ModelBuffer() { reset(); }
-    void reset() {
-        erase_free(data, size);
-        data = nullptr;
-        size = 0;
-    }
-};
 bool endpoint(const char *root, const char *path, char *out, size_t capacity) {
     const auto normalized = normalized_api_root(root);
     const int written =
@@ -62,7 +40,7 @@ bool endpoint(const char *root, const char *path, char *out, size_t capacity) {
     return written > 0 && size_t(written) < capacity;
 }
 // Observe classified local/business tool facts, never text, results or argument values.
-void trace_tool_status(ayni_string_v1 context) {
+void trace_tool_status(DiagnosticLog &log, ayni_string_v1 context) {
     ayni_string_v1 instructions{}, messages{};
     ayni_string_v1 definitions{};
     if (ayni::model::split_request(context, messages, definitions) != AYNI_OK ||
@@ -87,8 +65,8 @@ void trace_tool_status(ayni_string_v1 context) {
     auto *root = yyjson_doc_get_root(doc);
     auto *status = yyjson_obj_get(yyjson_obj_get(root, "error"), "status");
     if (yyjson_is_int(status)) {
-        std::printf("wifi tool result_status=%lld\n",
-                    static_cast<long long>(yyjson_get_sint(status)));
+        log.record("wifi tool result_status=%lld\n",
+                   static_cast<long long>(yyjson_get_sint(status)));
     } else {
         auto *outcome = yyjson_obj_get(root, "outcome");
         status = yyjson_obj_get(root, "status");
@@ -96,11 +74,11 @@ void trace_tool_status(ayni_string_v1 context) {
         auto *effect = yyjson_obj_get(root, "effect");
         if (yyjson_is_uint(outcome) && yyjson_is_int(status) && yyjson_is_uint(reason) &&
             yyjson_is_uint(effect)) {
-            std::printf("wifi tool outcome=%llu result_status=%lld reason=%llu effect=%llu\n",
-                        static_cast<unsigned long long>(yyjson_get_uint(outcome)),
-                        static_cast<long long>(yyjson_get_sint(status)),
-                        static_cast<unsigned long long>(yyjson_get_uint(reason)),
-                        static_cast<unsigned long long>(yyjson_get_uint(effect)));
+            log.record("wifi tool outcome=%llu result_status=%lld reason=%llu effect=%llu\n",
+                       static_cast<unsigned long long>(yyjson_get_uint(outcome)),
+                       static_cast<long long>(yyjson_get_sint(status)),
+                       static_cast<unsigned long long>(yyjson_get_uint(reason)),
+                       static_cast<unsigned long long>(yyjson_get_uint(effect)));
         }
     }
     yyjson_doc_free(doc);
@@ -133,8 +111,8 @@ bool Api::initialize(const Settings &settings, Transport &transport) {
             started_ = true;
             const auto status = pthread_detach(thread);
             if (status) {
-                std::printf("wifi api detach status=%d; worker retained for boot lifetime\n",
-                            status);
+                transport_->diagnostics().record(
+                    "wifi api detach status=%d; worker retained for boot lifetime\n", status);
             }
             return true; // A created worker owns the queues even if detach was refused.
         }
@@ -230,8 +208,9 @@ void *Api::work(void *context) {
             continue;
         }
         auto &job = self.jobs_[index];
-        std::printf("wifi api phase=begin request=%u id=%llu\n", unsigned(job.request),
-                    static_cast<unsigned long long>(job.input.id));
+        self.transport_->diagnostics().record("wifi api phase=begin request=%u id=%llu\n",
+                                              unsigned(job.request),
+                                              static_cast<unsigned long long>(job.input.id));
         if (self.current(job)) {
             if (esp_timer_get_time() < job.deadline) {
                 self.perform(job);
@@ -240,7 +219,7 @@ void *Api::work(void *context) {
             }
         }
         // Request metadata only; never print transcripts, generated audio or keys.
-        std::printf(
+        self.transport_->diagnostics().record(
             "wifi api request=%u ok=%u current=%u elapsed_ms=%lld error=%s\n",
             unsigned(job.request), unsigned(job.ok), unsigned(self.current(job)),
             static_cast<long long>(
@@ -290,6 +269,7 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
     int transport_code = esp_http_client_open(client, expected_upload);
     bool ok = transport_code == ESP_OK;
     const char *stage = "连接";
+    int last_read = 0;
     size_t uploaded = 0;
     if (ok) {
         const int descriptor = esp_http_client_get_socket(client), enabled = 1;
@@ -406,10 +386,14 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
         while (ok && alive()) {
             const int got =
                 esp_http_client_read(client, reinterpret_cast<char *>(chunk.data()), chunk.size());
+            last_read = got;
             if (got == -ESP_ERR_HTTP_EAGAIN) {
                 continue;
             }
             if (got <= 0) {
+                if (got < 0) {
+                    transport_code = got;
+                }
                 ok = got == 0 && esp_http_client_is_complete_data_received(client);
                 break;
             }
@@ -431,10 +415,14 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
         if (job.response_bytes == capacity) {
             char excess = 0;
             const int count = esp_http_client_read(client, &excess, 1);
+            last_read = count;
             if (count == -ESP_ERR_HTTP_EAGAIN) {
                 continue;
             }
             ok = count == 0 && esp_http_client_is_complete_data_received(client);
+            if (count < 0) {
+                transport_code = count;
+            }
             if (count > 0 && job.request == Request::model) {
                 model_failure(job.output, AYNI_CAPACITY_EXCEEDED, AYNI_REASON_MODEL_OUTPUT);
             }
@@ -443,6 +431,7 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
         const int got = esp_http_client_read(
             client, reinterpret_cast<char *>(job.response + job.response_bytes),
             std::min(network_chunk, capacity - job.response_bytes));
+        last_read = got;
         if (got == -ESP_ERR_HTTP_EAGAIN) {
             continue;
         }
@@ -463,13 +452,23 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
     }
     const auto socket_error = esp_http_client_get_errno(client);
     if (!ok) {
-        std::printf("wifi http stage=%s status=%d length=%lld code=%d errno=%d upload=%zu/%zu "
-                    "response=%zu parser_status=%ld internal_free=%zu internal_min=%zu\n",
-                    stage, status, static_cast<long long>(length), transport_code, socket_error,
-                    uploaded, expected_upload, job.response_bytes,
-                    static_cast<long>(model_stream ? model_stream->status() : AYNI_OK),
-                    heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-                    heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        int tls_code = 0, tls_flags = 0;
+        const auto tls_status =
+            esp_http_client_get_and_clear_last_tls_error(client, &tls_code, &tls_flags);
+        transport_->diagnostics().record(
+            "wifi http stage=%s status=%d length=%lld code=%d errno=%d upload=%zu/%zu "
+            "response=%zu parser_status=%ld read=%d complete=%u id=%llu\n",
+            stage, status, static_cast<long long>(length), transport_code, socket_error, uploaded,
+            expected_upload, job.response_bytes,
+            static_cast<long>(model_stream ? model_stream->status() : AYNI_OK), last_read,
+            unsigned(esp_http_client_is_complete_data_received(client)),
+            static_cast<unsigned long long>(job.input.id));
+        transport_->diagnostics().record(
+            "wifi http_tls id=%llu status=%ld code=%d flags=%d internal_free=%zu "
+            "internal_min=%zu\n",
+            static_cast<unsigned long long>(job.input.id), long(tls_status), tls_code, tls_flags,
+            heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+            heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     }
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
@@ -487,6 +486,14 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
     return ok;
 }
 void Api::perform(Job &job) {
+    if (job.request == Request::template_capture) {
+        model(job, nullptr); // Explicit local diagnostic reply; no endpoint or HTTP request.
+        return;
+    }
+    if (job.request == Request::capacity) {
+        capacity(job);
+        return;
+    }
     std::array<char, 256> url{};
     const char *root =
         job.request == Request::model ? settings_.model_url.data() : settings_.speech_url.data();
@@ -513,7 +520,30 @@ void Api::perform(Job &job) {
         job.ok = http(job, url.data(), "application/json", nullptr, 0, nullptr, 0, nullptr, 0,
                       json_limit);
         break;
+    case Request::capacity:
+    case Request::template_capture:
+        break; // Handled before endpoint selection; this job never sends HTTP.
     }
+}
+ayni::providers::model_protocol::RequestOptions Api::model_options(bool tools_allowed) const {
+    ayni::providers::model_protocol::RequestOptions options;
+    options.model = settings_.model.data();
+    options.api = settings_.model_api();
+    options.stream = settings_.model_streaming();
+    options.chat_token_limit = settings_.model_token_limit();
+    options.reply_encoding = ayni::model::ReplyEncoding::framed;
+    options.continuation_scope = normalized_api_root(settings_.model_url.data());
+    options.max_output_tokens = harness::max_output_tokens;
+    options.result_format = tools_allowed ? AYNI_CALL_RESULT_TOOL_CALLS : AYNI_CALL_RESULT_TEXT;
+    if (std::strstr(settings_.model_url.data(), "https://api.deepseek.com") ==
+        settings_.model_url.data()) {
+        options.extra_parameters =
+            tools_allowed ? R"({"parallel_tool_calls":false,"thinking":{"type":"disabled"}})"
+                          : R"({"thinking":{"type":"disabled"}})";
+    } else if (tools_allowed) {
+        options.extra_parameters = R"({"parallel_tool_calls":false})";
+    }
+    return options;
 }
 void Api::model(Job &job, const char *url) {
     // Before HTTP there is no remote effect. Each refusal keeps its concrete local cause.
@@ -556,24 +586,12 @@ void Api::model(Job &job, const char *url) {
         return;
     }
     const ayni_string_v1 context{reinterpret_cast<const char *>(framed.data), reference.size};
-    trace_tool_status(context);
-    ayni::providers::model_protocol::RequestOptions options;
-    options.model = settings_.model.data();
-    options.api = settings_.model_api();
-    options.stream = settings_.model_streaming();
-    options.chat_token_limit = settings_.model_token_limit();
-    options.reply_encoding = ayni::model::ReplyEncoding::framed;
-    options.continuation_scope = normalized_api_root(settings_.model_url.data());
-    options.max_output_tokens = harness::max_output_tokens;
-    options.result_format = tools_allowed ? AYNI_CALL_RESULT_TOOL_CALLS : AYNI_CALL_RESULT_TEXT;
-    if (std::strstr(settings_.model_url.data(), "https://api.deepseek.com") ==
-        settings_.model_url.data()) {
-        options.extra_parameters =
-            tools_allowed ? R"({"parallel_tool_calls":false,"thinking":{"type":"disabled"}})"
-                          : R"({"thinking":{"type":"disabled"}})";
-    } else if (tools_allowed) {
-        options.extra_parameters = R"({"parallel_tool_calls":false})";
+    trace_tool_status(transport_->diagnostics(), context);
+    if (tools_allowed && !context_probe_.ready()) {
+        transport_->diagnostics().record("wifi context template_ready=%u\n",
+                                         unsigned(context_probe_.capture(context)));
     }
+    auto options = model_options(tools_allowed);
     const ayni::providers::model_protocol::Protocol codec;
     const auto encode = [&](ayni::json::Writer &out) {
         return codec.write_request(out, options, context);
@@ -602,7 +620,30 @@ void Api::model(Job &job, const char *url) {
         std::snprintf(job.error.data(), job.error.size(), "模型上下文编码失败");
         return;
     }
+    transport_->diagnostics().record(
+        "wifi context framed_bytes=%lu wire_bytes=%zu wire_est_tokens=%llu "
+        "internal_free=%zu psram_free=%zu psram_largest=%zu\n",
+        static_cast<unsigned long>(reference.size), size,
+        static_cast<unsigned long long>(ayni::model::estimate_tokens(measured.characters())),
+        heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+        heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+        heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     framed.reset(); // Only the projected JSON remains during the HTTP request.
+    if (job.request == Request::template_capture) {
+        if (!context_probe_.ready()) {
+            std::snprintf(job.error.data(), job.error.size(), "诊断工具模板不可用；未调用模型");
+            return;
+        }
+        // A local test fixture completes only the isolated diagnostic Task, never a user turn.
+        const auto response =
+            options.api == ayni::providers::model_protocol::Api::responses
+                ? R"({"status":"completed","output":[{"type":"message","id":"diagnostic","role":"assistant","status":"completed","content":[{"type":"output_text","text":"local diagnostic only"}]}]})"
+                : R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"local diagnostic only"}}]})";
+        job.ok = decode_model(response, tools_allowed, job.output, options);
+        transport_->diagnostics().record("wifi probe template_only=1 no_model_http=1 status=%ld\n",
+                                         long(job.ok ? AYNI_OK : AYNI_INVALID_ARGUMENT));
+        return;
+    }
     struct Delivery {
         Api &self;
         Job &job;
@@ -670,6 +711,60 @@ void Api::model(Job &job, const char *url) {
         model_failure(job.output, stream->status(), AYNI_REASON_MODEL_OUTPUT);
     }
     std::fill(preview_snapshot_.text.begin(), preview_snapshot_.text.end(), 0);
+}
+void Api::capacity(Job &job) {
+    auto &log = transport_->diagnostics();
+    if (!context_probe_.ready()) {
+        std::snprintf(job.error.data(), job.error.size(), "先完成一次普通对话以取得当前工具模板");
+        log.record("wifi probe status=%ld stage=template\n", long(AYNI_NOT_READY));
+        return;
+    }
+    auto options = model_options(true);
+    log.record("wifi probe begin context_tokens=%llu reserved_output_tokens=%llu body_limit=%lu\n",
+               static_cast<unsigned long long>(harness::context_window_tokens),
+               static_cast<unsigned long long>(harness::max_output_tokens),
+               static_cast<unsigned long>(harness::model_body_bytes));
+    for (auto corpus :
+         {ContextProbe::Corpus::latin, ContextProbe::Corpus::han, ContextProbe::Corpus::escaped}) {
+        uint32_t lower = 0, upper = harness::model_body_bytes;
+        ContextProbe::Sample last, first_failure;
+        while (upper - lower > 1) {
+            if (!current(job) || esp_timer_get_time() >= job.deadline) {
+                std::snprintf(job.error.data(), job.error.size(), "容量测试取消或到期，结果不完整");
+                log.record("wifi probe interrupted corpus=%s\n", ContextProbe::name(corpus));
+                return;
+            }
+            const auto units = lower + (upper - lower) / 2;
+            auto sample = context_probe_.trial<ModelBuffer>(
+                options, corpus, units, [&](const ContextProbe::Sample &peak) {
+                    log.record(
+                        "wifi probe peak corpus=%s units=%lu scratch_bytes=%zu "
+                        "internal_free=%zu psram_free=%zu psram_largest=%zu stack_free=%lu\n",
+                        ContextProbe::name(corpus), static_cast<unsigned long>(units),
+                        peak.scratch_bytes,
+                        heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                        heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+                        heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+                        static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));
+                });
+            if (sample.status == AYNI_OK) {
+                lower = units;
+                last = sample;
+            } else {
+                upper = units;
+                first_failure = sample;
+            }
+            vTaskDelay(1); // Idle/motor/UI tasks retain CPU between bounded synthetic trials.
+        }
+        log.record("wifi probe boundary corpus=%s units_ok=%lu input_tokens=%llu framed_bytes=%zu "
+                   "wire_bytes=%zu first_refused_units=%lu stage=%s status=%ld\n",
+                   ContextProbe::name(corpus), static_cast<unsigned long>(lower),
+                   static_cast<unsigned long long>(last.estimated_tokens), last.framed_bytes,
+                   last.wire_bytes, static_cast<unsigned long>(upper), first_failure.stage,
+                   long(first_failure.status));
+    }
+    job.ok = true;
+    log.record("wifi probe complete; transport_only=1 no_model_http=1 history_unchanged=1\n");
 }
 void Api::speech(Job &job, const char *url) {
     const std::string_view input(reinterpret_cast<const char *>(job.input.body.data()),
