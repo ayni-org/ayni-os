@@ -28,9 +28,11 @@ struct Turn {
     uint64_t base_revision = 0;
     uint64_t memory_id = 0; // Optional explicit source selected for this turn; zero selects none.
     std::string input;
-    std::string history;                  // record.history's messages, standard framing.
-    std::string summary;                  // record.summary.
-    std::vector<Round> rounds;            // record.rounds, oldest first.
+    std::string definitions;       // Transient request-only tools; regenerated from each snapshot.
+    bool canonical_summary = true; // Turn format 6 offsets address canonical summary data.
+    std::string history;           // record.history's messages, standard framing.
+    std::string summary;           // record.summary.
+    std::vector<Round> rounds;     // record.rounds, oldest first.
     TurnPhase phase = TurnPhase::initial; // Sole owner of current model/group/compaction progress.
     uint32_t model_round = 0;    // Monotone main Call ordinal, never reset on context invalidation.
     uint32_t tool_index = 0;     // Next proposal in the current durable model result.
@@ -92,11 +94,13 @@ struct ModelResult {
     ayni_task_call_result_v1 call{};
     ayni_string_v1 list{};
     std::string owned;
+    model::Continuation continuation{}; // Borrowed from the selected Provider reply encoding.
 };
 // result's status; a completed body still loading answers NOT_READY.
 ayni_status_t model_result(Workspace &workspace, const ayni_body_store_v1 &bodies,
                            const ayni_task_snapshot_v1 &snapshot, ayni_string_v1 key,
-                           ModelResult &out);
+                           ModelResult &out,
+                           model::ReplyEncoding encoding = model::ReplyEncoding::text);
 // Proposal index of a resolved list; its strings borrow the list (ayni_tool_call_read).
 ayni_status_t read_proposal(Workspace &workspace, ayni_string_v1 list, uint32_t index,
                             ayni_task_tool_call_v1 &out);

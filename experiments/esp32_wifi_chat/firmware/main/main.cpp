@@ -86,10 +86,11 @@ void *owner(void *) {
             wait_us = hello_us - (now - hello_at);
         }
         while (transport->receive(*packet)) {
-            if (!configured && packet->kind == wifichat::Kind::configure && packet->size == 16) {
-                char route[17]{};
-                std::memcpy(route, packet->body.data(), 16);
-                const auto rc = chat->initialize(route);
+            if (!configured && packet->kind == wifichat::Kind::configure &&
+                packet->size == sizeof(wifichat::ModelSelection)) {
+                wifichat::ModelSelection selection;
+                std::memcpy(&selection, packet->body.data(), sizeof(selection));
+                const auto rc = chat->initialize(selection);
                 configured = true;
                 failed = rc != AYNI_OK;
                 if (failed) {

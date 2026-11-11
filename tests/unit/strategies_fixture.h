@@ -24,6 +24,7 @@ class StrategiesFixture : public ::testing::Test {
         uint64_t operation;
         bool ended = false;
     };
+    std::function<void(policies::ToolLoopConfig &)> configure_loop;
     bool action_tool = false;
     bool software_tools = false;
     ayni::providers::software::WorkProvider software;
@@ -51,6 +52,9 @@ class StrategiesFixture : public ::testing::Test {
         cfg.limits = limits;
         cfg.bodies = body_store ? body_store : bodies.store();
         cfg.history = history_port;
+        if (configure_loop) {
+            configure_loop(cfg);
+        }
         ASSERT_EQ(loop.configure(cfg, ::ayni::test::loop_workspace()), AYNI_OK);
         auto &c = work.node().config();
         c.storage_buffer_bytes = 0;

@@ -25,7 +25,7 @@ class Chat {
     // Owner startup before the UI/radios: reserve contiguous control/audio stacks.
     // The audio worker stays idle; motor hardware/worker still require local preparation.
     ayni_status_t reserve_control_memory();
-    ayni_status_t initialize(const char *route);
+    ayni_status_t initialize(const ModelSelection &selection);
     // Advances the devices, steps Core once and moves the session on. report is that step's
     // report; again is set when this tick changed state the step has not seen yet.
     ayni_status_t tick(ayni_step_report_v1 &report, bool &again);
@@ -109,6 +109,8 @@ class Chat {
     // for transport capacity; it is never announced before actual teardown.
     enum class Closing { open, quiescing, cancel_work, kernel, stopped };
     Closing closing_ = Closing::open;
+    ModelSelection selection_{};
+    ayni::providers::model_protocol::RequestOptions protocol_options_{};
     char route_[32]{};
     // The model service: tool-calling turns and text-only summaries, one slot, one destination.
     ayni_call_resource_v1 resource_{};
@@ -128,8 +130,10 @@ class Chat {
     bool summary_ = false; // The pending request asked for text only.
     enum class ModelState { idle, waiting, text, tools, failed, cancelled };
     ModelState model_ = ModelState::idle;
-    std::array<char, summary_bytes> model_text_{};
-    size_t model_text_size_ = 0;
+    std::string model_answer_; // Complete selected reply encoding, stored before publication.
+    uint32_t model_tool_count_ = 0;
+    ayni_model_usage_v1 model_usage_{};
+    ayni_provider_result_v1 model_failure_{}; // Explicit adapter refusal, otherwise UNKNOWN.
     ModelTools model_tools_;
     std::array<char, 1024> diagnostics_{}; // Metadata-only capacity/status rendering.
     ayni_provider_completion_t *screen_completion_ = nullptr;

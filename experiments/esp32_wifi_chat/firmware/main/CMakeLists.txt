@@ -14,24 +14,15 @@ if(NOT CONFIG_SPIRAM_XIP_FROM_PSRAM OR CONFIG_FREERTOS_SMP)
     message(FATAL_ERROR "This experiment requires PSRAM XiP and the legacy IDF kernel")
 endif()
 include("${AYNI_SOURCE_DIR}/cmake/AyniSDK.cmake")
-ayni_add_sdk(COMPONENTS core conversation permit_gate)
-target_link_libraries(${COMPONENT_LIB} PRIVATE Ayni::Core Ayni::Strategies Ayni::Conversation Ayni::PermitGate)
+ayni_add_sdk(COMPONENTS core conversation permit_gate model_protocol)
+target_link_libraries(${COMPONENT_LIB} PRIVATE Ayni::Core Ayni::Strategies Ayni::Conversation Ayni::PermitGate Ayni::ModelProtocol)
 target_compile_options(${COMPONENT_LIB} PRIVATE -Wall -Wextra -Werror -std=c++17 -fno-exceptions -fno-rtti)
 if(AYNI_WIFI_PROFILE)
     # IDF's early dependency scan does not import arbitrary project cache
     # variables. These components are present in the full-profile build; attach
     # their usage requirements after the selected profile is known.
     idf_component_optional_requires(PRIVATE ${wifi_dependencies})
-    # Same pinned JSON implementation as the Native adapter. Populate sources
-    # only: upstream's install/export rules cannot export ESP-IDF's HAL targets.
-    include(FetchContent)
-    FetchContent_Declare(yyjson URL https://github.com/ibireme/yyjson/archive/refs/tags/0.10.0.tar.gz
-        URL_HASH SHA256=0d901cb2c45c5586e3f3a4245e58c2252d6b24bf4b402723f6179523d389b165
-        SOURCE_SUBDIR ayni-source-only DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
-    FetchContent_MakeAvailable(yyjson)
-    add_library(ayni_wifi_json STATIC "${yyjson_SOURCE_DIR}/src/yyjson.c")
-    target_include_directories(ayni_wifi_json PUBLIC "${yyjson_SOURCE_DIR}/src")
-    target_link_libraries(${COMPONENT_LIB} PRIVATE ayni_wifi_json)
+    target_link_libraries(${COMPONENT_LIB} PRIVATE yyjson)
     target_add_binary_data(${COMPONENT_LIB} "${CMAKE_CURRENT_LIST_DIR}/../../build/assets/ayni_font.bin" BINARY)
     target_add_binary_data(${COMPONENT_LIB} "${CMAKE_CURRENT_LIST_DIR}/../wifi/config.html" TEXT)
 endif()

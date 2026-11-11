@@ -6,7 +6,7 @@ namespace wifichat {
 // Owns a public SDK tool-list body and bounded node views until Core copies it.
 class ModelTools {
   public:
-    static constexpr size_t wire_bytes = 8192, nodes_per_tool = 32;
+    static constexpr size_t wire_bytes = 32768, nodes_per_tool = 32;
     ayni_status_t decode(ayni_bytes_v1, const ayni_workspace_v1 &);
     const ayni_tool_call_v1 *calls() const { return calls_.data(); }
     uint32_t count() const { return count_; }

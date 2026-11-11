@@ -251,7 +251,8 @@
     "providers": [
       "api",
       "own",
-      "external"
+      "external",
+      "providers:model_protocol"
     ],
     "strategies": [
       "api",
@@ -282,7 +283,8 @@
       "hosts:storage",
       "strategies:builtin",
       "runtime:conversation",
-      "external"
+      "external",
+      "providers:model_protocol"
     ],
     "examples": [
       "api",

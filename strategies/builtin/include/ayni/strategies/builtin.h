@@ -11,6 +11,7 @@
 #include <ayni/calendar.h>
 #include <ayni/calls.h>
 #include <ayni/directory.h>
+#include <ayni/model_messages.hpp>
 #include <ayni/workspace.h>
 #include <optional>
 #include <string>
@@ -200,6 +201,9 @@ struct TokenLimits {
     uint64_t compact_target_tokens = 0;
     uint64_t tool_result_max_tokens = 0;
 };
+// Discovery preserves existing consumers; preloaded sends the current authorized directory
+// as request-only tools. Neither mode changes Core authorization.
+enum class ToolExposure { discovery, preloaded };
 struct ToolLoopConfig {
     Identity identity;
     Call model;
@@ -211,6 +215,10 @@ struct ToolLoopConfig {
     // rest of the config. Bodies of conversation id use scope id.
     const ayni_body_store_v1 *bodies = nullptr;
     HistoryPort history{};
+    ToolExposure tool_exposure = ToolExposure::discovery; // Captured anew on every decision.
+    model::ReplyEncoding reply_encoding = model::ReplyEncoding::text; // Main Provider encoding.
+    model::ReplyEncoding summary_reply_encoding = model::ReplyEncoding::text; // Summary encoding.
+    model::Projection projection{}; // Actual wire context, including tools and continuation.
 };
 class ToolLoop {
   public:

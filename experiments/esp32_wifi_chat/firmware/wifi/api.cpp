@@ -5,6 +5,7 @@
 #include "speech_stream.h"
 #include <algorithm>
 #include <ayni/model_messages.hpp>
+#include <ayni/providers/model_protocol.h>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -14,6 +15,7 @@
 #include <esp_pthread.h>
 #include <esp_timer.h>
 #include <lwip/sockets.h>
+#include <memory>
 #include <new>
 #include <pthread.h>
 #include <string>
@@ -62,7 +64,9 @@ bool endpoint(const char *root, const char *path, char *out, size_t capacity) {
 // Observe the last local tool error without retaining its message, user text or tool arguments.
 void trace_tool_status(ayni_string_v1 context) {
     ayni_string_v1 instructions{}, messages{};
-    if (ayni::model::split_instructions(context, instructions, messages) != AYNI_OK) {
+    ayni_string_v1 definitions{};
+    if (ayni::model::split_request(context, messages, definitions) != AYNI_OK ||
+        ayni::model::split_instructions(messages, instructions, messages) != AYNI_OK) {
         return;
     }
     ayni::model::Reader reader(messages);
@@ -90,14 +94,15 @@ void trace_tool_status(ayni_string_v1 context) {
 } // namespace
 bool Api::initialize(const Settings &settings, Transport &transport) {
     transport_ = &transport;
-    if (started_ || free_ || waiting_ || done_) {
+    if (started_ || free_ || waiting_ || done_ || !settings.valid()) {
         return false;
     }
     settings_ = settings;
     free_ = xQueueCreate(slots, sizeof(uint32_t));
     waiting_ = xQueueCreate(slots, sizeof(uint32_t));
     done_ = xQueueCreate(slots, sizeof(uint32_t));
-    if (free_ && waiting_ && done_) {
+    previews_ = xQueueCreate(1, sizeof(ModelPreview));
+    if (free_ && waiting_ && done_ && previews_) {
         for (uint32_t i = 0; i < slots; ++i) {
             xQueueSend(free_, &i, 0);
         }
@@ -129,9 +134,22 @@ bool Api::initialize(const Settings &settings, Transport &transport) {
     if (done_) {
         vQueueDelete(done_);
     }
-    free_ = waiting_ = done_ = nullptr;
+    if (previews_) {
+        vQueueDelete(previews_);
+    }
+    free_ = waiting_ = done_ = previews_ = nullptr;
     settings_.model_key.fill(0);
     settings_.password.fill(0);
+    return false;
+}
+bool Api::take_preview(ModelPreview &out) {
+    if (previews_ && xQueueReceive(previews_, &out, 0) == pdTRUE &&
+        out.generation == generation_.load(std::memory_order_acquire)) {
+        return true;
+    }
+    std::fill(out.text.begin(), out.text.end(), 0);
+    out.size = 0;
+    out.id = 0;
     return false;
 }
 bool Api::current(const Job &job) const {
@@ -153,6 +171,8 @@ bool Api::submit(Request kind, uint64_t id, const void *data, size_t bytes, uint
     job.input.id = id;
     job.input.size = bytes;
     job.output.id = id;
+    job.output.kind = {};
+    job.output.size = 0;
     job.ok = false;
     job.error.fill(0);
     job.generation = generation_.load(std::memory_order_acquire);
@@ -224,7 +244,7 @@ void *Api::work(void *context) {
 bool Api::http(Job &job, const char *url, const char *content_type, const void *prefix,
                size_t prefix_bytes, const void *body, size_t body_bytes, const void *suffix,
                size_t suffix_bytes, size_t response_limit, CaptureReader *capture,
-               SpeechStream *stream) {
+               SpeechStream *stream, ayni::providers::model_protocol::Stream *model_stream) {
     if (std::strncmp(url, "https://", 8) == 0 && std::time(nullptr) < 1700000000) {
         std::snprintf(job.error.data(), job.error.size(), "等待网络校时后重试");
         return false;
@@ -334,23 +354,39 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
     }
     const int status = esp_http_client_get_status_code(client);
     ok = ok && alive() && length >= 0 && status == 200 && length <= int64_t(response_limit);
+    if (!ok && job.request == Request::model && status == 200 && length > int64_t(response_limit)) {
+        model_failure(job.output, AYNI_CAPACITY_EXCEEDED, AYNI_REASON_MODEL_OUTPUT);
+    }
     if (!ok && status >= 100 && status <= 599 && status != 200) {
+        if (job.request == Request::model) {
+            const auto classified = status == 400                    ? AYNI_INVALID_ARGUMENT
+                                    : status == 401 || status == 403 ? AYNI_DENIED
+                                    : status == 404                  ? AYNI_NOT_FOUND
+                                    : status == 408                  ? AYNI_EXPIRED
+                                    : status == 429                  ? AYNI_BUSY
+                                    : status >= 500                  ? AYNI_NOT_READY
+                                                                     : AYNI_UNSUPPORTED;
+            model_failure(job.output, classified);
+        }
         std::snprintf(job.error.data(), job.error.size(), "API HTTP %d；不会自动重试", status);
     }
     // Buffered JSON responses use Content-Length when supplied. Speech bypasses
     // this allocation and copies validated frames into the bounded playback ring.
     const size_t capacity =
         length > 0 && length <= int64_t(response_limit) ? size_t(length) : response_limit;
-    if (ok && !stream) {
+    if (ok && !stream && !model_stream) {
         stage = "响应体";
         job.response = static_cast<uint8_t *>(
             heap_caps_malloc(capacity + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
         if (!job.response) {
+            if (job.request == Request::model) {
+                model_failure(job.output, AYNI_CAPACITY_EXCEEDED, AYNI_REASON_MODEL_OUTPUT);
+            }
             std::snprintf(job.error.data(), job.error.size(), "API 响应内存不足");
             ok = false;
         }
     }
-    if (stream && ok) {
+    if ((stream || model_stream) && ok) {
         stage = "语音流";
         std::array<uint8_t, network_chunk> chunk{};
         while (ok && alive()) {
@@ -364,12 +400,15 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
                 break;
             }
             job.response_bytes += size_t(got);
-            ok = job.response_bytes <= response_limit && stream->feed(chunk.data(), size_t(got));
+            ok = job.response_bytes <= response_limit &&
+                 (stream ? stream->feed(chunk.data(), size_t(got))
+                         : model_stream->feed({reinterpret_cast<const char *>(chunk.data()),
+                                               size_t(got)}) == AYNI_OK);
         }
         std::fill(chunk.begin(), chunk.end(), 0);
-        ok = ok && stream->complete();
+        ok = ok && (!stream || stream->complete());
     }
-    while (!stream && ok && alive()) {
+    while (!stream && !model_stream && ok && alive()) {
         // fetch_headers may already have parsed and cached the whole body.
         // Parser completion is not proof that the application drained that cache.
         if (length > 0 && job.response_bytes == size_t(length)) {
@@ -382,6 +421,9 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
                 continue;
             }
             ok = count == 0 && esp_http_client_is_complete_data_received(client);
+            if (count > 0 && job.request == Request::model) {
+                model_failure(job.output, AYNI_CAPACITY_EXCEEDED, AYNI_REASON_MODEL_OUTPUT);
+            }
             break;
         }
         const int got = esp_http_client_read(
@@ -433,7 +475,8 @@ void Api::perform(Job &job) {
     std::array<char, 256> url{};
     const char *root =
         job.request == Request::model ? settings_.model_url.data() : settings_.speech_url.data();
-    const char *path = job.request == Request::model       ? "/chat/completions"
+    const char *path = job.request == Request::model
+                           ? ayni::providers::model_protocol::path(settings_.model_api()).data()
                        : job.request == Request::speech    ? "/v1/audio/speech/stream"
                        : job.request == Request::recognize ? "/v1/audio/transcriptions"
                                                            : "/readyz";
@@ -458,6 +501,8 @@ void Api::perform(Job &job) {
     }
 }
 void Api::model(Job &job, const char *url) {
+    // Before HTTP there is no remote effect. Each refusal keeps its concrete local cause.
+    model_failure(job.output, AYNI_INVALID_ARGUMENT, AYNI_REASON_NONE, AYNI_CALL_EFFECT_NONE);
     if (job.input.size != model_request_bytes || !transport_ || !transport_->bodies() ||
         get32(job.input.body.data() + body_reference_bytes) > 1) {
         std::snprintf(job.error.data(), job.error.size(), "模型正文引用无效");
@@ -472,6 +517,7 @@ void Api::model(Job &job, const char *url) {
     }
     ModelBuffer framed(reference.size);
     if (!framed.data) {
+        model_failure(job.output, AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE, AYNI_CALL_EFFECT_NONE);
         std::snprintf(job.error.data(), job.error.size(), "上下文内存不足，未发出模型请求");
         return;
     }
@@ -486,55 +532,129 @@ void Api::model(Job &job, const char *url) {
     }
     if (status != AYNI_OK || !current(job) ||
         ayni_body_verify(&reference, {framed.data, reference.size}) != AYNI_OK) {
+        model_failure(job.output,
+                      status == AYNI_NOT_READY ? AYNI_EXPIRED
+                      : status == AYNI_OK      ? AYNI_INVALID_ARGUMENT
+                                               : status,
+                      AYNI_REASON_NONE, AYNI_CALL_EFFECT_NONE);
         std::snprintf(job.error.data(), job.error.size(), "模型正文不可读、超时或已取消；未重试");
         return;
     }
     const ayni_string_v1 context{reinterpret_cast<const char *>(framed.data), reference.size};
     trace_tool_status(context);
+    ayni::providers::model_protocol::RequestOptions options;
+    options.model = settings_.model.data();
+    options.api = settings_.model_api();
+    options.stream = settings_.model_streaming();
+    options.chat_token_limit = settings_.model_token_limit();
+    options.reply_encoding = ayni::model::ReplyEncoding::framed;
+    options.continuation_scope = normalized_api_root(settings_.model_url.data());
+    options.max_output_tokens = harness::max_output_tokens;
+    options.result_format = tools_allowed ? AYNI_CALL_RESULT_TOOL_CALLS : AYNI_CALL_RESULT_TEXT;
+    if (std::strstr(settings_.model_url.data(), "https://api.deepseek.com") ==
+        settings_.model_url.data()) {
+        options.extra_parameters =
+            tools_allowed ? R"({"parallel_tool_calls":false,"thinking":{"type":"disabled"}})"
+                          : R"({"thinking":{"type":"disabled"}})";
+    } else if (tools_allowed) {
+        options.extra_parameters = R"({"parallel_tool_calls":false})";
+    }
+    const ayni::providers::model_protocol::Protocol codec;
     const auto encode = [&](ayni::json::Writer &out) {
-        out.raw("{\"model\":");
-        out.string(std::string_view(settings_.model.data()));
-        out.raw(",\"stream\":false,\"max_tokens\":");
-        out.unsigned_number(harness::max_output_tokens);
-        if (tools_allowed) {
-            out.raw(",\"parallel_tool_calls\":false");
-        }
-        if (std::strstr(settings_.model_url.data(), "https://api.deepseek.com") ==
-            settings_.model_url.data()) {
-            out.raw(",\"thinking\":{\"type\":\"disabled\"}");
-        }
-        out.raw(",");
-        const auto status =
-            tools_allowed ? ayni::model::write_context(out, context, ayni::model::Mode::assistant)
-                          : ayni::model::write_context(out, context, ayni::model::Mode::text);
-        out.raw("}");
-        return status;
+        return codec.write_request(out, options, context);
     };
     auto measured = ayni::json::Writer::measuring();
     size_t size = 0;
-    if (encode(measured) != AYNI_OK || !measured.finish(size) || size > harness::model_body_bytes) {
+    const auto encoded = encode(measured);
+    if (encoded != AYNI_OK || !measured.finish(size) || size > harness::model_body_bytes) {
+        model_failure(job.output, encoded != AYNI_OK ? encoded : AYNI_CAPACITY_EXCEEDED,
+                      AYNI_REASON_NONE, AYNI_CALL_EFFECT_NONE);
         std::snprintf(job.error.data(), job.error.size(), "模型上下文编码超限");
         return;
     }
     ModelBuffer json(size);
     if (!json.data) {
+        model_failure(job.output, AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE, AYNI_CALL_EFFECT_NONE);
         std::snprintf(job.error.data(), job.error.size(), "上下文发送内存不足；未请求模型");
         return;
     }
     ayni::json::Writer out(reinterpret_cast<char *>(json.data), size);
-    if (encode(out) != AYNI_OK || !out.finish(size)) {
+    const auto written_status = encode(out);
+    if (written_status != AYNI_OK || !out.finish(size)) {
+        model_failure(job.output,
+                      written_status != AYNI_OK ? written_status : AYNI_CAPACITY_EXCEEDED,
+                      AYNI_REASON_NONE, AYNI_CALL_EFFECT_NONE);
         std::snprintf(job.error.data(), job.error.size(), "模型上下文编码失败");
         return;
     }
     framed.reset(); // Only the projected JSON remains during the HTTP request.
-    if (http(job, url, "application/json", nullptr, 0, json.data, size, nullptr, 0, json_limit)) {
-        job.ok = decode_model({reinterpret_cast<const char *>(job.response), job.response_bytes},
-                              tools_allowed, job.output);
+    struct Delivery {
+        Api &self;
+        Job &job;
+        bool enabled;
+    } delivery{*this, job, tools_allowed};
+    const ayni::providers::model_protocol::Preview preview{
+        &delivery, [](void *context, std::string_view delta) {
+            auto &d = *static_cast<Delivery *>(context);
+            if (!d.enabled || !d.self.current(d.job)) {
+                return;
+            }
+            auto &snapshot = d.self.preview_snapshot_;
+            size_t take = std::min<size_t>(delta.size(), snapshot.text.size() - snapshot.size);
+            while (take && take < delta.size() &&
+                   (static_cast<unsigned char>(delta[take]) & 0xc0U) == 0x80U) {
+                --take;
+            }
+            if (!take) {
+                return;
+            }
+            std::memcpy(snapshot.text.data() + snapshot.size, delta.data(), take);
+            snapshot.size += static_cast<uint32_t>(take);
+            xQueueOverwrite(d.self.previews_, &snapshot); // UI-only tentative text, no Core event.
+        }};
+    preview_snapshot_ = {};
+    preview_snapshot_.id = job.input.id;
+    preview_snapshot_.generation = job.generation;
+    std::unique_ptr<ayni::providers::model_protocol::Stream> stream;
+    constexpr size_t streaming_metadata_factor = 4;
+    const size_t response_limit =
+        options.stream ? json_limit * streaming_metadata_factor : json_limit;
+    if (options.stream) {
+        stream.reset(new (std::nothrow)
+                         ayni::providers::model_protocol::Stream(options, response_limit, preview));
+    }
+    if (options.stream && (!stream || stream->status() != AYNI_OK)) {
+        model_failure(job.output, AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE, AYNI_CALL_EFFECT_NONE);
+        std::snprintf(job.error.data(), job.error.size(), "模型流内存不足；未请求");
+        return;
+    }
+    job.output.kind = {};
+    job.output.size = 0; // From here a transport interruption is UNKNOWN.
+    if (http(job, url, "application/json", nullptr, 0, json.data, size, nullptr, 0, response_limit,
+             nullptr, nullptr, stream.get())) {
+        if (stream) {
+            auto answer = std::unique_ptr<ayni::providers::model_protocol::Answer>(
+                new (std::nothrow) ayni::providers::model_protocol::Answer{});
+            if (answer) {
+                stream->finish(*answer);
+                job.ok = package_model(options, *answer, tools_allowed, job.output);
+            } else {
+                model_failure(job.output, AYNI_CAPACITY_EXCEEDED, AYNI_REASON_MODEL_OUTPUT);
+            }
+        } else {
+            job.ok =
+                decode_model({reinterpret_cast<const char *>(job.response), job.response_bytes},
+                             tools_allowed, job.output, options);
+        }
         if (!job.ok) {
-            std::snprintf(job.error.data(), job.error.size(),
-                          "模型必须返回完整文本，工具调用或超限输出已拒绝");
+            std::snprintf(job.error.data(), job.error.size(), "模型未返回完整有效回答，未重试");
         }
     }
+    if (!job.ok && stream && stream->status() != AYNI_OK && current(job) &&
+        job.output.kind != Kind::model_error) {
+        model_failure(job.output, stream->status(), AYNI_REASON_MODEL_OUTPUT);
+    }
+    std::fill(preview_snapshot_.text.begin(), preview_snapshot_.text.end(), 0);
 }
 void Api::speech(Job &job, const char *url) {
     const std::string_view input(reinterpret_cast<const char *>(job.input.body.data()),

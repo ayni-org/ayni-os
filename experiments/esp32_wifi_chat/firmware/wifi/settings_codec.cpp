@@ -4,8 +4,8 @@
 namespace wifichat::wifi {
 bool parse_settings_patch(std::string_view body, SettingsPatch &out) {
     constexpr size_t maximum_bytes = 2048;
-    constexpr const char *names[] = {"ssid",      "password",  "speech_url",
-                                     "model_url", "model_key", "model"};
+    constexpr const char *names[] = {"ssid",  "password", "speech_url", "model_url",   "model_key",
+                                     "model", "api_type", "stream",     "output_limit"};
     if (body.empty() || body.size() > maximum_bytes) {
         return false;
     }
@@ -39,7 +39,7 @@ bool parse_settings_patch(std::string_view body, SettingsPatch &out) {
         patch.fields |= 1U << index;
     }
     yyjson_doc_free(doc);
-    if (ok && patch.fields) {
+    if (ok && patch.fields && patch.values.model_options_valid()) {
         out = patch;
     } else {
         ok = false;

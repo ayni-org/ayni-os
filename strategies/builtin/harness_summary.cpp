@@ -30,7 +30,8 @@ ayni_status_t source_result(Workspace &workspace, const Turn &turn, const ToolLo
                             ayni_task_call_result_v1 &call, ayni_task_tool_call_v1 &proposal) {
     char key[AYNI_CATALOG_ID_MAX_BYTES];
     const auto model_step = model_key(turn.model_round, key);
-    auto status = model_result(workspace, *config.bodies, snapshot, model_step, model);
+    auto status =
+        model_result(workspace, *config.bodies, snapshot, model_step, model, config.reply_encoding);
     if (status != AYNI_OK) {
         return status;
     }
@@ -74,7 +75,8 @@ ayni_status_t request_chunk(Turn &turn, const ToolLoopConfig &config,
             return AYNI_CAPACITY_EXCEEDED;
         }
         model::TokenEstimate count;
-        const auto counted = model::estimate_input(body, model::Mode::text, count);
+        const auto counted =
+            model::estimate_input(config.projection, body, model::Mode::text, count);
         if (counted != AYNI_OK) {
             return counted;
         }
@@ -126,7 +128,8 @@ template <class Write> ayni_status_t render(std::string &out, Write write) {
     }
     return json.finish(size) && size == out.size() ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
 }
-ayni_status_t append_summary(Turn &turn, const ayni_task_call_result_v1 &call,
+ayni_status_t append_summary(Turn &turn, const ToolLoopConfig &config,
+                             const ayni_task_call_result_v1 &call,
                              const ayni_tool_call_v1 &proposal,
                              const ayni_task_snapshot_v1 &snapshot) {
     ayni_operation_info_v1 info{};
@@ -157,6 +160,14 @@ ayni_status_t append_summary(Turn &turn, const ayni_task_call_result_v1 &call,
     });
     if (status != AYNI_OK) {
         return status;
+    }
+    ToolBudget budget;
+    status = current_tool_budget(config, turn, proposal.protocol_id, budget);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    if (!budget.fits(view(reply))) {
+        return AYNI_CAPACITY_EXCEEDED;
     }
     std::string history = turn.history;
     auto append = growing(history);
@@ -213,7 +224,8 @@ ayni_status_t summarize_result(Workspace &workspace, Turn &turn, const ToolLoopC
     const auto step = summary_key(turn, key);
     ModelResult resolved;
     const auto &summary = resolved.call;
-    status = model_result(workspace, *config.bodies, snapshot, step, resolved);
+    status = model_result(workspace, *config.bodies, snapshot, step, resolved,
+                          config.summary_reply_encoding);
     if (status == AYNI_NOT_FOUND) {
         status = request_chunk(turn, config, snapshot, step, output);
         requested = status == AYNI_OK;
@@ -237,7 +249,7 @@ ayni_status_t summarize_result(Workspace &workspace, Turn &turn, const ToolLoopC
     }
     ++turn.result_summary.chunk;
     return turn.result_summary.offset == archived.json_bytes
-               ? append_summary(turn, original, proposal.call, snapshot)
+               ? append_summary(turn, config, original, proposal.call, snapshot)
                : AYNI_OK;
 }
 } // namespace ayni::strategies::detail

@@ -17,7 +17,7 @@ function(ayni_add_sdk)
         message(FATAL_ERROR "ayni_add_sdk expects COMPONENTS followed by component names")
     endif()
     set(known api core strategies software_provider permit_gate assistant
-        software_workflow mock_provider mock_execution host_storage native_host fixture_model conversation portable_profile)
+        software_workflow mock_provider mock_execution host_storage native_host fixture_model conversation portable_profile model_protocol)
     if(NOT sdk_COMPONENTS)
         set(sdk_COMPONENTS core strategies)
     endif()
@@ -52,12 +52,12 @@ function(ayni_add_sdk)
     # Fixed topological order also permits repeated calls that add components.
     set(paths "" core strategies/builtin providers/software control/permit_gate
         applications/assistant applications/software_workflow providers/mock providers/mock_execution
-        hosts/storage hosts/native providers/fixture_model runtime/conversation runtime/portable)
+        hosts/storage hosts/native providers/fixture_model runtime/conversation runtime/portable providers/model_protocol)
     set(targets ayni_api ayni_core ayni_strategies ayni_provider_software ayni_control_gate
         ayni_assistant_application ayni_software_workflow ayni_provider_mock ayni_provider_mock_execution
-        ayni_host_storage ayni_host_native ayni_provider_fixture_model ayni_runtime_conversation ayni_runtime_portable)
+        ayni_host_storage ayni_host_native ayni_provider_fixture_model ayni_runtime_conversation ayni_runtime_portable ayni_model_protocol)
     set(aliases Api Core Strategies SoftwareProvider PermitGate Assistant
-        SoftwareWorkflow MockProvider MockExecution HostStorage NativeHost FixtureModel Conversation PortableProfile)
+        SoftwareWorkflow MockProvider MockExecution HostStorage NativeHost FixtureModel Conversation PortableProfile ModelProtocol)
     foreach(component IN LISTS known)
         if(NOT component IN_LIST selected)
             continue()

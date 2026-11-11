@@ -1,12 +1,12 @@
 # Ayni：通用原生 AgentOS 基础能力与实验实施计划
 
 > **文档性质**：工程实施计划与待实现契约，不代表已有软件能力。\
-> **文档版本**：v1.106 · 2026-11-08；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
+> **文档版本**：v1.107 · 2026-11-11；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
 > **产品定位**：跨平台、跨设备的通用原生 AgentOS；宿主与扩展决定提供哪些设备或软件能力，统一助理只是应用示例。\
 > **架构路线**：按 Ayni 的共享 Agent 状态、授权、资源及恢复需求设计原生 Core，复用宿主 OS，模型优先通过外部 API 获得；架构图仅参考 AIOS 的分层分组表达样式。\
 > **实施顺序**：先完成基础通用能力，再开展 ESP32-S3、Linux 系统等实验；设备与能力组合按实验目标选取，不要求宿主具备语音、视觉、运动或特定外设。\
 > **基准投入**：单人全职；阶段周期是相对工作量估算，不是开工日期或交付日期承诺。\
-> **当前状态**：通用基础与独立源码SDK已随 #112～#123 交付，见[基础报告](../reports/core/foundation-acceptance.md)和[独立接入报告](../reports/core/independent-consumption.md)；现有正文存储基线为ABI0.54/schema9，见ADR-0096。独立触屏Wi-Fi/RC003-MS语音实验已实施，沿用一个内置ToolLoop及公开能力SDK，USB入口撤除；完整128K峰值、60秒电机和通用硬件停止链仍未验收，见[ADR-0097](adr/0097-esp32-touch-wifi-voice-experiment.md)。本轮电机不连接，不推进新故障/恢复或耐久专项。
+> **当前状态**：通用基础与独立源码SDK已随 #112～#123 交付，见[基础报告](../reports/core/foundation-acceptance.md)和[独立接入报告](../reports/core/independent-consumption.md)；现有正文存储基线为ABI0.54/schema9，见ADR-0096。独立触屏Wi-Fi/RC003-MS语音实验已实施，沿用一个内置ToolLoop及公开能力SDK，USB入口撤除；完整128K峰值、60秒电机和通用硬件停止链仍未验收，见[ADR-0097](adr/0097-esp32-touch-wifi-voice-experiment.md)。共用Chat/Responses协议、SSE和请求工具预置见[ADR-0098](adr/0098-shared-model-protocol-and-preloaded-tools.md)，软件验证与交付在工作分支，本轮不烧录或合并PR。
 
 > **本轮范围**：用户2026-10-31要求实施[独立工程接入与验收计划](architecture/independent-consumption-plan.md)：通用源码SDK、低栈工作区、Native/ESP存储及Host、共同应用和验收。平台适配保持独立目录，必要接口直接升级，正常存储和最小重开获授权；实机操作、付费模型及其他新专项不启动。
 
@@ -587,7 +587,7 @@ NVS 保存小型配置，文件分区保存有界日志/快照。快照采用写
 
 ### 5.1 模型 API 和 Provider
 
-模型请求经 Kernel 调用管理、上下文过滤、授权、资源与 Task 运行限制准入，异步交给 Provider。首先实现 Mock A / Mock B，再实现直连 OpenAI-compatible Chat Completions 的非流式文本/工具调用。JSON 与 HTTP 留在边界，Core 使用有界 typed 结构。真实文本、视觉、ASR、TTS 分别声明和验证，不假定聊天 API 支持全部模态。
+模型请求经 Kernel 调用管理、上下文过滤、授权、资源与 Task 运行限制准入，异步交给 Provider。Mock A / Mock B与直连OpenAI-compatible Chat Completions非流式文本/工具调用已有基线；可选ModelProtocol现支持Chat/Responses及流式，Native/ESP共用wire实现，完整工具可作为当前请求tools预置（ADR-0098）。JSON 与 HTTP 留在边界，Core 使用有界 typed 结构。真实文本、视觉、ASR、TTS 分别声明和验证，不假定聊天 API 支持全部模态。
 
 endpoint、model 与密钥引用运行时配置；密钥由 Provider/Host 管理，不进入 Core、日志或提交。默认模型并发 1、每 Task 模型调用 8 次、单次请求 30 秒，输入/输出大小与后台频率有显式上限。达到 Task 上限暂停并保留进度；普通恢复不清零，仅所有者可提高软上限。无设备/Agent/Goal 累计额度、充值、费用预留或结算；可选 usage 仅诊断。数据外发和计费副作用仍受稳定调用身份与派发屏障约束，未知结果不能盲目重试或自动换服务。
 
@@ -1097,6 +1097,8 @@ idf.py -p <SERIAL_PORT> flash monitor
 ## 14. 默认值与仍需用户决策的问题
 
 ### 14.1 已接受的实施默认值
+
+本次修订（v1.107，2026-11-11）：按用户要求在原ToolLoop内完成完整工具预置、共用Chat/Responses原生协议、SSE与ESP设置；工具不累积进历史，续传绑定模型/目的地，摘要排除opaque内容，实际协议投影统一预算。turn格式6保留格式5reader，ConversationRecord5/ABI0.54/schema9不变；默认旧消费者保留发现/Chat非流式行为。软件验证与独立复查见ADR-0098及工作分支提交说明；不烧录、不调用线上模型、不合并PR。
 
 本次修订（v1.106，2026-11-08）：按用户决定删除独立 USB 版本，Wi-Fi使用同一个内置ToolLoop，由模型直接回答或按需发现、调用设备；普通直接回答只请求一次模型；最终采用通用提示词，应用显示聊天记录，屏幕/扬声器等由模型按用户需求调用，删除自动TTS收尾。原电机能力迁入Wi-Fi，触屏准备和停止；按用户最新决定不逐动作人工确认，默认单次累计PWM最多60秒；上下文预算改为128K，窗口满时允许原摘要；不改 Core/ABI/schema，128K硬件峰值验收仍未完成。见[实验说明](../experiments/esp32_wifi_chat/WIFI.md)。
 

@@ -3,7 +3,7 @@
 - **关联**：ADR-0085；C-POLICY-012、C-MEM-009/010；实现 `runtime/native_node/conversation_*`。
 - **属主**：Runtime/Host 拥有 SQLite、worker、缓存与 namespace；Core 只持有小引用、调用事实、原日志与快照。
 
-启动持有原 Native 目录锁，只接受私有普通非链接数据库文件。存在旧 conversation.bin 时在新写入前拒绝并保留目录；SQLite application_id=0x41594E49、user_version=3，不认识版本拒绝。会话记录格式 5（只含正文引用）独立于 Core schema。旧二进制/原目录用于回退，无自动迁移或清空。
+启动持有原 Native 目录锁，只接受私有普通非链接数据库文件。存在旧 conversation.bin 时在新写入前拒绝并保留目录；SQLite application_id=0x41594E49、user_version=3，不认识版本拒绝。会话记录格式5（只含正文引用）独立于Core schema；turn格式6读取旧格式5，摘要游标改为规范数据偏移（ADR-0098）。新回复续传随对应历史正文保存，公开轮次/结果摘要只显示规范回答，不显示内部封套；旧二进制不能接管格式6。旧二进制/原目录用于回退，无自动迁移或清空。
 
 启动后一个 worker 独占 SQL，owner callbacks 仅在 mutex 下复制有界作业。state save、history load/save、raw archive 各一 lane，queued/writing 时明确 NOT_READY；全局 ready 覆盖全部共享 lane。SQLite FULL 同步、DELETE journal、foreign_keys、secure_delete 与 trusted_schema=OFF；事务提交后才报告完成并允许 Core 保存引用。ready 与 decide 之间完成用显式 DEFER 处理，不允许静默吞掉服务错误。关闭先停止 Kernel 消费，再排空所有 lane、join worker、关数据库；Core step 不等 SQL。
 

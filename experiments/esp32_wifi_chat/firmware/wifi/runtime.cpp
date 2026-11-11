@@ -29,7 +29,8 @@ constexpr int64_t redraw_us = 300000;
 constexpr size_t recent_stages = 3;
 constexpr int remote_candidates_top = 90, remote_candidate_pitch = 46;
 constexpr const char *labels[] = {"Wi-Fi 名称",      "Wi-Fi 密码",   "语音 API 地址",
-                                  "模型 API 根地址", "模型 API Key", "模型名称"};
+                                  "模型 API 根地址", "模型 API Key", "模型名称",
+                                  "模型接口",        "生成时预览",   "Chat 输出预算格式"};
 std::string_view keyboard_keys(bool symbols) {
     return symbols ? "!@#$%^&*()_+-=[]{}:<>?~`|\\\"' ABCDEFGHIJK"
                    : "qwertyuiopasdfghjkl;zxcvbnm,./0123456789";
@@ -85,6 +86,7 @@ class Runtime {
     void draw_settings();
     void draw_home();
     void configure();
+    void clear_preview();
     void cancel();
     void start_motor_check(uint32_t motor);
     void send(std::string_view text, uint64_t id = 0);
@@ -134,8 +136,10 @@ class Runtime {
     bool api_started_ = false, api_failed_ = false, dirty_ = true;
     Restart restart_ = Restart::none;
     ResetWorker reset_;
+    ModelSelection selection_{};
     std::array<char, 17> route_{}; // Frozen with Api's active settings, separate from the UI draft.
     bool shifted_ = false, symbols_ = false, was_connected_ = false;
+    bool model_settings_ = false;
     Page page_ = Page::conversation;
     size_t field_ = 0, current_page_ = 0, pages_ = 1, peer_index_ = 0;
     uint64_t document_turn_ = 0; // Last turn that explicitly used the screen capability.
@@ -144,6 +148,9 @@ class Runtime {
     std::array<std::string, stage_capacity> stages_{};
     size_t stage_count_ = 0;
     uint32_t model_round_ = 0;
+    uint64_t active_model_ = 0;
+    Api::ModelPreview preview_packet_{};
+    std::string preview_text_;
     std::string document_, transcript_, answer_, status_ = "请先在触屏设置 Wi-Fi 和 API";
     std::string speech_error_; // Fixed backend diagnostic only, cleared for a new turn.
     std::string session_detail_ = "等待 Wi-Fi 和模型配置";
@@ -234,9 +241,12 @@ void Runtime::configure() {
         }
         // Freeze destination identity and the I/O snapshot in one owner turn.
         // A UI draft edit while the transport is full cannot change either.
-        const std::string destination =
-            std::string(normalized_api_root(settings_.model_url.data())) + "\n" +
-            settings_.model.data();
+        std::string destination = std::string(normalized_api_root(settings_.model_url.data())) +
+                                  "\n" + settings_.model.data();
+        // Preserve existing Chat route identities; Responses is a distinct selection.
+        if (std::strcmp(settings_.api_type.data(), "responses") == 0) {
+            destination += "\nresponses";
+        }
         uint8_t digest[32]{};
         size_t digest_bytes = 0;
         if (psa_crypto_init() != PSA_SUCCESS ||
@@ -256,21 +266,40 @@ void Runtime::configure() {
             session_status(Session::failed, "API 任务启动失败，请重启");
             return;
         }
+        selection_.route = route_;
+        selection_.model = settings_.model;
+        const auto scope = normalized_api_root(settings_.model_url.data());
+        std::snprintf(selection_.scope.data(), selection_.scope.size(), "%.*s", int(scope.size()),
+                      scope.data());
+        selection_.api = settings_.model_api();
+        selection_.chat_token_limit = settings_.model_token_limit();
         api_started_ = true;
     }
-    if (transport_.post(Kind::configure, 0, route_.data(), route_.size() - 1)) {
+    if (transport_.post(Kind::configure, 0, &selection_, sizeof(selection_))) {
         configured_ = true;
         api_.submit(Request::health, ++next_id_);
         session_status(Session::opening, "已联网，正在打开 Ayni 会话");
     }
 }
 
+void Runtime::clear_preview() {
+    active_model_ = 0;
+    volatile char *bytes = preview_text_.data();
+    for (size_t at = 0; at < preview_text_.size(); ++at) {
+        bytes[at] = 0;
+    }
+    std::string{}.swap(preview_text_);
+    std::fill(preview_packet_.text.begin(), preview_packet_.text.end(), 0);
+    preview_packet_.size = 0;
+    dirty_ = true;
+}
 void Runtime::cancel() {
     if (motor_.active()) {
         motor_.stop(transport_);
     }
     remote_.cancel_recording();
     api_.cancel_all();
+    clear_preview();
     if (motor_check_id_) {
         transport_.post(Kind::cancel, *motor_check_id_, nullptr, 0);
         message("正在停止自检，不会自动重试");
@@ -324,6 +353,7 @@ void Runtime::send(std::string_view text, uint64_t id) {
     for (auto &entry : stages_) {
         entry.clear();
     }
+    clear_preview();
     stage("输入已提交给Ayni");
     transcript_.assign(text);
     answer_.clear();
@@ -373,6 +403,8 @@ void Runtime::packets() {
                 !api_.submit(Request::model, id, body.data(), body.size())) {
                 transport_.post(Kind::model_error, id, nullptr, 0);
             } else {
+                clear_preview();
+                active_model_ = id;
                 ++model_round_;
                 const bool summary = packet_.size == model_request_bytes &&
                                      get32(packet_.body.data() + body_reference_bytes) == 0;
@@ -470,6 +502,7 @@ void Runtime::packets() {
                         motor_.stop(transport_);
                     }
                     api_.cancel_all();
+                    clear_preview();
                     remote_.cancel_recording();
                     work_ = Work::idle;
                     motor_check_id_.reset();
@@ -500,6 +533,7 @@ void Runtime::packets() {
                 dirty_ = true;
             }
             if (body == "context cleared on device") {
+                clear_preview();
                 transcript_.clear();
                 answer_.clear();
                 page_ = Page::history;
@@ -521,13 +555,27 @@ void Runtime::packets() {
     }
 }
 void Runtime::results() {
+    if (api_.take_preview(preview_packet_) && work_ == Work::running &&
+        preview_packet_.id == active_model_) {
+        preview_text_.assign(preview_packet_.text.data(), preview_packet_.size);
+        dirty_ = true;
+    }
+    std::fill(preview_packet_.text.begin(), preview_packet_.text.end(), 0);
+    preview_packet_.size = 0;
     while (auto *job = api_.result()) {
         if (!api_.current(*job)) {
+            if (job->request == Request::model && active_model_ == job->input.id) {
+                clear_preview();
+            }
             api_.release(job);
             continue;
         }
         if (job->request == Request::model) {
-            if (job->ok) {
+            if (active_model_ == job->input.id) {
+                clear_preview();
+            }
+            if (job->ok || (job->output.kind == Kind::model_error &&
+                            job->output.size == model_result_header_bytes)) {
                 if (!transport_.post(job->output.kind, job->input.id, job->output.body.data(),
                                      job->output.size)) {
                     message("模型结果提交失败，将按超时收尾");
@@ -581,6 +629,7 @@ void Runtime::stop_for_restart() {
         motor_.stop(transport_);
     }
     api_.cancel_all();
+    clear_preview();
     remote_.cancel_recording();
     restart_at_ = esp_timer_get_time() + (restart_ == Restart::settings ? 1000000 : 1);
 }
@@ -757,6 +806,28 @@ void Runtime::tap_home(int x, int y) {
     }
 }
 void Runtime::tap_settings(int x, int y) {
+    if (y < 26) {
+        model_settings_ = !model_settings_;
+        return;
+    }
+    if (model_settings_ && y >= 30 && y < 246) {
+        const size_t option = size_t((y - 30) / 60);
+        if (option == 0) {
+            std::strcpy(settings_.api_type.data(),
+                        std::strcmp(settings_.api_type.data(), "responses") == 0
+                            ? "chat_completions"
+                            : "responses");
+        } else if (option == 1) {
+            std::strcpy(settings_.stream.data(),
+                        std::strcmp(settings_.stream.data(), "true") == 0 ? "false" : "true");
+        } else if (option == 2) {
+            std::strcpy(settings_.output_limit.data(),
+                        std::strcmp(settings_.output_limit.data(), "max_tokens") == 0
+                            ? "max_completion_tokens"
+                            : "max_tokens");
+        }
+        return;
+    }
     if (y >= 30 && y < 246) {
         field_ = size_t((y - 30) / 36);
         if (!field_) {
@@ -948,9 +1019,11 @@ void Runtime::draw_home() {
                                       : !ready()                  ? "会话未就绪，点击查看"
                                                                   : std::string_view(status_);
     canvas_.label(8, 28, activity);
-    const auto history = busy() && answer_.empty()
-                             ? "执行过程：\n" + stages(recent_stages) + "\n你：\n" + transcript_
-                             : "你：\n" + transcript_ + "\n\nAyni：\n" + answer_;
+    const auto history =
+        busy() && answer_.empty()
+            ? "执行过程：\n" + stages(recent_stages) + "\n你：\n" + transcript_ +
+                  (preview_text_.empty() ? "" : "\n\n生成中（预览）：\n" + preview_text_)
+            : "你：\n" + transcript_ + "\n\nAyni：\n" + answer_;
     const std::string_view content =
         page_ == Page::history ? std::string_view(history) : std::string_view(document_);
     pages_ = canvas_.document(
@@ -982,7 +1055,18 @@ void Runtime::draw_maintenance() {
     canvas_.button(8, 278, 224, 36, "返回");
 }
 void Runtime::draw_settings() {
-    for (size_t i = 0; i < Settings::field_count; ++i) {
+    canvas_.button(126, 0, 114, 26, model_settings_ ? "网络设置" : "模型选项");
+    if (model_settings_) {
+        canvas_.label(8, 30, "模型接口（点击切换）");
+        canvas_.label(8, 54, settings_.api_type.data(), Canvas::accent);
+        canvas_.label(8, 90, "生成时预览（暂定文字）");
+        canvas_.label(8, 114, std::strcmp(settings_.stream.data(), "true") == 0 ? "开启" : "关闭",
+                      Canvas::accent);
+        canvas_.label(8, 150, "Chat 输出预算格式");
+        canvas_.label(8, 174, settings_.output_limit.data(), Canvas::accent);
+        canvas_.label(8, 210, "修改后保存重启生效");
+    }
+    for (size_t i = 0; !model_settings_ && i < Settings::legacy_field_count; ++i) {
         const int y = 30 + int(i) * 36;
         canvas_.label(8, y, labels[i]);
         canvas_.label(8, y + 16,

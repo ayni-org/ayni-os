@@ -107,7 +107,7 @@ cmake --preset native-debug -DFETCHCONTENT_SOURCE_DIR_GOOGLETEST=/path/to/google
 Native 构建增加 `libcurl4-openssl-dev` 与 `libsqlite3-dev`；CI 安装配方已包含。yyjson 由
 `cmake/AyniYyjson.cmake` 固定版本/哈希，复用 `AYNI_DOWNLOAD_DIR`。离线配置可指定
 `-DFETCHCONTENT_SOURCE_DIR_YYJSON=/path/to/yyjson-0.10.0`，与 GoogleTest 相同。
-ESP-IDF 不引入 curl 或 yyjson。相关本地用例可用 `ctest -R Openai` 选择；
+ESP-IDF不引入curl；可选ModelProtocol与实验复用固定yyjson的source-only导入。相关本地用例可用 `ctest -R Openai` 选择；
 测试只连回环 HTTP，不读取实服务密钥。手动实 API 程序显式构建、显式 `--live`，
 不注册为 CTest，运行方法见 [Provider 说明](../providers/openai_compat/README.md)。
 
@@ -311,3 +311,13 @@ ABI 0.48 的 `business_contract_max_bytes` 独立于 Scope 和业务正文，默
 较大的证明上限会使自动 journal buffer 超过显式 `storage_buffer_bytes` 的 1 MiB 输入上限；自动配置按完整批次预算选择，显式小缓冲仍拒绝。`ayni_native_measurements` 的 small smoke 使用默认证明上限；maximum 保留全部容量/证明上限，结果中 `explicit_buffer_supported=false`、`accepted_buffer_min_bytes=0` 表示只可用自动缓冲，不能解释成 0 字节已通过准入。测量 Host 的逻辑介质容量为 4 GiB（不预分配），容纳最大 Schema-4 双快照及日志；该工具不是硬件容量承诺。
 
 规范化/原证明解码仍使用有界栈暂存；本包在 Native 主线程验证，编译器静态单函数帧不是整条调用链峰值。ESP-IDF 栈、持久介质开销及真实 Host 资源支持尚未验证，不因 Native 正常回归推定可用。受限 Host 的配置与栈预算须在平台阶段实测。
+
+### 共用模型协议验证
+
+`providers/model_protocol`提供`Ayni::ModelProtocol`，Native与ESP传输共用Chat/Responses及SSE。
+检查入口为`tests/independent/model_protocol`、根工程的`ayni_model_protocol_tests`、
+`ayni_openai_provider_tests`、`ayni_strategies_tests`以及
+`experiments/esp32_wifi_chat/tests/wifi`。先按资源预算设置两个并发变量，再选择相关目标；
+协议/HTTP夹具只用合成数据和本地服务。FRAMED/完整预置接入须配置匹配的回复解码和
+`Protocol::projection`，见[组件说明](../providers/model_protocol/README.md)。
+独立ESP实验编译还需要按其README准备固定字体；编译不运行deploy或串口。
