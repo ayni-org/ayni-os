@@ -103,6 +103,8 @@ struct Preview {
     void (*text)(void *, std::string_view) = nullptr;
 };
 // One request's bounded SSE accumulator. feed accepts arbitrary byte cuts/CRLF/data lines.
+// byte_limit bounds each buffered line/event/output field and the completed response,
+// not lifetime wire bytes: repeated SSE metadata is discarded after each event.
 // finish is called only after HTTP succeeds; only then can a complete Answer be published.
 // Destruction wipes buffered model data. No retry, thread, credential or I/O belongs here.
 class Stream {

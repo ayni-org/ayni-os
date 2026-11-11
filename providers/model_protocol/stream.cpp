@@ -33,7 +33,7 @@ std::string source(yyjson_val *value) {
 } // namespace
 struct Stream::Impl {
     RequestOptions options;
-    size_t limit, received = 0;
+    size_t limit;
     Preview preview;
     ayni_status_t status = AYNI_OK;
     std::string line, event, event_type, content, finish_reason, usage, final_response;
@@ -136,9 +136,11 @@ struct Stream::Impl {
             status = AYNI_INVALID_ARGUMENT;
             return;
         }
-        auto *text = yyjson_obj_get(delta, "content");
-        if (text && !yyjson_is_null(text) && !string(text, content, true)) {
-            return;
+        for (const auto *field : {"content", "refusal"}) {
+            auto *text = yyjson_obj_get(delta, field);
+            if (text && !yyjson_is_null(text) && !string(text, content, true)) {
+                return;
+            }
         }
         auto *tool_calls = yyjson_obj_get(delta, "tool_calls");
         if (tool_calls && !yyjson_is_arr(tool_calls)) {
@@ -404,7 +406,7 @@ struct Stream::Impl {
         auto measure = Writer::measuring();
         write(measure);
         size_t bytes = 0;
-        if (!measure.finish(bytes)) {
+        if (!measure.finish(bytes) || bytes > limit) {
             status = AYNI_CAPACITY_EXCEEDED;
             return {};
         }
@@ -431,10 +433,6 @@ ayni_status_t Stream::feed(std::string_view bytes) {
     if (self.status != AYNI_OK) {
         return self.status;
     }
-    if (bytes.size() > self.limit - self.received) {
-        return self.status = AYNI_CAPACITY_EXCEEDED;
-    }
-    self.received += bytes.size();
 #if defined(__cpp_exceptions)
     try {
 #endif

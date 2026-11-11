@@ -26,8 +26,10 @@ requires a projection. Serving-model usage is reported separately from preflight
 estimation; projected requests do not reuse legacy Chat character anchors.
 
 Feed each successful SSE response into a fresh `Stream`; arbitrary cuts, CRLF and
-multiple data lines are supported. Check initial `status()` before HTTP. Invoke
-`finish` only after successful complete HTTP EOF. Only a completed Answer may be
+multiple data lines are supported. Check initial `status()` before HTTP.
+The byte limit bounds buffered lines/events, retained output fields and the completed
+response; repeated event metadata does not consume the accumulated answer budget.
+Invoke `finish` only after successful complete HTTP EOF. Only a completed Answer may be
 published. Preview callbacks execute on the transport worker, borrow their text
 until return and must not block, throw, reenter Core or execute tools. Cancelled or
 unknown calls are never automatically retried. Release the accumulator and Answer

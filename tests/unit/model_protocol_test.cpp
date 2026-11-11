@@ -322,6 +322,113 @@ TEST(ModelProtocol, ExplicitModernChatTokenLimitDoesNotDependOnModelName) {
 } // namespace
 
 namespace {
+TEST(ModelProtocol, FullMetadataChatDeltasFitBothTransportBudgets) {
+    // ADR-0098: repeated SSE metadata must not consume the accumulated answer budget.
+    RequestOptions options;
+    options.model = "fixture";
+    options.stream = true;
+    constexpr size_t output_tokens = 1024;
+    const std::string delta =
+        "data: "
+        R"({"id":"chatcmpl-fixture","object":"chat.completion.chunk","created":1700000000,"model":"fixture-chat-model","system_fingerprint":"fp_fixture","choices":[{"index":0,"delta":{"content":"x"},"logprobs":null,"finish_reason":null}]})"
+        "\r\n\r\n";
+    std::string wire;
+    for (size_t at = 0; at < output_tokens; ++at) {
+        wire += delta;
+    }
+    wire += "data: "
+            R"({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]})"
+            "\r\n\r\ndata: [DONE]\r\n\r\n";
+    constexpr size_t native_limit = 65536 + 96 * output_tokens;
+    constexpr size_t esp_limit = 131072;
+    for (const auto limit : {native_limit, esp_limit}) {
+        ASSERT_GT(wire.size(), limit);
+        for (const bool one_chunk : {false, true}) {
+            Stream stream(options, limit);
+            if (one_chunk) {
+                ASSERT_EQ(stream.feed(wire), AYNI_OK);
+            } else {
+                for (size_t at = 0; at < wire.size(); at += delta.size()) {
+                    ASSERT_EQ(stream.feed(std::string_view(wire).substr(at, delta.size())),
+                              AYNI_OK);
+                }
+            }
+            auto answer = std::make_unique<Answer>();
+            stream.finish(*answer);
+            ASSERT_EQ(answer->result.status, AYNI_OK);
+            EXPECT_EQ(answer->result.outcome, AYNI_CALL_COMPLETED);
+            EXPECT_EQ(std::string_view(answer->result.result.data, answer->result.result.size),
+                      std::string(output_tokens, 'x'));
+        }
+    }
+}
+TEST(ModelProtocol, ChatRefusalDeltasBecomeVisibleAnswerAndPreview) {
+    // ADR-0098: a refusal is visible assistant output, including in a refusal-only stream.
+    RequestOptions options;
+    options.model = "fixture";
+    options.stream = true;
+    std::string preview;
+    Stream stream(options, 4096, {&preview, [](void *context, std::string_view value) {
+                                      static_cast<std::string *>(context)->append(value);
+                                  }});
+    const std::string wire =
+        "data: "
+        R"({"choices":[{"index":0,"delta":{"role":"assistant","content":null,"refusal":"抱歉，"},"finish_reason":null}]})"
+        "\r\n\r\ndata: "
+        R"({"choices":[{"index":0,"delta":{"refusal":"无法协助此请求。"},"finish_reason":null}]})"
+        "\r\n\r\ndata: "
+        R"({"choices":[{"index":0,"delta":{"refusal":null},"finish_reason":"stop"}]})"
+        "\r\n\r\ndata: [DONE]\r\n\r\n";
+    for (const char &byte : wire) {
+        ASSERT_EQ(stream.feed({&byte, 1}), AYNI_OK);
+    }
+    auto answer = std::make_unique<Answer>();
+    stream.finish(*answer);
+    ASSERT_EQ(answer->result.status, AYNI_OK);
+    EXPECT_EQ(answer->result.outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(std::string_view(answer->result.result.data, answer->result.result.size),
+              "抱歉，无法协助此请求。");
+    EXPECT_EQ(preview, "抱歉，无法协助此请求。");
+}
+TEST(ModelProtocol, StreamingBuffersStillEnforceTheirByteLimit) {
+    // ADR-0098: discarding repeated framing must preserve bounded SSE/output storage.
+    RequestOptions options;
+    options.model = "fixture";
+    options.stream = true;
+    constexpr size_t limit = 256;
+    Stream line(options, limit);
+    EXPECT_EQ(line.feed(std::string(limit + 1, 'x')), AYNI_CAPACITY_EXCEEDED);
+    Stream event(options, limit);
+    const auto data_line = "data: " + std::string(limit / 2, 'x') + "\n";
+    ASSERT_EQ(event.feed(data_line), AYNI_OK);
+    EXPECT_EQ(event.feed(data_line), AYNI_CAPACITY_EXCEEDED);
+    for (const auto *field : {"content", "refusal"}) {
+        Stream output(options, limit);
+        const auto delta = std::string("data: {\"choices\":[{\"index\":0,\"delta\":{\"") + field +
+                           "\":\"x\"},\"finish_reason\":null}]}\n\n";
+        for (size_t at = 0; at < limit; ++at) {
+            ASSERT_EQ(output.feed(delta), AYNI_OK);
+        }
+        EXPECT_EQ(output.feed(delta), AYNI_CAPACITY_EXCEEDED);
+        auto answer = std::make_unique<Answer>();
+        output.finish(*answer);
+        EXPECT_EQ(answer->result.status, AYNI_CAPACITY_EXCEEDED);
+        EXPECT_EQ(answer->result.outcome, AYNI_CALL_FAILED);
+    }
+    Stream completed(options, limit);
+    const auto half = std::string("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"") +
+                      std::string(limit / 2, 'x') + "\"},\"finish_reason\":null}]}\n\n";
+    ASSERT_EQ(completed.feed(half), AYNI_OK);
+    ASSERT_EQ(completed.feed(half), AYNI_OK);
+    ASSERT_EQ(completed.feed("data: "
+                             R"({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]})"
+                             "\n\ndata: [DONE]\n\n"),
+              AYNI_OK);
+    auto answer = std::make_unique<Answer>();
+    completed.finish(*answer);
+    EXPECT_EQ(answer->result.status, AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(answer->result.outcome, AYNI_CALL_FAILED);
+}
 TEST(ModelProtocol, ResponsesArgumentDeltasFinishWithOrderedItemsAndSemanticObjectEquality) {
     // ADR-0098: item order matters; object member order does not. arguments.done is not terminal.
     RequestOptions options;
