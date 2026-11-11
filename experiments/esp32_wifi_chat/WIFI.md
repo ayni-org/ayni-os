@@ -244,3 +244,10 @@ API校时拒绝明确返回NOT_READY/FAILED/EFFECT_NONE，客户端分配失败�
 - Kernel字段：git diff仅实验目录和工作流记录，没有Core/ABI/schema字段；Job继续拥有接收字节计数，ResponseLimit不复制计数或正文。
 - 重复公式：response_limit.h:11/12统一HTTP声明长度及逐块计数的总量检查，Api调用同一规则；实际SSE解析/保留大小继续由公开共享解析器拥有，没有另写协议。
 - 裸数字：旧阈值只作为测试回归常量old_wire_limit；生产保留stream_buffer_limit命名常量，计数用numeric_limits防溢出，无新的Core记录偏移或阈值。
+
+
+本次部署实际遇阻，不能报告OTA后正常就绪：最终修复版本0fed423，应用0x287f80（2654080）字节、小槽余量16%。第一次HTTP409在写入前明确拒绝，随后用户实际取消，日志出现turn failed/cancelled终态，才再次发起更新。第二次31.64秒得到HTTP200及updated/restarting=true，轮询先观察到新版本0fed423/ota_1/pending_verify=true，之后回到3805453/ota_0/pending_verify=false。新版本没有通过就绪确认，正常更新中自然触发回退；没有主动制造故障或启动回退测试专项。
+
+只读日志显示已有卷重放进入RESTRICTED：lifecycle=4、restriction=5（公开常量LOG_CORRUPT）、boot=0、durable=434；旧版本回退后也报告相同错误。这不证明物理Flash损坏，也不把durable=434说成具体损坏记录。Core/ABI/schema没有改动，模型流尚未调用，因此不能将此次重放问题归因于新SSE解析。任务/会话、NVS及配对未擦除，旧记录不改写。固件声明长度/写入校验成功与应用正常就绪分别记录，修复代码已推送，不声称新版本已驻留运行。
+
+当前固件在会话受限时editable=false，会拒绝OTA；现有Web只有元数据日志，没有数据卷导出。USB枚举未发现目标板，因此已请求用户保持驱动断电并连接USB，准备只读备份/分析实际卷；未据早先的一次清空授权再次删除数据。脱敏证据在本机build/stream-limit-ota-update-after-cancel.log、stream-limit-storage-restriction.json及stream-limit-rollback-state.json，为仓库外记录。待卷重放原因解决后再完成OTA与实机长模型流验证。
