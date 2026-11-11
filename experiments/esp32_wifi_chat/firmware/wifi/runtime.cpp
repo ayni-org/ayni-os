@@ -5,6 +5,7 @@
 #include "api.h"
 #include "canvas.h"
 #include "motor_panel.h"
+#include "network_time.h"
 #include "ota_update.h"
 #include "remote.h"
 #include "reset_worker.h"
@@ -15,6 +16,7 @@
 #include <ayni/model_messages.hpp>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <esp_heap_caps.h>
 #include <esp_random.h>
 #include <esp_system.h>
@@ -122,6 +124,9 @@ class Runtime {
     enum class Session { unconfigured, opening, ready, failed, closing, stopped };
     Session session_ = Session::unconfigured;
     bool ready() const { return session_ == Session::ready && !update_.pending_verification(); }
+    bool model_clock_ready() const {
+        return request_clock_ready(settings_.model_url.data(), std::time(nullptr));
+    }
     void session_status(Session state, std::string_view detail) {
         session_ = state;
         session_detail_.assign(detail);
@@ -146,6 +151,7 @@ class Runtime {
     ModelSelection selection_{};
     std::array<char, 17> route_{}; // Frozen with Api's active settings, separate from the UI draft.
     bool shifted_ = false, symbols_ = false, was_connected_ = false;
+    bool was_clock_ready_ = false; // UI redraw tracking only; does not own/copy system time.
     bool model_settings_ = false;
     Page page_ = Page::conversation;
     size_t field_ = 0, current_page_ = 0, pages_ = 1, peer_index_ = 0;
@@ -339,6 +345,10 @@ void Runtime::start_motor_check(uint32_t motor) {
     message("已提交本地自检，无需模型");
 }
 void Runtime::send(std::string_view text, uint64_t id) {
+    if (!model_clock_ready()) {
+        message("等待网络校时；未创建对话任务");
+        return;
+    }
     if (!ready() || !station_.connected() || busy() || recognizing() || text.empty() ||
         text.size() > input_bytes || restarting()) {
         message("会话未就绪、忙碌或输入超限，未发送");
@@ -1102,9 +1112,10 @@ void Runtime::draw() {
     dirty_ = false;
 }
 void Runtime::draw_status() {
-    const std::string detail = "会话：\n" + session_detail_ + "\n\n遥控器：\n" +
-                               remote_snapshot_.message.data() + "\n\n当前提示：\n" + status_ +
-                               "\n\n执行过程：\n" + stages(stage_capacity);
+    const std::string detail =
+        "会话：\n" + session_detail_ + "\n\n遥控器：\n" + remote_snapshot_.message.data() +
+        "\n\n模型网络：\n" + (model_clock_ready() ? "校时已就绪" : "等待网络校时，尚不能对话") +
+        "\n\n当前提示：\n" + status_ + "\n\n执行过程：\n" + stages(stage_capacity);
     pages_ = canvas_.document(detail, current_page_, 32, 250);
     canvas_.button(0, 270, 114, 44, "返回");
     canvas_.button(118, 270, 58, 44, "上页");
@@ -1116,7 +1127,8 @@ void Runtime::draw_home() {
                                       : recognizing()             ? "正在ASR转写"
                                       : work_ == Work::cancelling ? "正在取消"
                                       : !ready()                  ? "会话未就绪，点击查看"
-                                                                  : std::string_view(status_);
+                                      : !model_clock_ready() ? "等待网络校时，暂不能对话"
+                                                             : std::string_view(status_);
     canvas_.label(8, 28, activity);
     const auto history =
         busy() && answer_.empty()
@@ -1249,7 +1261,7 @@ void Runtime::run() {
     if (!storage_ok_) {
         message("配置分区不可用；未擦除任何数据");
     }
-    if (!station_.initialize()) {
+    if (!station_.initialize(transport_.diagnostics())) {
         message("Wi-Fi 初始化失败");
     }
     if (storage_ok_) {
@@ -1276,6 +1288,14 @@ void Runtime::run() {
             message("Wi-Fi RF策略未就绪，连接已取消");
         }
         const bool connected = station_.connected();
+        const bool clock_ready = model_clock_ready();
+        if (clock_ready != was_clock_ready_) {
+            was_clock_ready_ = clock_ready;
+            dirty_ = true;
+            if (clock_ready && ready() && !busy() && !recognizing() && !restarting()) {
+                message("网络校时完成，Ayni 就绪");
+            }
+        }
         if (connected != was_connected_) {
             if (!connected) {
                 cancel();
@@ -1326,13 +1346,13 @@ void Runtime::run() {
             }
         }
         reset_progress();
-        remote_.allow_recording(ready() && connected && !busy() && !recognizing() &&
+        remote_.allow_recording(ready() && clock_ready && connected && !busy() && !recognizing() &&
                                 !restarting() && remote_snapshot_.state == Remote::State::ready &&
                                 page_ != Page::keyboard);
         uint8_t *recording = nullptr;
         size_t bytes = 0;
         if (remote_.take_audio(recording, bytes)) {
-            if (ready() && connected && !busy() && !recognizing() && !restarting() &&
+            if (ready() && clock_ready && connected && !busy() && !recognizing() && !restarting() &&
                 api_started_ &&
                 api_.submit(Request::recognize, ++next_id_, nullptr, 0, recording, bytes)) {
                 work_ = Work::recognizing;

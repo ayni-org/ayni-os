@@ -1,11 +1,17 @@
 #include "station.h"
+#include "network_time.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <esp_netif.h>
 #include <esp_netif_sntp.h>
+#include <esp_timer.h>
 namespace wifichat::wifi {
 namespace {
+constexpr size_t time_server_count = 3;
+constexpr int64_t clock_poll_us = 1000000, clock_log_us = 30000000;
+static_assert(CONFIG_LWIP_SNTP_MAX_SERVERS >= time_server_count);
 // Same three verification points as the previously accepted PS_NONE display
 // profile. Logs expose policy metadata only, never credentials or AP details.
 bool power_policy(const char *phase) {
@@ -34,7 +40,8 @@ void Station::event(void *context, esp_event_base_t base, int32_t id, void *data
         self.scanned_.store(true, std::memory_order_release);
     }
 }
-bool Station::initialize() {
+bool Station::initialize(DiagnosticLog &diagnostics) {
+    diagnostics_ = &diagnostics;
     if (esp_netif_init() != ESP_OK || esp_event_loop_create_default() != ESP_OK ||
         !esp_netif_create_default_wifi_sta()) {
         return false;
@@ -52,14 +59,18 @@ bool Station::initialize() {
     if (!power_policy("after_start")) {
         return false;
     }
-    esp_sntp_config_t clock = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    esp_sntp_config_t clock = ESP_NETIF_SNTP_DEFAULT_CONFIG_MULTIPLE(
+        time_server_count,
+        ESP_SNTP_SERVER_LIST("ntp.aliyun.com", "time.cloudflare.com", "pool.ntp.org"));
     clock.start = false;
     clock.server_from_dhcp = false;
     if (esp_netif_sntp_init(&clock) != ESP_OK) {
         return false;
     }
-    initialized_ = esp_netif_sntp_start() == ESP_OK;
-    return initialized_;
+    // Starting before DHCP/DNS readiness can enter backoff before the first request.
+    // SNTP starts/restarts from the UI poll after IP_READY, never from a network callback.
+    initialized_ = true;
+    return true;
 }
 bool Station::connect(const Settings &settings) {
     wifi_config_t config{};
@@ -96,9 +107,12 @@ bool Station::poll() {
     auto expected = Link::policy_pending;
     const auto link = link_.load(std::memory_order_acquire);
     if (link == Link::down) {
+        clock_ = Clock::idle;
+        next_clock_poll_us_ = 0;
         return release_radio();
     }
     if (link != expected) {
+        poll_clock();
         return true;
     }
     bool verified = power_policy("IP_READY");
@@ -125,7 +139,41 @@ bool Station::poll() {
         // A disconnect during acquire wins; its reference must not escape this turn.
         return release_radio();
     }
+    if (connected()) {
+        poll_clock();
+    }
     return true;
+}
+void Station::poll_clock() {
+    const auto now = esp_timer_get_time();
+    if (now < next_clock_poll_us_) {
+        return;
+    }
+    next_clock_poll_us_ = now + clock_poll_us;
+    if (clock_ == Clock::idle || clock_ == Clock::failed) {
+        const auto result = esp_netif_sntp_start();
+        clock_ = result == ESP_OK ? Clock::waiting : Clock::failed;
+        diagnostics_->record("wifi clock start status=%ld servers=%zu\n", long(result),
+                             time_server_count);
+        next_clock_log_us_ = now + clock_log_us;
+        if (result != ESP_OK) {
+            next_clock_poll_us_ = next_clock_log_us_;
+            return;
+        }
+    }
+    const auto epoch = std::time(nullptr);
+    if (network_clock_ready(epoch)) {
+        if (clock_ != Clock::ready) {
+            diagnostics_->record("wifi clock ready epoch=%lld uptime_ms=%lld\n",
+                                 static_cast<long long>(epoch), static_cast<long long>(now / 1000));
+        }
+        clock_ = Clock::ready;
+    } else if (clock_ == Clock::ready || now >= next_clock_log_us_) {
+        clock_ = Clock::waiting;
+        diagnostics_->record("wifi clock waiting epoch=%lld uptime_ms=%lld\n",
+                             static_cast<long long>(epoch), static_cast<long long>(now / 1000));
+        next_clock_log_us_ = now + clock_log_us;
+    }
 }
 bool Station::scan() {
     scanned_.store(false, std::memory_order_release);

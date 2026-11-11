@@ -1,11 +1,13 @@
 #include "web_config.h"
 #include "../main/harness.h"
 #include "model_buffer.h"
+#include "network_time.h"
 #include "ota_update.h"
 #include <ayni/model_messages.hpp>
 #include <charconv>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <esp_netif.h>
 #include <esp_timer.h>
 #include <string>
@@ -234,6 +236,11 @@ esp_err_t WebConfig::logs(httpd_req_t *request) {
     out.unsigned_number(heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     out.raw(",\"psram_largest\":");
     out.unsigned_number(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    const auto epoch = std::time(nullptr);
+    out.raw("},\"clock\":{\"ready\":");
+    out.raw(network_clock_ready(epoch) ? "true" : "false");
+    out.raw(",\"epoch_seconds\":");
+    out.number(epoch);
     out.raw("},\"log\":");
     if (!self.diagnostics_->json(out, after)) {
         httpd_resp_set_status(request, "503 Service Unavailable");

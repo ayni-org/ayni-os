@@ -3,6 +3,7 @@
 #include "../main/speaker.h"
 #include "model_buffer.h"
 #include "model_codec.h"
+#include "network_time.h"
 #include "speech_stream.h"
 #include <algorithm>
 #include <ayni/model_messages.hpp>
@@ -238,8 +239,11 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
                size_t prefix_bytes, const void *body, size_t body_bytes, const void *suffix,
                size_t suffix_bytes, size_t response_limit, CaptureReader *capture,
                SpeechStream *stream, ayni::providers::model_protocol::Stream *model_stream) {
-    if (std::strncmp(url, "https://", 8) == 0 && std::time(nullptr) < 1700000000) {
-        std::snprintf(job.error.data(), job.error.size(), "等待网络校时后重试");
+    if (!request_clock_ready(url, std::time(nullptr))) {
+        if (job.request == Request::model) {
+            model_failure(job.output, AYNI_NOT_READY, AYNI_REASON_NONE, AYNI_CALL_EFFECT_NONE);
+        }
+        std::snprintf(job.error.data(), job.error.size(), "网络尚未校时；请求未发出");
         return false;
     }
     const auto deadline = job.deadline;
@@ -253,6 +257,10 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
     config.max_authorization_retries = 0;
     auto client = esp_http_client_init(&config);
     if (!client) {
+        if (job.request == Request::model) {
+            model_failure(job.output, AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE,
+                          AYNI_CALL_EFFECT_NONE);
+        }
         std::snprintf(job.error.data(), job.error.size(), "API 客户端初始化失败");
         return false;
     }

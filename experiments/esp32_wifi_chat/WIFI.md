@@ -207,3 +207,20 @@ USB首启动从ota_0运行，pending_verify由true变false；随后经真实HTTP
 同一空闲阶段内部空闲从安装前26787增至新版本约58879–59503字节，符合主控栈返还32768字节并扣除OTA新增开销的预期；实际正常关闭时owner_free=39448/65536，storage worker_free=14048/24576、speaker_free=11596/12288。历史最低内部空闲本轮约51 KiB。此为启动/正常OTA路径的观测，不是所有模型/电机/长语音峰值保证；原约9K wire token的间歇读失败仍需结合新传输错误码归因，不能宣称已根治。
 
 自查复核补充：OTA拒绝应答已移到metadata mutex之外，HTTP慢客户端不会持锁阻塞UI；明确未成功排入关闭命令的路径可以拒绝，已在关闭中的超时仍等待STOPPED才重启。相关3项UpdatePlan检查在修正后重跑通过。部署与诊断日志在本机build目录，是仓库外证据；不开展无效镜像、断电、回退、额外擦卷或带电电机专项。
+
+
+### 2026-11-11 HTTPS 校时前置条件与已知未发出分类
+
+新一次Wi-Fi记录表明ASR在1396ms成功；首个模型请求完整wire估算7708 token，在本地70ms返回“等待网络校时后重试”，没有进入HTTPS客户端。内部空闲55435、PSRAM1645480字节，不能归因于上下文或RAM耗尽。API在进入http()之前清除了已知失败包，而校时早退没有恢复包，使UI提交空model_error，原Core按UNKNOWN(-17)暂停。旧版仅一个pool.ntp.org，Wi-Fi初始化时便启动SNTP；界面未把模型网络校时作为对话准入条件。实际DNS/UDP未成功的原因仍无抓包证据，不将启动时序问题说成唯一网络原因。
+
+本次只改实验：三个SNTP源，在IP_READY和射频策略确认后启动，重连后重启SNTP；SDK负责后续重试，不重发模型请求。首选ntp.aliyun.com及备用time.cloudflare.com的地址分别依据[阿里云](https://www.alibabacloud.com/help/en/ecs/user-guide/cloud-marketplace-mirror-specification)和[Cloudflare](https://developers.cloudflare.com/time-services/ntp/usage/)官方文档，保留pool.ntp.org。对话/录音在HTTPS时间前置条件未就绪时拒绝，触屏显示等待校时且不创建Goal；配置和OTA保持可用，启动确认仍不依赖公共NTP可用性。TLS证书与日期校验不关闭。网络时钟阈值只在network_time.h定义，HTTP、Station、UI和日志共同使用。
+
+API校时拒绝明确返回NOT_READY/FAILED/EFFECT_NONE，客户端分配失败同样标为已知未发出；已进入网络后的不确定结果仍保守处理，不重试。GET /api/logs新增clock.ready及clock.epoch_seconds，页面显示状态，设备RAM记录包括启动/就绪/等待；不记录语音、正文、Key或SSID。此修复避免冷启动创建本次这种无效对话及错误UNKNOWN，不把所有其他失败Task改为自动完成。旧UNKNOWN记录不改写、不清空。
+
+本次资源预算沿用16 GiB主机可用比例46%、swap约1.1 GiB，每个构建/测试显式1任务。ESP-IDF6.0.3/GCC15.2.0编译通过；Wi-Fi Native49/49、部署/安装Python6/6、页面JS、契约、diff和机械可读性通过。完整CI/线上Responses/断电或回退专项未运行。
+
+自查四项：
+- 删除注释：station.cpp:71保留并补充联网后启动原因；api.cpp保留传输后UNKNOWN的边界，前置拒绝补充完整无副作用结果。
+- Kernel字段：git diff仅实验目录及相关记录，没有Core或公共ABI字段；Clock状态归Station，UI的was_clock_ready_仅供重绘，不复制系统时间。
+- 重复公式：network_time.h:8/11拥有唯一时钟阈值与HTTPS准入判断，Station/API/Runtime/Web共用；SDK负责SNTP和TLS，不另写协议。
+- 裸数字：network_time.h命名epoch阈值及HTTPS前缀；station.cpp命名源数量、轮询和日志间隔；不新增Core记录或线格式数字。
