@@ -237,7 +237,7 @@ API校时拒绝明确返回NOT_READY/FAILED/EFFECT_NONE，客户端分配失败�
 
 用户明确要求去掉128 KiB累计限制、保留内存保护并OTA更新，确认驱动断电及回合已结束。只改独立ESP HTTP适配：模型流的Content-Length检查和逐块计数都不再有累计字节上限；ResponseLimit仅拥有HTTP字节边界和计数溢出保护，缺省总量表示模型流。原共享ModelProtocol::Stream继续限制每条行/事件/输出字段和完整组装响应（本实验传入128 KiB），消费完的元数据被释放。未扩大解析器缓存，非流式JSON32 KiB、语音帧/300秒预算、输出token及请求期限均保留。流解析/保留数据容量错误明确记录具体原因，网络后未知副作用仍保守处理，不自动重试或重放旧指令。成功HTTP模型流增加wire_bytes/buffer_limit元数据，不记录正文或Key。
 
-资源检查16 GiB主机、10逻辑CPU、当前可用比例74%、swap约3.1 GiB，无其他编译任务；每个构建/测试显式1任务。ESP-IDF6.0.3/GCC15.2.0候选编译通过；Wi-Fi Native52/52通过，包括累计超过128 KiB且组装结果小于4 KiB的完整正常Chat流、已声明Content-Length与逐块使用同一边界、单事件/组装输出内存上限和计数溢出；共享协议已有的完整元数据流及缓冲边界2/2通过，部署Python6/6通过。新增测试首次编译时使用了错误的结果字段名，改为现行result.result后重新构建并通过；旧49项二进制运行不作为新增测试证据。不开展新的存储故障、断电/回退或带电动作活动。
+资源检查16 GiB主机、10逻辑CPU、当前可用比例74%、swap约3.1 GiB，无其他编译任务；每个构建/测试显式1任务。ESP-IDF6.0.3/GCC15.2.0候选编译通过；Wi-Fi Native52/52通过，包括累计超过128 KiB且组装结果小于4 KiB的完整正常Chat流、已声明Content-Length与逐块使用同一边界、单事件/组装输出内存上限和计数溢出；共享协议已有的完整元数据流及缓冲边界2/2通过，部署Python6/6通过。不开展新的存储故障、断电/回退或带电动作活动。
 
 自查四项：
 - 删除注释：api.cpp:377保留并改写原JSON/语音分配说明，补充模型流消费事件与保留内存的区别；传输不确定与无重试说明仍在。
@@ -251,3 +251,10 @@ API校时拒绝明确返回NOT_READY/FAILED/EFFECT_NONE，客户端分配失败�
 只读日志显示已有卷重放进入RESTRICTED：lifecycle=4、restriction=5（公开常量LOG_CORRUPT）、boot=0、durable=434；旧版本回退后也报告相同错误。这不证明物理Flash损坏，也不把durable=434说成具体损坏记录。Core/ABI/schema没有改动，模型流尚未调用，因此不能将此次重放问题归因于新SSE解析。任务/会话、NVS及配对未擦除，旧记录不改写。固件声明长度/写入校验成功与应用正常就绪分别记录，修复代码已推送，不声称新版本已驻留运行。
 
 当前固件在会话受限时editable=false，会拒绝OTA；现有Web只有元数据日志，没有数据卷导出。USB枚举未发现目标板，因此已请求用户保持驱动断电并连接USB，准备只读备份/分析实际卷；未据早先的一次清空授权再次删除数据。脱敏证据在本机build/stream-limit-ota-update-after-cancel.log、stream-limit-storage-restriction.json及stream-limit-rollback-state.json，为仓库外记录。待卷重放原因解决后再完成OTA与实机长模型流验证。
+
+
+用户随后明确“数据不用了，清空就行”，并确认USB接好、驱动断电。本次额外授权仅执行一次Ayni任务/会话区重建，不延续为未来自动擦卷权限。通过已知VID/PID/序列号核对目标，读取分区表并逐项匹配ADR-0099布局后，仅erase-region 0x800000/0x800000，23.6秒完成；未擦应用、OTA元数据、NVS、demo_cfg或配对。串口工具的XMC启动警告在之前正常备份/安装中也存在，擦除报告成功；没有据此确认Flash物理损坏，也未开展新硬件故障专项。
+
+擦除后旧固件先正常初始化空卷、goals=0/4、会话就绪；再经Wi-Fi上传同一个0fed423应用，31.65秒得到200。最终运行ota_1、version=0fed423、pending_verify=false，校时启动约2781ms就绪，Core旧卷正常重开且session=2/goals=0/4，OTA verification status=0。配置password_set/model_key_set及原Chat/流式选项保持，内部空闲58887、PSRAM1663924字节。此次仅通过USB执行授权清空，应用安装仍走Wi-Fi OTA。
+
+最终修复与部署完成，保留内存边界的累计大模型流已在本机回归通过；本轮未再发真实长模型对话，不声称实机长流验收。旧卷重放限制的根因仍未确认，用户选择清空恢复，不能把清空当作存储根因修复。追加证据位于本机build/stream-limit-authorized-reset.log、stream-limit-after-clear-evidence.json、stream-limit-ota-after-authorized-clear.log、stream-limit-ota-evidence.json，为仓库外记录。
