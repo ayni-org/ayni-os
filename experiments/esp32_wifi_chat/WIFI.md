@@ -224,3 +224,8 @@ API校时拒绝明确返回NOT_READY/FAILED/EFFECT_NONE，客户端分配失败�
 - Kernel字段：git diff仅实验目录及相关记录，没有Core或公共ABI字段；Clock状态归Station，UI的was_clock_ready_仅供重绘，不复制系统时间。
 - 重复公式：network_time.h:8/11拥有唯一时钟阈值与HTTPS准入判断，Station/API/Runtime/Web共用；SDK负责SNTP和TLS，不另写协议。
 - 裸数字：network_time.h命名epoch阈值及HTTPS前缀；station.cpp命名源数量、轮询和日志间隔；不新增Core记录或线格式数字。
+
+
+本次实际OTA为3805453，应用0x287d90（2653584）字节。用户确认驱动断电，触屏取消后日志已见turn failed/cancelled终态；经Wi-Fi上传32.55秒得到200及updated/restarting=true，从ota_1切换到ota_0。新启动wifi clock start status=0 servers=3，开机2771ms即记录clock ready；GET clock.ready=true且与Mac时间差小于1秒。Core旧卷正常重放并就绪，OTA启动确认status=0/pending_verify=false；password_set/model_key_set和原接口/流式选项一致。旧UNKNOWN记录保留，未清理或重放；未修改bootloader/分区表，未使用USB。实机只验证正常OTA、启动、校时及配置保留，本轮尚未重新进行语音/模型/电机对话。
+
+最终头文件命名常量整理后，相关2项WifiClock检查重跑通过；无Core/ABI/schema改动。完整设备脱敏证据在本机忽略的build/clock-ota-update.log与clock-ota-evidence.json，属于仓库外证据。
