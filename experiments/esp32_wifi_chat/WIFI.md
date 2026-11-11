@@ -258,3 +258,22 @@ API校时拒绝明确返回NOT_READY/FAILED/EFFECT_NONE，客户端分配失败�
 擦除后旧固件先正常初始化空卷、goals=0/4、会话就绪；再经Wi-Fi上传同一个0fed423应用，31.65秒得到200。最终运行ota_1、version=0fed423、pending_verify=false，校时启动约2781ms就绪，Core旧卷正常重开且session=2/goals=0/4，OTA verification status=0。配置password_set/model_key_set及原Chat/流式选项保持，内部空闲58887、PSRAM1663924字节。此次仅通过USB执行授权清空，应用安装仍走Wi-Fi OTA。
 
 最终修复与部署完成，保留内存边界的累计大模型流已在本机回归通过；本轮未再发真实长模型对话，不声称实机长流验收。旧卷重放限制的根因仍未确认，用户选择清空恢复，不能把清空当作存储根因修复。追加证据位于本机build/stream-limit-authorized-reset.log、stream-limit-after-clear-evidence.json、stream-limit-ota-after-authorized-clear.log、stream-limit-ota-evidence.json，为仓库外记录。
+
+
+### 2026-11-12 存储重放根因排查阶段记录（用户要求暂停）
+
+用户要求从代码继续排查，不以清空恢复代替根因、不反复刷固件；随后要求先停止排查并提交推送。本轮仅检查源码和本机已有备份，未访问开发板、未清空、未烧录、未改Core或生产实现。根因仍未确定。
+
+已查调用链：Host单工作线程排队写入FileLog、LittleFS显式sync与正常关闭；Core BootSequence发现/重放批次、WorkReplay逐记录配对及跨表一致性；Task/Goal回收、Call的UNKNOWN保留与取消。LOG_CORRUPT既可能来自批次/记录校验，也可能来自语义配对或跨表一致性，现有restriction/durable元数据没有具体失败分支，不能单凭它断言Flash损坏或某条记录有错。
+
+找到本机2026-11-10的8 MiB只读卷备份，使用固定LittleFS源码以LFS_READONLY编译的工具只读导出commit_log，未输出聊天或参数内容。它不是此前清空的durable=434故障卷。该历史日志125916字节、117个完整批次、schema9，Host外层和Core批次头/正文CRC全部通过；不据此证明后来卷的CRC也正常。
+
+实际离线结果：
+- 当前Core正常读取上述历史批次，进入RUNNING/restriction=0，启动后durable=120/boot=5；未注册完整实验设备目录，不能称为整个实验应用的重放验收。
+- 历史61条Call记录可由当前记录reader解码，无需恢复或打印正文。
+- 复用现有Sim/public ABI夹具：模型返回UNKNOWN、用户取消Goal、正常关闭重开，进入RUNNING/restriction=0/durable=15。
+- 4 Goal/4 Task/32 Call配置下，保留三个已取消但UNKNOWN的Call，连续24个正常完成回合复用第四个槽；每轮用现有日志检查新Kernel重开，最后再UNKNOWN/取消并正常关闭重开，进入RUNNING/restriction=0/durable=207。没有修改存储字节或注入存储故障。
+
+本机资源检查16 GiB、10逻辑CPU、可用比例67%、swap约3.1 GiB，独立Debug诊断目标显式单任务构建，使用当前Core/Sim及现有单测夹具；合计四个临时检查通过。这些检查尚未复现durable=434失败，不等于根因修复；完整实验ToolLoop、按需能力绑定、实际文件值与压缩组合仍未覆盖，停止前尚未展开该部分。没有执行断电、变异或新的实机恢复专项。
+
+诊断源码、构建及结果保存在本机忽略目录build/replay-investigation-20261112/，包括probe/、native/、old-batch-metadata.json、probe.log和tight-probe.log；原历史备份仍在build/dialogue-inspect-20261110/。这些均为仓库外证据，不提交原始卷、commit_log、正文或导出的文件值。后续先用完整实验条件继续本机复现，并细分重放拒绝位置；不要把未复现的候选当作此次根因，也不要再以擦卷替代诊断。
