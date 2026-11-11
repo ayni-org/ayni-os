@@ -1,12 +1,12 @@
 # Ayni：通用原生 AgentOS 基础能力与实验实施计划
 
 > **文档性质**：工程实施计划与待实现契约，不代表已有软件能力。\
-> **文档版本**：v1.107 · 2026-11-11；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
+> **文档版本**：v1.108 · 2026-11-11；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
 > **产品定位**：跨平台、跨设备的通用原生 AgentOS；宿主与扩展决定提供哪些设备或软件能力，统一助理只是应用示例。\
 > **架构路线**：按 Ayni 的共享 Agent 状态、授权、资源及恢复需求设计原生 Core，复用宿主 OS，模型优先通过外部 API 获得；架构图仅参考 AIOS 的分层分组表达样式。\
 > **实施顺序**：先完成基础通用能力，再开展 ESP32-S3、Linux 系统等实验；设备与能力组合按实验目标选取，不要求宿主具备语音、视觉、运动或特定外设。\
 > **基准投入**：单人全职；阶段周期是相对工作量估算，不是开工日期或交付日期承诺。\
-> **当前状态**：通用基础与独立源码SDK已随 #112～#123 交付，见[基础报告](../reports/core/foundation-acceptance.md)和[独立接入报告](../reports/core/independent-consumption.md)；现有正文存储基线为ABI0.54/schema9，见ADR-0096。独立触屏Wi-Fi/RC003-MS语音实验已实施，沿用一个内置ToolLoop及公开能力SDK，USB入口撤除；完整128K峰值、60秒电机和通用硬件停止链仍未验收，见[ADR-0097](adr/0097-esp32-touch-wifi-voice-experiment.md)。共用Chat/Responses协议、SSE和请求工具预置见[ADR-0098](adr/0098-shared-model-protocol-and-preloaded-tools.md)，软件验证与交付在工作分支，本轮不烧录或合并PR。
+> **当前状态**：通用基础与独立源码SDK已随 #112～#123 交付，见[基础报告](../reports/core/foundation-acceptance.md)和[独立接入报告](../reports/core/independent-consumption.md)；现有正文存储基线为ABI0.54/schema9，见ADR-0096。独立触屏Wi-Fi/RC003-MS语音实验已实施，沿用一个内置ToolLoop及公开能力SDK，USB入口撤除；完整128K峰值、60秒电机和通用硬件停止链仍未验收，见[ADR-0097](adr/0097-esp32-touch-wifi-voice-experiment.md)。共用Chat/Responses协议、SSE和请求工具预置已随#132合并，见[ADR-0098](adr/0098-shared-model-protocol-and-preloaded-tools.md)；用户随后授权的Chat流式实机复核及修正见[实验记录](../experiments/esp32_wifi_chat/WIFI.md#2026-11-11-拉取后实机复核)，线上Responses与本版朗读仍待验证，PR及合并由用户处理。
 
 > **本轮范围**：用户2026-10-31要求实施[独立工程接入与验收计划](architecture/independent-consumption-plan.md)：通用源码SDK、低栈工作区、Native/ESP存储及Host、共同应用和验收。平台适配保持独立目录，必要接口直接升级，正常存储和最小重开获授权；实机操作、付费模型及其他新专项不启动。
 
@@ -1097,6 +1097,8 @@ idf.py -p <SERIAL_PORT> flash monitor
 ## 14. 默认值与仍需用户决策的问题
 
 ### 14.1 已接受的实施默认值
+
+本次修订（v1.108，2026-11-11）：同步#132已合并及用户随后授权的独立ESP实机复核。Chat SSE的可选null字段修正保留完整终态、最终工具身份及授权检查，Core/ABI/schema不变。语音转写与断电驱动下的PWM控制信号正常；旧卷重放失败原因、本版朗读及线上Responses仍未验证，详见实验记录。不扩大为新的恢复专项或硬件停止链验收。
 
 本次修订（v1.107，2026-11-11）：按用户要求在原ToolLoop内完成完整工具预置、共用Chat/Responses原生协议、SSE与ESP设置；工具不累积进历史，续传绑定模型/目的地，摘要排除opaque内容，实际协议投影统一预算。turn格式6保留格式5reader，ConversationRecord5/ABI0.54/schema9不变；默认旧消费者保留发现/Chat非流式行为。软件验证与独立复查见ADR-0098及工作分支提交说明；不烧录、不调用线上模型、不合并PR。
 

@@ -1,6 +1,6 @@
 # ADR-0098：共用模型协议、续传与请求工具预置
 
-- **状态**：已接受用户范围（2026-11-10～11）；实现与软件验证见工作分支，PR由用户处理。
+- **状态**：已接受用户范围（2026-11-10～11）；实现与软件验证已随[#132](https://github.com/RobotSe7en/ayni/pull/132)合并。
 - **日期**：2026-11-11。
 - **关联**：ADR-0055、0085、0086、0095、0096、0097；[实施计划](../architecture/shared-model-protocol-plan.md)。本决定补充0085的可选工具呈现与协议方式，不改变Core授权、ABI0.54或schema9。
 
@@ -32,3 +32,5 @@ ESP实验与Native各自编码Chat请求、解析工具参数，无法共享流�
 两种API的文本/工具、usage、流式分块及多轮配对通过本地合成协议与HTTP夹具检查；真实ToolLoop预置、完整组和不含opaque内容的摘要通过正常软件验证。ESP设置旧reader和正文结果接线纳入同一正常检查；固件编译不代表硬件运行。独立只读审查及修复复查、最终命令/结果以本分支提交说明为准。未进行线上模型、烧录、串口、电机、128K峰值、故障/恢复、变异或耐久活动。
 
 官方协议依据：[function calling](https://developers.openai.com/api/docs/guides/function-calling)、[Responses迁移](https://developers.openai.com/api/docs/guides/migrate-to-responses)、[reasoning](https://developers.openai.com/api/docs/guides/reasoning)、[streaming events](https://developers.openai.com/api/reference/resources/responses/streaming-events)。
+
+后续记录（2026-11-11）：用户另行授权的Chat流式实机复核、可选null字段修正及验证边界见[实验记录](../../experiments/esp32_wifi_chat/WIFI.md#2026-11-11-拉取后实机复核)，不改写上述原交付的软件证据范围；线上Responses仍未验证。

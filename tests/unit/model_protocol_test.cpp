@@ -510,4 +510,94 @@ TEST(ModelProtocol, ResponsesRefusalUsesVisibleTextAndRetainsOriginalItem) {
               "Cannot do that.");
     EXPECT_NE(answer->continuation.find("\"type\":\"refusal\""), std::string::npos);
 }
+TEST(ModelProtocol, OpenAiNullableToolDeltasKeepTheInitialIdentityAndCompleteArguments) {
+    // ADR-0098: OpenAI's tool-stream example sends null id/type/name after the first delta.
+    RequestOptions options;
+    options.model = "fixture";
+    options.stream = true;
+    const std::string wire =
+        "data: "
+        R"({"choices":[{"index":0,"delta":{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"ayni_call_capability","arguments":""}}]},"finish_reason":null}]})"
+        "\r\n\r\n"
+        "data: "
+        R"({"choices":[{"index":0,"delta":{"role":null,"content":null,"tool_calls":[{"index":0,"id":null,"type":null,"function":{"name":null,"arguments":"{}"}}]},"finish_reason":null}]})"
+        "\r\n\r\n"
+        "data: "
+        R"({"choices":[{"index":0,"delta":{"tool_calls":null},"finish_reason":"tool_calls"}]})"
+        "\r\n\r\n"
+        "data: [DONE]\r\n\r\n";
+    Stream stream(options, 16384);
+    for (const auto &byte : wire) {
+        ASSERT_EQ(stream.feed({&byte, 1}), AYNI_OK);
+    }
+    auto answer = std::make_unique<Answer>();
+    stream.finish(*answer);
+    ASSERT_EQ(answer->result.status, AYNI_OK);
+    ASSERT_EQ(answer->result.tool_call_count, 1U);
+    const auto &call = answer->calls[0];
+    EXPECT_EQ(std::string_view(call.protocol_id.data, call.protocol_id.size), "call-1");
+    EXPECT_EQ(std::string_view(call.function_name.data, call.function_name.size),
+              "ayni_call_capability");
+    EXPECT_EQ(call.input_kind, AYNI_TOOL_INPUT_ARGUMENTS);
+    EXPECT_EQ(call.input.arguments.node_count, 1U);
+}
+TEST(ModelProtocol, NullableOptionalFieldsDoNotInterruptTextPreview) {
+    // ADR-0098: optional nulls carry no new value; they must not erase accumulated text.
+    RequestOptions options;
+    options.model = "fixture";
+    options.stream = true;
+    std::string preview;
+    Stream stream(options, 16384, {&preview, [](void *ctx, std::string_view value) {
+                                       static_cast<std::string *>(ctx)->append(value);
+                                   }});
+    ASSERT_EQ(
+        stream.feed(
+            "data: "
+            R"({"choices":[{"index":0,"delta":{"role":"assistant","content":"你","tool_calls":null},"finish_reason":null}]})"
+            "\n\n"),
+        AYNI_OK);
+    ASSERT_EQ(
+        stream.feed(
+            "data: "
+            R"({"choices":[{"index":0,"delta":{"role":null,"content":"好","tool_calls":null},"finish_reason":null}]})"
+            "\n\n"),
+        AYNI_OK);
+    ASSERT_EQ(
+        stream.feed(
+            "data: "
+            R"({"choices":[{"index":0,"delta":{"content":null,"tool_calls":null},"finish_reason":"stop"}]})"
+            "\n\n"
+            "data: [DONE]\n\n"),
+        AYNI_OK);
+    auto answer = std::make_unique<Answer>();
+    stream.finish(*answer);
+    ASSERT_EQ(answer->result.status, AYNI_OK);
+    EXPECT_EQ(preview, "你好");
+    EXPECT_EQ(std::string_view(answer->result.result.data, answer->result.result.size), preview);
+}
+TEST(ModelProtocol, OptionalNullHandlingStillRejectsMalformedValuesAndMissingFinalIdentity) {
+    // ADR-0098: optional absence is allowed; malformed fields and incomplete tools are refused.
+    RequestOptions options;
+    options.model = "fixture";
+    options.stream = true;
+    Stream malformed(options, 16384);
+    EXPECT_EQ(
+        malformed.feed(
+            "data: "
+            R"({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":7}]},"finish_reason":null}]})"
+            "\n\n"),
+        AYNI_INVALID_ARGUMENT);
+    Stream incomplete(options, 16384);
+    ASSERT_EQ(
+        incomplete.feed(
+            "data: "
+            R"({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":null,"type":"function","function":{"name":"ayni_call_capability","arguments":"{}"}}]},"finish_reason":"tool_calls"}]})"
+            "\n\n"
+            "data: [DONE]\n\n"),
+        AYNI_OK);
+    auto answer = std::make_unique<Answer>();
+    incomplete.finish(*answer);
+    EXPECT_NE(answer->result.status, AYNI_OK);
+    EXPECT_EQ(answer->result.tool_call_count, 0U);
+}
 } // namespace

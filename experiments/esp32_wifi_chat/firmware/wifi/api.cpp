@@ -61,7 +61,7 @@ bool endpoint(const char *root, const char *path, char *out, size_t capacity) {
         std::snprintf(out, capacity, "%.*s%s", int(normalized.size()), normalized.data(), path);
     return written > 0 && size_t(written) < capacity;
 }
-// Observe the last local tool error without retaining its message, user text or tool arguments.
+// Observe classified local/business tool facts, never text, results or argument values.
 void trace_tool_status(ayni_string_v1 context) {
     ayni_string_v1 instructions{}, messages{};
     ayni_string_v1 definitions{};
@@ -84,10 +84,24 @@ void trace_tool_status(ayni_string_v1 context) {
     if (!doc) {
         return;
     }
-    auto *status = yyjson_obj_get(yyjson_obj_get(yyjson_doc_get_root(doc), "error"), "status");
+    auto *root = yyjson_doc_get_root(doc);
+    auto *status = yyjson_obj_get(yyjson_obj_get(root, "error"), "status");
     if (yyjson_is_int(status)) {
         std::printf("wifi tool result_status=%lld\n",
                     static_cast<long long>(yyjson_get_sint(status)));
+    } else {
+        auto *outcome = yyjson_obj_get(root, "outcome");
+        status = yyjson_obj_get(root, "status");
+        auto *reason = yyjson_obj_get(root, "reason");
+        auto *effect = yyjson_obj_get(root, "effect");
+        if (yyjson_is_uint(outcome) && yyjson_is_int(status) && yyjson_is_uint(reason) &&
+            yyjson_is_uint(effect)) {
+            std::printf("wifi tool outcome=%llu result_status=%lld reason=%llu effect=%llu\n",
+                        static_cast<unsigned long long>(yyjson_get_uint(outcome)),
+                        static_cast<long long>(yyjson_get_sint(status)),
+                        static_cast<unsigned long long>(yyjson_get_uint(reason)),
+                        static_cast<unsigned long long>(yyjson_get_uint(effect)));
+        }
     }
     yyjson_doc_free(doc);
 }
@@ -387,7 +401,7 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
         }
     }
     if ((stream || model_stream) && ok) {
-        stage = "语音流";
+        stage = model_stream ? "模型流" : "语音流";
         std::array<uint8_t, network_chunk> chunk{};
         while (ok && alive()) {
             const int got =
@@ -450,9 +464,10 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
     const auto socket_error = esp_http_client_get_errno(client);
     if (!ok) {
         std::printf("wifi http stage=%s status=%d length=%lld code=%d errno=%d upload=%zu/%zu "
-                    "response=%zu internal_free=%zu internal_min=%zu\n",
+                    "response=%zu parser_status=%ld internal_free=%zu internal_min=%zu\n",
                     stage, status, static_cast<long long>(length), transport_code, socket_error,
                     uploaded, expected_upload, job.response_bytes,
+                    static_cast<long>(model_stream ? model_stream->status() : AYNI_OK),
                     heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
                     heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     }
