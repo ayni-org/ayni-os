@@ -185,3 +185,16 @@ ESP32 使用 `POST /v1/audio/speech/stream`，请求示例：
 配置已令Wi-Fi/LwIP优先PSRAM、TLS显式使用PSRAM，但普通malloc在<=2048字节时仍优先内部RAM。FileBodies的std::string正文缓存、map/list元数据和模型流的行/事件/文本缓冲走普通分配；正文缓存保留到释放或下一轮reset_idle，因而一轮内的多个模型/工具调用会增加同时存活的中小对象。HTTP及响应的显式关闭/清除路径已检查，未发现足以证明永久泄漏的证据，也没有逐分配堆追踪来把全部下降精确归账。
 
 另一个确定缺陷是流式读取的负返回值未写入transport_code，使真实读错误被显示成0/0。候选现在保留read返回值、HTTP完整标志与TLS状态/子码/flags，分两条有调用ID的有界数值记录输出；不把正常EAGAIN当断流，不放宽完整响应要求或增加重试。主控栈整改、资源预检与这些诊断仅完成本机编译/检查，未再次烧录；不能据此宣布间歇问题已修复。后续是否需要进一步的缓冲放置或释放整改，须结合实际错误码或堆归因决定，不靠反复烧录猜测。
+
+
+### 2026-11-11 Web OTA 与内存修复部署
+
+用户确认USB连接、驱动断电，并选择先完成OTA与内存修复再一起安装。布局和兼容边界见[ADR-0099](../../docs/adr/0099-esp32-web-ota.md)。旧3 MiB音频区改为ota_0；原factory地址保留为ota_1；NVS、配对及8 MiB Ayni区不移动、不擦除。首装先完整备份旧bootloader/表/空白元数据区/音频/应用；后续从设备设置中的“固件更新”选择应用bin即可。正常升级不再需要串口。
+
+初次引导（仅本次已授权的已知旧布局）：使用已安装ESP-IDF Python运行 `ota_install.py prepare`，完整备份成功后运行 `ota_install.py install`。后续访问 `http://设备IP/update`；原始接口为 `POST /api/firmware`，Content-Type为application/octet-stream，body为完整的ayni_wifi_chat.bin，最大3145728字节。GET同一路径查询版本、槽位、启动确认、进度和错误码。忙碌时先结束/取消；上传或应答中断后读取状态，不自动再次上传。局域网入口沿用无验证码方式，只用于可信LAN；SDK镜像哈希校验不代表固件签名认证。
+
+HTTP只写备用槽；UI沿用维护停止、所有API借用退出、Core与Host关闭、STOPPED确认，随后才允许写入。Wi-Fi与RF唤醒引用在应答前保持。完整SDK镜像校验后才切换；应答尝试后留1秒再重启。新启动先禁止对话/设备操作，配置、触摸、Web、Wi-Fi、会话稳定5秒后确认；60秒不能就绪请求SDK软件回退。未来ABI/schema变化仍须单独兼容决策；当前不改变ABI0.54/schema9。未执行断电、镜像破坏或回退专项。
+
+本机资源检查16 GiB、10逻辑CPU、可用内存比例46%，swap用量约1.1 GiB；每个构建/测试显式1任务。ESP-IDF6.0.3/GCC15.2.0编译通过，应用初版0x287750字节，小槽余量16%；Wi-Fi相关Native检查47/47、Python安装/部署6/6、页面JS语法及契约/diff/机械可读性检查通过。64 KiB主控栈与读错误诊断沿用前一提交，实际安装及Wi-Fi更新结果稍后记录；不将编译当作实机验证。
+
+设计自查：删除的维护注释已改为同时说明重建/OTA的STOPPED屏障；Core及Kernel字段未变化（仅实验目录）。进度与重启屏障归UpdatePlan，SDK校验/选择归OtaUpdate，UI/停止生命周期归Runtime，无HTTP回调直接调用Core。OTA选择CRC公式只在安装器selection实现，出处为固定SDK otatool.py；分区/大小/时限均有命名常量，安装器比较完整冻结布局；无新的Core裸数字或公共状态码。正常检查不替代故障回退证据。

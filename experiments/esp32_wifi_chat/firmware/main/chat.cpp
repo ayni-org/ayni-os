@@ -684,8 +684,8 @@ void Chat::incoming(const Packet &p) {
         return;
     }
     if (p.kind == Kind::maintenance_shutdown) {
-        // User-confirmed state rebuild discards this run after STOPPED. Public
-        // shutdown does not require a spare command/Goal slot to cancel work.
+        // Rebuild and OTA both require confirmed STOPPED before touching their flash
+        // regions. Public shutdown needs no spare command/Goal slot to cancel work.
         announced_ = false;
         stop_outputs();
         if (!kernel_ || closing_ == Closing::stopped || closing_ == Closing::kernel) {

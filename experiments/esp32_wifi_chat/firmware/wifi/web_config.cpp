@@ -1,6 +1,7 @@
 #include "web_config.h"
 #include "../main/harness.h"
 #include "model_buffer.h"
+#include "ota_update.h"
 #include <ayni/model_messages.hpp>
 #include <charconv>
 #include <cstdio>
@@ -12,6 +13,7 @@
 #include <yyjson.h>
 extern const char web_page[] asm("_binary_config_html_start");
 extern const char diagnostic_page[] asm("_binary_diagnostics_html_start");
+extern const char firmware_page_data[] asm("_binary_firmware_html_start");
 namespace wifichat::wifi {
 namespace {
 constexpr size_t request_bytes = 2048;
@@ -56,8 +58,10 @@ bool WebConfig::same_origin(httpd_req_t *request) {
     const std::string expected = std::string("http://") + host;
     return origin == expected;
 }
-bool WebConfig::initialize(const Settings &settings, DiagnosticLog &diagnostics) {
+bool WebConfig::initialize(const Settings &settings, DiagnosticLog &diagnostics,
+                           OtaUpdate &update) {
     diagnostics_ = &diagnostics;
+    update_ = &update;
     public_ = settings;
     password_set_ = *settings.password.data();
     key_set_ = *settings.model_key.data();
@@ -74,10 +78,12 @@ bool WebConfig::initialize(const Settings &settings, DiagnosticLog &diagnostics)
     config.lru_purge_enable = true;
     config.recv_wait_timeout = 3;
     config.send_wait_timeout = 3;
+    constexpr size_t route_count = 9;
+    config.max_uri_handlers = route_count;
     if (httpd_start(&server_, &config) != ESP_OK) {
         return false;
     }
-    httpd_uri_t routes[6]{};
+    httpd_uri_t routes[route_count]{};
     routes[0].uri = "/";
     routes[0].method = HTTP_GET;
     routes[0].handler = page;
@@ -96,6 +102,15 @@ bool WebConfig::initialize(const Settings &settings, DiagnosticLog &diagnostics)
     routes[5].uri = "/api/diagnostics/context-test";
     routes[5].method = HTTP_POST;
     routes[5].handler = probe;
+    routes[6].uri = "/update";
+    routes[6].method = HTTP_GET;
+    routes[6].handler = firmware_page;
+    routes[7].uri = "/api/firmware";
+    routes[7].method = HTTP_GET;
+    routes[7].handler = firmware_get;
+    routes[8].uri = "/api/firmware";
+    routes[8].method = HTTP_POST;
+    routes[8].handler = firmware_post;
     for (auto &route : routes) {
         route.user_ctx = this;
     }
@@ -152,6 +167,37 @@ esp_err_t WebConfig::logs_page(httpd_req_t *request) {
     }
     headers(request, "text/html; charset=utf-8");
     return httpd_resp_send(request, diagnostic_page, HTTPD_RESP_USE_STRLEN);
+}
+esp_err_t WebConfig::firmware_page(httpd_req_t *request) {
+    if (!same_origin(request)) {
+        return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid origin");
+    }
+    headers(request, "text/html; charset=utf-8");
+    return httpd_resp_send(request, firmware_page_data, HTTPD_RESP_USE_STRLEN);
+}
+esp_err_t WebConfig::firmware_get(httpd_req_t *request) {
+    if (!same_origin(request)) {
+        return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid origin");
+    }
+    headers(request, "application/json");
+    return static_cast<WebConfig *>(request->user_ctx)->update_->status(request);
+}
+esp_err_t WebConfig::firmware_post(httpd_req_t *request) {
+    if (!same_origin(request)) {
+        return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid origin");
+    }
+    auto &self = *static_cast<WebConfig *>(request->user_ctx);
+    if (!self.editable_.load(std::memory_order_acquire)) {
+        httpd_resp_set_status(request, "409 Conflict");
+        return httpd_resp_sendstr(request, "Finish or cancel the current turn before updating");
+    }
+    char type[48]{};
+    if (httpd_req_get_hdr_value_str(request, "Content-Type", type, sizeof(type)) != ESP_OK ||
+        std::strcmp(type, "application/octet-stream")) {
+        return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Use application/octet-stream");
+    }
+    headers(request, "application/json");
+    return self.update_->upload(request);
 }
 esp_err_t WebConfig::logs(httpd_req_t *request) {
     if (!same_origin(request)) {

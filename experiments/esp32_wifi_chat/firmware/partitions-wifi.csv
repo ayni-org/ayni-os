@@ -1,7 +1,8 @@
 # Preserve audio, demo_cfg, bootloader and the Ayni volume. The new nvs fits
 # entirely inside the old unused 0x406000..0x410000 gap; deploy verifies it first.
-audio, data, 0x40, 0x100000, 0x300000,
+otadata, data, ota, 0x9000, 0x2000,
+ota_0, app, ota_0, 0x100000, 0x300000,
 demo_cfg, data, nvs, 0x400000, 0x6000,
 nvs, data, nvs, 0x406000, 0xa000,
-factory, app, factory, 0x410000, 0x3f0000,
+ota_1, app, ota_1, 0x410000, 0x3f0000,
 ayni, data, littlefs, 0x800000, 0x800000,

@@ -5,6 +5,7 @@
 #include "api.h"
 #include "canvas.h"
 #include "motor_panel.h"
+#include "ota_update.h"
 #include "remote.h"
 #include "reset_worker.h"
 #include "station.h"
@@ -63,7 +64,7 @@ class Runtime {
     void run();
 
   private:
-    enum class Restart { none, settings, rebuild };
+    enum class Restart { none, settings, rebuild, ota };
     bool restarting() const { return restart_ != Restart::none; }
     void packets();
     void stage(std::string_view text);
@@ -96,6 +97,7 @@ class Runtime {
     void begin_rebuild();
     void stop_for_restart();
     void reset_progress();
+    void update_progress();
     void draw_maintenance();
     void message(std::string_view text) {
         if (status_ == text) {
@@ -113,12 +115,13 @@ class Runtime {
     MotorPanel motor_{};
     Api api_{};
     WebConfig web_{};
+    OtaUpdate update_{};
     bool web_started_ = false;
     Packet packet_{};
     bool storage_ok_ = false, touch_ok_ = false, configured_ = false;
     enum class Session { unconfigured, opening, ready, failed, closing, stopped };
     Session session_ = Session::unconfigured;
-    bool ready() const { return session_ == Session::ready; }
+    bool ready() const { return session_ == Session::ready && !update_.pending_verification(); }
     void session_status(Session state, std::string_view detail) {
         session_ = state;
         session_detail_.assign(detail);
@@ -549,8 +552,14 @@ void Runtime::packets() {
             } else if (body.find("reset shutdown failed") == 0) {
                 message(body);
             } else if (body.find("stopped; reset board") == 0) {
-                static_cast<void>(station_.close_radio()); // Failure is logged; no false release.
-                if (restart_ == Restart::rebuild) {
+                if (restart_ != Restart::ota) {
+                    static_cast<void>(
+                        station_.close_radio()); // Failure is logged; no false release.
+                }
+                if (restart_ == Restart::ota) {
+                    session_status(Session::stopped, "会话已关闭，正在接收并校验固件");
+                    update_.stopped();
+                } else if (restart_ == Restart::rebuild) {
                     session_status(Session::stopped, "Core及存储已关闭，准备重建实验数据");
                 } else if (session_ == Session::failed) {
                     session_detail_ += "\n会话已关闭；请复位设备重开，数据已保留";
@@ -665,7 +674,8 @@ void Runtime::save_restart() {
     begin_restart();
 }
 void Runtime::stop_for_restart() {
-    if (!station_.close_radio()) {
+    // OTA keeps the RF lease and Wi-Fi alive until the HTTP response has been attempted.
+    if (restart_ != Restart::ota && !station_.close_radio()) {
         message("RF唤醒引用释放失败，重启后重新初始化");
     }
     if (motor_.active()) {
@@ -675,6 +685,36 @@ void Runtime::stop_for_restart() {
     clear_preview();
     remote_.cancel_recording();
     restart_at_ = esp_timer_get_time() + (restart_ == Restart::settings ? 1000000 : 1);
+}
+void Runtime::update_progress() {
+    if (update_.verify_boot(storage_ok_ && touch_ok_ && web_started_ && station_.connected() &&
+                            session_ == Session::ready && !restarting())) {
+        motor_.stop(transport_);
+        api_.cancel_all();
+        remote_.cancel_recording();
+        const auto result = esp_ota_mark_app_invalid_rollback_and_reboot();
+        transport_.diagnostics().record("wifi ota rollback request status=%ld\n", long(result));
+        message("新固件启动确认失败，请检查更新日志");
+    }
+    if (update_.snapshot().phase == UpdatePlan::Phase::requested) {
+        if (!ready() || busy() || recognizing() || restarting() || !api_.idle() ||
+            remote_snapshot_.state == Remote::State::recording) {
+            update_.close_refused(ESP_ERR_INVALID_STATE);
+        } else if (update_.begin_close()) {
+            if (!transport_.post(Kind::maintenance_stop, 0, nullptr, 0)) {
+                update_.close_refused(ESP_ERR_NO_MEM);
+            } else {
+                restart_ = Restart::ota;
+                work_ = Work::cancelling;
+                stop_for_restart();
+                message("正在关闭会话，随后更新固件");
+            }
+        }
+    }
+    if (restart_ == Restart::ota && update_.reboot_due()) {
+        static_cast<void>(station_.close_radio());
+        esp_restart();
+    }
 }
 void Runtime::begin_restart() {
     restart_ = Restart::settings;
@@ -1200,6 +1240,7 @@ void Runtime::draw_confirmation() {
 }
 
 void Runtime::run() {
+    update_.initialize(transport_.diagnostics());
     storage_ok_ = settings_.load();
     touch_ok_ = touch_.initialize();
     if (!touch_ok_) {
@@ -1212,7 +1253,7 @@ void Runtime::run() {
         message("Wi-Fi 初始化失败");
     }
     if (storage_ok_) {
-        web_started_ = web_.initialize(settings_, transport_.diagnostics());
+        web_started_ = web_.initialize(settings_, transport_.diagnostics(), update_);
         if (!web_started_) {
             message("Web 配置服务启动失败");
         }
@@ -1267,14 +1308,16 @@ void Runtime::run() {
         if (motor_.tick(transport_, ready() && connected && !restarting(), now)) {
             dirty_ = true;
         }
+        update_progress();
         web_changes();
         if (restart_at_ && now >= restart_at_ && api_.idle()) {
             if (!configured_) {
                 if (restart_ == Restart::settings) {
                     esp_restart();
                 }
-            } else if (transport_.post(restart_ == Restart::rebuild ? Kind::maintenance_shutdown
-                                                                    : Kind::shutdown,
+            } else if (transport_.post(restart_ == Restart::rebuild || restart_ == Restart::ota
+                                           ? Kind::maintenance_shutdown
+                                           : Kind::shutdown,
                                        0, nullptr, 0)) {
                 if (restart_ == Restart::rebuild) {
                     std::printf("wifi reset api=idle; shutdown requested\n");

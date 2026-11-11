@@ -154,3 +154,4 @@
 | [0097](0097-esp32-touch-wifi-voice-experiment.md) | 独立 ESP32 触屏 Wi-Fi 语音配置 | 已接受实验范围；完整实机验收未完成 | 独立实验、API、RC003-MS、Web 设置 |
 
 | [0098](0098-shared-model-protocol-and-preloaded-tools.md) | 共用模型协议、续传与请求工具预置 | 已接受；软件验证见工作分支，PR由用户处理 | ModelProtocol、ToolLoop、Native/ESP、正文帧 |
+| [0099](0099-esp32-web-ota.md) | 独立ESP32双槽与Web OTA | 已接受用户选择；正常更新与未验证边界见实验记录 | 独立实验、分区兼容、Web管理 |
