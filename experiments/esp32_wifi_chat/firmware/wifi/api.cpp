@@ -4,6 +4,7 @@
 #include "model_buffer.h"
 #include "model_codec.h"
 #include "network_time.h"
+#include "response_limit.h"
 #include "speech_stream.h"
 #include <algorithm>
 #include <ayni/model_messages.hpp>
@@ -247,6 +248,8 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
         return false;
     }
     const auto deadline = job.deadline;
+    const ResponseLimit wire_limit{model_stream ? std::nullopt
+                                                : std::optional<size_t>(response_limit)};
     esp_http_client_config_t config{};
     config.url = url;
     config.timeout_ms = int(std::max<int64_t>(
@@ -355,9 +358,11 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
         transport_code = int(length);
     }
     const int status = esp_http_client_get_status_code(client);
-    ok = ok && alive() && length >= 0 && status == 200 && length <= int64_t(response_limit);
-    if (!ok && job.request == Request::model && status == 200 && length > int64_t(response_limit)) {
+    ok = ok && alive() && length >= 0 && status == 200 && wire_limit.accepts(uint64_t(length));
+    if (!ok && job.request == Request::model && status == 200 && length >= 0 &&
+        !wire_limit.accepts(uint64_t(length))) {
         model_failure(job.output, AYNI_CAPACITY_EXCEEDED, AYNI_REASON_MODEL_OUTPUT);
+        std::snprintf(job.error.data(), job.error.size(), "模型响应超出缓冲上限；未重试");
     }
     if (!ok && status >= 100 && status <= 599 && status != 200) {
         if (job.request == Request::model) {
@@ -372,8 +377,8 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
         }
         std::snprintf(job.error.data(), job.error.size(), "API HTTP %d；不会自动重试", status);
     }
-    // Buffered JSON responses use Content-Length when supplied. Speech bypasses
-    // this allocation and copies validated frames into the bounded playback ring.
+    // Only buffered JSON uses this allocation. Speech copies into the bounded ring;
+    // model SSE discards consumed events and applies the shared parser's field bounds.
     const size_t capacity =
         length > 0 && length <= int64_t(response_limit) ? size_t(length) : response_limit;
     if (ok && !stream && !model_stream) {
@@ -405,11 +410,21 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
                 ok = got == 0 && esp_http_client_is_complete_data_received(client);
                 break;
             }
-            job.response_bytes += size_t(got);
-            ok = job.response_bytes <= response_limit &&
-                 (stream ? stream->feed(chunk.data(), size_t(got))
-                         : model_stream->feed({reinterpret_cast<const char *>(chunk.data()),
-                                               size_t(got)}) == AYNI_OK);
+            ok = wire_limit.received(job.response_bytes, size_t(got));
+            if (ok) {
+                ok = stream ? stream->feed(chunk.data(), size_t(got))
+                            : model_stream->feed({reinterpret_cast<const char *>(chunk.data()),
+                                                  size_t(got)}) == AYNI_OK;
+            }
+            if (!ok && model_stream) {
+                const auto parsed = model_stream->status();
+                const auto cause = parsed == AYNI_OK ? AYNI_CAPACITY_EXCEEDED : parsed;
+                model_failure(job.output, cause, AYNI_REASON_MODEL_OUTPUT);
+                std::snprintf(job.error.data(), job.error.size(),
+                              parsed == AYNI_OK ? "模型流字节计数溢出；未重试"
+                              : cause == AYNI_CAPACITY_EXCEEDED ? "模型流保留数据超限；未重试"
+                                                                : "模型流协议无效；未重试");
+            }
         }
         std::fill(chunk.begin(), chunk.end(), 0);
         ok = ok && (!stream || stream->complete());
@@ -680,9 +695,10 @@ void Api::model(Job &job, const char *url) {
     preview_snapshot_.id = job.input.id;
     preview_snapshot_.generation = job.generation;
     std::unique_ptr<ayni::providers::model_protocol::Stream> stream;
-    constexpr size_t streaming_metadata_factor = 4;
-    const size_t response_limit =
-        options.stream ? json_limit * streaming_metadata_factor : json_limit;
+    // This bounds retained parser data, not lifetime network traffic. Do not increase
+    // memory allocation in proportion to cumulative SSE metadata.
+    constexpr size_t stream_buffer_limit = json_limit * 4;
+    const size_t response_limit = options.stream ? stream_buffer_limit : json_limit;
     if (options.stream) {
         stream.reset(new (std::nothrow)
                          ayni::providers::model_protocol::Stream(options, response_limit, preview));
@@ -697,6 +713,9 @@ void Api::model(Job &job, const char *url) {
     if (http(job, url, "application/json", nullptr, 0, json.data, size, nullptr, 0, response_limit,
              nullptr, nullptr, stream.get())) {
         if (stream) {
+            transport_->diagnostics().record(
+                "wifi model_stream http_complete=1 wire_bytes=%zu buffer_limit=%zu\n",
+                job.response_bytes, stream_buffer_limit);
             auto answer = std::unique_ptr<ayni::providers::model_protocol::Answer>(
                 new (std::nothrow) ayni::providers::model_protocol::Answer{});
             if (answer) {

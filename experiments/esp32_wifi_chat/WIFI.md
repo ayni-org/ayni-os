@@ -229,3 +229,18 @@ API校时拒绝明确返回NOT_READY/FAILED/EFFECT_NONE，客户端分配失败�
 本次实际OTA为3805453，应用0x287d90（2653584）字节。用户确认驱动断电，触屏取消后日志已见turn failed/cancelled终态；经Wi-Fi上传32.55秒得到200及updated/restarting=true，从ota_1切换到ota_0。新启动wifi clock start status=0 servers=3，开机2771ms即记录clock ready；GET clock.ready=true且与Mac时间差小于1秒。Core旧卷正常重放并就绪，OTA启动确认status=0/pending_verify=false；password_set/model_key_set和原接口/流式选项一致。旧UNKNOWN记录保留，未清理或重放；未修改bootloader/分区表，未使用USB。实机只验证正常OTA、启动、校时及配置保留，本轮尚未重新进行语音/模型/电机对话。
 
 最终头文件命名常量整理后，相关2项WifiClock检查重跑通过；无Core/ABI/schema改动。完整设备脱敏证据在本机忽略的build/clock-ota-update.log与clock-ota-evidence.json，属于仓库外证据。
+
+
+### 2026-11-11 模型SSE累计流量限制修复
+
+后续多轮语音记录中，校时正常、ASR和此前普通对话/扬声器调用成功；失败模型请求wire估算23565输入token，HTTP200、完整上传38351字节、收到133120字节时解析器仍为OK，read=2048/complete=0。代码按32768×4=131072限制整个SSE累计响应，因而被本地总量上限终止，不是本次网络读错误或已证明的内存不足。内部最低33476字节，读取日志时内部空闲52447、PSRAM1553280。该记录的环形日志已有282条覆盖，不声称重建了更早的完整会话。
+
+用户明确要求去掉128 KiB累计限制、保留内存保护并OTA更新，确认驱动断电及回合已结束。只改独立ESP HTTP适配：模型流的Content-Length检查和逐块计数都不再有累计字节上限；ResponseLimit仅拥有HTTP字节边界和计数溢出保护，缺省总量表示模型流。原共享ModelProtocol::Stream继续限制每条行/事件/输出字段和完整组装响应（本实验传入128 KiB），消费完的元数据被释放。未扩大解析器缓存，非流式JSON32 KiB、语音帧/300秒预算、输出token及请求期限均保留。流解析/保留数据容量错误明确记录具体原因，网络后未知副作用仍保守处理，不自动重试或重放旧指令。成功HTTP模型流增加wire_bytes/buffer_limit元数据，不记录正文或Key。
+
+资源检查16 GiB主机、10逻辑CPU、当前可用比例74%、swap约3.1 GiB，无其他编译任务；每个构建/测试显式1任务。ESP-IDF6.0.3/GCC15.2.0候选编译通过；Wi-Fi Native52/52通过，包括累计超过128 KiB且组装结果小于4 KiB的完整正常Chat流、已声明Content-Length与逐块使用同一边界、单事件/组装输出内存上限和计数溢出；共享协议已有的完整元数据流及缓冲边界2/2通过，部署Python6/6通过。新增测试首次编译时使用了错误的结果字段名，改为现行result.result后重新构建并通过；旧49项二进制运行不作为新增测试证据。不开展新的存储故障、断电/回退或带电动作活动。
+
+自查四项：
+- 删除注释：api.cpp:377保留并改写原JSON/语音分配说明，补充模型流消费事件与保留内存的区别；传输不确定与无重试说明仍在。
+- Kernel字段：git diff仅实验目录和工作流记录，没有Core/ABI/schema字段；Job继续拥有接收字节计数，ResponseLimit不复制计数或正文。
+- 重复公式：response_limit.h:11/12统一HTTP声明长度及逐块计数的总量检查，Api调用同一规则；实际SSE解析/保留大小继续由公开共享解析器拥有，没有另写协议。
+- 裸数字：旧阈值只作为测试回归常量old_wire_limit；生产保留stream_buffer_limit命名常量，计数用numeric_limits防溢出，无新的Core记录偏移或阈值。
