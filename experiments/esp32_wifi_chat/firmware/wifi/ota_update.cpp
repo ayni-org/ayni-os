@@ -254,12 +254,14 @@ esp_err_t OtaUpdate::upload(httpd_req_t *request) {
         return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST,
                                    "Wrong project or invalid application header");
     }
+    bool accepted = false;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!plan_.request(total, maximum_)) {
-            httpd_resp_set_status(request, "409 Conflict");
-            return httpd_resp_sendstr(request, "Update already active");
-        }
+        accepted = plan_.request(total, maximum_);
+    }
+    if (!accepted) {
+        httpd_resp_set_status(request, "409 Conflict");
+        return httpd_resp_sendstr(request, "Update already active");
     }
     log_->record("wifi ota requested total=%zu\n", total);
     const auto deadline = esp_timer_get_time() + close_timeout_us;

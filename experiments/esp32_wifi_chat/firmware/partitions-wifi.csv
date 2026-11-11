@@ -1,5 +1,5 @@
-# Preserve audio, demo_cfg, bootloader and the Ayni volume. The new nvs fits
-# entirely inside the old unused 0x406000..0x410000 gap; deploy verifies it first.
+# ADR-0099: bootstrap backs up and reuses the retired audio region for ota_0.
+# Keep demo_cfg, nvs and the Ayni volume fixed; original app becomes ota_1 fallback.
 otadata, data, ota, 0x9000, 0x2000,
 ota_0, app, ota_0, 0x100000, 0x300000,
 demo_cfg, data, nvs, 0x400000, 0x6000,

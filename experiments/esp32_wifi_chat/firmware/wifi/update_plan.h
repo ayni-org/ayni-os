@@ -41,7 +41,8 @@ class UpdatePlan {
     }
     // UI may refuse before it successfully enqueues shutdown; no close is then in flight.
     void close_refused(int error) {
-        if (state_.phase == Phase::requested || state_.phase == Phase::closing) {
+        if (state_.phase == Phase::requested || state_.phase == Phase::closing ||
+            state_.phase == Phase::aborting_close) {
             state_.phase = Phase::rejected;
             state_.error = error;
         }
