@@ -141,13 +141,24 @@ ayni_status_t FileBodies::write(void *context, uint64_t scope, ayni_bytes_v1 bod
             return AYNI_INVALID_STATE;
         }
         const auto found = self.entries_.find(id);
-        if (found == self.entries_.end()) {
+        if (found == self.entries_.end() || found->second.state == State::evicted) {
             if (self.removing(id)) {
                 return AYNI_NOT_READY; // Its old files are removed first.
+            }
+            if (found != self.entries_.end() &&
+                (found->second.digest != digest || found->second.size != body.size)) {
+                return AYNI_STORAGE_FAILED;
+            }
+            const auto room = self.reserve_cache(body.size);
+            if (room != AYNI_OK) {
+                return room;
             }
             auto &entry = self.entries_[id];
             entry.scope = scope;
             entry.digest = digest;
+            entry.size = body.size;
+            entry.state = State::writing;
+            entry.submitted = 0;
             entry.bytes.assign(reinterpret_cast<const char *>(body.data), body.size);
             self.wait(id);
         } else {
@@ -166,7 +177,8 @@ ayni_status_t FileBodies::write(void *context, uint64_t scope, ayni_bytes_v1 bod
                     return AYNI_STORAGE_FAILED; // Identity collision: fail closed, never alias.
                 }
                 entry.scope = entry.scope ? entry.scope : scope;
-                if (entry.state == State::durable) {
+                if (entry.state == State::ready || entry.state == State::durable) {
+                    entry.state = State::durable; // This caller has consumed the durable result.
                     *out = {id, digest, body.size, 0};
                     return AYNI_OK;
                 }
@@ -189,22 +201,29 @@ ayni_status_t FileBodies::read(void *context, const ayni_body_ref_v1 *ref, uint8
             return AYNI_INVALID_STATE;
         }
         const auto found = self.entries_.find(ref->id);
-        if (found == self.entries_.end()) {
+        if (found != self.entries_.end() &&
+            (found->second.digest != ref->digest || found->second.size != ref->size)) {
+            return AYNI_STORAGE_FAILED;
+        }
+        if (found == self.entries_.end() || found->second.state == State::evicted) {
             if (self.removing(ref->id)) {
                 return AYNI_NOT_FOUND;
             }
+            const auto room = self.reserve_cache(ref->size);
+            if (room != AYNI_OK) {
+                return room;
+            }
             auto &entry = self.entries_[ref->id];
             entry.digest = ref->digest;
+            entry.size = ref->size;
             entry.state = State::loading;
+            entry.submitted = 0;
             entry.bytes.assign(ref->size, '\0');
             self.wait(ref->id);
         } else {
             auto &entry = found->second;
             if (entry.released) {
                 return AYNI_NOT_FOUND;
-            }
-            if (entry.digest != ref->digest || entry.bytes.size() != ref->size) {
-                return AYNI_STORAGE_FAILED;
             }
             if (entry.state == State::failed) {
                 if (entry.outstanding) {
@@ -220,6 +239,9 @@ ayni_status_t FileBodies::read(void *context, const ayni_body_ref_v1 *ref, uint8
                 }
                 if (!entry.bytes.empty()) {
                     std::memcpy(out, entry.bytes.data(), entry.bytes.size());
+                }
+                if (entry.state == State::ready) {
+                    entry.state = State::durable; // The loaded result can now be reclaimed.
                 }
                 return AYNI_OK;
             }
@@ -261,8 +283,7 @@ void FileBodies::collect(uint64_t scope, const std::vector<ayni_body_ref_v1> &ke
                 kept = kept || ref.id == id;
             }
             if (!kept) {
-                released.push_back(
-                    {id, entry.digest, static_cast<uint32_t>(entry.bytes.size()), 0});
+                released.push_back({id, entry.digest, entry.size, 0});
             }
         }
     }
@@ -274,7 +295,61 @@ uint32_t FileBodies::ready(void *context, uint64_t) {
     auto &self = *static_cast<FileBodies *>(context);
     self.flush();
     std::lock_guard<std::mutex> lock(self.mutex_);
-    return self.outstanding_ || !self.waiting_.empty() ? 0U : 1U;
+    return self.outstanding_ || !self.waiting_.empty() || !self.removals_.empty() ? 0U : 1U;
+}
+size_t FileBodies::cached_bytes_locked() const {
+    size_t total = 0;
+    for (const auto &item : entries_) {
+        total += item.second.bytes.size();
+    }
+    return total;
+}
+size_t FileBodies::cached_bytes() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return cached_bytes_locked();
+}
+// All descriptor reads copy bytes, so only file requests borrow cached storage. Deterministic
+// map order suffices for reclamation. Keep ownership metadata for scope collection even
+// after the cached payload is gone (C-HVAL-005). Only explicit trim may abandon a ready
+// result, so cancellation can reclaim it without enabling automatic retry/eviction loops.
+ayni_status_t FileBodies::trim_locked(size_t target, Reclaim reclaim) {
+    auto bytes = cached_bytes_locked();
+    for (auto at = entries_.begin(); bytes > target && at != entries_.end(); ++at) {
+        auto &entry = at->second;
+        const bool reclaimable = entry.state == State::durable ||
+                                 (reclaim == Reclaim::completed && entry.state == State::ready);
+        if (reclaimable && !entry.outstanding) {
+            bytes -= entry.bytes.size();
+            std::string{}.swap(entry.bytes);
+            entry.state = State::evicted;
+        }
+    }
+    return bytes <= target ? AYNI_OK : AYNI_BUSY;
+}
+ayni_status_t FileBodies::trim_cache(size_t target) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return trim_locked(target, Reclaim::completed);
+}
+ayni_status_t FileBodies::set_cache_limit(size_t bytes) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (bytes) {
+        const auto status = trim_locked(bytes, Reclaim::consumed);
+        if (status != AYNI_OK) {
+            return status;
+        }
+    }
+    cache_limit_ = bytes;
+    return AYNI_OK;
+}
+ayni_status_t FileBodies::reserve_cache(size_t bytes) {
+    if (!cache_limit_) {
+        return AYNI_OK;
+    }
+    if (bytes > cache_limit_) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    const auto status = trim_locked(cache_limit_ - bytes, Reclaim::consumed);
+    return status == AYNI_OK ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
 }
 void FileBodies::complete(void *context, const FileValueResult &result) noexcept {
     auto *pending = static_cast<Pending *>(context);
@@ -298,10 +373,10 @@ void FileBodies::complete(void *context, const FileValueResult &result) noexcept
         } else if (!entry.outstanding && entry.submitted == chunks(size)) {
             const ayni_bytes_v1 bytes{reinterpret_cast<const uint8_t *>(entry.bytes.data()), size};
             if (entry.state == State::writing) {
-                entry.state = State::durable;
+                entry.state = State::ready;
             } else if (entry.state == State::loading) {
                 const bool verified = ayni_body_digest(bytes) == entry.digest;
-                entry.state = verified ? State::durable : State::failed;
+                entry.state = verified ? State::ready : State::failed;
                 entry.failure = verified ? AYNI_OK : AYNI_STORAGE_FAILED;
             }
         }

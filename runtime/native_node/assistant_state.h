@@ -3,6 +3,7 @@
 #include "conversation_store.h"
 #include <array>
 #include <ayni/calls.h>
+#include <ayni/commands.hpp>
 #include <ayni/context.h>
 #include <ayni/host_authority.h>
 #include <ayni/runtime/native_node.h>
@@ -30,7 +31,8 @@ struct Assistant::Impl {
     };
     std::optional<AwaitingNotice> awaiting_notice; // Released only after exact file ACK is durable.
     ayni_status_t storage_status = AYNI_OK;
-    uint64_t session = 0, boot = 0, command_sequence = 0;
+    uint64_t session = 0;
+    CommandSequence command_ids; // Shared identity rule; CLI retains its multi-command window.
     // Client receipt identities only; Core owns their effects and durable phase.
     std::array<uint64_t, AYNI_COMMAND_CAPACITY_DEFAULT> pending_commands{};
     uint32_t pending_count = 0;

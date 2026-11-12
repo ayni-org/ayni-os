@@ -164,3 +164,9 @@ add_executable(ayni_cpp_sdk_tests cpp_sdk_test.cpp runtime_examples_test.cpp)
 target_link_libraries(ayni_cpp_sdk_tests PRIVATE ayni_core ayni_host_sim ayni_runtime_common ayni_runtime_examples
     ayni_warnings GTest::gtest_main)
 gtest_discover_tests(ayni_cpp_sdk_tests)
+
+# Public SDK integration: the interactive consumer shares Session/Profile with ESP.
+add_executable(ayni_conversation_session_tests conversation_session_test.cpp)
+target_link_libraries(ayni_conversation_session_tests PRIVATE ayni_runtime_portable
+    ayni_host_native ayni_warnings GTest::gtest_main)
+gtest_discover_tests(ayni_conversation_session_tests)

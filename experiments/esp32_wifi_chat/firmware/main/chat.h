@@ -1,24 +1,25 @@
 #pragma once
 #include "../wifi/model_buffer.h"
-#include "history.h"
 #include "model_tools.h"
 #include "motor.h"
 #include "motor_check.h"
 #include "speaker.h"
 #include "transport.h"
-#include "value_queue.h"
 #include <array>
 #include <ayni/authority.h>
 #include <ayni/ayni.hpp>
 #include <ayni/calls.h>
+#include <ayni/commands.hpp>
 #include <ayni/hosts/esp_idf.h>
+#include <ayni/hosts/storage/value_admission.h>
+#include <ayni/runtime/conversation.h>
 #include <ayni/runtime/conversation/file_bodies.h>
 #include <ayni/strategies/builtin.h>
 #include <string>
 namespace wifichat {
 // Experiment composition: one Agent, one model destination fixed per boot, and the built-in
 // ToolLoop. Core owns Goals, Tasks, Calls and the ToolLoop schedule; this owns the devices,
-// the conversation record (History) and the session policy.
+// shared conversation ports and the session policy.
 class Chat {
   public:
     explicit Chat(Transport &transport)
@@ -56,6 +57,11 @@ class Chat {
     ayni_status_t receipt();
     ayni_status_t settle_session(uint64_t durable_seq, bool &settled);
     ayni_status_t prepare(const ayni_kernel_info_v1 &);
+    ayni_status_t prepare_owner(const ayni_kernel_info_v1 &);
+    ayni_status_t prepare_grant();
+    ayni_status_t prepare_history(const ayni_kernel_info_v1 &);
+    ayni_status_t close_session(const ayni_kernel_info_v1 &);
+    ayni_status_t observe_probe(const ayni_kernel_info_v1 &);
     ayni_status_t converse(const ayni_kernel_info_v1 &);
     ayni_status_t present_reply();
     void end_turn(const char *);
@@ -73,16 +79,23 @@ class Chat {
     ayni_kernel_t *kernel_ = nullptr;
     void *arena_ = nullptr;
     // Every conversation text and model request body, on the Host's value files (ADR-0096).
-    ValueQueue values_; // Reserves shared Host queue room for Core log/maintenance requests.
-    BodyCache bodies_;
+    static constexpr uint32_t host_capacity = 16, value_capacity = 8;
+    ayni::hosts::storage::ValueAdmission<value_capacity>
+        values_; // Reserves shared Host queue room for Core log/maintenance requests.
+    ayni::runtime::FileBodies bodies_;
     ayni::strategies::ToolLoop loop_;
     ayni_strategy_v1 inner_{}, strategy_{};
     // One owner-only region for the ToolLoop and conversation codecs; never used inside a
     // nested callback of theirs.
     ayni_workspace_v1 workspace_{};
-    History history_;
+    ayni::runtime::conversation::Session history_;
+    uint64_t rounds() const {
+        const auto *record = history_.record();
+        return record ? record->last_round : 0;
+    }
     bool history_configured_ = false;
-    uint64_t session_ = 0, instance_ = 0, boot_ = 0, sequence_ = 0, pending_command_ = 0;
+    uint64_t session_ = 0, instance_ = 0;
+    ayni::CommandClient commands_;
     uint64_t grant_ = 0, goal_ = 0, turn_ = 0;
     bool announced_ = false, hold_reported_ = false, cancel_requested_ = false;
     bool progress_ = false; // A command or state change this tick that Core has not stepped.
@@ -116,7 +129,7 @@ class Chat {
     // borrows first, then uses public shutdown without needing spare Goal slots.
     // stopped means Kernel/resources are gone and the terminal report is waiting
     // for transport capacity; it is never announced before actual teardown.
-    enum class Closing { open, quiescing, cancel_work, kernel, stopped };
+    enum class Closing { open, quiescing, cancel_work, drain_session, kernel, stopped };
     Closing closing_ = Closing::open;
     ModelSelection selection_{};
     ayni::providers::model_protocol::RequestOptions protocol_options_{};

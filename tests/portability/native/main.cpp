@@ -65,6 +65,10 @@ int main(int argc, char **argv) {
         const auto destroyed = profile.destroy();
         if (status != AYNI_OK || stopped != AYNI_OK || destroyed != AYNI_OK) {
             std::printf("failed status=%d stopped=%d destroyed=%d\n", status, stopped, destroyed);
+            // A failed assertion still releases an arena whose Kernel/Host were actually joined.
+            if (destroyed == AYNI_OK) {
+                ::operator delete(arena, std::align_val_t(memory.alignment));
+            }
             return 1;
         }
     }

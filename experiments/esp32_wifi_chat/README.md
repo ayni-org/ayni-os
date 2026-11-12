@@ -17,3 +17,9 @@ RC003-MS 松键后整段 ASR，识别文字显示并自动提交。只有一个 
 完整Schema和说明来自当前Task可见目录，模型只得到一个通用ayni_call_capability的完整分支工具，不需list/inspect往返。每请求一份tools，不写入历史；invoke/start/read/wait/cancel/close与原授权/许可语义保持。Responses续传包含有序Items和encrypted reasoning，绑定API/模型/目的地；更换选择时明确拒绝旧续传，用户显式建立新会话，绝不自动擦卷。主请求/工具结果/摘要预算使用真实API投影，服务usage独立报告。
 
 软件验证使用本地合成HTTP/SSE与公开SDK，兼容决定见[ADR-0098](../../docs/adr/0098-shared-model-protocol-and-preloaded-tools.md)。当前屏幕设置预览见[截图](screenshots/model-settings-preview.png)。本轮只编译与软件验证，没有烧录、串口、线上模型或电机运行，未完成128K峰值、60秒动作或硬件停止链验收。
+
+## 2026-11-12 共享交互会话
+
+聊天复用`runtime/conversation::Session`，输入、Goal、终态、文件保存、Core发布/ACK和清空由同一实现管理。显式discard模式允许取消后继续，发布中的回答保留已确认历史，界面只抑制晚到展示。启动先取消旧实验工作，合成容量诊断使用独立类型、不进入真实历史。原实验History、BodyCache和ValueQueue已移除；正文缓存2 MiB预算及清退、8/16文件请求准入和不可复制命令客户端均使用共享接口。
+
+按用户决定不迁移旧独立历史文件；新锚点对应的新会话正常持久和重开，Core任务/调用证据与配置保留，无启动自动擦卷。本轮未烧录或OTA，完整跨存储中断恢复及硬件内存峰值未验证，独立审查由用户后续安排。见[ADR-0100](../../docs/adr/0100-shared-interactive-runtime.md)。

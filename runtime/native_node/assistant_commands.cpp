@@ -1,7 +1,6 @@
 #include "assistant_state.h"
 #include <algorithm>
 #include <cstring>
-#include <limits>
 namespace ayni::runtime {
 namespace {
 Reply failure(ayni_status_t status) {
@@ -9,10 +8,6 @@ Reply failure(ayni_status_t status) {
     reply.status = status;
     return reply;
 }
-// CLI command identities occupy a boot-specific monotonic range. These are
-// management keys, not Kernel object IDs; no persistent counter shadows Core.
-constexpr uint64_t commands_per_boot = uint64_t{1} << 32;
-
 } // namespace
 Reply Assistant::Impl::submit(ayni_intent_kind_t kind, const void *body, uint32_t revision) {
     const auto collected = collect_receipts();
@@ -22,17 +17,11 @@ Reply Assistant::Impl::submit(ayni_intent_kind_t kind, const void *body, uint32_
     if (pending_count == pending_commands.size()) {
         return failure(AYNI_BUSY);
     }
-    if (!boot || boot >= std::numeric_limits<uint64_t>::max() / commands_per_boot ||
-        command_sequence == commands_per_boot - 1) {
+    const auto command_id = command_ids.next();
+    if (!command_id) {
         return failure(AYNI_CAPACITY_EXCEEDED);
     }
-    ayni_intent_v1 intent{sizeof(intent),
-                          kind,
-                          boot * commands_per_boot + ++command_sequence,
-                          session,
-                          revision,
-                          0,
-                          body};
+    const ayni_intent_v1 intent{sizeof(intent), kind, command_id, session, revision, 0, body};
     ayni_intent_result_v1 result{};
     result.struct_size = sizeof(result);
     ayni_error_v1 error{};

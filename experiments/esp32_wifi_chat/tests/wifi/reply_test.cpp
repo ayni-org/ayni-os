@@ -1,8 +1,8 @@
-#include "body_cache.h"
 #include "harness.h"
 #include "protocol.h"
 #include <algorithm>
 #include <ayni/model_messages.hpp>
+#include <ayni/runtime/conversation/file_bodies.h>
 #include <ayni/strategies/builtin.h>
 #include <ayni/values.hpp>
 #include <cstring>
@@ -136,10 +136,10 @@ struct ValueFiles {
     }
 };
 void large_context(std::string_view glyph, unsigned rounds) {
-    // Use the actual public ToolLoop AND FileBodies through the experiment cache.
+    // Use the actual public ToolLoop AND FileBodies through the shared cache.
     // Repeated complete normal turns grow its real history beyond the old 32KiB path.
     ValueFiles files;
-    wifichat::BodyCache bodies;
+    ayni::runtime::FileBodies bodies;
     ASSERT_EQ(bodies.configure({&files, ValueFiles::submit}), AYNI_OK);
     const auto *store = bodies.store();
     size_t bytes = 0, alignment = 0;
@@ -172,13 +172,13 @@ void large_context(std::string_view glyph, unsigned rounds) {
     }
     size_t maximum_prompt = 0;
     for (unsigned round = 0; round < rounds; ++round) {
-        ASSERT_EQ(bodies.reset_idle(), AYNI_OK);
+        ASSERT_EQ(bodies.trim_cache(), AYNI_OK);
         ayni::strategies::Encoded parameters;
         auto status = AYNI_NOT_READY;
         for (unsigned poll = 0; poll < 256 && status == AYNI_NOT_READY; ++poll) {
             status = ayni::strategies::Conversation::begin(&workspace, *store, record, text(user),
                                                            parameters);
-            wifichat::BodyCache::ready(&bodies, 0);
+            ayni::runtime::FileBodies::ready(&bodies, 0);
         }
         ASSERT_EQ(status, AYNI_OK);
         Serving serving;
@@ -210,7 +210,7 @@ void large_context(std::string_view glyph, unsigned rounds) {
             output.call_context = &serving;
             serving.output = &output;
             ASSERT_EQ(inner.decide(inner.ctx, &snapshot, &output), AYNI_OK);
-            wifichat::BodyCache::ready(&bodies, 0);
+            ayni::runtime::FileBodies::ready(&bodies, 0);
             if (output.disposition == AYNI_POLICY_OUTPUT_DEFER) {
                 continue;
             }
@@ -243,17 +243,17 @@ void large_context(std::string_view glyph, unsigned rounds) {
             }
         }
         bodies.collect(record.id, keep);
-        wifichat::BodyCache::ready(&bodies, 0);
+        ayni::runtime::FileBodies::ready(&bodies, 0);
         record = next;
     }
     EXPECT_GT(maximum_prompt, 400U * 1024U);
     EXPECT_LT(maximum_prompt, wifichat::harness::model_body_bytes);
-    ASSERT_EQ(bodies.reset_idle(), AYNI_OK);
+    ASSERT_EQ(bodies.trim_cache(), AYNI_OK);
     std::vector<ayni::strategies::Round> retained;
     auto status = AYNI_NOT_READY;
     for (unsigned poll = 0; poll < 256 && status == AYNI_NOT_READY; ++poll) {
         status = ayni::strategies::Conversation::rounds(*store, record, retained);
-        wifichat::BodyCache::ready(&bodies, 0);
+        ayni::runtime::FileBodies::ready(&bodies, 0);
     }
     ASSERT_EQ(status, AYNI_OK);
     ASSERT_FALSE(retained.empty());
@@ -341,10 +341,10 @@ TEST(WifiReply, RealToolLoopCompletesTextAfterOneModelRequestAndSavesItsOwnHisto
     EXPECT_EQ(rounds[0].user, "你好");
     EXPECT_EQ(rounds[0].answer, "你好，这是直接回答。");
 }
-TEST(WifiReply, CacheResetRetainsCleanupUntilNormalFileQueueHasCapacity) {
-    // ADR-0097: a normal full file queue cannot cause cache reset to discard deferred removals.
+TEST(WifiReply, CacheTrimRetainsCleanupUntilNormalFileQueueHasCapacity) {
+    // ADR-0097: a normal full file queue cannot cause cache trimming to discard deferred removals.
     ValueFiles files;
-    wifichat::BodyCache bodies;
+    ayni::runtime::FileBodies bodies;
     ASSERT_EQ(bodies.configure({&files, ValueFiles::submit}), AYNI_OK);
     const auto *port = bodies.store();
     const uint8_t value[] = "retired body";
@@ -352,19 +352,20 @@ TEST(WifiReply, CacheResetRetainsCleanupUntilNormalFileQueueHasCapacity) {
     auto written = AYNI_NOT_READY;
     for (unsigned poll = 0; poll < 16 && written == AYNI_NOT_READY; ++poll) {
         written = port->write(port->context, 1, {value, sizeof(value) - 1}, &reference);
-        wifichat::BodyCache::ready(&bodies, 0);
+        ayni::runtime::FileBodies::ready(&bodies, 0);
     }
     ASSERT_EQ(written, AYNI_OK);
-    ASSERT_TRUE(wifichat::BodyCache::ready(&bodies, 0));
+    ASSERT_TRUE(ayni::runtime::FileBodies::ready(&bodies, 0));
     ASSERT_FALSE(files.values.empty());
     files.removal_capacity = false;
     port->release(port->context, &reference);
-    EXPECT_EQ(bodies.reset_idle(), AYNI_BUSY);
+    EXPECT_FALSE(ayni::runtime::FileBodies::ready(&bodies, 0));
+    EXPECT_EQ(bodies.trim_cache(), AYNI_OK);
     EXPECT_FALSE(files.values.empty());
     files.removal_capacity = true;
     auto status = AYNI_BUSY;
     for (unsigned poll = 0; poll < 16 && status == AYNI_BUSY; ++poll) {
-        status = bodies.reset_idle();
+        status = ayni::runtime::FileBodies::ready(&bodies, 0) ? bodies.trim_cache() : AYNI_BUSY;
     }
     EXPECT_EQ(status, AYNI_OK);
     EXPECT_TRUE(files.values.empty());

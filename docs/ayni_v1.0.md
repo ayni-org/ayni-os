@@ -1,12 +1,12 @@
 # Ayni：通用原生 AgentOS 基础能力与实验实施计划
 
 > **文档性质**：工程实施计划与待实现契约，不代表已有软件能力。\
-> **文档版本**：v1.109 · 2026-11-11；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
+> **文档版本**：v1.111 · 2026-11-12；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
 > **产品定位**：跨平台、跨设备的通用原生 AgentOS；宿主与扩展决定提供哪些设备或软件能力，统一助理只是应用示例。\
 > **架构路线**：按 Ayni 的共享 Agent 状态、授权、资源及恢复需求设计原生 Core，复用宿主 OS，模型优先通过外部 API 获得；架构图仅参考 AIOS 的分层分组表达样式。\
 > **实施顺序**：先完成基础通用能力，再开展 ESP32-S3、Linux 系统等实验；设备与能力组合按实验目标选取，不要求宿主具备语音、视觉、运动或特定外设。\
 > **基准投入**：单人全职；阶段周期是相对工作量估算，不是开工日期或交付日期承诺。\
-> **当前状态**：通用基础与独立源码SDK已随 #112～#123 交付，见[基础报告](../reports/core/foundation-acceptance.md)和[独立接入报告](../reports/core/independent-consumption.md)；现有正文存储基线为ABI0.54/schema9，见ADR-0096。独立触屏Wi-Fi/RC003-MS语音实验已实施，沿用一个内置ToolLoop及公开能力SDK，USB入口撤除；完整128K峰值、60秒电机和通用硬件停止链仍未验收，见[ADR-0097](adr/0097-esp32-touch-wifi-voice-experiment.md)。共用Chat/Responses协议、SSE和请求工具预置已随#132合并，见[ADR-0098](adr/0098-shared-model-protocol-and-preloaded-tools.md)；用户随后授权的Chat流式实机复核及修正见[实验记录](../experiments/esp32_wifi_chat/WIFI.md#2026-11-11-拉取后实机复核)，线上Responses与本版朗读仍待验证，PR及合并由用户处理。用户随后选择独立Web OTA与内存修复一起部署，见[ADR-0099](adr/0099-esp32-web-ota.md)。
+> **当前状态**：共享交互会话、正文缓存、文件准入与命令辅助按用户要求实施，ESP迁入统一上下文路径，见[ADR-0100](adr/0100-shared-interactive-runtime.md)；单子智能体独立审查发现的两项缓存问题已按用户要求最小修复，本轮未部署。通用基础与独立源码SDK已随 #112～#123 交付，见[基础报告](../reports/core/foundation-acceptance.md)和[独立接入报告](../reports/core/independent-consumption.md)；现有正文存储基线为ABI0.54/schema9，见ADR-0096。独立触屏Wi-Fi/RC003-MS语音实验已实施，沿用一个内置ToolLoop及公开能力SDK，USB入口撤除；完整128K峰值、60秒电机和通用硬件停止链仍未验收，见[ADR-0097](adr/0097-esp32-touch-wifi-voice-experiment.md)。共用Chat/Responses协议、SSE和请求工具预置已随#132合并，见[ADR-0098](adr/0098-shared-model-protocol-and-preloaded-tools.md)；用户随后授权的Chat流式实机复核及修正见[实验记录](../experiments/esp32_wifi_chat/WIFI.md#2026-11-11-拉取后实机复核)，线上Responses与本版朗读仍待验证，PR及合并由用户处理。用户随后选择独立Web OTA与内存修复一起部署，见[ADR-0099](adr/0099-esp32-web-ota.md)。
 
 > **本轮范围**：用户2026-10-31要求实施[独立工程接入与验收计划](architecture/independent-consumption-plan.md)：通用源码SDK、低栈工作区、Native/ESP存储及Host、共同应用和验收。平台适配保持独立目录，必要接口直接升级，正常存储和最小重开获授权；实机操作、付费模型及其他新专项不启动。
 
@@ -1097,6 +1097,10 @@ idf.py -p <SERIAL_PORT> flash monitor
 ## 14. 默认值与仍需用户决策的问题
 
 ### 14.1 已接受的实施默认值
+
+本次修订（v1.111，2026-11-12）：按用户要求完成共享交互运行时的单子智能体独立审查及两项缓存问题的最小修复。清退保留正文所有权元数据供collect；自动回收保留未取走的读写完成结果，显式清退可放弃这类缓存；预算不足明确拒绝，避免多正文重试循环。C ABI和存储格式不变，见[ADR-0100](adr/0100-shared-interactive-runtime.md)。
+
+本次修订（v1.110，2026-11-12）：按用户要求依次补齐共享交互会话、正文缓存、外层文件准入和命令提交辅助并迁移ESP。默认草稿保留语义不变，显式discard支持取消后继续；发布与删除仍走Core锚点/精确ACK。旧独立历史按用户决定不迁移；Core/ABI/schema不变，本轮只做软件检查及编译、统一提交推送，独立审查后续由用户安排，见[ADR-0100](adr/0100-shared-interactive-runtime.md)。
 
 本次修订（v1.109，2026-11-11）：用户选择独立ESP实验Web OTA与内存修复一起部署；沿用正常关闭，重用停用音频区建立双槽，配置、配对和8 MiB数据区保留，见[ADR-0099](adr/0099-esp32-web-ota.md)。只运行正常安装/更新，不扩展故障回退或断电专项。
 

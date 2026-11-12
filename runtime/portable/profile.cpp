@@ -1,7 +1,9 @@
 #include <algorithm>
 #include <array>
 #include <ayni/applications/software_workflow.h>
+#include <ayni/commands.hpp>
 #include <ayni/host_authority.h>
+#include <ayni/hosts/storage/value_admission.h>
 #include <ayni/providers/fixture_model.h>
 #include <ayni/providers/mock_execution.h>
 #include <ayni/providers/software/work.h>
@@ -28,7 +30,6 @@ constexpr uint32_t write_interval_us = 1000, journal_bytes = 512 * 1024;
 constexpr runtime::HarnessSettings harness{12288, 3072, 4096, 2304, 8, 30000, 1};
 constexpr int64_t execution_minimum = -100, execution_maximum = 100;
 constexpr uint32_t execution_lease_us = 200000, command_age_us = 100000;
-constexpr uint64_t command_range = UINT64_C(1) << 32;
 constexpr uint64_t event_interval_us = 10000;
 constexpr const char *chat_types[agent_count] = {"portable.chat.a", "portable.chat.b"};
 constexpr const char *model_bindings[agent_count] = {"portable.model.a", "portable.model.b"};
@@ -116,7 +117,8 @@ struct Profile::Impl {
           summary(providers::fixture_model::Variant::a, providers::fixture_model::Service::summary,
                   host.ctx, host.monotonic_now_us, bodies.store()) {}
     ayni_host_v1 host;
-    hosts::storage::FileValuePort values;
+    hosts::storage::ValueAdmission<value_request_capacity> value_admission;
+    hosts::storage::FileValuePort values; // All outer values use the same bounded admission.
     runtime::FileBodies bodies; // Every conversation text and model body, on the value files.
     ayni_kernel_t *kernel = nullptr;
     providers::fixture_model::Provider model_a, model_b, summary;
@@ -129,51 +131,14 @@ struct Profile::Impl {
     std::array<runtime::conversation::Session, agent_count> conversations;
     std::array<bool, agent_count>
         conversation_bound{}; // Startup bindings only, never domain state.
-    uint64_t session = 0, boot = 0, command_sequence = 0;
-    std::optional<uint64_t> pending_command;
+    uint64_t session = 0;
+    CommandClient commands;
     std::array<uint64_t, agent_count> instances{}; // Public stable IDs, initialized once per boot.
 
-    ayni_status_t receipts() {
-        if (!pending_command) {
-            return AYNI_OK;
-        }
-        auto receipt = initialized<ayni_intent_receipt_v1>();
-        const auto status =
-            ayni_get_intent_receipt(kernel, owner_principal, *pending_command, &receipt);
-        if (status == AYNI_OK && receipt.phase == AYNI_INTENT_DURABLE) {
-            pending_command.reset();
-        }
-        return status;
-    }
+    ayni_status_t receipts() { return commands.poll(); }
     static Submission command(void *context, ayni_intent_kind_t kind, const void *body,
                               uint32_t revision) {
-        auto &self = *static_cast<Impl *>(context);
-        Submission out;
-        out.status = self.receipts();
-        if (out.status != AYNI_OK) {
-            return out;
-        }
-        if (self.pending_command) {
-            out.status = AYNI_BUSY;
-            return out;
-        }
-        if (!self.session || !self.boot || self.boot >= UINT64_MAX / command_range ||
-            self.command_sequence == command_range - 1) {
-            out.status = AYNI_NOT_READY;
-            return out;
-        }
-        const ayni_intent_v1 intent{sizeof(intent),
-                                    kind,
-                                    self.boot * command_range + ++self.command_sequence,
-                                    self.session,
-                                    revision,
-                                    0,
-                                    body};
-        out.status = ayni_submit_intent(self.kernel, &intent, &out.result, &out.error);
-        if (out.status == AYNI_OK && out.result.phase != AYNI_INTENT_DURABLE) {
-            self.pending_command = intent.command_id;
-        }
-        return out;
+        return static_cast<Impl *>(context)->commands.submit(kind, body, revision);
     }
     ayni_status_t resource(const char *id, uint32_t capacity) {
         const ayni_resource_desc_v1 desc{sizeof(desc),
@@ -506,7 +471,11 @@ ayni_status_t Profile::create_in(void *data, size_t bytes, const ayni_host_v1 &h
     }
     Regions regions{static_cast<uint8_t *>(data)};
     impl_ = new (regions.take(sizeof(Impl), alignof(Impl))) Impl(host, files);
-    status = impl_->bodies.configure(files);
+    if (!impl_->value_admission.configure(files)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    impl_->values = impl_->value_admission.port();
+    status = impl_->bodies.configure(impl_->values);
     if (status != AYNI_OK) {
         return status;
     }
@@ -554,7 +523,7 @@ Submission Profile::submit(ayni_intent_kind_t kind, const void *body, uint32_t r
     return {};
 }
 bool Profile::command_pending() const {
-    return impl_ && impl_->pending_command.has_value();
+    return impl_ && impl_->commands.pending() != 0;
 }
 runtime::conversation::Session *Profile::conversation(uint32_t index) {
     return impl_ && index < agent_count ? &impl_->conversations[index] : nullptr;
@@ -603,7 +572,11 @@ ayni_status_t Profile::tick() {
         if (status != AYNI_OK) {
             return status;
         }
-        self.boot = info.boot_epoch;
+        status =
+            self.commands.configure(self.kernel, owner_principal, self.session, info.boot_epoch);
+        if (status != AYNI_OK) {
+            return status;
+        }
         for (uint32_t at = 0; at < agent_count; ++at) {
             auto agent = initialized<ayni_agent_info_v1>();
             status = ayni_get_agent(self.kernel, at + 1U, &agent);
@@ -631,7 +604,7 @@ ayni_status_t Profile::tick() {
     return first;
 }
 
-ayni_status_t Profile::open_conversations() {
+ayni_status_t Profile::open_conversations(conversation::UnfinishedTurn unfinished) {
     if (!running()) {
         return AYNI_NOT_READY;
     }
@@ -671,8 +644,9 @@ ayni_status_t Profile::open_conversations() {
                                                    text(chat_types[at]),
                                                    &self.owner_region,
                                                    self.values,
-                                                   &self.bodies,
-                                                   {&self, Impl::command}});
+                                                   self.bodies.collection(),
+                                                   {&self, Impl::command},
+                                                   unfinished});
         if (status != AYNI_OK) {
             return status;
         }
