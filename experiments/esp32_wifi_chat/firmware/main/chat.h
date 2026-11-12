@@ -1,4 +1,5 @@
 #pragma once
+#include "../wifi/model_buffer.h"
 #include "history.h"
 #include "model_tools.h"
 #include "motor.h"
@@ -90,6 +91,14 @@ class Chat {
     // One turn at a time: its text until the Goal exists, then the Goal until its answer.
     enum class Turn { idle, preparing_input, input, running, saving, answer, reply_done };
     Turn turn_state_ = Turn::idle;
+    struct ProbeTurn {
+        uint32_t characters = 0; // Zero only primes the transport template; otherwise Han text.
+        std::unique_ptr<wifi::ModelBuffer> history;
+        ayni_body_ref_v1 history_ref{};
+        uint32_t history_bytes = 0;
+    };
+    std::optional<ProbeTurn> probe_; // Present only for an isolated diagnostic Goal.
+    ayni_status_t probe_input(ayni_string_v1, ayni::strategies::Encoded &);
     std::string input_, answer_;
     std::array<char, 192> terminal_text_{}; // Owned error text until the terminal queue accepts it.
     const char *reply_end_ = nullptr; // Static or terminal_text_, valid throughout reply_done.

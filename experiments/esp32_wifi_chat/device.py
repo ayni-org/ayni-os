@@ -75,6 +75,8 @@ def deploy(variant='wifi'):
     build = ROOT/'build'/directory
     app = build/binary
     table = build/'partition_table/partition-table.bin'
+    if b'ota_0' in table.read_bytes() or b'ota_1' in table.read_bytes():
+        raise RuntimeError('OTA layout requires ota_install.py bootstrap, then Web OTA; legacy deploy refused')
     capacity = WIFI_APP_SIZE if variant == 'wifi' else APP_SIZE
     if not 0 < app.stat().st_size <= capacity or table.stat().st_size > TABLE_SIZE:
         raise RuntimeError('Image exceeds the preserved app/table region')

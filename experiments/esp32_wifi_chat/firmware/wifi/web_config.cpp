@@ -1,13 +1,21 @@
 #include "web_config.h"
+#include "../main/harness.h"
+#include "model_buffer.h"
+#include "network_time.h"
+#include "ota_update.h"
 #include <ayni/model_messages.hpp>
+#include <charconv>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <esp_netif.h>
 #include <esp_timer.h>
 #include <string>
 #include <string_view>
 #include <yyjson.h>
 extern const char web_page[] asm("_binary_config_html_start");
+extern const char diagnostic_page[] asm("_binary_diagnostics_html_start");
+extern const char firmware_page_data[] asm("_binary_firmware_html_start");
 namespace wifichat::wifi {
 namespace {
 constexpr size_t request_bytes = 2048;
@@ -52,7 +60,10 @@ bool WebConfig::same_origin(httpd_req_t *request) {
     const std::string expected = std::string("http://") + host;
     return origin == expected;
 }
-bool WebConfig::initialize(const Settings &settings) {
+bool WebConfig::initialize(const Settings &settings, DiagnosticLog &diagnostics,
+                           OtaUpdate &update) {
+    diagnostics_ = &diagnostics;
+    update_ = &update;
     public_ = settings;
     password_set_ = *settings.password.data();
     key_set_ = *settings.model_key.data();
@@ -69,10 +80,12 @@ bool WebConfig::initialize(const Settings &settings) {
     config.lru_purge_enable = true;
     config.recv_wait_timeout = 3;
     config.send_wait_timeout = 3;
+    constexpr size_t route_count = 9;
+    config.max_uri_handlers = route_count;
     if (httpd_start(&server_, &config) != ESP_OK) {
         return false;
     }
-    httpd_uri_t routes[3]{};
+    httpd_uri_t routes[route_count]{};
     routes[0].uri = "/";
     routes[0].method = HTTP_GET;
     routes[0].handler = page;
@@ -82,6 +95,24 @@ bool WebConfig::initialize(const Settings &settings) {
     routes[2].uri = "/api/settings";
     routes[2].method = HTTP_POST;
     routes[2].handler = post;
+    routes[3].uri = "/logs";
+    routes[3].method = HTTP_GET;
+    routes[3].handler = logs_page;
+    routes[4].uri = "/api/logs";
+    routes[4].method = HTTP_GET;
+    routes[4].handler = logs;
+    routes[5].uri = "/api/diagnostics/context-test";
+    routes[5].method = HTTP_POST;
+    routes[5].handler = probe;
+    routes[6].uri = "/update";
+    routes[6].method = HTTP_GET;
+    routes[6].handler = firmware_page;
+    routes[7].uri = "/api/firmware";
+    routes[7].method = HTTP_GET;
+    routes[7].handler = firmware_get;
+    routes[8].uri = "/api/firmware";
+    routes[8].method = HTTP_POST;
+    routes[8].handler = firmware_post;
     for (auto &route : routes) {
         route.user_ctx = this;
     }
@@ -131,6 +162,125 @@ esp_err_t WebConfig::get(httpd_req_t *request) {
     }
     headers(request, "application/json");
     return httpd_resp_send(request, body, size);
+}
+esp_err_t WebConfig::logs_page(httpd_req_t *request) {
+    if (!same_origin(request)) {
+        return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Use the device IP address");
+    }
+    headers(request, "text/html; charset=utf-8");
+    return httpd_resp_send(request, diagnostic_page, HTTPD_RESP_USE_STRLEN);
+}
+esp_err_t WebConfig::firmware_page(httpd_req_t *request) {
+    if (!same_origin(request)) {
+        return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid origin");
+    }
+    headers(request, "text/html; charset=utf-8");
+    return httpd_resp_send(request, firmware_page_data, HTTPD_RESP_USE_STRLEN);
+}
+esp_err_t WebConfig::firmware_get(httpd_req_t *request) {
+    if (!same_origin(request)) {
+        return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid origin");
+    }
+    headers(request, "application/json");
+    return static_cast<WebConfig *>(request->user_ctx)->update_->status(request);
+}
+esp_err_t WebConfig::firmware_post(httpd_req_t *request) {
+    if (!same_origin(request)) {
+        return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid origin");
+    }
+    auto &self = *static_cast<WebConfig *>(request->user_ctx);
+    if (!self.editable_.load(std::memory_order_acquire)) {
+        httpd_resp_set_status(request, "409 Conflict");
+        return httpd_resp_sendstr(request, "Finish or cancel the current turn before updating");
+    }
+    char type[48]{};
+    if (httpd_req_get_hdr_value_str(request, "Content-Type", type, sizeof(type)) != ESP_OK ||
+        std::strcmp(type, "application/octet-stream")) {
+        return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Use application/octet-stream");
+    }
+    headers(request, "application/json");
+    return self.update_->upload(request);
+}
+esp_err_t WebConfig::logs(httpd_req_t *request) {
+    if (!same_origin(request)) {
+        return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid origin");
+    }
+    uint64_t after = 0;
+    char query[64]{}, cursor[24]{};
+    if (httpd_req_get_url_query_len(request)) {
+        if (httpd_req_get_url_query_str(request, query, sizeof(query)) != ESP_OK ||
+            httpd_query_key_value(query, "after", cursor, sizeof(cursor)) != ESP_OK) {
+            return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid cursor");
+        }
+        const auto parsed = std::from_chars(cursor, cursor + std::strlen(cursor), after);
+        if (!*cursor || parsed.ec != std::errc{} || *parsed.ptr) {
+            return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid cursor");
+        }
+    }
+    // Worst-case JSON escaping of twelve bounded lines; keep HTTP's stack internal and small.
+    constexpr size_t response_bytes = DiagnosticLog::batch * DiagnosticLog::line_bytes * 6 + 2048;
+    ModelBuffer body(response_bytes);
+    auto &self = *static_cast<WebConfig *>(request->user_ctx);
+    if (!body.data) {
+        httpd_resp_set_status(request, "503 Service Unavailable");
+        return httpd_resp_sendstr(request, "Diagnostic memory busy");
+    }
+    ayni::json::Writer out(reinterpret_cast<char *>(body.data), body.size);
+    out.raw("{\"memory\":{\"internal_free\":");
+    out.unsigned_number(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    out.raw(",\"internal_largest\":");
+    out.unsigned_number(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    out.raw(",\"internal_min\":");
+    out.unsigned_number(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    out.raw(",\"psram_free\":");
+    out.unsigned_number(heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    out.raw(",\"psram_largest\":");
+    out.unsigned_number(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    const auto epoch = std::time(nullptr);
+    out.raw("},\"clock\":{\"ready\":");
+    out.raw(network_clock_ready(epoch) ? "true" : "false");
+    out.raw(",\"epoch_seconds\":");
+    out.number(epoch);
+    out.raw("},\"log\":");
+    if (!self.diagnostics_->json(out, after)) {
+        httpd_resp_set_status(request, "503 Service Unavailable");
+        return httpd_resp_sendstr(request, "Diagnostic snapshot busy");
+    }
+    out.raw("}");
+    size_t size = 0;
+    if (!out.finish(size)) {
+        return httpd_resp_send_err(request, HTTPD_500_INTERNAL_SERVER_ERROR, "Diagnostic overflow");
+    }
+    headers(request, "application/json");
+    return httpd_resp_send(request, reinterpret_cast<const char *>(body.data), size);
+}
+esp_err_t WebConfig::probe(httpd_req_t *request) {
+    if (!same_origin(request) || request->content_len != 0) {
+        return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid diagnostic request");
+    }
+    auto &self = *static_cast<WebConfig *>(request->user_ctx);
+    uint32_t characters = UINT32_MAX, expected = 0;
+    if (httpd_req_get_url_query_len(request)) {
+        char query[64]{}, number[16]{};
+        if (httpd_req_get_url_query_str(request, query, sizeof(query)) != ESP_OK ||
+            httpd_query_key_value(query, "characters", number, sizeof(number)) != ESP_OK) {
+            return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid test size");
+        }
+        const auto parsed = std::from_chars(number, number + std::strlen(number), characters);
+        if (!*number || parsed.ec != std::errc{} || *parsed.ptr || !characters ||
+            characters > harness::model_body_bytes / 3) {
+            return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid test size");
+        }
+    }
+    if (!self.editable_.load(std::memory_order_acquire) ||
+        !self.probe_requested_.compare_exchange_strong(expected, characters,
+                                                       std::memory_order_acq_rel)) {
+        httpd_resp_set_status(request, "409 Conflict");
+        return httpd_resp_sendstr(request, "Device busy; no test started");
+    }
+    headers(request, "application/json");
+    httpd_resp_set_status(request, "202 Accepted");
+    return httpd_resp_sendstr(request, "{\"queued\":true,\"completion\":\"/api/logs\"}");
 }
 esp_err_t WebConfig::post(httpd_req_t *request) {
     auto &self = *static_cast<WebConfig *>(request->user_ctx);

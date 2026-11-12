@@ -19,10 +19,11 @@ ayni_status_t MotorExecution::reserve_control_stack() {
         worker_stack_ = static_cast<StackType_t *>(heap_caps_malloc(worker_stack_bytes, caps));
     }
     const auto code = worker_stack_ ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
-    std::printf("motor init stage=stack-reserve status=%ld internal_free=%zu "
-                "internal_largest=%zu stack_bytes=%lu\n",
-                long(code), heap_caps_get_free_size(caps), heap_caps_get_largest_free_block(caps),
-                static_cast<unsigned long>(worker_stack_bytes));
+    transport_.diagnostics().record("motor init stage=stack-reserve status=%ld internal_free=%zu "
+                                    "internal_largest=%zu stack_bytes=%lu\n",
+                                    long(code), heap_caps_get_free_size(caps),
+                                    heap_caps_get_largest_free_block(caps),
+                                    static_cast<unsigned long>(worker_stack_bytes));
     return code;
 }
 // Startup owns SDK resources until this succeeds; then ownership passes to the worker.
@@ -37,11 +38,12 @@ ayni_status_t MotorExecution::initialize() {
     initialization_ = Initialization::failed;
     const auto caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     const auto trace_init = [&](const char *stage, ayni_status_t code, esp_err_t sdk) {
-        std::printf("motor init stage=%s status=%ld sdk=%ld internal_free=%zu internal_largest=%zu "
-                    "inbox_bytes=%zu stack_bytes=%lu gate_bytes=%zu\n",
-                    stage, long(code), long(sdk), heap_caps_get_free_size(caps),
-                    heap_caps_get_largest_free_block(caps), inbox_slots * sizeof(Message),
-                    static_cast<unsigned long>(worker_stack_bytes), gate_bytes_);
+        transport_.diagnostics().record(
+            "motor init stage=%s status=%ld sdk=%ld internal_free=%zu internal_largest=%zu "
+            "inbox_bytes=%zu stack_bytes=%lu gate_bytes=%zu\n",
+            stage, long(code), long(sdk), heap_caps_get_free_size(caps),
+            heap_caps_get_largest_free_block(caps), inbox_slots * sizeof(Message),
+            static_cast<unsigned long>(worker_stack_bytes), gate_bytes_);
     };
     const auto abort_init = [&](const char *stage, ayni_status_t code) {
         trace_init(stage, code, output_ ? output_->last_error() : ESP_OK);

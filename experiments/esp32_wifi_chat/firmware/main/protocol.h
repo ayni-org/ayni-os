@@ -13,7 +13,10 @@ constexpr size_t input_bytes = 4096, answer_bytes = 4096;
 constexpr size_t summary_bytes = 8192;
 constexpr size_t tx_bytes = 32768;
 constexpr size_t packet_slots = 4;
-constexpr uint32_t owner_stack_capacity = 96 * 1024;
+// The legacy USB owner reserved 96 KiB internally. Recorded normal peak was 25,832 bytes;
+// 64 KiB keeps 39,704 bytes above that observation while returning 32 KiB to radio/TLS.
+// This is a deployment stack budget, not a claim that every future path has been measured.
+constexpr uint32_t owner_stack_capacity = 64 * 1024;
 constexpr size_t body_reference_bytes = 24; // id, digest, size and reserved, little endian.
 constexpr size_t model_request_bytes = body_reference_bytes + sizeof(uint32_t);
 constexpr size_t tool_outline_bytes = 2048;
@@ -67,7 +70,9 @@ enum class Kind : uint8_t {
     maintenance_shutdown = 37,
     motor_check = 38,
     motor_check_state = 39,
-    model_result = 40
+    model_result = 40,
+    context_template = 41, // Fixed synthetic ToolLoop turn; never saved in the real conversation.
+    template_model_request = 42 // Explicit local diagnostic route; ordinary model calls stay HTTP.
 };
 // A bounded in-process lane; network protocols are owned by their adapters.
 struct Packet {

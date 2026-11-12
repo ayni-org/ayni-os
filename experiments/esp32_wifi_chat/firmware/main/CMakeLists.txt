@@ -2,9 +2,9 @@ set(wifi_sources)
 set(wifi_dependencies)
 if(AYNI_WIFI_PROFILE)
     set(wifi_sources "../wifi/runtime.cpp" "../wifi/reset_worker.cpp" "../wifi/canvas.cpp" "../wifi/settings.cpp"
-        "../wifi/touch.cpp" "../wifi/station.cpp" "../wifi/remote.cpp" "../wifi/api.cpp" "../wifi/model_codec.cpp" "../wifi/web_config.cpp" "../wifi/settings_codec.cpp" "../wifi/capture.cpp" "../wifi/motor_panel.cpp")
+        "../wifi/touch.cpp" "../wifi/station.cpp" "../wifi/remote.cpp" "../wifi/api.cpp" "../wifi/model_codec.cpp" "../wifi/web_config.cpp" "../wifi/ota_update.cpp" "../wifi/settings_codec.cpp" "../wifi/capture.cpp" "../wifi/motor_panel.cpp")
     set(wifi_dependencies bt nvs_flash esp_wifi esp_netif esp_http_client mbedtls
-        esp_driver_i2c nimble_central_utils esp_http_server)
+        esp_driver_i2c nimble_central_utils esp_http_server app_update)
 endif()
 idf_component_register(SRCS "main.cpp" "transport.cpp" "display.cpp" "chat.cpp" "screen.cpp" "speaker.cpp" "history.cpp" "model_tools.cpp" "motor.cpp" "motor_check.cpp" "motor_execution.cpp" "motor_output.cpp" "motor_worker.cpp" ${wifi_sources}
     INCLUDE_DIRS "."
@@ -25,4 +25,6 @@ if(AYNI_WIFI_PROFILE)
     target_link_libraries(${COMPONENT_LIB} PRIVATE yyjson)
     target_add_binary_data(${COMPONENT_LIB} "${CMAKE_CURRENT_LIST_DIR}/../../build/assets/ayni_font.bin" BINARY)
     target_add_binary_data(${COMPONENT_LIB} "${CMAKE_CURRENT_LIST_DIR}/../wifi/config.html" TEXT)
+    target_add_binary_data(${COMPONENT_LIB} "${CMAKE_CURRENT_LIST_DIR}/../wifi/diagnostics.html" TEXT)
+    target_add_binary_data(${COMPONENT_LIB} "${CMAKE_CURRENT_LIST_DIR}/../wifi/firmware.html" TEXT)
 endif()

@@ -18,6 +18,11 @@ void erase(std::string &value) {
 bool is(yyjson_val *value, const char *text) {
     return yyjson_equals_str(value, text);
 }
+// Optional Chat delta fields may be omitted or explicitly null between fragments.
+// Required identities are still checked on the assembled final response.
+bool has_value(yyjson_val *value) {
+    return value && !yyjson_is_null(value);
+}
 std::string source(yyjson_val *value) {
     auto measured = Writer::measuring();
     detail::write_json(measured, value);
@@ -132,7 +137,7 @@ struct Stream::Impl {
             return;
         }
         auto *role = yyjson_obj_get(delta, "role");
-        if (role && !is(role, "assistant")) {
+        if (has_value(role) && !is(role, "assistant")) {
             status = AYNI_INVALID_ARGUMENT;
             return;
         }
@@ -143,7 +148,7 @@ struct Stream::Impl {
             }
         }
         auto *tool_calls = yyjson_obj_get(delta, "tool_calls");
-        if (tool_calls && !yyjson_is_arr(tool_calls)) {
+        if (has_value(tool_calls) && !yyjson_is_arr(tool_calls)) {
             status = AYNI_INVALID_ARGUMENT;
             return;
         }
@@ -158,21 +163,25 @@ struct Stream::Impl {
             auto &target = calls[static_cast<size_t>(yyjson_get_uint(index))];
             target.present = true;
             auto *type = yyjson_obj_get(call, "type");
-            if (type && !is(type, "function")) {
+            if (has_value(type) && !is(type, "function")) {
                 status = AYNI_UNSUPPORTED;
                 return;
             }
             auto *id = yyjson_obj_get(call, "id");
-            if (id && !string(id, target.id)) {
+            if (has_value(id) && !string(id, target.id)) {
                 return;
             }
             auto *function = yyjson_obj_get(call, "function");
-            auto *name = yyjson_obj_get(function, "name");
-            auto *args = yyjson_obj_get(function, "arguments");
-            if (name && !string(name, target.name)) {
+            if (has_value(function) && !yyjson_is_obj(function)) {
+                status = AYNI_INVALID_ARGUMENT;
                 return;
             }
-            if (args && !string(args, target.arguments)) {
+            auto *name = yyjson_obj_get(function, "name");
+            auto *args = yyjson_obj_get(function, "arguments");
+            if (has_value(name) && !string(name, target.name)) {
+                return;
+            }
+            if (has_value(args) && !string(args, target.arguments)) {
                 return;
             }
         }

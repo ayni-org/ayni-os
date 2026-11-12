@@ -147,3 +147,133 @@ ESP32 使用 `POST /v1/audio/speech/stream`，请求示例：
 完整Schema和说明来自当前Task可见目录，模型只得到一个通用ayni_call_capability的完整分支工具，不需list/inspect往返。每请求一份tools，不写入历史；invoke/start/read/wait/cancel/close与原授权/许可语义保持。Responses续传包含有序Items和encrypted reasoning，绑定API/模型/目的地；更换选择时明确拒绝旧续传，用户显式建立新会话，绝不自动擦卷。主请求/工具结果/摘要预算使用真实API投影，服务usage独立报告。
 
 软件验证使用本地合成HTTP/SSE与公开SDK，兼容决定见[ADR-0098](../../docs/adr/0098-shared-model-protocol-and-preloaded-tools.md)。当前屏幕设置预览见[截图](screenshots/model-settings-preview.png)。本轮只编译与软件验证，没有烧录、串口、线上模型或电机运行，未完成128K峰值、60秒动作或硬件停止链验收。
+
+## 2026-11-11 拉取后实机复核
+
+用户随后要求拉取最新代码并测试独立固件，确认驱动断电、USB已连接。本次基线为已合并#132的main `bf9811e`。原有数据启动受限，日志为restriction=5（LOG_CORRUPT）、durable=396；换回保存的旧应用后同样受限，不能据此认定为新协议格式不兼容或Flash已满。用户另行授权重建任务与会话后，仅擦除既有ayni数据区，配置及配对保留。新卷启动、通过Web启用模型流式后的正常关闭重开均成功；旧日志的具体重放失败原因未查明，重建不代表修复旧卷或完成恢复验收。
+
+首次流式模型回合在HTTP200后解析失败并挂起。定向检查发现共用Chat SSE累计器把后续delta中显式null的可选role、tool_calls及工具身份/参数字段当作错误。现在这些null与省略字段一样，不增加或覆盖已有片段；非null错误类型和最终缺失工具身份仍拒绝，完整协议终态及HTTP完成前仍不交付执行。新增正常分片、预览及不完整身份检查；实验日志区分模型流/语音流，并只增加SDK固定数值状态与parser_status，不记录正文、参数、Key或音频。不修改Core、授权、自动重试或电机执行机制。
+
+修正版已写入并校验，启动就绪、RC003-MS加密重连成功；重启后在触屏重新准备电机。用户操作的五次语音输入均转写成功，ASR接口约1.05–1.59秒。四轮模型电机调用使用预置工具的invoke，许可、PWM启动及execution-end均status=0；PCNT依次记录GPIO38/39/40/41为3000/0/3000/0、5000/0/0/5000、3000/0/0/3000及10000/0/0/10000。四轮均保存最终回答，模型请求分别3、2、2、2次，回合约23.34–31.16秒；另一次纯文字回合为1次模型请求、约10.25秒。回合耗时不含ASR，包含动作等待与持久化，不能当作模型HTTP延时。此次驱动保持断电，上述计数只证明控制信号及正常收尾，不证明车轮转动。没有观察到扬声器调用，本版朗读听感仍未确认；串口随后断开，未自动重连或重放动作。
+
+本地共用协议/帧检查28/28（AppleClang、ASan/UBSan）、Wi-Fi正常检查40/40、未修改的部署脚本检查3/3通过；ESP-IDF6.0.3/GCC15.2.0单任务编译通过，应用2620720字节、分区余量37%。clang-format18、readability、契约和diff检查通过；Darwin保留已有shadow告警豁免，未修改Core消警。独立定向只读复核未发现阻断项。原始脱敏指标位于本机忽略的build日志中，属于仓库外证据；线上模型仅验证DeepSeek Chat流式，Responses仍只有软件协议证据。未执行完整300秒播放、128K峰值、60秒动作、硬件停止链或新的故障/恢复/变异/耐久专项。
+
+## 2026-11-11 Wi-Fi实时诊断与容量探针
+
+用户随后报告多次操作后仍有间歇性held/-17/-7，本次未取得同一次新失败的完整现场，不能宣布间歇问题已解决。重新接串口时只读到旧的UNKNOWN调用，占1/4个Goal槽位；-17表示结果未知，-7表示容量不足，各自原因不能仅凭代码推定。任务暂停现在同时记录关联Goal/Task/Call状态；模型编码记录正文/JSON字节数、估算量及内存余量，以便后续直接通过Wi-Fi取证。
+
+在同一局域网打开设备地址的`/logs`，或`GET /api/logs?after=0`读取。服务沿用数字IP与同源检查、无验证码、禁止缓存。每次最多12条，`log.next`是下次after游标的十进制字符串；boot改变或reset表示应重置游标，lost明确报告64条环形记录覆盖的缺口，dropped报告捕获竞争或超长记录拒绝。浏览器每秒读取，最多保留2000条，可下载当前已收到的记录。板端只保留RAM，不写Flash；断电后清空，启动后重新捕获。HTTP先编码快照再发送，发送期间不持有日志锁；生产者try-lock失败只丢诊断。电机控制线程只复制预格式化状态，不新增UART或网络等待。采集点是明确选择的状态码、阶段和数值，不转发任意printf、UI文字、模型/用户正文、工具参数、Key或媒体。
+
+`POST /api/diagnostics/context-test`（空正文）排队测三种合成文本的发送编码边界。HTTP202仅确认排队，最终完成/拒绝见wifi probe日志；忙碌返回409，配置保存和测试均由UI再次检查就绪与空闲。模板通过单独的合成Goal从实际预置目录获得，使用原ToolLoop；消息kind显式区分本地诊断与普通HTTP模型调用。固定本地诊断回复只完成此Goal，不交给设备能力、不保存为用户回答；真实会话的历史轮数在前后记录并保持相同。普通模型请求不经过此本地回复路径。
+
+加`?characters=N`测N个合成中文字符的完整样本：生成独立历史正文，走同一FileBodies缓存/持久值、Goal、原ToolLoop、真实请求编码及本地回复收尾；当前会话不变。范围1–262144字符，仍受部署字节/估算token预算及内存限制。失败的诊断Task按正常取消收尾，不擦卷、不重试未知动作。它测板端路径，不包含真实模型、TLS、语音并发、所有历史/工具分布或耐久；上下文满时策略仍可额外摘要，因此完成样本须结合model_requests和实际发出的上下文大小判断是否保留了原始文本。
+
+代码自查后为完整样本增加保守资源预检：按六份历史工作副本、128 KiB编码余量与至少16 KiB内部空闲量决定是否尝试，不足时在创建Goal前返回容量错误。此项只限制诊断任务，避免资源不足时仍盲目进入SDK的STL分配；它不是普通会话的上下文上限，也不保证任意运行负载都不会分配失败。预检版尚未烧录。
+
+首版发送编码实机结果：latin与Han均可到129272个估算输入token，另预留1800个输出token，总计131072；下一字符因context_budget返回-7。Han合成文本160020字，内部帧491461字节、JSON492584字节，两个发送工作区约987110字节，记录时PSRAM剩694684字节。控制字符样本受JSON转义估算影响，27049个换行已到129271估算token。它们证明这一发送路径达到配置预算，不能单独当作完整历史峰值验收。
+
+完整路径已实际通过32768、65536个合成中文字符，分别一轮本地模型结果完成、未摘要，JSON为109693/209005字节，完整wire估算33045/58377 token；编码记录时PSRAM分别剩1171032/670592字节。诊断前后真实历史轮数均为0；不从这个数值推断或重建此前用户聊天。Wi-Fi页面实际显示已连接、游标日志与内存统计。用户随后断开USB改为充电宝：Mac枚举中目标USB串口已消失，同一设备IP的日志HTTP200且boot改变，证明脱离USB仍能读取。98304字样本没有取得同一次完整终态，观察期间boot变化，不能据此判断是OOM或最大边界；随后按用户要求停止启动新实测，转为代码排查。不把当前通过值称为最大值。
+
+最终完整路径候选使用ESP-IDF6.0.3/GCC15.2.0，应用0x283200字节、分区余量36%，已写入校验并启动。新增环形游标/转义/模板隐私/协议与容量边界检查后，Wi-Fi正常检查44/44通过；共用协议28项与部署3项沿用同一未改实现的已有结果。资源预算为每个构建1任务；未修改Core、ABI或schema。读取旧应用备份曾在串口传输中断，未写入新应用；改为分块只读备份完成后部署，既有配置、配对和数据区未擦除。容量结果与脱敏日志位于本机忽略的build目录，是仓库外证据。
+
+### 内部内存与传输失败的代码排查
+
+无线日志实际捕获到一次新失败：ASR成功，电机许可、PWM及5秒终态成功；第三次模型请求内部帧11806字节、JSON12415字节、完整wire估算9127 token，随后HTTP200、已接收18212字节、parser_status=0，但读阶段失败并进入held/-17。该次不是128K上下文耗尽；现有证据不能确定底层断流原因。错误瞬间internal_free=9763，internal_min=6380是启动以来的历史最低值，不是当前剩余量；PSRAM在此前编码记录中仍剩约1.6 MB。用户提供的同一次脱敏文本与Wi-Fi记录相符，原文未提交。
+
+代码确认主控线程继承11-01旧USB实验的96 KiB内部栈；已记录正常高水位空闲72472/98304字节，即观察到峰值使用25832字节。源码候选改为64 KiB，为该观察保留39704字节余量，返还32 KiB内部RAM。其他线程栈、DMA和停止链未改变。交叉编译器-fstack-usage检查主控入口、Chat、ToolLoop和Stream：最大单函数帧分别为464、3136、3184、144字节；这是部分翻译单元的单帧静态报告，不是完整调用链或64 KiB实机验收。96 KiB版固定的主控/存储/API/扬声器/电机/I/O/Web栈合计172 KiB，此外还有射频、驱动、控制块和DMA开销。
+
+配置已令Wi-Fi/LwIP优先PSRAM、TLS显式使用PSRAM，但普通malloc在<=2048字节时仍优先内部RAM。FileBodies的std::string正文缓存、map/list元数据和模型流的行/事件/文本缓冲走普通分配；正文缓存保留到释放或下一轮reset_idle，因而一轮内的多个模型/工具调用会增加同时存活的中小对象。HTTP及响应的显式关闭/清除路径已检查，未发现足以证明永久泄漏的证据，也没有逐分配堆追踪来把全部下降精确归账。
+
+另一个确定缺陷是流式读取的负返回值未写入transport_code，使真实读错误被显示成0/0。候选现在保留read返回值、HTTP完整标志与TLS状态/子码/flags，分两条有调用ID的有界数值记录输出；不把正常EAGAIN当断流，不放宽完整响应要求或增加重试。主控栈整改、资源预检与这些诊断仅完成本机编译/检查，未再次烧录；不能据此宣布间歇问题已修复。后续是否需要进一步的缓冲放置或释放整改，须结合实际错误码或堆归因决定，不靠反复烧录猜测。
+
+
+### 2026-11-11 Web OTA 与内存修复部署
+
+用户确认USB连接、驱动断电，并选择先完成OTA与内存修复再一起安装。布局和兼容边界见[ADR-0099](../../docs/adr/0099-esp32-web-ota.md)。旧3 MiB音频区改为ota_0；原factory地址保留为ota_1；NVS、配对及8 MiB Ayni区不移动、不擦除。首装先完整备份旧bootloader/表/空白元数据区/音频/应用；后续从设备设置中的“固件更新”选择应用bin即可。正常升级不再需要串口。
+
+初次引导（仅本次已授权的已知旧布局）：使用已安装ESP-IDF Python运行 `ota_install.py prepare`，完整备份成功后运行 `ota_install.py install`。后续访问 `http://设备IP/update`；原始接口为 `POST /api/firmware`，Content-Type为application/octet-stream，body为完整的ayni_wifi_chat.bin，最大3145728字节。GET同一路径查询版本、槽位、启动确认、进度和错误码。忙碌时先结束/取消；上传或应答中断后读取状态，不自动再次上传。局域网入口沿用无验证码方式，只用于可信LAN；SDK镜像哈希校验不代表固件签名认证。
+
+HTTP只写备用槽；UI沿用维护停止、所有API借用退出、Core与Host关闭、STOPPED确认，随后才允许写入。Wi-Fi与RF唤醒引用在应答前保持。完整SDK镜像校验后才切换；应答尝试后留1秒再重启。新启动先禁止对话/设备操作，配置、触摸、Web、Wi-Fi、会话稳定5秒后确认；60秒不能就绪请求SDK软件回退。未来ABI/schema变化仍须单独兼容决策；当前不改变ABI0.54/schema9。未执行断电、镜像破坏或回退专项。
+
+本机资源检查16 GiB、10逻辑CPU、可用内存比例46%，swap用量约1.1 GiB；每个构建/测试显式1任务。ESP-IDF6.0.3/GCC15.2.0编译通过，应用初版0x287750字节，小槽余量16%；Wi-Fi相关Native检查47/47、Python安装/部署6/6、页面JS语法及契约/diff/机械可读性检查通过。64 KiB主控栈与读错误诊断沿用前一提交，实际安装及Wi-Fi更新结果稍后记录；不将编译当作实机验证。
+
+设计自查：删除的维护注释已改为同时说明重建/OTA的STOPPED屏障；Core及Kernel字段未变化（仅实验目录）。进度与重启屏障归UpdatePlan，SDK校验/选择归OtaUpdate，UI/停止生命周期归Runtime，无HTTP回调直接调用Core。OTA选择CRC公式只在安装器selection实现，出处为固定SDK otatool.py；分区/大小/时限均有命名常量，安装器比较完整冻结布局；无新的Core裸数字或公共状态码。正常检查不替代故障回退证据。
+
+
+实际部署版本为`bebffbe`，最终应用0x287790（2652048）字节，小槽余量16%。旧布局完整备份保存在本机忽略的`artifacts/recovery/pre-ota-20261111/`，包括32768字节bootloader、4096字节表、8192字节空白区、3145728字节音频和4128768字节旧应用；原应用最后一个只读块曾串口中断，保留已完成块并续读成功后才开始写入。USB仅写0/0x8000/0x9000/0x100000四个区域，esptool逐项校验成功，原应用槽保留。NVS和Ayni卷未读写/擦除，正常应用的日志维护仍会按原行为写入数据卷。
+
+USB首启动从ota_0运行，pending_verify由true变false；随后经真实HTTP上传同一个有效应用，20.58秒收到200及updated/restarting=true。串口证据为正常STOPPED、接收2652048/2652048、OTA status=0；重启后从ota_1运行、启动确认status=0。配置password_set/model_key_set及接口/流式选项与安装前一致，旧Goal/Task/Call元数据重放且会话就绪，未清空历史挂起记录。配对区域保持，启动仍从保存的peer发起连接，但遥控器此次自动连接status=13失败；未做唤醒重连或新语音回合，不声称朗读/遥控器本轮已验通。
+
+同一空闲阶段内部空闲从安装前26787增至新版本约58879–59503字节，符合主控栈返还32768字节并扣除OTA新增开销的预期；实际正常关闭时owner_free=39448/65536，storage worker_free=14048/24576、speaker_free=11596/12288。历史最低内部空闲本轮约51 KiB。此为启动/正常OTA路径的观测，不是所有模型/电机/长语音峰值保证；原约9K wire token的间歇读失败仍需结合新传输错误码归因，不能宣称已根治。
+
+自查复核补充：OTA拒绝应答已移到metadata mutex之外，HTTP慢客户端不会持锁阻塞UI；明确未成功排入关闭命令的路径可以拒绝，已在关闭中的超时仍等待STOPPED才重启。相关3项UpdatePlan检查在修正后重跑通过。部署与诊断日志在本机build目录，是仓库外证据；不开展无效镜像、断电、回退、额外擦卷或带电电机专项。
+
+
+### 2026-11-11 HTTPS 校时前置条件与已知未发出分类
+
+新一次Wi-Fi记录表明ASR在1396ms成功；首个模型请求完整wire估算7708 token，在本地70ms返回“等待网络校时后重试”，没有进入HTTPS客户端。内部空闲55435、PSRAM1645480字节，不能归因于上下文或RAM耗尽。API在进入http()之前清除了已知失败包，而校时早退没有恢复包，使UI提交空model_error，原Core按UNKNOWN(-17)暂停。旧版仅一个pool.ntp.org，Wi-Fi初始化时便启动SNTP；界面未把模型网络校时作为对话准入条件。实际DNS/UDP未成功的原因仍无抓包证据，不将启动时序问题说成唯一网络原因。
+
+本次只改实验：三个SNTP源，在IP_READY和射频策略确认后启动，重连后重启SNTP；SDK负责后续重试，不重发模型请求。首选ntp.aliyun.com及备用time.cloudflare.com的地址分别依据[阿里云](https://www.alibabacloud.com/help/en/ecs/user-guide/cloud-marketplace-mirror-specification)和[Cloudflare](https://developers.cloudflare.com/time-services/ntp/usage/)官方文档，保留pool.ntp.org。对话/录音在HTTPS时间前置条件未就绪时拒绝，触屏显示等待校时且不创建Goal；配置和OTA保持可用，启动确认仍不依赖公共NTP可用性。TLS证书与日期校验不关闭。网络时钟阈值只在network_time.h定义，HTTP、Station、UI和日志共同使用。
+
+API校时拒绝明确返回NOT_READY/FAILED/EFFECT_NONE，客户端分配失败同样标为已知未发出；已进入网络后的不确定结果仍保守处理，不重试。GET /api/logs新增clock.ready及clock.epoch_seconds，页面显示状态，设备RAM记录包括启动/就绪/等待；不记录语音、正文、Key或SSID。此修复避免冷启动创建本次这种无效对话及错误UNKNOWN，不把所有其他失败Task改为自动完成。旧UNKNOWN记录不改写、不清空。
+
+本次资源预算沿用16 GiB主机可用比例46%、swap约1.1 GiB，每个构建/测试显式1任务。ESP-IDF6.0.3/GCC15.2.0编译通过；Wi-Fi Native49/49、部署/安装Python6/6、页面JS、契约、diff和机械可读性通过。完整CI/线上Responses/断电或回退专项未运行。
+
+自查四项：
+- 删除注释：station.cpp:71保留并补充联网后启动原因；api.cpp保留传输后UNKNOWN的边界，前置拒绝补充完整无副作用结果。
+- Kernel字段：git diff仅实验目录及相关记录，没有Core或公共ABI字段；Clock状态归Station，UI的was_clock_ready_仅供重绘，不复制系统时间。
+- 重复公式：network_time.h:8/11拥有唯一时钟阈值与HTTPS准入判断，Station/API/Runtime/Web共用；SDK负责SNTP和TLS，不另写协议。
+- 裸数字：network_time.h命名epoch阈值及HTTPS前缀；station.cpp命名源数量、轮询和日志间隔；不新增Core记录或线格式数字。
+
+
+本次实际OTA为3805453，应用0x287d90（2653584）字节。用户确认驱动断电，触屏取消后日志已见turn failed/cancelled终态；经Wi-Fi上传32.55秒得到200及updated/restarting=true，从ota_1切换到ota_0。新启动wifi clock start status=0 servers=3，开机2771ms即记录clock ready；GET clock.ready=true且与Mac时间差小于1秒。Core旧卷正常重放并就绪，OTA启动确认status=0/pending_verify=false；password_set/model_key_set和原接口/流式选项一致。旧UNKNOWN记录保留，未清理或重放；未修改bootloader/分区表，未使用USB。实机只验证正常OTA、启动、校时及配置保留，本轮尚未重新进行语音/模型/电机对话。
+
+最终头文件命名常量整理后，相关2项WifiClock检查重跑通过；无Core/ABI/schema改动。完整设备脱敏证据在本机忽略的build/clock-ota-update.log与clock-ota-evidence.json，属于仓库外证据。
+
+
+### 2026-11-11 模型SSE累计流量限制修复
+
+后续多轮语音记录中，校时正常、ASR和此前普通对话/扬声器调用成功；失败模型请求wire估算23565输入token，HTTP200、完整上传38351字节、收到133120字节时解析器仍为OK，read=2048/complete=0。代码按32768×4=131072限制整个SSE累计响应，因而被本地总量上限终止，不是本次网络读错误或已证明的内存不足。内部最低33476字节，读取日志时内部空闲52447、PSRAM1553280。该记录的环形日志已有282条覆盖，不声称重建了更早的完整会话。
+
+用户明确要求去掉128 KiB累计限制、保留内存保护并OTA更新，确认驱动断电及回合已结束。只改独立ESP HTTP适配：模型流的Content-Length检查和逐块计数都不再有累计字节上限；ResponseLimit仅拥有HTTP字节边界和计数溢出保护，缺省总量表示模型流。原共享ModelProtocol::Stream继续限制每条行/事件/输出字段和完整组装响应（本实验传入128 KiB），消费完的元数据被释放。未扩大解析器缓存，非流式JSON32 KiB、语音帧/300秒预算、输出token及请求期限均保留。流解析/保留数据容量错误明确记录具体原因，网络后未知副作用仍保守处理，不自动重试或重放旧指令。成功HTTP模型流增加wire_bytes/buffer_limit元数据，不记录正文或Key。
+
+资源检查16 GiB主机、10逻辑CPU、当前可用比例74%、swap约3.1 GiB，无其他编译任务；每个构建/测试显式1任务。ESP-IDF6.0.3/GCC15.2.0候选编译通过；Wi-Fi Native52/52通过，包括累计超过128 KiB且组装结果小于4 KiB的完整正常Chat流、已声明Content-Length与逐块使用同一边界、单事件/组装输出内存上限和计数溢出；共享协议已有的完整元数据流及缓冲边界2/2通过，部署Python6/6通过。不开展新的存储故障、断电/回退或带电动作活动。
+
+自查四项：
+- 删除注释：api.cpp:377保留并改写原JSON/语音分配说明，补充模型流消费事件与保留内存的区别；传输不确定与无重试说明仍在。
+- Kernel字段：git diff仅实验目录和工作流记录，没有Core/ABI/schema字段；Job继续拥有接收字节计数，ResponseLimit不复制计数或正文。
+- 重复公式：response_limit.h:11/12统一HTTP声明长度及逐块计数的总量检查，Api调用同一规则；实际SSE解析/保留大小继续由公开共享解析器拥有，没有另写协议。
+- 裸数字：旧阈值只作为测试回归常量old_wire_limit；生产保留stream_buffer_limit命名常量，计数用numeric_limits防溢出，无新的Core记录偏移或阈值。
+
+
+本次部署实际遇阻，不能报告OTA后正常就绪：最终修复版本0fed423，应用0x287f80（2654080）字节、小槽余量16%。第一次HTTP409在写入前明确拒绝，随后用户实际取消，日志出现turn failed/cancelled终态，才再次发起更新。第二次31.64秒得到HTTP200及updated/restarting=true，轮询先观察到新版本0fed423/ota_1/pending_verify=true，之后回到3805453/ota_0/pending_verify=false。新版本没有通过就绪确认，正常更新中自然触发回退；没有主动制造故障或启动回退测试专项。
+
+只读日志显示已有卷重放进入RESTRICTED：lifecycle=4、restriction=5（公开常量LOG_CORRUPT）、boot=0、durable=434；旧版本回退后也报告相同错误。这不证明物理Flash损坏，也不把durable=434说成具体损坏记录。Core/ABI/schema没有改动，模型流尚未调用，因此不能将此次重放问题归因于新SSE解析。任务/会话、NVS及配对未擦除，旧记录不改写。固件声明长度/写入校验成功与应用正常就绪分别记录，修复代码已推送，不声称新版本已驻留运行。
+
+当前固件在会话受限时editable=false，会拒绝OTA；现有Web只有元数据日志，没有数据卷导出。USB枚举未发现目标板，因此已请求用户保持驱动断电并连接USB，准备只读备份/分析实际卷；未据早先的一次清空授权再次删除数据。脱敏证据在本机build/stream-limit-ota-update-after-cancel.log、stream-limit-storage-restriction.json及stream-limit-rollback-state.json，为仓库外记录。待卷重放原因解决后再完成OTA与实机长模型流验证。
+
+
+用户随后明确“数据不用了，清空就行”，并确认USB接好、驱动断电。本次额外授权仅执行一次Ayni任务/会话区重建，不延续为未来自动擦卷权限。通过已知VID/PID/序列号核对目标，读取分区表并逐项匹配ADR-0099布局后，仅erase-region 0x800000/0x800000，23.6秒完成；未擦应用、OTA元数据、NVS、demo_cfg或配对。串口工具的XMC启动警告在之前正常备份/安装中也存在，擦除报告成功；没有据此确认Flash物理损坏，也未开展新硬件故障专项。
+
+擦除后旧固件先正常初始化空卷、goals=0/4、会话就绪；再经Wi-Fi上传同一个0fed423应用，31.65秒得到200。最终运行ota_1、version=0fed423、pending_verify=false，校时启动约2781ms就绪，Core旧卷正常重开且session=2/goals=0/4，OTA verification status=0。配置password_set/model_key_set及原Chat/流式选项保持，内部空闲58887、PSRAM1663924字节。此次仅通过USB执行授权清空，应用安装仍走Wi-Fi OTA。
+
+最终修复与部署完成，保留内存边界的累计大模型流已在本机回归通过；本轮未再发真实长模型对话，不声称实机长流验收。旧卷重放限制的根因仍未确认，用户选择清空恢复，不能把清空当作存储根因修复。追加证据位于本机build/stream-limit-authorized-reset.log、stream-limit-after-clear-evidence.json、stream-limit-ota-after-authorized-clear.log、stream-limit-ota-evidence.json，为仓库外记录。
+
+
+### 2026-11-12 存储重放根因排查阶段记录（用户要求暂停）
+
+用户要求从代码继续排查，不以清空恢复代替根因、不反复刷固件；随后要求先停止排查并提交推送。本轮仅检查源码和本机已有备份，未访问开发板、未清空、未烧录、未改Core或生产实现。根因仍未确定。
+
+已查调用链：Host单工作线程排队写入FileLog、LittleFS显式sync与正常关闭；Core BootSequence发现/重放批次、WorkReplay逐记录配对及跨表一致性；Task/Goal回收、Call的UNKNOWN保留与取消。LOG_CORRUPT既可能来自批次/记录校验，也可能来自语义配对或跨表一致性，现有restriction/durable元数据没有具体失败分支，不能单凭它断言Flash损坏或某条记录有错。
+
+找到本机2026-11-10的8 MiB只读卷备份，使用固定LittleFS源码以LFS_READONLY编译的工具只读导出commit_log，未输出聊天或参数内容。它不是此前清空的durable=434故障卷。该历史日志125916字节、117个完整批次、schema9，Host外层和Core批次头/正文CRC全部通过；不据此证明后来卷的CRC也正常。
+
+实际离线结果：
+- 当前Core正常读取上述历史批次，进入RUNNING/restriction=0，启动后durable=120/boot=5；未注册完整实验设备目录，不能称为整个实验应用的重放验收。
+- 历史61条Call记录可由当前记录reader解码，无需恢复或打印正文。
+- 复用现有Sim/public ABI夹具：模型返回UNKNOWN、用户取消Goal、正常关闭重开，进入RUNNING/restriction=0/durable=15。
+- 4 Goal/4 Task/32 Call配置下，保留三个已取消但UNKNOWN的Call，连续24个正常完成回合复用第四个槽；每轮用现有日志检查新Kernel重开，最后再UNKNOWN/取消并正常关闭重开，进入RUNNING/restriction=0/durable=207。没有修改存储字节或注入存储故障。
+
+本机资源检查16 GiB、10逻辑CPU、可用比例67%、swap约3.1 GiB，独立Debug诊断目标显式单任务构建，使用当前Core/Sim及现有单测夹具；合计四个临时检查通过。这些检查尚未复现durable=434失败，不等于根因修复；完整实验ToolLoop、按需能力绑定、实际文件值与压缩组合仍未覆盖，停止前尚未展开该部分。没有执行断电、变异或新的实机恢复专项。
+
+诊断源码、构建及结果保存在本机忽略目录build/replay-investigation-20261112/，包括probe/、native/、old-batch-metadata.json、probe.log和tight-probe.log；原历史备份仍在build/dialogue-inspect-20261110/。这些均为仓库外证据，不提交原始卷、commit_log、正文或导出的文件值。后续先用完整实验条件继续本机复现，并细分重放拒绝位置；不要把未复现的候选当作此次根因，也不要再以擦卷替代诊断。

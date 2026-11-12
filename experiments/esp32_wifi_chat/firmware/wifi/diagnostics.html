@@ -1,0 +1,21 @@
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Ayni 实时诊断</title>
+<style>
+body{margin:0;background:#0c131c;color:#e7edf5;font:16px system-ui,sans-serif}main{max-width:1000px;margin:32px auto;padding:20px}a{color:#73d4bb}h1{font-size:26px}.hint{color:#a9b6c8;line-height:1.7}button{padding:10px 16px;margin:4px;border:0;border-radius:6px;background:#73d4bb;color:#071512;font:inherit;cursor:pointer}button:disabled{opacity:.5}pre{padding:16px;background:#141f2e;border:1px solid #344153;border-radius:8px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.6 ui-monospace,monospace}#status{min-height:26px}#memory{font:14px/1.8 ui-monospace,monospace}
+</style><main><a href="/">设备设置</a><h1>实时诊断</h1>
+<p class="hint">每秒更新。仅包含执行阶段、错误码、任务槽位、内存和上下文大小，不包含聊天正文、Key或录音。设备保留最近64条；断电后日志清空，浏览器打开期间保留最近2000条并可下载。重启和记录缺口会明确标出。</p>
+<div id="status" role="status" aria-live="polite">连接中…</div><div id="memory"></div>
+<p><button id="pause">暂停更新</button><button id="download">下载本页日志</button><select id="mode"><option value="transport">发送编码边界</option><option value="loop">完整ToolLoop样本（中文）</option></select><input id="characters" type="number" min="1" max="262144" value="32768" aria-label="合成中文字符数"><button id="probe">测试上下文容量</button></p>
+<p class="hint">测试先通过独立的诊断回合取得当前完整工具模板，再使用合成文本，仅测请求编码及发送缓冲，不调用云端模型、不驱动设备、不修改聊天。发送编码模式不覆盖历史与摘要；完整ToolLoop模式还会加载合成历史、执行原策略并编码请求，以固定的本地诊断文本代替模型响应。两者均不测TLS或云端模型容量；结果中的token是估算值。测试期间需等待结束后再对话，可在触屏取消。</p>
+<pre id="log" aria-label="诊断记录"></pre></main>
+<script>
+'use strict';
+const output=document.querySelector('#log'),status=document.querySelector('#status'),memory=document.querySelector('#memory');
+let after='0',boot=null,paused=false,lines=[];
+function append(value){lines.push(value);if(lines.length>2000)lines.splice(0,lines.length-2000);output.textContent=lines.join('\n');}
+async function poll(){try{if(!paused){const response=await fetch('/api/logs?after='+encodeURIComponent(after),{cache:'no-store'});if(!response.ok)throw Error('HTTP '+response.status);const value=await response.json(),log=value.log;if(boot!==null&&boot!==log.boot){append('── 设备已重启，日志游标重置 ──');after='0';boot=log.boot;return;}boot=log.boot;if(log.lost)append('── 设备环形记录已覆盖 '+log.lost+' 条 ──');if(log.reset)append('── 日志游标已重置 ──');for(const event of log.events)append('['+(event.ms/1000).toFixed(3)+'s] '+event.text.trimEnd());after=log.next;memory.textContent=Object.entries(value.memory).map(([k,v])=>k+'='+v+' B').join(' · ');status.textContent='已连接 · boot='+boot+' · 捕获时丢弃='+log.dropped+(value.clock?' · 校时='+(value.clock.ready?'就绪':'等待')+' · epoch='+value.clock.epoch_seconds:'');}}catch(error){status.textContent='连接中断：'+error.message+'；保留已收到记录，继续尝试连接。';}finally{setTimeout(poll,1000);}}
+document.querySelector('#pause').onclick=event=>{paused=!paused;event.target.textContent=paused?'继续更新':'暂停更新';};
+document.querySelector('#download').onclick=()=>{const url=URL.createObjectURL(new Blob([lines.join('\n')],{type:'text/plain;charset=utf-8'})),a=document.createElement('a');a.href=url;a.download='ayni-diagnostics.txt';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
+document.querySelector('#probe').onclick=async event=>{event.target.disabled=true;try{const response=await fetch('/api/diagnostics/context-test'+(document.querySelector('#mode').value==='loop'?'?characters='+encodeURIComponent(document.querySelector('#characters').value):''),{method:'POST'});if(!response.ok)throw Error(response.status===409?'设备忙碌，请等待当前操作结束。':'HTTP '+response.status);append('── 容量测试已排队，结束状态见下方 wifi probe 记录 ──');}catch(error){status.textContent=error.message;}finally{event.target.disabled=false;}};
+poll();
+</script></html>
