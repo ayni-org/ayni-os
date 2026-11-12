@@ -6,6 +6,8 @@
 #include <ayni/hosts/native.h>
 #include <ayni/hosts/storage/file_value.h>
 #include <ayni/runtime/conversation/file_bodies.h>
+#include <ayni/strategies/builtin.h>
+#include <ayni/workspace.hpp>
 #include <chrono>
 #include <filesystem>
 #include <gtest/gtest.h>
@@ -211,6 +213,146 @@ TEST_F(FileBodies, trimming_and_a_payload_budget_preserve_referenced_disk_bodies
                            &refused),
               AYNI_CAPACITY_EXCEEDED);
     EXPECT_EQ(files(), file_count);
+    host.close_storage();
+}
+// C-HVAL-005: payload eviction must retain the scope and complete multi-file length for GC.
+TEST_F(FileBodies, scope_collection_survives_automatic_eviction_trim_and_reload) {
+    const auto before = files();
+    ayni::runtime::FileBodies bodies;
+    ASSERT_EQ(bodies.configure(host.value_store()), AYNI_OK);
+    const std::string first(file_value_bytes_max + 1, 'a'), second(first.size(), 'b');
+    ASSERT_EQ(bodies.set_cache_limit(first.size()), AYNI_OK);
+    const auto *store = bodies.store();
+    constexpr uint64_t scope = 7;
+    ayni_body_ref_v1 kept{}, obsolete{};
+    ayni_status_t status = AYNI_NOT_READY;
+    for (const auto &[text, ref] : {std::pair{&first, &kept}, std::pair{&second, &obsolete}}) {
+        ASSERT_TRUE(until([&] {
+            status = store->write(store->context, scope,
+                                  {reinterpret_cast<const uint8_t *>(text->data()),
+                                   static_cast<uint32_t>(text->size())},
+                                  ref);
+            return status != AYNI_NOT_READY;
+        }));
+        ASSERT_EQ(status, AYNI_OK);
+    }
+    EXPECT_EQ(files(), before + 4);
+    std::string out(first.size(), '\0');
+    const auto read_kept = [&] {
+        status = store->read(store->context, &kept, reinterpret_cast<uint8_t *>(out.data()),
+                             static_cast<uint32_t>(out.size()));
+        return status != AYNI_NOT_READY;
+    };
+    ASSERT_TRUE(until(read_kept));
+    ASSERT_EQ(status, AYNI_OK);
+    EXPECT_EQ(out, first);
+    ASSERT_EQ(bodies.trim_cache(), AYNI_OK);
+    EXPECT_EQ(bodies.cached_bytes(), 0U);
+    bodies.collect(scope, {kept});
+    ASSERT_TRUE(until([&] { return ayni::runtime::FileBodies::ready(&bodies, 0) != 0; }));
+    EXPECT_EQ(files(), before + 2);
+    ASSERT_TRUE(until(read_kept));
+    ASSERT_EQ(status, AYNI_OK);
+    EXPECT_EQ(out, first);
+    bodies.collect(scope, {});
+    ASSERT_TRUE(until([&] { return ayni::runtime::FileBodies::ready(&bodies, 0) != 0; }));
+    EXPECT_EQ(files(), before);
+    host.close_storage();
+}
+// C-HVAL-005: a completed load remains resident until the caller copies its result.
+TEST_F(FileBodies, unconsumed_load_resists_automatic_eviction_and_allows_explicit_trim) {
+    ayni::runtime::FileBodies bodies;
+    ASSERT_EQ(bodies.configure(host.value_store()), AYNI_OK);
+    constexpr uint32_t body_bytes = 6;
+    ASSERT_EQ(bodies.set_cache_limit(body_bytes), AYNI_OK);
+    const auto *store = bodies.store();
+    ayni_body_ref_v1 first{}, second{};
+    ayni_status_t status = AYNI_NOT_READY;
+    ASSERT_TRUE(until([&] {
+        return (status = store->write(store->context, 1,
+                                      {reinterpret_cast<const uint8_t *>("aaaaaa"), body_bytes},
+                                      &first)) != AYNI_NOT_READY;
+    }));
+    ASSERT_EQ(status, AYNI_OK);
+    ASSERT_EQ(bodies.trim_cache(), AYNI_OK);
+    std::array<uint8_t, body_bytes> out{};
+    ASSERT_EQ(store->read(store->context, &first, out.data(), out.size()), AYNI_NOT_READY);
+    ASSERT_TRUE(until([&] { return ayni::runtime::FileBodies::ready(&bodies, 0) != 0; }));
+    const auto write_second = [&] {
+        return store->write(store->context, 1,
+                            {reinterpret_cast<const uint8_t *>("bbbbbb"), body_bytes}, &second);
+    };
+    EXPECT_EQ(write_second(), AYNI_CAPACITY_EXCEEDED);
+    ASSERT_EQ(store->read(store->context, &first, out.data(), out.size()), AYNI_OK);
+    EXPECT_EQ(std::string(out.begin(), out.end()), "aaaaaa");
+    ASSERT_EQ(bodies.trim_cache(), AYNI_OK);
+    EXPECT_EQ(bodies.cached_bytes(), 0U);
+    // A cancelled reader never copies its loaded result; explicit trim must still progress.
+    ASSERT_EQ(store->read(store->context, &first, out.data(), out.size()), AYNI_NOT_READY);
+    ASSERT_TRUE(until([&] { return ayni::runtime::FileBodies::ready(&bodies, 0) != 0; }));
+    ASSERT_EQ(bodies.trim_cache(), AYNI_OK);
+    EXPECT_EQ(bodies.cached_bytes(), 0U);
+    ASSERT_TRUE(until([&] { return (status = write_second()) != AYNI_NOT_READY; }));
+    EXPECT_EQ(status, AYNI_OK);
+    host.close_storage();
+}
+// C-HVAL-005 / ADR-0100: restart-from-first-body decoding must reject an oversized working
+// set rather than alternate evictions forever. Exercise the actual public policy consumer.
+TEST_F(FileBodies, tool_loop_rejects_a_read_working_set_larger_than_the_cache) {
+    ayni::runtime::FileBodies bodies;
+    ASSERT_EQ(bodies.configure(host.value_store()), AYNI_OK);
+    constexpr size_t cache_bytes = 10;
+    constexpr uint32_t body_bytes = 6;
+    ASSERT_EQ(bodies.set_cache_limit(cache_bytes), AYNI_OK);
+    const auto *store = bodies.store();
+    ayni::strategies::ConversationRecord record;
+    record.id = 42;
+    record.owner_instance_id = 22;
+    record.last_round = record.summary_first = record.summary_last = 1;
+    ayni_status_t status = AYNI_NOT_READY;
+    ASSERT_TRUE(until([&] {
+        status = store->write(store->context, record.id,
+                              {reinterpret_cast<const uint8_t *>("aaaaaa"), body_bytes},
+                              &record.summary);
+        return status != AYNI_NOT_READY;
+    }));
+    ASSERT_EQ(status, AYNI_OK);
+    ayni::Workspace memory;
+    ASSERT_EQ(memory.create(ayni::strategies::ToolLoop::workspace_requirements), AYNI_OK);
+    ayni::strategies::Encoded parameters;
+    ASSERT_TRUE(until([&] {
+        status = ayni::strategies::Conversation::begin(memory.get(), *store, record,
+                                                       {"bbbbbb", body_bytes}, parameters);
+        return status != AYNI_NOT_READY;
+    }));
+    ASSERT_EQ(status, AYNI_OK);
+    ayni::strategies::ToolLoopConfig config;
+    config.identity.id = {"loop", 4};
+    config.model.kind = config.summary.kind = AYNI_POLICY_REQUEST_MODEL;
+    config.model.binding_id = config.summary.binding_id = {"model", 5};
+    config.limits = {32768, 1024, 8192, 4096};
+    config.bodies = store;
+    ayni::strategies::ToolLoop loop;
+    ASSERT_EQ(loop.configure(config, memory.get()), AYNI_OK);
+    const auto policy = loop.describe();
+    ayni_task_snapshot_v1 snapshot{};
+    snapshot.struct_size = sizeof(snapshot);
+    snapshot.owner_instance_id = record.owner_instance_id;
+    snapshot.goal_parameters = parameters.view();
+    constexpr uint32_t attempts_max = 4;
+    status = AYNI_OK;
+    for (uint32_t attempt = 0; attempt < attempts_max && status == AYNI_OK; ++attempt) {
+        ayni_policy_output_v1 output{};
+        output.struct_size = sizeof(output);
+        status = policy.decide(policy.ctx, &snapshot, &output);
+        EXPECT_EQ(output.intent_count, 0U);
+        if (status == AYNI_OK) {
+            ASSERT_EQ(output.disposition, AYNI_POLICY_OUTPUT_DEFER);
+            ASSERT_TRUE(until([&] { return ayni::runtime::FileBodies::ready(&bodies, 0) != 0; }));
+        }
+    }
+    EXPECT_EQ(status, AYNI_CAPACITY_EXCEEDED);
+    EXPECT_LE(bodies.cached_bytes(), cache_bytes);
     host.close_storage();
 }
 } // namespace

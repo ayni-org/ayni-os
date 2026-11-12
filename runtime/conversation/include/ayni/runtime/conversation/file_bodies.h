@@ -32,10 +32,12 @@ class FileBodies {
     BodyCollection collection() { return {store(), this, collect_port, ready}; }
     // Owner-thread before use: zero keeps the existing unlimited cache. A positive budget
     // bounds cached payload bytes, including active loads/writes; metadata is separate.
-    // Oversized bodies return CAPACITY_EXCEEDED; active borrows are never evicted.
+    // Oversized bodies return CAPACITY_EXCEEDED; automatic eviction preserves active borrows
+    // and results not yet copied by read/write. Insufficient room also returns that error.
     ayni_status_t set_cache_limit(size_t bytes);
     // Any thread. Evicts only durable, unborrowed cached copies, preserving disk files and
-    // descriptor identity. BUSY means active entries prevent reaching the requested target.
+    // descriptor identity and scope metadata. Explicitly abandons unconsumed cached results,
+    // e.g. after cancellation; BUSY means active file borrows prevent reaching the target.
     ayni_status_t trim_cache(size_t target_bytes = 0);
     size_t cached_bytes() const;
     // Nonzero when no body is waiting for its files; the shape of a HistoryPort ready callback.
@@ -44,12 +46,17 @@ class FileBodies {
     void collect(uint64_t scope, const std::vector<ayni_body_ref_v1> &keep);
 
   private:
-    enum class State { writing, loading, durable, failed };
+    // Ready pins a completed file result until a descriptor call consumes it, so a retry
+    // cannot evict another unconsumed result forever (C-HVAL-005).
+    enum class State { evicted, writing, loading, ready, durable, failed };
+    // Automatic pressure preserves unconsumed results; explicit trim may abandon them.
+    enum class Reclaim { consumed, completed };
     struct Entry {
         uint64_t scope = 0;
         uint64_t digest = 0;
+        uint32_t size = 0; // Complete body bytes, retained with scope/digest after eviction.
         std::string bytes;
-        State state = State::writing;
+        State state = State::evicted;    // Evicted has no payload; all other states own size bytes.
         ayni_status_t failure = AYNI_OK; // The first error, in failed.
         uint32_t submitted = 0;          // Chunks accepted by the queue, in order.
         uint32_t outstanding = 0;        // Accepted file requests not yet completed.
@@ -71,7 +78,7 @@ class FileBodies {
         static_cast<FileBodies *>(context)->collect(scope, keep);
     }
     size_t cached_bytes_locked() const;
-    ayni_status_t trim_locked(size_t target);
+    ayni_status_t trim_locked(size_t target, Reclaim reclaim);
     ayni_status_t reserve_cache(size_t bytes);
     static void complete(void *, const hosts::storage::FileValueResult &) noexcept;
     static uint64_t identity(uint64_t scope, uint64_t digest);
