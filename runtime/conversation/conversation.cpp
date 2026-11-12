@@ -41,8 +41,8 @@ ayni_status_t Session::configure(Config config) {
         return AYNI_INVALID_STATE;
     }
     if (!config.kernel || !config.session || !config.owner_instance || !config.goal_type.data ||
-        !config.goal_type.size || !config.workspace || !config.files.submit || !config.bodies ||
-        !config.commands.submit) {
+        !config.goal_type.size || !config.workspace || !config.files.submit ||
+        !config.bodies.store || !config.bodies.collect || !config.commands.submit) {
         return AYNI_INVALID_ARGUMENT;
     }
     config_ = config;
@@ -69,8 +69,8 @@ Submission Session::command(ayni_intent_kind_t kind, const ayni_context_info_v1 
                                        anchor.generation, task,   turn_id};
     return config_.commands.submit(config_.commands.context, kind, &body, anchor.revision);
 }
-// Missing body initializes only an empty anchor. Existing bodies must match the
-// complete anchor/owner and contain no unfinished draft; no empty fallback is allowed.
+// Missing body initializes only an empty anchor. Existing bodies must match its
+// exact owner/version; an explicit discard may remove a settled draft, never adopt it.
 ayni_status_t Session::load(const ayni_context_info_v1 &anchor) {
     if (phase_ == Phase::load) {
         FileValueRequest request;
@@ -109,10 +109,22 @@ ayni_status_t Session::load(const ayni_context_info_v1 &anchor) {
     if (status != AYNI_OK) {
         return status;
     }
-    if (!matches(current_, anchor) || current_.draft.size) {
+    if (!matches(current_, anchor)) {
         return AYNI_NOT_READY;
     }
     value_version_ = answer_.generation;
+    if (current_.draft.size) {
+        if (config_.unfinished != UnfinishedTurn::discard) {
+            return AYNI_NOT_READY;
+        }
+        auto info = initialized<ayni_kernel_info_v1>();
+        const auto queried = ayni_get_kernel_info(config_.kernel, &info);
+        if (queried != AYNI_OK) {
+            return queried;
+        }
+        const auto stopped = settled(info.durable_seq);
+        return stopped == AYNI_OK ? discard() : stopped;
+    }
     phase_ = Phase::ready;
     return AYNI_OK;
 }
@@ -152,16 +164,17 @@ ayni_status_t Session::saved(const ayni_context_info_v1 &anchor) {
         // stop this application; the still-pending Core action is never falsely ACKed.
         return AYNI_NOT_READY;
     }
+    const auto previous = current_;
     current_ = candidate_;
-    if (save_ == Save::publication || save_ == Save::erasure) {
-        // No turn is outstanding: bodies this record does not name are superseded or erased.
-        std::vector<strategies::BodyRef> keep;
-        Conversation::references(current_, keep);
-        config_.bodies->collect(current_.id, keep);
+    if (save_ == Save::publication || save_ == Save::erasure || save_ == Save::discard) {
+        collect_superseded(previous);
     }
-    phase_ = save_ == Save::draft        ? Phase::start_turn
-             : save_ == Save::initialize ? Phase::ready
-                                         : Phase::acknowledge;
+    phase_ = save_ == Save::draft                                  ? Phase::start_turn
+             : save_ == Save::initialize || save_ == Save::discard ? Phase::ready
+                                                                   : Phase::acknowledge;
+    if (save_ == Save::discard) {
+        end_request_ = EndRequest::none;
+    }
     return AYNI_OK;
 }
 ayni_status_t Session::begin(ayni_string_v1 user, uint64_t memory_id) {
@@ -170,19 +183,26 @@ ayni_status_t Session::begin(ayni_string_v1 user, uint64_t memory_id) {
     if (available != AYNI_OK) {
         return available;
     }
-    input_.assign(user.data ? user.data : "", user.size);
+    if (!user.data || !user.size) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    input_.assign(user.data, user.size);
     memory_id_ = memory_id;
     const auto status = input();
     if (status != AYNI_OK && status != AYNI_NOT_READY) {
         input_.clear();
         return status;
     }
+    result_.reset();
+    goal_ = 0;
+    end_request_ = EndRequest::none;
+    held_ = false;
     phase_ = status == AYNI_OK ? Phase::save : Phase::input;
     return AYNI_OK;
 }
 // Stores the accepted input as a body; NOT_READY until the body store made it durable.
 ayni_status_t Session::input() {
-    const auto status = Conversation::begin(config_.workspace, *config_.bodies->store(), current_,
+    const auto status = Conversation::begin(config_.workspace, *config_.bodies.store, current_,
                                             {input_.data(), static_cast<uint32_t>(input_.size())},
                                             parameters_, memory_id_);
     if (status != AYNI_OK) {
@@ -200,7 +220,13 @@ ayni_status_t Session::input() {
 }
 // Core owns Goal/Task lifecycle and the ToolLoop. This application only submits
 // the copied user turn and bridges a completed Task to the outer context file.
-ayni_status_t Session::turn(const ayni_context_info_v1 &anchor) {
+ayni_status_t Session::turn(const ayni_context_info_v1 &anchor, uint64_t durable) {
+    if (end_request_ != EndRequest::none) {
+        const auto status = cancel_turn(durable);
+        if (status != AYNI_OK || phase_ != Phase::turn) {
+            return status;
+        }
+    }
     if (phase_ == Phase::start_turn) {
         // Privacy maintenance retains terminal work until compaction finishes.
         // Wait before new Goal admission; file ACKs in other Sessions must still progress.
@@ -225,6 +251,9 @@ ayni_status_t Session::turn(const ayni_context_info_v1 &anchor) {
         if (accepted.status == AYNI_OK) {
             goal_ = accepted.result.object.id;
             phase_ = Phase::turn;
+        } else if (accepted.status != AYNI_BUSY) {
+            result_ = TurnResult{0, 0, accepted.status, accepted.error.reason, false};
+            return unfinished();
         }
         return accepted.status;
     }
@@ -234,6 +263,12 @@ ayni_status_t Session::turn(const ayni_context_info_v1 &anchor) {
         return status;
     }
     if (!goal.last_task_id) {
+        if (goal.commit_seq <= durable &&
+            (goal.lifecycle == AYNI_GOAL_CANCELLED || goal.lifecycle == AYNI_GOAL_FAILED ||
+             goal.lifecycle == AYNI_GOAL_EXPIRED)) {
+            result_ = TurnResult{goal_, 0, AYNI_NOT_READY, goal.wait_reason, false};
+            return unfinished();
+        }
         return AYNI_OK;
     }
     auto task = initialized<ayni_task_info_v1>();
@@ -242,9 +277,14 @@ ayni_status_t Session::turn(const ayni_context_info_v1 &anchor) {
         return status;
     }
     if (task.lifecycle == AYNI_TASK_PAUSED && task.hold_status != AYNI_OK) {
+        held_ = true;
         return task.hold_status; // Report the Core hold; poll keeps the original Task attached.
     }
+    if (task.commit_seq > durable) {
+        return AYNI_OK;
+    }
     if (task.lifecycle == AYNI_TASK_COMPLETED) {
+        result_ = TurnResult{goal_, task.task_id, AYNI_OK, AYNI_REASON_NONE, false};
         const auto accepted = command(AYNI_INTENT_CONTEXT_PUBLISH, anchor, task.task_id,
                                       AYNI_CONTEXT_IDLE, anchor.last_turn_id + 1);
         if (accepted.status == AYNI_OK) {
@@ -254,7 +294,8 @@ ayni_status_t Session::turn(const ayni_context_info_v1 &anchor) {
     }
     if (task.lifecycle == AYNI_TASK_FAILED || task.lifecycle == AYNI_TASK_EXPIRED ||
         task.lifecycle == AYNI_TASK_CANCELLED) {
-        return AYNI_NOT_READY; // Preserve draft and evidence; never manufacture an answer.
+        result_ = TurnResult{goal_, task.task_id, AYNI_NOT_READY, task.hold_reason, false};
+        return unfinished(); // Retention remains the default.
     }
     return AYNI_OK;
 }
@@ -288,6 +329,7 @@ ayni_status_t Session::forget(ayni_context_action_t action, uint64_t turn_id) {
     }
     const auto accepted = command(AYNI_INTENT_CONTEXT_FORGET, anchor, 0, action, turn_id);
     if (accepted.status == AYNI_OK) {
+        result_.reset();
         phase_ = Phase::erase;
     }
     return accepted.status;
@@ -296,7 +338,7 @@ ayni_status_t Session::erase(const ayni_context_info_v1 &anchor) {
     if (anchor.pending_action < AYNI_CONTEXT_ERASE_ALL) {
         return AYNI_NOT_READY;
     }
-    const auto &bodies = *config_.bodies->store();
+    const auto &bodies = *config_.bodies.store;
     const auto status =
         anchor.pending_action == AYNI_CONTEXT_ERASE_ALL
             ? Conversation::erase(config_.workspace, current_, candidate_)
@@ -319,6 +361,10 @@ ayni_status_t Session::erase(const ayni_context_info_v1 &anchor) {
 // Each invocation performs one queue operation or one public state transition.
 // No owner text escapes until both the file and the exact Core ACK are durable.
 ayni_status_t Session::poll() {
+    if (config_.bodies.ready) {
+        // Idle Sessions must also advance queued body cleanup after ordinary backpressure.
+        static_cast<void>(config_.bodies.ready(config_.bodies.context, 0));
+    }
     if (phase_ == Phase::failed) {
         return failure_;
     }
@@ -334,6 +380,7 @@ ayni_status_t Session::poll() {
     if (status != AYNI_OK || anchor.commit_seq > kernel.durable_seq) {
         return status;
     }
+    held_ = false;
     switch (phase_) {
     case Phase::load:
     case Phase::loading:
@@ -355,7 +402,10 @@ ayni_status_t Session::poll() {
         break;
     case Phase::start_turn:
     case Phase::turn:
-        status = turn(anchor);
+        status = turn(anchor, kernel.durable_seq);
+        break;
+    case Phase::terminal:
+        status = unfinished();
         break;
     case Phase::publish:
         status = publish(anchor);
@@ -377,6 +427,12 @@ ayni_status_t Session::poll() {
         if (anchor.pending_action == AYNI_CONTEXT_IDLE && anchor.usable &&
             matches(current_, anchor)) {
             phase_ = Phase::ready;
+            if (save_ == Save::publication) {
+                if (result_) {
+                    result_->published = true;
+                }
+            }
+            end_request_ = EndRequest::none;
         }
         break;
     case Phase::ready:
@@ -397,10 +453,170 @@ ayni_status_t Session::poll() {
     // Core owns Task holds, including owner-recoverable authority/model overlays.
     // Report their status without detaching from the original Task; polling after
     // owner resolution continues that Task and does not resubmit its old actions.
-    if (status != AYNI_OK && status != AYNI_BUSY && phase_ != Phase::turn) {
+    if (status != AYNI_OK && status != AYNI_BUSY && phase_ != Phase::turn &&
+        phase_ != Phase::terminal) {
         failure_ = status;
         phase_ = Phase::failed;
     }
     return status;
+}
+// A discarded saved draft is an explicit interaction policy, never permission to replay.
+// The composition must first cancel the old ONCE Goals and wait for their Tasks to terminate.
+ayni_status_t Session::settled(uint64_t durable) const {
+    uint32_t count = 0;
+    auto status = ayni_list_objects(config_.kernel, AYNI_OBJECT_GOAL, nullptr, 0, &count);
+    if (status != AYNI_OK && status != AYNI_BUFFER_TOO_SMALL) {
+        return status;
+    }
+    std::vector<uint64_t> ids(count);
+    status = ayni_list_objects(config_.kernel, AYNI_OBJECT_GOAL, ids.data(), count, &count);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    for (const auto id : ids) {
+        auto goal = initialized<ayni_goal_info_v1>();
+        status = ayni_get_goal(config_.kernel, id, &goal);
+        if (status != AYNI_OK) {
+            return status;
+        }
+        if (goal.owner_instance_id != config_.owner_instance ||
+            goal.goal_type_id_size != config_.goal_type.size ||
+            std::memcmp(goal.goal_type_id, config_.goal_type.data, config_.goal_type.size)) {
+            continue;
+        }
+        if (goal.commit_seq > durable || goal.lifecycle == AYNI_GOAL_PROPOSED ||
+            goal.lifecycle == AYNI_GOAL_ACTIVE || goal.lifecycle == AYNI_GOAL_PAUSED) {
+            return AYNI_NOT_READY;
+        }
+        if (goal.last_task_id) {
+            auto task = initialized<ayni_task_info_v1>();
+            status = ayni_get_task(config_.kernel, goal.last_task_id, &task);
+            if (status != AYNI_OK) {
+                return status;
+            }
+            if (task.commit_seq > durable ||
+                (task.lifecycle != AYNI_TASK_COMPLETED && task.lifecycle != AYNI_TASK_FAILED &&
+                 task.lifecycle != AYNI_TASK_CANCELLED && task.lifecycle != AYNI_TASK_EXPIRED)) {
+                return AYNI_NOT_READY;
+            }
+        }
+    }
+    return AYNI_OK;
+}
+// File deletion and cache collection have one owner. Loaded bodies may have no cached
+// scope, so explicitly release the old record's references after its replacement is durable.
+void Session::collect_superseded(const strategies::ConversationRecord &old) {
+    std::vector<strategies::BodyRef> before, after;
+    Conversation::references(old, before);
+    Conversation::references(current_, after);
+    const auto *store = config_.bodies.store;
+    for (const auto &ref : before) {
+        bool named = false;
+        for (const auto &keep : after) {
+            named = named || keep.id == ref.id;
+        }
+        if (!named) {
+            store->release(store->context, &ref);
+        }
+    }
+    config_.bodies.collect(config_.bodies.context, current_.id, after);
+}
+bool Session::active() const {
+    switch (phase_) {
+    case Phase::input:
+    case Phase::start_turn:
+    case Phase::turn:
+    case Phase::terminal:
+    case Phase::publish:
+        return true;
+    case Phase::save:
+    case Phase::saving:
+        return save_ == Save::draft || save_ == Save::publication || save_ == Save::discard;
+    case Phase::acknowledge:
+    case Phase::acknowledged:
+        return save_ == Save::publication;
+    default:
+        return false;
+    }
+}
+ayni_status_t Session::cancel() {
+    if (!active()) {
+        return phase_ == Phase::failed ? failure_ : AYNI_INVALID_STATE;
+    }
+    if (end_request_ == EndRequest::none) {
+        end_request_ = EndRequest::cancel;
+    }
+    return AYNI_OK;
+}
+ayni_status_t Session::abandon() {
+    if (phase_ != Phase::terminal) {
+        return AYNI_INVALID_STATE;
+    }
+    end_request_ = EndRequest::abandon;
+    return AYNI_OK;
+}
+ayni_status_t Session::quiesce() {
+    if (phase_ == Phase::empty) {
+        return AYNI_OK;
+    }
+    if (active() && phase_ != Phase::terminal) {
+        const auto status = cancel();
+        if (status != AYNI_OK) {
+            return status;
+        }
+    }
+    const auto status = poll();
+    if (status != AYNI_OK && status != AYNI_BUSY && phase_ != Phase::terminal && !held_) {
+        return status;
+    }
+    if (!ready() && phase_ != Phase::terminal) {
+        return AYNI_BUSY;
+    }
+    return !config_.bodies.ready || config_.bodies.ready(config_.bodies.context, 0) ? AYNI_OK
+                                                                                    : AYNI_BUSY;
+}
+bool Session::take_result(TurnResult &out) {
+    if ((!ready() && phase_ != Phase::terminal) || !result_) {
+        return false;
+    }
+    out = *result_;
+    result_.reset();
+    return true;
+}
+// Discard only the outer draft. Original Core Tasks/Calls, including UNKNOWN evidence,
+// retain their existing lifecycle and reclamation rules.
+ayni_status_t Session::unfinished() {
+    if (config_.unfinished == UnfinishedTurn::discard || end_request_ == EndRequest::abandon) {
+        return discard();
+    }
+    phase_ = Phase::terminal;
+    return AYNI_NOT_READY;
+}
+ayni_status_t Session::discard() {
+    candidate_ = current_;
+    candidate_.draft = {};
+    input_.clear();
+    save_ = Save::discard;
+    phase_ = Phase::save;
+    return AYNI_OK;
+}
+ayni_status_t Session::cancel_turn(uint64_t durable) {
+    if (phase_ == Phase::start_turn) {
+        result_ = TurnResult{0, 0, AYNI_NOT_READY, AYNI_REASON_NONE, false};
+        return unfinished();
+    }
+    auto goal = initialized<ayni_goal_info_v1>();
+    auto status = ayni_get_goal(config_.kernel, goal_, &goal);
+    if (status != AYNI_OK || goal.commit_seq > durable) {
+        return status;
+    }
+    if (goal.lifecycle == AYNI_GOAL_ACTIVE || goal.lifecycle == AYNI_GOAL_PAUSED ||
+        goal.lifecycle == AYNI_GOAL_PROPOSED) {
+        const ayni_goal_target_v1 target{sizeof(target), 0, goal_};
+        return config_.commands
+            .submit(config_.commands.context, AYNI_INTENT_GOAL_CANCEL, &target, goal.revision)
+            .status;
+    }
+    return AYNI_OK;
 }
 } // namespace ayni::runtime::conversation

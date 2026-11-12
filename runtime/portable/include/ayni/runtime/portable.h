@@ -3,9 +3,13 @@
 #define AYNI_RUNTIME_PORTABLE_H
 #include <ayni/ayni.h>
 #include <ayni/runtime/conversation.h>
+#include <ayni/runtime/conversation/file_bodies.h>
 namespace ayni::runtime::portable {
 inline constexpr uint32_t agent_count = 2;
 inline constexpr uint32_t live_task_limit = 4;
+// Runtime Core storage has one request in flight; outer values leave that queue slot free.
+inline constexpr uint32_t value_request_capacity = 4;
+inline constexpr uint32_t host_request_capacity_min = value_request_capacity + 1;
 inline constexpr uint64_t owner_principal = 1;
 // Same fixed capacities on both platforms; this is a deployment profile, not Core defaults.
 ayni_config_v1 configuration();
@@ -30,6 +34,7 @@ class Profile {
     Profile &operator=(const Profile &) = delete;
     static ayni_status_t memory_requirements(Memory &);
     // CONFIGURING on success, allowing the consumer to register its own application.
+    // Host queue capacity must be at least host_request_capacity_min.
     // Existing Providers make bounded nothrow startup allocations outside this region.
     // On partial registration/allocation failure, retain the region; destroy after Host join.
     ayni_status_t create_in(void *, size_t, const ayni_host_v1 &, hosts::storage::FileValuePort);
@@ -38,7 +43,10 @@ class Profile {
     // No waiting; caller's OS loop owns wake/yield and its overall deadline.
     ayni_status_t tick();
     bool running() const; // RUNNING and a durable authenticated management session exists.
-    ayni_status_t open_conversations(); // Repeated owner call, BUSY until both exact files ready.
+    ayni_status_t
+    open_conversations(conversation::UnfinishedTurn unfinished =
+                           conversation::UnfinishedTurn::retain); // Repeated owner call, BUSY until
+                                                                  // both exact files ready.
     runtime::conversation::Session *conversation(uint32_t index);
     ayni_kernel_t *kernel() const;
     uint64_t session() const;

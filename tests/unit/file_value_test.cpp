@@ -173,4 +173,44 @@ TEST_F(FileBodies, released_bodies_leave_no_files) {
     EXPECT_EQ(files(), before);
     host.close_storage();
 }
+// Shared cache limits affect only resident bytes; durable references keep their files.
+TEST_F(FileBodies, trimming_and_a_payload_budget_preserve_referenced_disk_bodies) {
+    ayni::runtime::FileBodies bodies;
+    ASSERT_EQ(bodies.configure(host.value_store()), AYNI_OK);
+    const std::string text = "persistent bytes";
+    ASSERT_EQ(bodies.set_cache_limit(text.size()), AYNI_OK);
+    const auto *store = bodies.store();
+    ayni_body_ref_v1 ref{};
+    ayni_status_t status = AYNI_NOT_READY;
+    ASSERT_TRUE(until([&] {
+        status = store->write(
+            store->context, 1,
+            {reinterpret_cast<const uint8_t *>(text.data()), static_cast<uint32_t>(text.size())},
+            &ref);
+        return status != AYNI_NOT_READY;
+    }));
+    ASSERT_EQ(status, AYNI_OK);
+    EXPECT_EQ(bodies.cached_bytes(), text.size());
+    const auto file_count = files();
+    ASSERT_EQ(bodies.trim_cache(), AYNI_OK);
+    EXPECT_EQ(bodies.cached_bytes(), 0U);
+    EXPECT_EQ(files(), file_count);
+    std::string out(text.size(), '\0');
+    ASSERT_TRUE(until([&] {
+        status = store->read(store->context, &ref, reinterpret_cast<uint8_t *>(out.data()),
+                             static_cast<uint32_t>(out.size()));
+        return status != AYNI_NOT_READY;
+    }));
+    EXPECT_EQ(status, AYNI_OK);
+    EXPECT_EQ(out, text);
+    std::string oversized(text.size() + 1, 'x');
+    ayni_body_ref_v1 refused{};
+    EXPECT_EQ(store->write(store->context, 1,
+                           {reinterpret_cast<const uint8_t *>(oversized.data()),
+                            static_cast<uint32_t>(oversized.size())},
+                           &refused),
+              AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(files(), file_count);
+    host.close_storage();
+}
 } // namespace

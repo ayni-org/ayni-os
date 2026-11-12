@@ -2,15 +2,15 @@
 // files named by an identity derived from its scope and digest, so an identical write after a
 // restart finds the same files. Writes, loads and removals go through the bounded Host queue:
 // write answers NOT_READY until every file is durable, read answers NOT_READY until loaded, and
-// ready() turns nonzero once nothing is outstanding. Bodies stay cached after their first use.
-// Any thread may call the descriptor. Only the thread that called configure, the Host's owner
-// thread, submits file requests: work recorded on another thread, or refused by a full queue,
-// waits for the owner's next call, ready() included. Completions run on the storage worker.
-// The object lives through Host join once any request was accepted.
+// ready() turns nonzero once nothing is outstanding. Durable cached bytes can be evicted without
+// deleting their files. Any thread may call the descriptor. Only the thread that called configure,
+// the Host's owner thread, submits file requests: work recorded on another thread, or refused by a
+// full queue, waits for the owner's next call, ready() included. Completions run on the storage
+// worker. The object lives through Host join once any request was accepted.
 #ifndef AYNI_RUNTIME_CONVERSATION_FILE_BODIES_H
 #define AYNI_RUNTIME_CONVERSATION_FILE_BODIES_H
-#include <ayni/bodies.h>
 #include <ayni/hosts/storage/file_value.h>
+#include <ayni/runtime/conversation/body_collection.h>
 #include <list>
 #include <map>
 #include <mutex>
@@ -29,6 +29,15 @@ class FileBodies {
     // On the owner thread, before any other call.
     ayni_status_t configure(hosts::storage::FileValuePort files, uint64_t base = default_base);
     const ayni_body_store_v1 *store() const { return &store_; }
+    BodyCollection collection() { return {store(), this, collect_port, ready}; }
+    // Owner-thread before use: zero keeps the existing unlimited cache. A positive budget
+    // bounds cached payload bytes, including active loads/writes; metadata is separate.
+    // Oversized bodies return CAPACITY_EXCEEDED; active borrows are never evicted.
+    ayni_status_t set_cache_limit(size_t bytes);
+    // Any thread. Evicts only durable, unborrowed cached copies, preserving disk files and
+    // descriptor identity. BUSY means active entries prevent reaching the requested target.
+    ayni_status_t trim_cache(size_t target_bytes = 0);
+    size_t cached_bytes() const;
     // Nonzero when no body is waiting for its files; the shape of a HistoryPort ready callback.
     static uint32_t ready(void *context, uint64_t task);
     // Releases every body of scope written or loaded by this process that keep does not name.
@@ -57,6 +66,13 @@ class FileBodies {
     static ayni_status_t write(void *, uint64_t, ayni_bytes_v1, ayni_body_ref_v1 *);
     static ayni_status_t read(void *, const ayni_body_ref_v1 *, uint8_t *, uint32_t);
     static void release(void *, const ayni_body_ref_v1 *);
+    static void collect_port(void *context, uint64_t scope,
+                             const std::vector<ayni_body_ref_v1> &keep) {
+        static_cast<FileBodies *>(context)->collect(scope, keep);
+    }
+    size_t cached_bytes_locked() const;
+    ayni_status_t trim_locked(size_t target);
+    ayni_status_t reserve_cache(size_t bytes);
     static void complete(void *, const hosts::storage::FileValueResult &) noexcept;
     static uint64_t identity(uint64_t scope, uint64_t digest);
     static uint32_t chunks(uint32_t size);
@@ -70,6 +86,7 @@ class FileBodies {
     void withdraw(const std::vector<Pending *> &requests, std::size_t from);
     hosts::storage::FileValuePort files_{};
     uint64_t base_ = default_base;
+    size_t cache_limit_ = 0; // Zero is unlimited; never includes externally owned file buffers.
     std::thread::id owner_;
     mutable std::mutex mutex_;
     std::map<uint64_t, Entry> entries_;

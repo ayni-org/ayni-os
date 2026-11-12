@@ -20,7 +20,8 @@ namespace {
 constexpr uint64_t probe_record_id = UINT64_C(0x43545850524f4245);
 constexpr uint32_t version = 1, step_units = 32, step_us = 4000;
 constexpr uint64_t presentation_wait_us = UINT64_C(120) * 1000000;
-constexpr uint64_t principal = 1, command_range = UINT64_C(1) << 32;
+constexpr uint64_t principal = 1;
+constexpr char chat_type[] = "wifi.chat", probe_type[] = "wifi.context-probe";
 constexpr char model_capability[] = "usb.model.text", summary_capability[] = "usb.model.summary",
                model_binding[] = "usb.model", summary_binding[] = "usb.summary",
                strategy_id[] = "usb.chat", reply_capability[] = "wifi.model.text",
@@ -109,8 +110,8 @@ ayni_status_t Chat::initialize(const ModelSelection &selection) {
         return AYNI_CAPACITY_EXCEEDED;
     }
     host_ = new (host_memory) ayni::hosts::esp_idf::Host;
-    static_assert(ValueQueue::host_capacity <= ayni::hosts::esp_idf::Host::request_capacity_limit);
-    const auto opened = host_->open_storage("ayni", ValueQueue::host_capacity, true);
+    static_assert(host_capacity <= ayni::hosts::esp_idf::Host::request_capacity_limit);
+    const auto opened = host_->open_storage("ayni", host_capacity, true);
     if (opened.status != ayni::hosts::esp_idf::StorageStatus::ok) {
         char error[96];
         std::snprintf(error, sizeof(error), "storage open=%u cause=%d", unsigned(opened.status),
@@ -124,6 +125,12 @@ ayni_status_t Chat::initialize(const ModelSelection &selection) {
     auto rc = bodies_.configure(values_.port());
     if (rc != AYNI_OK) {
         status(0, "stage: bodies");
+        return rc;
+    }
+    // This deployment caps cached payloads independently from the model token window.
+    constexpr size_t cache_bytes = 2 * 1024 * 1024;
+    rc = bodies_.set_cache_limit(cache_bytes);
+    if (rc != AYNI_OK) {
         return rc;
     }
     transport_.attach_bodies(bodies_.store());
@@ -413,7 +420,7 @@ ayni_status_t Chat::configure_strategy() {
     config.limits = {harness::context_window_tokens, harness::max_output_tokens,
                      harness::compact_target_tokens, harness::tool_result_max_tokens};
     config.bodies = bodies_.store();
-    config.history = {&bodies_, BodyCache::ready, nullptr, nullptr};
+    config.history = {&bodies_, ayni::runtime::FileBodies::ready, nullptr, nullptr};
     config.tool_exposure = ayni::strategies::ToolExposure::preloaded;
     config.reply_encoding = config.summary_reply_encoding = ayni::model::ReplyEncoding::framed;
     protocol_options_.model = selection_.model.data();
@@ -455,8 +462,19 @@ ayni_status_t Chat::configure_strategy() {
     type.tools = tools;
     type.tool_count = sizeof(tools) / sizeof(tools[0]);
     type.tool_authorization = AYNI_TOOLS_ON_DEMAND;
+    // Retained legacy Tasks are cancelled before admission; their original type stays intact.
     type.context_mode = AYNI_GOAL_CONTEXT_NONE;
-    return ayni_register_goal_type(kernel_, &type);
+    status = ayni_register_goal_type(kernel_, &type);
+    if (status == AYNI_OK) {
+        type.goal_type_id = text(probe_type);
+        status = ayni_register_goal_type(kernel_, &type);
+    }
+    if (status == AYNI_OK) {
+        type.goal_type_id = text(chat_type);
+        type.context_mode = AYNI_GOAL_CONTEXT_AGENT;
+        status = ayni_register_goal_type(kernel_, &type);
+    }
+    return status;
 }
 ayni_status_t Chat::decide(void *ctx, const ayni_task_snapshot_v1 *snapshot,
                            ayni_policy_output_v1 *output) {
@@ -596,58 +614,35 @@ void Chat::publish_model() {
     }
 }
 ayni_status_t Chat::receipt() {
-    if (!pending_command_) {
-        return AYNI_OK;
-    }
-    auto r = sized<ayni_intent_receipt_v1>();
-    const auto rc = ayni_get_intent_receipt(kernel_, principal, pending_command_, &r);
-    if (rc == AYNI_OK && r.phase == AYNI_INTENT_DURABLE) {
-        pending_command_ = 0;
+    const auto previous = commands_.pending();
+    const auto status = commands_.poll();
+    if (previous && !commands_.pending()) {
         progress_ = true;
     }
-    return rc;
+    return status;
 }
 ayni_status_t Chat::command(ayni_intent_kind_t kind, const void *body, uint64_t *id,
                             uint32_t revision, ayni_reason_t *reason) {
+    const auto out = commands_.submit(kind, body, revision);
     if (reason) {
-        *reason = AYNI_REASON_NONE;
+        *reason = out.error.reason;
     }
-    auto rc = receipt();
-    if (rc != AYNI_OK) {
-        return rc;
-    }
-    if (pending_command_) {
-        return AYNI_BUSY;
-    }
-    if (!boot_ || boot_ >= UINT64_MAX / command_range || sequence_ == command_range - 1) {
-        return AYNI_INVALID_STATE;
-    }
-    const ayni_intent_v1 intent{
-        sizeof(intent), kind, boot_ * command_range + ++sequence_, session_, revision, 0, body};
-    auto out = sized<ayni_intent_result_v1>();
-    auto error = sized<ayni_error_v1>();
-    rc = ayni_submit_intent(kernel_, &intent, &out, &error);
-    if (reason) {
-        *reason = error.reason;
-    }
-    if (rc != AYNI_OK && rc != AYNI_BUSY) {
+    if (out.status != AYNI_OK && out.status != AYNI_BUSY) {
         transport_.diagnostics().record(
             "wifi intent kind=%lu status=%ld reason=%lu object_kind=%lu object_id=%llu\n",
-            static_cast<unsigned long>(kind), long(rc), static_cast<unsigned long>(error.reason),
-            static_cast<unsigned long>(error.object.kind),
-            static_cast<unsigned long long>(error.object.id));
+            static_cast<unsigned long>(kind), long(out.status),
+            static_cast<unsigned long>(out.error.reason),
+            static_cast<unsigned long>(out.error.object.kind),
+            static_cast<unsigned long long>(out.error.object.id));
         diagnostics();
     }
-    if (rc == AYNI_OK) {
+    if (out.status == AYNI_OK) {
         progress_ = true;
-        if (out.phase != AYNI_INTENT_DURABLE) {
-            pending_command_ = intent.command_id;
-        }
         if (id) {
-            *id = out.object.id;
+            *id = out.result.object.id;
         }
     }
-    return rc;
+    return out.status;
 }
 void Chat::incoming(const Packet &p) {
     if (p.kind == Kind::motor_check) {
@@ -691,16 +686,10 @@ void Chat::incoming(const Packet &p) {
         if (!kernel_ || closing_ == Closing::stopped || closing_ == Closing::kernel) {
             return; // Already closing/closed; keep the original STOPPED report authoritative.
         }
-        const auto code = ayni_begin_shutdown(kernel_);
-        if (code == AYNI_OK) {
-            closing_ = Closing::kernel;
-            progress_ = true;
-        } else {
-            char detail[80];
-            std::snprintf(detail, sizeof(detail), "reset shutdown failed status=%ld; no erase",
-                          long(code));
-            status(0, detail);
-        }
+        // API borrows are drained. Complete the shared file/ACK bridge before Core closes;
+        // no new Goal is created and accepted device work still follows public cancellation.
+        closing_ = Closing::drain_session;
+        progress_ = true;
         return;
     }
     if (p.kind == Kind::cancel && turn_state_ != Turn::idle) {
@@ -771,7 +760,7 @@ void Chat::incoming(const Packet &p) {
             probe_.emplace();
             probe_->characters = p.size ? get32(p.body.data()) : 0;
             transport_.diagnostics().record("wifi probe template_begin history_rounds=%llu\n",
-                                            static_cast<unsigned long long>(history_.rounds()));
+                                            static_cast<unsigned long long>(rounds()));
             input_ = "synthetic context diagnostic";
         } else {
             input_.assign(reinterpret_cast<const char *>(p.body.data()), p.size);
@@ -793,7 +782,7 @@ void Chat::incoming(const Packet &p) {
     } else if (p.kind == Kind::cancel &&
                (turn_state_ == Turn::input || turn_state_ == Turn::preparing_input)) {
         end_turn("turn failed/cancelled before task creation; no automatic retry");
-    } else if (p.kind == Kind::cancel && goal_) {
+    } else if (p.kind == Kind::cancel && (goal_ || history_.active())) {
         cancel_requested_ = true;
         progress_ = true;
         status(p.id, "cancel queued; waiting for current command receipt");
@@ -818,7 +807,7 @@ void Chat::incoming(const Packet &p) {
 // and wait for durable termination instead of replaying old screen/audio work.
 ayni_status_t Chat::settle_session(uint64_t durable_seq, bool &settled) {
     settled = false;
-    if (pending_command_) {
+    if (commands_.pending()) {
         return AYNI_OK;
     }
     uint64_t ids[goal_slots]{};
@@ -833,10 +822,10 @@ ayni_status_t Chat::settle_session(uint64_t durable_seq, bool &settled) {
         if (rc != AYNI_OK) {
             return rc;
         }
-        const bool chat_goal =
-            goal.goal_type_version == version &&
-            goal.goal_type_id_size == sizeof(strategy_id) - 1 &&
-            !std::memcmp(goal.goal_type_id, strategy_id, sizeof(strategy_id) - 1);
+        const bool chat_goal = goal.goal_type_version == version &&
+                               (same({goal.goal_type_id, goal.goal_type_id_size}, strategy_id) ||
+                                same({goal.goal_type_id, goal.goal_type_id_size}, chat_type) ||
+                                same({goal.goal_type_id, goal.goal_type_id_size}, probe_type));
         const bool check_goal =
             MotorCheck::owns({goal.goal_type_id, goal.goal_type_id_size}, goal.goal_type_version);
         if (goal.owner_instance_id != instance_ || (!chat_goal && !check_goal)) {
@@ -917,7 +906,7 @@ void Chat::diagnostics() {
         }
     }
     append("session metadata (no message bodies): rounds=%llu",
-           static_cast<unsigned long long>(history_.rounds()));
+           static_cast<unsigned long long>(rounds()));
     if (ayni_list_objects(kernel_, AYNI_OBJECT_TASK, ids, call_slots, &count) == AYNI_OK) {
         for (uint32_t at = 0; at < count; ++at) {
             auto task = sized<ayni_task_info_v1>();
@@ -979,7 +968,7 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
         return audio;
     }
     if (turn_state_ == Turn::reply_done) {
-        // Drain the retained terminal before shutdown can release History's file port.
+        // Drain the retained terminal before shutdown can release the shared session's file port.
         // A full UI queue defers this tick, rather than losing the only end-of-turn notice.
         const auto terminal = present_reply();
         if (terminal != AYNI_OK || turn_state_ == Turn::reply_done) {
@@ -1072,10 +1061,8 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
     return rc;
 }
 // Session, Grants, Scene and the conversation record, then the cleanup of restored work.
-ayni_status_t Chat::prepare(const ayni_kernel_info_v1 &info) {
-    if (closing_ == Closing::quiescing) {
-        return AYNI_OK;
-    }
+// Bootstrap, deployment grants, current Scene and the shared session are separate owners.
+ayni_status_t Chat::prepare_owner(const ayni_kernel_info_v1 &info) {
     if (!session_) {
         const ayni_session_desc_v1 desc{sizeof(desc), AYNI_CHANNEL_MANAGEMENT, principal, version,
                                         0};
@@ -1092,74 +1079,165 @@ ayni_status_t Chat::prepare(const ayni_kernel_info_v1 &info) {
             return rc;
         }
         instance_ = agent.instance_id;
-        boot_ = info.boot_epoch;
+        rc = commands_.configure(kernel_, principal, session_, info.boot_epoch);
+        if (rc != AYNI_OK) {
+            return rc;
+        }
         progress_ = true;
     }
-    auto rc = receipt();
+    return AYNI_OK;
+}
+ayni_status_t Chat::prepare_grant() {
+    auto rc = AYNI_OK;
+    if (commands_.pending()) {
+        return AYNI_OK;
+    }
+    // Reuse an exact, currently usable restored Grant instead of filling the
+    // bounded table with a new permanent root after every ordinary reboot.
+    uint64_t ids[grant_slots]{};
+    uint32_t count = 0;
+    rc = ayni_list_objects(kernel_, AYNI_OBJECT_GRANT, ids, grant_slots, &count);
     if (rc != AYNI_OK) {
         return rc;
     }
+    const auto wanted = text(grant_capabilities[grant_]);
+    const auto wanted_version =
+        same(wanted, "speaker.speech") ? SpeechProfile::capability_version
+        : std::string_view(wanted.data, wanted.size).substr(0, 6) == "motor." ? motor_version
+                                                                              : version;
+    for (uint32_t at = 0; at < count; ++at) {
+        auto existing = sized<ayni_grant_info_v1>();
+        rc = ayni_get_grant(kernel_, ids[at], &existing);
+        if (rc != AYNI_OK) {
+            return rc;
+        }
+        if (existing.subject_instance_id == instance_ && !existing.bound_goal_id &&
+            existing.capability_version == wanted_version &&
+            existing.effective_reason == AYNI_REASON_NONE &&
+            existing.capability_id_size == wanted.size &&
+            !std::memcmp(existing.capability_id, wanted.data, wanted.size)) {
+            ++grant_;
+            progress_ = true;
+            return AYNI_OK;
+        }
+    }
+    const bool motion = same(wanted, "motor.run");
+    const ayni_grant_create_v1 grant{sizeof(grant),
+                                     wanted_version,
+                                     wanted,
+                                     instance_,
+                                     0,
+                                     motion ? AYNI_GRANT_CURRENT_BOOT : AYNI_GRANT_PERMANENT,
+                                     0,
+                                     motion ? motor_grant_us : 0,
+                                     scope()};
+    const auto accepted = command(AYNI_INTENT_GRANT_CREATE, &grant);
+    if (accepted == AYNI_OK) {
+        ++grant_;
+    }
+    return accepted;
+}
+ayni_status_t Chat::close_session(const ayni_kernel_info_v1 &info) {
+    auto rc = AYNI_OK;
     if (closing_ == Closing::cancel_work) {
         bool settled = false;
         rc = settle_session(info.durable_seq, settled);
         if (rc != AYNI_OK || !settled) {
             return rc;
         }
-        rc = ayni_begin_shutdown(kernel_);
-        if (rc == AYNI_OK) {
-            closing_ = Closing::kernel;
-            progress_ = true;
-        }
-        return rc;
     }
-    if (grant_ < grant_count) {
-        if (pending_command_) {
+    if (history_configured_) {
+        rc = history_.quiesce();
+        if (rc == AYNI_BUSY) {
             return AYNI_OK;
         }
-        // Reuse an exact, currently usable restored Grant instead of filling the
-        // bounded table with a new permanent root after every ordinary reboot.
-        uint64_t ids[grant_slots]{};
-        uint32_t count = 0;
-        rc = ayni_list_objects(kernel_, AYNI_OBJECT_GRANT, ids, grant_slots, &count);
         if (rc != AYNI_OK) {
             return rc;
         }
-        const auto wanted = text(grant_capabilities[grant_]);
-        const auto wanted_version =
-            same(wanted, "speaker.speech") ? SpeechProfile::capability_version
-            : std::string_view(wanted.data, wanted.size).substr(0, 6) == "motor." ? motor_version
-                                                                                  : version;
-        for (uint32_t at = 0; at < count; ++at) {
-            auto existing = sized<ayni_grant_info_v1>();
-            rc = ayni_get_grant(kernel_, ids[at], &existing);
-            if (rc != AYNI_OK) {
-                return rc;
-            }
-            if (existing.subject_instance_id == instance_ && !existing.bound_goal_id &&
-                existing.capability_version == wanted_version &&
-                existing.effective_reason == AYNI_REASON_NONE &&
-                existing.capability_id_size == wanted.size &&
-                !std::memcmp(existing.capability_id, wanted.data, wanted.size)) {
-                ++grant_;
-                progress_ = true;
-                return AYNI_OK;
-            }
+    }
+    rc = ayni_begin_shutdown(kernel_);
+    if (rc == AYNI_OK) {
+        closing_ = Closing::kernel;
+        progress_ = true;
+    }
+    return rc;
+}
+ayni_status_t Chat::prepare_history(const ayni_kernel_info_v1 &info) {
+    auto rc = AYNI_OK;
+    if (!history_configured_) {
+        bool settled = false;
+        rc = settle_session(info.durable_seq, settled);
+        if (rc != AYNI_OK || !settled) {
+            return rc;
         }
-        const bool motion = same(wanted, "motor.run");
-        const ayni_grant_create_v1 grant{sizeof(grant),
-                                         wanted_version,
-                                         wanted,
-                                         instance_,
-                                         0,
-                                         motion ? AYNI_GRANT_CURRENT_BOOT : AYNI_GRANT_PERMANENT,
-                                         0,
-                                         motion ? motor_grant_us : 0,
-                                         scope()};
-        const auto accepted = command(AYNI_INTENT_GRANT_CREATE, &grant);
-        if (accepted == AYNI_OK) {
-            ++grant_;
+        auto anchor = sized<ayni_context_info_v1>();
+        rc = ayni_get_context(kernel_, session_, instance_, &anchor);
+        if (rc == AYNI_NOT_FOUND) {
+            auto opened = sized<ayni_context_command_v1>();
+            opened.owner_instance_id = instance_;
+            rc = command(AYNI_INTENT_CONTEXT_OPEN, &opened);
+            return rc == AYNI_BUSY ? AYNI_OK : rc;
         }
-        return accepted;
+        if (rc != AYNI_OK || anchor.commit_seq > info.durable_seq) {
+            return rc;
+        }
+        ayni::runtime::conversation::Config config;
+        config.kernel = kernel_;
+        config.session = session_;
+        config.owner_instance = instance_;
+        config.goal_type = text(chat_type);
+        config.workspace = &workspace_;
+        config.files = values_.port();
+        config.bodies = bodies_.collection();
+        config.commands = {
+            this, [](void *context, ayni_intent_kind_t kind, const void *body, uint32_t revision) {
+                auto &self = *static_cast<Chat *>(context);
+                auto out = self.commands_.submit(kind, body, revision);
+                self.progress_ = self.progress_ || out.status == AYNI_OK;
+                return out;
+            }};
+        config.unfinished = ayni::runtime::conversation::UnfinishedTurn::discard;
+        rc = history_.configure(config);
+        if (rc != AYNI_OK) {
+            return rc;
+        }
+        history_configured_ = true;
+    }
+    rc = history_.poll();
+    if (rc != AYNI_OK && rc != AYNI_BUSY && !history_.held()) {
+        status(turn_, "conversation store failed; no answer shown");
+        return rc;
+    }
+    if (!announced_ && !commands_.pending() && history_.ready()) {
+        announced_ = true;
+        progress_ = true; // Held Tasks may decide from the next step on.
+        speaker_.set_accepting(true);
+        motor_.execution().set_accepting(true);
+        diagnostics();
+        status(0, "ready");
+    }
+    return AYNI_OK;
+}
+ayni_status_t Chat::prepare(const ayni_kernel_info_v1 &info) {
+    if (closing_ == Closing::quiescing) {
+        return AYNI_OK;
+    }
+    auto rc = prepare_owner(info);
+    // RUNNING can precede the durable owner session; bootstrap must finish before Grants.
+    if (rc != AYNI_OK || !session_) {
+        return rc;
+    }
+    if (rc == AYNI_OK) {
+        rc = receipt();
+    }
+    if (rc != AYNI_OK) {
+        return rc;
+    }
+    if (closing_ == Closing::cancel_work || closing_ == Closing::drain_session) {
+        return close_session(info);
+    }
+    if (grant_ < grant_count) {
+        return prepare_grant();
     }
     if (closing_ == Closing::open) {
         auto scene = sized<ayni_scene_info_v1>();
@@ -1173,32 +1251,7 @@ ayni_status_t Chat::prepare(const ayni_kernel_info_v1 &info) {
             return command(AYNI_INTENT_SCENE_SET_ENABLED, &enabled, nullptr, scene.revision);
         }
     }
-    if (!history_configured_) {
-        rc = history_.configure(&workspace_, &bodies_, values_.port(), instance_);
-        if (rc != AYNI_OK) {
-            return rc;
-        }
-        history_configured_ = true;
-    }
-    rc = history_.poll();
-    if (rc != AYNI_OK) {
-        status(turn_, "conversation store failed; no answer shown");
-        return rc;
-    }
-    if (!announced_ && !pending_command_ && history_.ready()) {
-        bool settled = false;
-        rc = settle_session(info.durable_seq, settled);
-        if (rc != AYNI_OK || !settled) {
-            return rc;
-        }
-        announced_ = true;
-        progress_ = true; // Held Tasks may decide from the next step on.
-        speaker_.set_accepting(true);
-        motor_.execution().set_accepting(true);
-        diagnostics();
-        status(0, "ready");
-    }
-    return AYNI_OK;
+    return prepare_history(info);
 }
 void Chat::wait_for(const char *phase, const char *label, ayni_status_t code) {
     const auto now = uint64_t(esp_timer_get_time());
@@ -1209,7 +1262,7 @@ void Chat::wait_for(const char *phase, const char *label, ayni_status_t code) {
     if (now >= preparation_wait_.next_trace_us) {
         transport_.diagnostics().record(
             "wifi preparation phase=%s status=%ld pending=%llu goal=%llu elapsed_ms=%llu\n", phase,
-            long(code), static_cast<unsigned long long>(pending_command_),
+            long(code), static_cast<unsigned long long>(commands_.pending()),
             static_cast<unsigned long long>(goal_),
             static_cast<unsigned long long>((now - turn_started_) / 1000));
         constexpr uint64_t trace_period_us = 2000000;
@@ -1227,7 +1280,6 @@ void Chat::end_turn(const char *message) {
         progress_ = true;
         return;
     }
-    history_.abandon(); // Drops the input body; the next turn starts from the saved record.
     if (probe_.has_value()) {
         bodies_.collect(probe_record_id, {}); // No diagnostic checkpoint becomes chat history.
     }
@@ -1309,12 +1361,68 @@ ayni_status_t Chat::probe_input(ayni_string_v1 user, ayni::strategies::Encoded &
     return ayni::strategies::Conversation::begin(&workspace_, *bodies_.store(), record, user,
                                                  parameters);
 }
+// Isolated capacity diagnostics observe Core without publishing to the real conversation.
+ayni_status_t Chat::observe_probe(const ayni_kernel_info_v1 &info) {
+    auto goal = sized<ayni_goal_info_v1>();
+    auto rc = ayni_get_goal(kernel_, goal_, &goal);
+    if (rc != AYNI_OK) {
+        return rc;
+    }
+    if (goal.wait_reason == AYNI_REASON_TASK_CAPACITY && !hold_reported_) {
+        status(turn_, "task capacity full: retained unresolved history; input will be "
+                      "cancelled, no retry");
+        diagnostics();
+        hold_reported_ = true;
+        cancel_requested_ = true;
+    }
+    if (!goal.last_task_id) {
+        if (goal.commit_seq <= info.durable_seq &&
+            (goal.lifecycle == AYNI_GOAL_CANCELLED || goal.lifecycle == AYNI_GOAL_FAILED)) {
+            end_turn("turn failed/cancelled before task creation; no automatic retry");
+        }
+        return AYNI_OK;
+    }
+    auto task = sized<ayni_task_info_v1>();
+    rc = ayni_get_task(kernel_, goal.last_task_id, &task);
+    if (rc != AYNI_OK) {
+        return rc;
+    }
+    if (task.lifecycle == AYNI_TASK_COMPLETED && task.commit_seq <= info.durable_seq) {
+        transport_.diagnostics().record(
+            "wifi probe loop_complete characters=%lu model_requests=%lu\n",
+            static_cast<unsigned long>(probe_->characters),
+            static_cast<unsigned long>(model_requests_));
+        transport_.diagnostics().record("wifi probe template_complete history_rounds=%llu\n",
+                                        static_cast<unsigned long long>(rounds()));
+        goal_ = 0;
+        reply_end_ = "reply completed";
+        turn_state_ = Turn::reply_done;
+        progress_ = true;
+        return AYNI_OK; // Diagnostic model reply is deliberately not saved or shown.
+    } else if (task.lifecycle == AYNI_TASK_FAILED || task.lifecycle == AYNI_TASK_CANCELLED ||
+               task.lifecycle == AYNI_TASK_EXPIRED) {
+        if (task.commit_seq <= info.durable_seq) {
+            end_turn("turn failed/cancelled; no automatic retry");
+        }
+    } else if (task.lifecycle == AYNI_TASK_PAUSED && !hold_reported_) {
+        char message[96];
+        std::snprintf(message, sizeof(message), "task held status=%ld reason=%lu",
+                      long(task.hold_status), static_cast<unsigned long>(task.hold_reason));
+        transport_.diagnostics().record("wifi held status=%ld reason=%lu\n", long(task.hold_status),
+                                        static_cast<unsigned long>(task.hold_reason));
+        status(turn_, message);
+        hold_reported_ = true;
+        diagnostics(); // Capture the same held call before a later reset loses the trace.
+    }
+    return AYNI_OK;
+}
 // One user turn: durable input body, Goal, completed Task, durable record, then the answer.
 ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
     if (turn_state_ == Turn::preparing_input) {
         // Clear caches after every prior terminal, including cancellation. Disk
         // values remain available to retained Calls and conversation references.
-        const auto status = bodies_.reset_idle();
+        static_cast<void>(ayni::runtime::FileBodies::ready(&bodies_, 0));
+        const auto status = bodies_.trim_cache();
         if (status == AYNI_BUSY) {
             wait_for("body_cleanup", "preparing input: waiting for body cleanup", status);
             return AYNI_OK;
@@ -1328,7 +1436,7 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
         progress_ = true;
     }
     if (forget_ == Forget::requested && turn_state_ == Turn::idle && history_.ready()) {
-        const auto rc = history_.forget();
+        const auto rc = history_.forget(AYNI_CONTEXT_ERASE_ALL);
         if (rc == AYNI_OK) {
             forget_ = Forget::saving;
             progress_ = true;
@@ -1340,7 +1448,14 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
         forget_ = Forget::none;
         status(0, "context cleared on device");
     }
-    if (cancel_requested_ && goal_ && !pending_command_) {
+    if (cancel_requested_ && !probe_ && history_.active()) {
+        const auto rc = history_.cancel();
+        if (rc != AYNI_OK) {
+            return rc;
+        }
+        cancel_requested_ = false;
+    }
+    if (cancel_requested_ && probe_ && goal_ && !commands_.pending()) {
         auto goal = sized<ayni_goal_info_v1>();
         auto rc = ayni_get_goal(kernel_, goal_, &goal);
         if (rc != AYNI_OK) {
@@ -1368,17 +1483,17 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
         if (probe_.has_value()) {
             rc = probe_input(user, parameters_);
         } else {
-            rc = history_.begin(user, parameters_);
+            rc = history_.begin(user);
         }
         if (rc == AYNI_NOT_READY || rc == AYNI_BUSY) {
             wait_for("input_body", "preparing input: waiting for input storage", rc);
             return AYNI_OK; // The input body is still being stored.
         }
-        if (rc == AYNI_OK) {
+        if (rc == AYNI_OK && probe_) {
             failure_stage = "goal creation";
             auto body = sized<ayni_goal_create_v1>();
             body.goal_type_version = version;
-            body.goal_type_id = text(strategy_id);
+            body.goal_type_id = text(probe_type);
             body.owner_instance_id = instance_;
             body.parameters = parameters_.view();
             body.trigger = AYNI_TRIGGER_ONCE;
@@ -1401,86 +1516,67 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
         turn_state_ = Turn::running;
         return AYNI_OK;
     }
-    if (turn_state_ == Turn::running) {
+    if (turn_state_ == Turn::running && !probe_) {
+        goal_ = history_.latest_goal();
         auto goal = sized<ayni_goal_info_v1>();
-        auto rc = ayni_get_goal(kernel_, goal_, &goal);
-        if (rc != AYNI_OK) {
-            return rc;
+        if (goal_ && !hold_reported_) {
+            const auto queried = ayni_get_goal(kernel_, goal_, &goal);
+            if (queried != AYNI_OK) {
+                return queried;
+            }
+            if (goal.wait_reason == AYNI_REASON_TASK_CAPACITY) {
+                status(turn_, "task capacity full; cancelling input without retry");
+                hold_reported_ = true;
+                return history_.cancel();
+            }
         }
-        if (goal.wait_reason == AYNI_REASON_TASK_CAPACITY && !hold_reported_) {
-            status(turn_, "task capacity full: retained unresolved history; input will be "
-                          "cancelled, no retry");
-            diagnostics();
-            hold_reported_ = true;
-            cancel_requested_ = true;
-        }
-        if (!goal.last_task_id) {
-            if (goal.commit_seq <= info.durable_seq &&
-                (goal.lifecycle == AYNI_GOAL_CANCELLED || goal.lifecycle == AYNI_GOAL_FAILED)) {
-                end_turn("turn failed/cancelled before task creation; no automatic retry");
+        if (history_.held()) {
+            if (!hold_reported_) {
+                auto task = sized<ayni_task_info_v1>();
+                const auto queried = ayni_get_task(kernel_, goal.last_task_id, &task);
+                if (queried != AYNI_OK) {
+                    return queried;
+                }
+                char detail[96];
+                std::snprintf(detail, sizeof(detail), "task held status=%ld reason=%lu",
+                              long(task.hold_status), static_cast<unsigned long>(task.hold_reason));
+                status(turn_, detail);
+                diagnostics();
+                hold_reported_ = true;
             }
             return AYNI_OK;
         }
-        auto task = sized<ayni_task_info_v1>();
-        rc = ayni_get_task(kernel_, goal.last_task_id, &task);
-        if (rc != AYNI_OK) {
-            return rc;
+        ayni::runtime::conversation::TurnResult result;
+        if (!history_.take_result(result)) {
+            return AYNI_OK;
         }
-        if (task.lifecycle == AYNI_TASK_COMPLETED && task.commit_seq <= info.durable_seq) {
-            if (probe_.has_value()) {
-                transport_.diagnostics().record(
-                    "wifi probe loop_complete characters=%lu model_requests=%lu\n",
-                    static_cast<unsigned long>(probe_->characters),
-                    static_cast<unsigned long>(model_requests_));
-                transport_.diagnostics().record(
-                    "wifi probe template_complete history_rounds=%llu\n",
-                    static_cast<unsigned long long>(history_.rounds()));
-                goal_ = 0;
-                reply_end_ = "reply completed";
-                turn_state_ = Turn::reply_done;
-                progress_ = true;
-                return AYNI_OK; // Diagnostic model reply is deliberately not saved or shown.
-            }
-            rc = ayni_copy_task_checkpoint(kernel_, task.task_id, parameters_.bytes.data(),
-                                           static_cast<uint32_t>(parameters_.bytes.size()),
-                                           &parameters_.size);
-            if (rc == AYNI_OK) {
-                rc = history_.finish(parameters_.view());
-            }
-            if (rc == AYNI_OK) {
-                turn_state_ = Turn::saving;
-                status(turn_, "answer saving");
-                trace("save_started");
-                progress_ = true;
-            } else if (rc != AYNI_BUSY) {
-                char error[80];
-                std::snprintf(error, sizeof(error),
-                              "turn failed/cancelled: answer not saved=%ld; no automatic retry",
-                              long(rc));
-                end_turn(error);
-            }
-        } else if (task.lifecycle == AYNI_TASK_FAILED || task.lifecycle == AYNI_TASK_CANCELLED ||
-                   task.lifecycle == AYNI_TASK_EXPIRED) {
-            if (task.commit_seq <= info.durable_seq) {
-                end_turn("turn failed/cancelled; no automatic retry");
-            }
-        } else if (task.lifecycle == AYNI_TASK_PAUSED && !hold_reported_) {
-            char message[96];
-            std::snprintf(message, sizeof(message), "task held status=%ld reason=%lu",
-                          long(task.hold_status), static_cast<unsigned long>(task.hold_reason));
-            transport_.diagnostics().record("wifi held status=%ld reason=%lu\n",
-                                            long(task.hold_status),
-                                            static_cast<unsigned long>(task.hold_reason));
-            status(turn_, message);
-            hold_reported_ = true;
-            diagnostics(); // Capture the same held call before a later reset loses the trace.
+        if (!result.published) {
+            char detail[128];
+            std::snprintf(detail, sizeof(detail),
+                          "turn failed/cancelled status=%ld reason=%lu; no automatic retry",
+                          long(result.status), static_cast<unsigned long>(result.reason));
+            end_turn(detail);
+            return AYNI_OK;
         }
-        return AYNI_OK;
+        turn_state_ = Turn::saving;
+    }
+    if (turn_state_ == Turn::running && probe_) {
+        return observe_probe(info);
     }
     if (turn_state_ == Turn::saving) {
-        if (!history_.take_answer(answer_)) {
-            return AYNI_OK; // Shown only after the record naming it is durable.
+        const auto *record = history_.record();
+        std::vector<ayni::strategies::Round> rounds;
+        const auto rc =
+            record ? ayni::strategies::Conversation::rounds(*bodies_.store(), *record, rounds)
+                   : AYNI_NOT_READY;
+        if (rc == AYNI_NOT_READY) {
+            return AYNI_OK;
         }
+        if (rc != AYNI_OK || rounds.empty()) {
+            end_turn("turn failed: saved answer unavailable");
+            return AYNI_OK;
+        }
+        answer_ = std::move(rounds.back().answer);
         turn_state_ = Turn::answer;
         trace("answer_saved");
         reply_deadline_ = uint64_t(esp_timer_get_time()) + presentation_wait_us;

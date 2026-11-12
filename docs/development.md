@@ -321,3 +321,9 @@ ABI 0.48 的 `business_contract_max_bytes` 独立于 Scope 和业务正文，默
 协议/HTTP夹具只用合成数据和本地服务。FRAMED/完整预置接入须配置匹配的回复解码和
 `Protocol::projection`，见[组件说明](../providers/model_protocol/README.md)。
 独立ESP实验编译还需要按其README准备固定字体；编译不运行deploy或串口。
+
+### 共享交互运行时的源码接口
+
+`Session::Config::bodies`使用`BodyCollection`，FileBodies调用方传入`collection()`；端口和所有异步缓冲保持到Host join。默认保留草稿，交互应用可显式选`UnfinishedTurn::discard`并使用cancel/abandon/take_result；关闭前反复quiesce并继续step，完成文件/ACK排空后再shutdown。旧工作必须先由组合根取消并确认终态；Core shutdown不等于取消所有持久Goal。FileBodies的set_cache_limit/trim_cache管理驻留正文，ready检查包含未受理删除。ValueAdmission的额度由部署选择；portable Profile的外层值为4槽，调用方打开的Host队列至少5槽。CommandClient要求每principal一个独占命令流；多命令窗口的Native CLI复用CommandSequence生成身份并保持原回执窗口。详见ADR-0100。
+
+相关正常检查为`ayni_conversation_session_tests`、`FileValues.*`/`FileBodies.*`和独立ESP实验的Wi-Fi检查；`tests/portability/run_native.py`继续覆盖默认保留模式及隔离SDK正常关闭重开。板端部署和新故障专项不由这些命令启动。

@@ -118,7 +118,10 @@ ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelCo
     if (status != AYNI_OK) {
         return status;
     }
-    boot = info.boot_epoch;
+    status = command_ids.configure(info.boot_epoch);
+    if (status != AYNI_OK) {
+        return status;
+    }
     const ayni_session_desc_v1 descriptor{sizeof(descriptor), AYNI_CHANNEL_MANAGEMENT, demo_owner,
                                           demo_binding_revision, 0};
     do {

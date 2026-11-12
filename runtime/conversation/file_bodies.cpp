@@ -145,6 +145,10 @@ ayni_status_t FileBodies::write(void *context, uint64_t scope, ayni_bytes_v1 bod
             if (self.removing(id)) {
                 return AYNI_NOT_READY; // Its old files are removed first.
             }
+            const auto room = self.reserve_cache(body.size);
+            if (room != AYNI_OK) {
+                return room;
+            }
             auto &entry = self.entries_[id];
             entry.scope = scope;
             entry.digest = digest;
@@ -192,6 +196,10 @@ ayni_status_t FileBodies::read(void *context, const ayni_body_ref_v1 *ref, uint8
         if (found == self.entries_.end()) {
             if (self.removing(ref->id)) {
                 return AYNI_NOT_FOUND;
+            }
+            const auto room = self.reserve_cache(ref->size);
+            if (room != AYNI_OK) {
+                return room;
             }
             auto &entry = self.entries_[ref->id];
             entry.digest = ref->digest;
@@ -274,7 +282,57 @@ uint32_t FileBodies::ready(void *context, uint64_t) {
     auto &self = *static_cast<FileBodies *>(context);
     self.flush();
     std::lock_guard<std::mutex> lock(self.mutex_);
-    return self.outstanding_ || !self.waiting_.empty() ? 0U : 1U;
+    return self.outstanding_ || !self.waiting_.empty() || !self.removals_.empty() ? 0U : 1U;
+}
+size_t FileBodies::cached_bytes_locked() const {
+    size_t total = 0;
+    for (const auto &item : entries_) {
+        total += item.second.bytes.size();
+    }
+    return total;
+}
+size_t FileBodies::cached_bytes() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return cached_bytes_locked();
+}
+// All descriptor reads copy bytes, so only file requests borrow cached storage. Deterministic
+// map order suffices for reclamation; no policy or persistent reference changes on eviction.
+ayni_status_t FileBodies::trim_locked(size_t target) {
+    auto bytes = cached_bytes_locked();
+    for (auto at = entries_.begin(); bytes > target && at != entries_.end();) {
+        const auto &entry = at->second;
+        if (entry.state == State::durable && !entry.outstanding) {
+            bytes -= entry.bytes.size();
+            at = entries_.erase(at);
+        } else {
+            ++at;
+        }
+    }
+    return bytes <= target ? AYNI_OK : AYNI_BUSY;
+}
+ayni_status_t FileBodies::trim_cache(size_t target) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return trim_locked(target);
+}
+ayni_status_t FileBodies::set_cache_limit(size_t bytes) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (bytes) {
+        const auto status = trim_locked(bytes);
+        if (status != AYNI_OK) {
+            return status;
+        }
+    }
+    cache_limit_ = bytes;
+    return AYNI_OK;
+}
+ayni_status_t FileBodies::reserve_cache(size_t bytes) {
+    if (!cache_limit_) {
+        return AYNI_OK;
+    }
+    if (bytes > cache_limit_) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    return trim_locked(cache_limit_ - bytes) == AYNI_OK ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
 }
 void FileBodies::complete(void *context, const FileValueResult &result) noexcept {
     auto *pending = static_cast<Pending *>(context);

@@ -666,6 +666,12 @@ static ayni_status_t compression(Profile &p, Clock c) {
 // C-RUN-003: reaching the soft model ceiling is an owner-recoverable Core hold.
 // Raising it must finish the same Task and retain exactly the original eight tool executions.
 static void describe_turn(Profile &p, uint32_t index) {
+    auto kernel = initialized<ayni_kernel_info_v1>();
+    const auto kernel_status = ayni_get_kernel_info(p.kernel(), &kernel);
+    std::printf("kernel query=%ld lifecycle=%u restriction=%u durable=%llu pending=%d\n",
+                static_cast<long>(kernel_status), static_cast<unsigned>(kernel.lifecycle),
+                static_cast<unsigned>(kernel.restriction),
+                static_cast<unsigned long long>(kernel.durable_seq), p.command_pending());
     auto goal = initialized<ayni_goal_info_v1>();
     auto task = initialized<ayni_task_info_v1>();
     const auto found = ayni_get_goal(p.kernel(), p.conversation(index)->latest_goal(), &goal);
@@ -720,6 +726,9 @@ static ayni_status_t resume_model_limit(Profile &p, Clock c) {
     while (!p.conversation(1)->ready()) {
         status = p.tick();
         if (status != AYNI_OK && status != expected_hold) {
+            std::printf("model limit continuation tick=%ld\n", static_cast<long>(status));
+            describe_turn(p, 0);
+            describe_turn(p, 1);
             return status;
         }
         if (c.now_us(c.context) - started >= wait_us) {
@@ -736,12 +745,18 @@ static ayni_status_t resume_model_limit(Profile &p, Clock c) {
     const ayni_task_raise_model_limit_v1 raise{sizeof(raise), raised_limit, task_id};
     const auto raised = p.submit(AYNI_INTENT_TASK_RAISE_MODEL_LIMIT, &raise, task.revision);
     if (raised.status != AYNI_OK) {
+        std::printf("raise model limit refused status=%ld reason=%u\n",
+                    static_cast<long>(raised.status), static_cast<unsigned>(raised.error.reason));
+        describe_turn(p, 0);
         return raised.status;
     }
     started = c.now_us(c.context);
     while (!p.conversation(0)->ready()) {
         const auto status = p.tick();
         if (status != AYNI_OK && status != expected_hold) {
+            std::printf("model limit continuation tick=%ld\n", static_cast<long>(status));
+            describe_turn(p, 0);
+            describe_turn(p, 1);
             return status;
         }
         if (c.now_us(c.context) - started >= wait_us) {
@@ -864,7 +879,8 @@ static ayni_status_t retained_call(Profile &p, uint64_t goal_id, uint64_t &sum_c
         }
     }
     if (status == AYNI_OK && (found != 1 || models != 2)) {
-        std::printf("retained calls found=%u models=%u\n", found, models);
+        std::printf("retained calls found=%u models=%u\n", static_cast<unsigned>(found),
+                    static_cast<unsigned>(models));
     }
     return status != AYNI_OK           ? status
            : found == 1 && models == 2 ? exact_sum(p, sum_call)

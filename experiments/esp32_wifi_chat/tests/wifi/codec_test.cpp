@@ -6,7 +6,7 @@
 #include "motor_plan.h"
 #include "nvs_flash.h"
 #include "settings_codec.h"
-#include "value_queue.h"
+#include <ayni/hosts/storage/value_admission.h>
 #include <ayni/strategies/builtin.h>
 #include <ayni/values_json.hpp>
 #include <cstring>
@@ -32,19 +32,20 @@ TEST(WifiStorage, OuterFilesLeaveRoomForCoreAndReleaseTheirSlotsOnCompletion) {
             ++*static_cast<uint32_t *>(context);
         }
     } pending;
-    ValueQueue queue;
+    constexpr uint32_t value_capacity = 8, host_capacity = 16;
+    ValueAdmission<value_capacity> queue;
     ASSERT_TRUE(queue.configure({&pending, Pending::submit}));
     const auto port = queue.port();
     uint32_t completions = 0;
     FileValueRequest request;
     request.context = &completions;
     request.complete = Pending::complete;
-    for (uint32_t at = 0; at < ValueQueue::value_capacity; ++at) {
+    for (uint32_t at = 0; at < value_capacity; ++at) {
         ASSERT_EQ(port.submit(port.context, &request), AYNI_SUBMIT_ACCEPTED);
     }
-    EXPECT_LT(pending.requests.size(), ValueQueue::host_capacity);
+    EXPECT_LT(pending.requests.size(), host_capacity);
     EXPECT_EQ(port.submit(port.context, &request), AYNI_SUBMIT_REJECTED_NOT_RETAINED);
-    EXPECT_EQ(pending.requests.size(), ValueQueue::value_capacity);
+    EXPECT_EQ(pending.requests.size(), value_capacity);
     const auto first = pending.requests.front();
     first.complete(first.context, {AYNI_OK, 0, 0, 0});
     ASSERT_EQ(port.submit(port.context, &request), AYNI_SUBMIT_ACCEPTED);
@@ -52,7 +53,7 @@ TEST(WifiStorage, OuterFilesLeaveRoomForCoreAndReleaseTheirSlotsOnCompletion) {
         const auto next = pending.requests[at];
         next.complete(next.context, {AYNI_OK, 0, 0, 0});
     }
-    EXPECT_EQ(completions, ValueQueue::value_capacity + 1);
+    EXPECT_EQ(completions, value_capacity + 1);
 }
 TEST(WifiRemote, HttControlMayStartBeforeHidWhileCommandedStartNeedsItsPress) {
     // ADR-0097, observed RC003-MS sequence: HTT START precedes HID voice DOWN.
