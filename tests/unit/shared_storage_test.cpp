@@ -21,6 +21,7 @@ TEST(SharedStorage, reservations_match_actual_append_bytes_and_normal_reopen_kee
               AYNI_WRITE_OK);
     const auto after = std::filesystem::file_size(directory.file("commit_log"));
     EXPECT_EQ(after - before, FileLog::append_bytes(static_cast<uint32_t>(payload.size())));
+    EXPECT_EQ(log.append_scan_frames(), 0U);
     log.close();
     ASSERT_EQ(log.open(directory.path().c_str(), "commit_log").status, FileLog::OpenStatus::ok);
     std::vector<uint8_t> found(payload.size());
@@ -33,6 +34,8 @@ TEST(SharedStorage, reservations_match_actual_append_bytes_and_normal_reopen_kee
     const auto next = ayni::test::test_batch(2, 128);
     ASSERT_EQ(log.append(2, next.data(), static_cast<uint32_t>(next.size())).outcome,
               AYNI_WRITE_OK);
+    // Storage diagnostics count existing header probes without changing framing/reopen behavior.
+    EXPECT_EQ(log.append_scan_frames(), 1U);
     found.resize(payload.size() + next.size());
     EXPECT_EQ(log.read_log(0, found.data(), static_cast<uint32_t>(found.size())).value,
               found.size());

@@ -9,6 +9,7 @@
 
 #include <ayni/ayni.h>
 #include <ayni/host_clock.hpp>
+#include <ayni/hosts/esp_idf/metrics.h>
 #include <ayni/hosts/storage/file_value.h>
 #include <cstddef>
 
@@ -70,6 +71,9 @@ class Host {
     bool wait_for_wake(uint64_t timeout_us);
     // Last completed worker or current worker high-water free bytes; 0 before a worker ran.
     uint32_t worker_stack_free_bytes() const;
+    // Owner only while open: bounded lock/copy, never performs I/O or resets counters.
+    // A completion may be visible just before its accounting snapshot is published.
+    StorageMetrics storage_metrics() const;
     // Startup accounting for one internal-RAM Storage including queue, caches and worker stack.
     static void storage_memory_requirements(std::size_t &bytes, std::size_t &alignment);
     static constexpr uint32_t worker_stack_bytes = 24 * 1024;

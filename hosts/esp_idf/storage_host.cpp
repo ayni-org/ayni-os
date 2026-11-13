@@ -1,8 +1,10 @@
 #include "littlefs_files.h"
+#include <algorithm>
 #include <ayni/hosts/esp_idf.h>
 #include <ayni/hosts/storage/work_item.h>
 #include <ayni/storage_format.h>
 #include <esp_heap_caps.h>
+#include <esp_timer.h>
 #include <new>
 namespace ayni::hosts::esp_idf {
 using storage::Request;
@@ -35,6 +37,12 @@ class Host::Storage {
     uint32_t stack_free_bytes() const {
         return worker_ ? uxTaskGetStackHighWaterMark(worker_) : final_stack_free_;
     }
+    StorageMetrics metrics() {
+        portENTER_CRITICAL(&mutex_);
+        const auto result = metrics_;
+        portEXIT_CRITICAL(&mutex_);
+        return result;
+    }
 
   private:
     ayni_submit_result_t enqueue(const WorkItem &request);
@@ -44,7 +52,13 @@ class Host::Storage {
     Host &owner_;
     LittleFiles files_;
     storage::FileLog log_;
-    std::array<WorkItem, Host::request_capacity_limit> requests_{};
+    struct Queued {
+        WorkItem work;
+        uint64_t submitted_us = 0; // Monotonic enqueue attempt, used only for queue timing.
+    };
+    void serve(const Queued &queued);
+    std::array<Queued, Host::request_capacity_limit> requests_{};
+    StorageMetrics metrics_{}; // Published copies only; guarded by mutex_, never read live files.
     uint32_t capacity_ = 0, head_ = 0, count_ = 0;
     enum class State { closed, running, draining };
     State state_ = State::closed;
@@ -84,9 +98,10 @@ StorageOpen Host::Storage::open(const char *label, uint32_t capacity) {
 }
 ayni_submit_result_t Host::Storage::enqueue(const WorkItem &request) {
     bool accepted = false;
+    const auto submitted = static_cast<uint64_t>(esp_timer_get_time());
     portENTER_CRITICAL(&mutex_);
     if (state_ == State::running && count_ < capacity_) {
-        requests_[(head_ + count_) % capacity_] = request;
+        requests_[(head_ + count_) % capacity_] = {request, submitted};
         ++count_;
         reserved_ += storage::work_reservation(request);
         accepted = true;
@@ -128,13 +143,13 @@ void Host::Storage::run(void *ctx) {
 }
 void Host::Storage::serve_queue() {
     for (;;) {
-        WorkItem request{};
+        Queued queued{};
         bool has_request = false, finished = false;
         portENTER_CRITICAL(&mutex_);
         has_request = count_ != 0;
         finished = !has_request && state_ == State::draining;
         if (has_request) {
-            request = requests_[head_];
+            queued = requests_[head_];
             head_ = (head_ + 1) % capacity_;
             --count_;
         }
@@ -143,18 +158,52 @@ void Host::Storage::serve_queue() {
             return;
         }
         if (!has_request) {
+            const auto started = esp_timer_get_time();
             if (refresh_space(0)) {
                 Host::wake(&owner_);
             }
+            const auto elapsed = static_cast<uint64_t>(esp_timer_get_time() - started);
+            portENTER_CRITICAL(&mutex_);
+            metrics_.idle_space_us += elapsed;
+            ++metrics_.idle_refreshes;
+            portEXIT_CRITICAL(&mutex_);
             ulTaskNotifyTake(pdTRUE, space_refresh_ticks);
             continue;
         }
-        const auto result = storage::serve_work(log_, files_, request);
-        static_cast<void>(refresh_space(storage::work_reservation(request)));
-        if (result.post()) {
-            Host::wake(&owner_);
-        }
+        serve(queued);
     }
+}
+// Preserve serve -> refresh reservations -> post ordering; publish observations only afterwards.
+void Host::Storage::serve(const Queued &queued) {
+    const auto started = static_cast<uint64_t>(esp_timer_get_time());
+    const auto result = storage::serve_work(log_, files_, queued.work);
+    const auto served = static_cast<uint64_t>(esp_timer_get_time());
+    static_cast<void>(refresh_space(storage::work_reservation(queued.work)));
+    const auto refreshed = static_cast<uint64_t>(esp_timer_get_time());
+    if (result.post()) {
+        Host::wake(&owner_);
+    }
+    const auto posted = static_cast<uint64_t>(esp_timer_get_time());
+    const auto file_metrics = files_.metrics();
+    portENTER_CRITICAL(&mutex_);
+    ++metrics_.completed;
+    metrics_.queue_us += started - queued.submitted_us;
+    metrics_.io_us += served - started;
+    metrics_.space_us += refreshed - served;
+    metrics_.post_us += posted - refreshed;
+    metrics_.max_queue_us = std::max(metrics_.max_queue_us, started - queued.submitted_us);
+    metrics_.max_io_us = std::max(metrics_.max_io_us, served - started);
+    metrics_.max_space_us = std::max(metrics_.max_space_us, refreshed - served);
+    if (const auto *core = std::get_if<Request>(&queued.work.value)) {
+        if (core->port == Request::Port::append) {
+            metrics_.append_us += served - started;
+        }
+    } else {
+        metrics_.value_us += served - started;
+    }
+    metrics_.scan_frames = log_.append_scan_frames();
+    metrics_.files = file_metrics;
+    portEXIT_CRITICAL(&mutex_);
 }
 void Host::Storage::stop() {
     if (worker_) {
@@ -202,6 +251,9 @@ StorageOpen Host::open_storage(const char *label, uint32_t capacity, bool initia
 }
 storage::FileValuePort Host::value_store() {
     return storage_ ? storage::FileValuePort{this, &Host::submit_value} : storage::FileValuePort{};
+}
+StorageMetrics Host::storage_metrics() const {
+    return storage_ ? storage_->metrics() : StorageMetrics{};
 }
 ayni_submit_result_t Host::submit_value(void *context, const storage::FileValueRequest *request) {
     auto *storage = static_cast<Host *>(context)->storage_;

@@ -2,6 +2,7 @@
 // source tokens afterwards so later synced writes remain linked. VFS rejects open-file rename.
 #ifndef AYNI_ESP_LITTLEFS_FILES_H
 #define AYNI_ESP_LITTLEFS_FILES_H
+#include <ayni/hosts/esp_idf/metrics.h>
 #include <ayni/hosts/storage/files.h>
 #include <esp_partition.h>
 #define ESP_LITTLEFS_RAW_API
@@ -30,6 +31,8 @@ class LittleFiles final : public storage::Files {
     int remove(const char *) override;
     int free_bytes(uint64_t &) const override;
     int last_mount_error() const { return mount_error_; }
+    // Same exclusive I/O-thread ownership as the file methods; no synchronization needed.
+    FileIoMetrics metrics() const { return metrics_; }
 
   private:
     static constexpr std::size_t file_capacity = 4;
@@ -60,6 +63,7 @@ class LittleFiles final : public storage::Files {
     int namespace_result(int status);
     // These structures and caches live in internal RAM with the owning Storage.
     mutable lfs_t filesystem_{};
+    mutable FileIoMetrics metrics_{};
     lfs_config config_{};
     mutable std::array<Slot, file_capacity> slots_{};
     std::array<uint8_t, cache_bytes> read_cache_{}, program_cache_{};

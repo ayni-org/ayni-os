@@ -263,6 +263,7 @@ uint32_t Speaker::input_bytes() {
     return shape.finish(value) == AYNI_OK ? ayni::encoded_bytes(value, maximum_text_bytes) : 0U;
 }
 bool Speaker::enqueue(Job job) {
+    job.call = pending_ ? pending_->call : 0;
     worker_->done.store(false, std::memory_order_release);
     if (xQueueSend(worker_->jobs, &job, 0) != pdTRUE) {
         return false;
@@ -388,14 +389,29 @@ bool Speaker::receive(Kind kind, uint64_t call, const uint8_t *data, size_t byte
 AudioWrite Speaker::append_audio(uint64_t call, uint32_t offset, const uint8_t *data,
                                  size_t bytes) {
     portENTER_CRITICAL(&mutex_);
+    const bool first = pcm_.received() == 0 && bytes != 0;
     const auto result = call == transfer_call_ && transfer_ == Transfer::data && !cancel_.load()
                             ? pcm_.append(offset, data, bytes)
                             : AudioWrite::rejected;
     portEXIT_CRITICAL(&mutex_);
     if (result == AudioWrite::accepted) {
+        if (first) {
+            trace_audio("first_pcm", call);
+        }
         wake_owner();
     }
     return result;
+}
+// Audio workers never write UART/Flash or wait for a log lock. Fixed metadata only; a
+// contended/oversized capture is counted as dropped by the existing RAM diagnostic lane.
+void Speaker::trace_audio(const char *phase, uint64_t call, uint32_t samples, int error) {
+    std::array<char, 160> line{};
+    const auto size = std::snprintf(
+        line.data(), line.size(), "wifi speaker phase=%s call=%llu samples=%lu error=%d\n", phase,
+        static_cast<unsigned long long>(call), static_cast<unsigned long>(samples), error);
+    if (size > 0 && size_t(size) < line.size()) {
+        transport_.diagnostics().capture({line.data(), size_t(size)});
+    }
 }
 ayni_status_t Speaker::advance() {
     if (!pending_) {
@@ -590,6 +606,9 @@ esp_err_t Speaker::Worker::write_samples(Job job, i2s_chan_handle_t tx) {
         size_t written = 0;
         const size_t bytes = count * repeat * stereo_channels * sizeof(int16_t);
         rc = i2s_channel_write(tx, output.data(), bytes, &written, write_timeout_ms);
+        if (at == 0 && written != 0) {
+            owner.trace_audio("first_i2s_write", job.call);
+        }
         accepted_samples += written / (repeat * stereo_channels * sizeof(int16_t));
         if (rc == ESP_OK && written != bytes) {
             rc = ESP_ERR_TIMEOUT;
@@ -606,6 +625,8 @@ void Speaker::run(void *ctx) {
             break;
         }
         worker.error = worker.play(job);
+        worker.owner.trace_audio(worker.drained ? "drained" : "ended", job.call,
+                                 worker.accepted_samples, worker.error);
         worker.input.fill(0);
         worker.output.fill(0);
         worker.done.store(true, std::memory_order_release);

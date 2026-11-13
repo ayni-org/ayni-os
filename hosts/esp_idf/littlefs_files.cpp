@@ -3,10 +3,21 @@
 #include <cerrno>
 #include <cstring>
 #include <esp_littlefs.h>
+#include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <limits>
 namespace ayni::hosts::esp_idf {
 namespace {
+// File API wall time includes preemption and LittleFS work; this emits no logs or I/O.
+class FileTimer {
+  public:
+    explicit FileTimer(uint64_t &total) : total_(total), start_(esp_timer_get_time()) {}
+    ~FileTimer() { total_ += static_cast<uint64_t>(esp_timer_get_time() - start_); }
+
+  private:
+    uint64_t &total_;
+    int64_t start_;
+};
 // Platform-local, bounded partition leases exclude all Ayni Hosts. Deployments
 // must dedicate these partitions: external VFS/raw writers are outside this owner.
 constexpr std::size_t volume_capacity = 2;
@@ -227,6 +238,8 @@ int LittleFiles::lock(int handle) {
 }
 int LittleFiles::read(int handle, uint64_t offset, uint8_t *data, std::size_t bytes,
                       std::size_t &count) const {
+    FileTimer timer(metrics_.read_us);
+    ++metrics_.read_calls;
     count = 0;
     if (volume_state_ != VolumeState::mounted) {
         return unavailable();
@@ -248,9 +261,11 @@ int LittleFiles::read(int handle, uint64_t offset, uint8_t *data, std::size_t by
         return cause(status);
     }
     count = static_cast<std::size_t>(status);
+    metrics_.read_bytes += count;
     return 0;
 }
 int LittleFiles::write(int handle, uint64_t offset, const uint8_t *data, std::size_t bytes) {
+    FileTimer timer(metrics_.write_us);
     if (volume_state_ != VolumeState::mounted) {
         return unavailable();
     }
@@ -297,6 +312,7 @@ int LittleFiles::truncate(int handle, uint64_t bytes) {
                                                         static_cast<lfs_off_t>(bytes)));
 }
 int LittleFiles::sync_file(int handle) {
+    FileTimer timer(metrics_.sync_us);
     if (volume_state_ != VolumeState::mounted) {
         return unavailable();
     }

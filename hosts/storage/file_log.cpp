@@ -346,6 +346,7 @@ FileLog::Result FileLog::append(uint64_t commit_seq, const uint8_t *data, uint32
     // A retry can follow an UNKNOWN whose full frame reached the medium.
     // Compare every byte, rather than a checksum, before acknowledging it.
     for (uint64_t at = file_header_size; at < end_;) {
+        ++append_scan_frames_;
         Frame frame{};
         int error = 0;
         if (!read_header(at, frame, error) || frame.end > end_) {

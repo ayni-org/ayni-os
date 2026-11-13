@@ -72,8 +72,9 @@ class Chat {
     void wait_for(const char *phase, const char *label, ayni_status_t);
     void status(uint64_t, const char *);
     void publish_model();
-    void publish_proposals();            // Best-effort UI metadata, never execution approval.
-    void trace(const char *phase) const; // Fixed phase/timing metadata only.
+    void publish_proposals();      // Best-effort UI metadata, never execution approval.
+    void trace(const char *phase); // Fixed phase/timing metadata only.
+    void trace_latency(const char *phase);
     void diagnostics();
     Transport &transport_;
     Speaker speaker_;
@@ -132,6 +133,12 @@ class Chat {
         uint64_t next_trace_us = 0;  // Monotonic microseconds, only valid with phase.
     } preparation_wait_;
     uint64_t turn_started_ = 0;
+    // Owner-only per-turn wall time. Step/conversation work may overlap storage on its worker;
+    // storage snapshots are cumulative completed work, sampled as deltas at phase boundaries.
+    struct TurnTiming {
+        uint64_t step_calls = 0, step_us = 0, max_step_us = 0, conversation_us = 0;
+        ayni::hosts::esp_idf::StorageMetrics storage;
+    } timing_;
     uint64_t reply_deadline_ = 0; // Deadline for final-text queue admission only.
     uint32_t model_requests_ = 0; // Metadata only, includes any context-compaction calls.
     ayni::strategies::Encoded parameters_{}; // Goal parameters, then the final checkpoint.

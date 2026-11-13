@@ -347,3 +347,25 @@ SpeechText使用SHA256锁定的MD4C 0.5.2及其实体表，替代简单符号删
 - 裸数字：原始答复及呈现使用tx_bytes限额，分段使用SpeechProfile::text_bytes；MD4C版本和源码校验仅在AyniMarkdown.cmake锁定，未新增Core记录布局或ABI数字。
 
 停止与关闭路径另经独立只读定向复核：驱动供电不属于软件准入条件，只有API排空、Core STOPPED、电机／扬声器worker真实关闭、Host关闭和Kernel销毁后才允许写备用槽。GPIO低电平读回属于软件停止事实；复位／bootloader窗口无毛刺、轮轴静止和独立硬件超时仍未验证。该复核不等同硬件测试，也不作为新的人工断电审批门槛。
+
+## 2026-11-14 回合延迟诊断
+
+用户观察到动作慢且像多轮执行，要求补充分段计时。旧版最近完整回合98.723秒，4次模型请求、3段5/2/3秒动作；模型API累计约10.25秒，PWM累计10.01秒，流式语音API约35.81秒，其余阶段约42.66秒。该差值包含多种本地工作，不能直接当作Flash耗时；流式语音总时长也不是首声等待。旧日志只证明均正常完成，未证明具体慢点。原始元数据保存在忽略的本机build/speech-text-20261114/latency-logs.json，属于仓库外证据。
+
+诊断只增加观察，不调整调度、持久接受、派发屏障、空间预算、许可、停止或自动语音行为；Core、C ABI和存储格式不改。ESP Host提供owner线程的有界、加锁累计快照；存储worker保持执行→刷新空间及释放预留→投递完成的原顺序，随后发布计数。计时包含任务抢占，不代表纯CPU或裸Flash时间。共享FileLog仅累计append查重扫描的记录头探测次数，仍执行完整原查重与同步。
+
+- `wifi latency phase=...`：从上一采样点起已完成请求数量，以及排队、实际I/O、请求后的空间统计、投递完成耗时；空闲空间统计另计。`max_*`是本Host生命周期最大值，不是该阶段增量。
+- `wifi io phase=...`：append/外层文件值的I/O子集、扫描记录头次数、文件read次数/返回字节及read/write/sync耗时。`turn_core_ms`、`steps`、`max_step_us`、`turn_converse_ms`是本回合已完成owner工作累计值；采样回调可能位于当前step内。不同线程及子集计时有重叠，不能相加为回合时长。
+- 模型请求、结果交接、正文缓存就绪、答案保存及terminal沿用固定阶段名输出摘要。异步请求在采样时仍未完成的耗时会计入后续快照；完成通知也可能先于计数发布被owner观察到。
+- `wifi api phase=begin`增加排队耗时；流式模型/语音的`first_body`只表示首批HTTP正文，未必是可播放音频。`wifi speaker phase=first_pcm/first_i2s_write/drained`分别记录首批PCM接纳、首次I²S写入和排空；I²S接纳不是麦克风测得的首声。
+
+全部新增日志仅含阶段、公开请求身份、计数和耗时，不记录用户/模型文本、工具参数、密钥或媒体。存储worker不打印或写入诊断文件；音频worker只尝试复制固定元数据到RAM，不等待日志锁。原有有界RAM环由64增至128条，12条分页、覆盖游标和丢弃计数不变，额外约25 KiB随Transport位于PSRAM。定位时从电脑持续读取`/api/logs?after=...`并保存游标，以免长回合覆盖起始阶段。
+
+本机AppleClang21/CMake4.0.3正常Wi-Fi检查74/74、直接编译的共享文件机制检查4/4及工具检查98/98通过；后者未运行Native Host或Linux完整配置。ESP-IDF6.0.3/GCC15.2.0单任务构建通过；clang-format18、依赖、契约、diff和机械可读性检查通过。机械可读性维持19项既有public-code-comment基线。硬件采样及OTA记录补充于下文。
+
+作者自查：
+
+- 删除注释：检查本次git diff，既有持久与关闭注释保留；trace说明扩展为固定阶段计时。
+- Kernel字段：本次core/及include/无改动；计数归ESP Storage/LittleFiles、共享FileLog及实验Chat，快照只供诊断，不参与决策。
+- 重复机制：复用原存储队列、文件接口、DiagnosticLog及阶段trace；不引入另一条任务、执行或TTS通道。
+- 裸数字：时间字段均用us或ms命名；日志容量沿用slots常量，C ABI和记录版本/布局没有新增数字。
