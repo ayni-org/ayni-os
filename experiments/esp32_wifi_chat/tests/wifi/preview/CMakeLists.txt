@@ -1,0 +1,17 @@
+cmake_minimum_required(VERSION 3.22)
+project(ayni_screen_preview LANGUAGES CXX ASM)
+set(CMAKE_CXX_STANDARD 17)
+find_package(ZLIB REQUIRED)
+get_filename_component(EXPERIMENT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
+get_filename_component(AYNI_ROOT "${EXPERIMENT}/../.." ABSOLUTE)
+if(APPLE)
+    set(font_section ".section __DATA,__const")
+else()
+    set(font_section ".section .rodata")
+endif()
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/font.S"
+    "${font_section}\n.globl _binary_ayni_font_bin_start\n_binary_ayni_font_bin_start:\n.incbin \"${EXPERIMENT}/build/assets/ayni_font.bin\"\n")
+add_executable(ayni_screen_preview main.cpp "${CMAKE_CURRENT_BINARY_DIR}/font.S"
+    "${EXPERIMENT}/firmware/wifi/canvas.cpp" "${EXPERIMENT}/firmware/wifi/app_menu.cpp")
+target_include_directories(ayni_screen_preview PRIVATE . "${EXPERIMENT}/firmware/wifi" "${AYNI_ROOT}/include" "${AYNI_ROOT}/providers/model_protocol/include")
+target_link_libraries(ayni_screen_preview PRIVATE ZLIB::ZLIB)

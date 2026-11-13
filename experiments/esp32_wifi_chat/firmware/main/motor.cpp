@@ -32,8 +32,8 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
         }
         return rc;
     };
-    // Register contracts at boot; hardware and the running worker are acquired only
-    // after local preparation. The composition reserves the control stack before Host startup.
+    // Register contracts at boot; hardware and the running worker are initialized automatically
+    // after registration. The composition reserves the control stack before Host startup.
     status_input_.kind = AYNI_VALUE_OBJECT;
     status_input_.subtree_end = 1;
     result_.kind = AYNI_VALUE_TEXT;
@@ -151,7 +151,7 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
         constexpr const char *summaries[]{
             "Read TA6586 wiring and manual-bench readiness; power/shaft state is not measured.",
             "Compute a TA6586 software plan without output.",
-            "Run a bounded TA6586 PWM procedure after boot-local touchscreen preparation; no "
+            "Run a bounded TA6586 PWM procedure while local motor control is enabled; no "
             "per-action approval.",
             "Request latched local motor output stop. Reconnection with driver power off is "
             "required to rearm."};
@@ -170,7 +170,8 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
             "This is PWM duty, not RPM; actual shaft direction is not measured. Runtime operator "
             "cap may "
             "be lower than 90. "
-            "No per-action approval after local preparation; do not retry "
+            "Resources initialize automatically; control defaults enabled after session readiness. "
+            "The local toggle can disable it. No per-action approval; do not retry "
             "expired or "
             "unknown actions.",
             "UNARY: use operation=\"invoke\" or omit operation; start is unsupported. Empty "

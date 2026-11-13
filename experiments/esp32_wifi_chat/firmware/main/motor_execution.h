@@ -1,4 +1,5 @@
 #pragma once
+#include "motor_admission.h"
 #include "motor_output.h"
 #include "motor_plan.h"
 #include "transport.h"
@@ -8,7 +9,7 @@
 #include <freertos/task.h>
 #include <optional>
 namespace wifichat {
-// One Core-controlled physical procedure after explicit boot-local preparation.
+// One Core-controlled physical procedure while the local enable interlock is open.
 // Core callbacks only copy bounded inbox messages. The control worker alone owns
 // Gate/GPIO state; completions use the public any-thread mailbox APIs.
 class MotorExecution {
@@ -109,6 +110,9 @@ class MotorExecution {
     uint64_t executor_boot_ = 0, current_permit_ = 0, refused_through_ = 0;
     uint64_t sequence_ = 0, terminal_notice_ = 0;
     Mode mode_ = Mode::disarmed;
+    MotorAdmission admission_;
+    bool state_notice_ = true; // Worker retries initial/mode snapshots until UI admission.
+    bool initialization_reported_ = false; // Owner-only failure notification when no worker exists.
     // Owner-only, one hardware acquisition attempt per boot. A partial cleanup
     // failure must retain its objects and cannot be overwritten by another Prepare.
     enum class Initialization { unattempted, failed, ready };

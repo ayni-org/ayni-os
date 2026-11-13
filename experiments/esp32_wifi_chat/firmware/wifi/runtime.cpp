@@ -3,10 +3,12 @@
 #include "../main/turn_status.h"
 #include "../main/wake.h"
 #include "api.h"
+#include "app_menu.h"
 #include "canvas.h"
 #include "motor_panel.h"
 #include "network_time.h"
 #include "ota_update.h"
+#include "preferences.h"
 #include "remote.h"
 #include "reset_worker.h"
 #include "station.h"
@@ -30,10 +32,10 @@ namespace wifichat::wifi {
 namespace {
 constexpr int64_t redraw_us = 300000;
 constexpr size_t recent_stages = 3;
+constexpr size_t network_fields[]{0, 1}, model_fields[]{3, 4, 5, 2};
 constexpr int remote_candidates_top = 90, remote_candidate_pitch = 46;
-constexpr const char *labels[] = {"Wi-Fi 名称",      "Wi-Fi 密码",   "语音 API 地址",
-                                  "模型 API 根地址", "模型 API Key", "模型名称",
-                                  "模型接口",        "生成时预览",   "Chat 输出预算格式"};
+constexpr const char *labels[] = {"Wi-Fi 网络", "密码", "语音 API", "模型 API", "API 密钥",
+                                  "模型名称",   "接口", "流式预览", "输出字段"};
 std::string_view keyboard_keys(bool symbols) {
     return symbols ? "!@#$%^&*()_+-=[]{}:<>?~`|\\\"' ABCDEFGHIJK"
                    : "qwertyuiopasdfghjkl;zxcvbnm,./0123456789";
@@ -47,6 +49,8 @@ void resources(DiagnosticLog &log, const char *stage) {
         static_cast<unsigned long>(uxTaskGetStackHighWaterMark(nullptr)));
 }
 enum class Page {
+    launcher,
+    voice,
     conversation,
     history,
     status,
@@ -88,6 +92,8 @@ class Runtime {
     void draw_keyboard();
     void draw_settings();
     void draw_home();
+    void open_app(App);
+    void toggle_voice();
     void configure();
     void clear_preview();
     void cancel();
@@ -110,6 +116,14 @@ class Runtime {
     }
     Transport &transport_;
     Settings settings_{};
+    Preferences preferences_;
+    bool preferences_ok_ = false;
+    struct VoiceSetting {
+        uint64_t id;
+        bool enabled;
+        bool queued;
+    };
+    std::optional<VoiceSetting> voice_setting_; // Exact owner acknowledgement gates new input.
     Canvas canvas_{};
     Touch touch_{};
     Station station_{};
@@ -152,8 +166,10 @@ class Runtime {
     std::array<char, 17> route_{}; // Frozen with Api's active settings, separate from the UI draft.
     bool shifted_ = false, symbols_ = false, was_connected_ = false;
     bool was_clock_ready_ = false; // UI redraw tracking only; does not own/copy system time.
-    bool model_settings_ = false;
-    Page page_ = Page::conversation;
+    const char *voice_hint_ = "重启后保留";
+    enum class SettingsView { network, model, options };
+    SettingsView settings_view_ = SettingsView::network;
+    Page page_ = Page::launcher;
     size_t field_ = 0, current_page_ = 0, pages_ = 1, peer_index_ = 0;
     uint64_t document_turn_ = 0; // Last turn that explicitly used the screen capability.
     uint64_t turn_ = 0, next_id_ = uint64_t(esp_random()) << 32U;
@@ -289,6 +305,7 @@ void Runtime::configure() {
         api_started_ = true;
     }
     if (transport_.post(Kind::configure, 0, &selection_, sizeof(selection_))) {
+        voice_setting_ = VoiceSetting{++next_id_, preferences_.voice_reply(), false};
         configured_ = true;
         api_.submit(Request::health, ++next_id_);
         session_status(Session::opening, "已联网，正在打开 Ayni 会话");
@@ -345,6 +362,10 @@ void Runtime::start_motor_check(uint32_t motor) {
     message("已提交本地自检，无需模型");
 }
 void Runtime::send(std::string_view text, uint64_t id) {
+    if (voice_setting_) {
+        message("语音开关同步中，尚未发送输入");
+        return;
+    }
     if (!model_clock_ready()) {
         message("等待网络校时；未创建对话任务");
         return;
@@ -388,6 +409,16 @@ void Runtime::packets() {
         const std::string_view body(reinterpret_cast<const char *>(packet_.body.data()),
                                     packet_.size);
         switch (packet_.kind) {
+        case Kind::voice_reply_state:
+            if (voice_setting_ && id == voice_setting_->id && packet_.size == 1 &&
+                bool(packet_.body[0]) == voice_setting_->enabled) {
+                voice_setting_.reset();
+                if (page_ == Page::voice) {
+                    message(preferences_.voice_reply() ? "自动语音回复已开启"
+                                                       : "自动语音回复已关闭");
+                }
+            }
+            break;
         case Kind::motor_check_state: {
             MotorCheckNotice notice;
             if (!motor_check_id_ || id != *motor_check_id_ ||
@@ -497,6 +528,15 @@ void Runtime::packets() {
                 }
                 stage(speech_error_.empty() ? std::string("任务已暂停：") + std::string(body)
                                             : speech_error_ + "；任务已暂停，未重播");
+            } else if (body == "motor resources initialized") {
+                motor_.initialized(true);
+            } else if (body == "motor initialization failed") {
+                motor_.initialized(false);
+                message("电机资源初始化失败，聊天仍可使用");
+            } else if (body == "automatic voice reply draining after error") {
+                stage("语音异常，等待停止确认后结束本轮");
+            } else if (body == "automatic voice reply started") {
+                stage("语音回复：正在朗读最终答复");
             } else if (body.find("motor preparation failed") == 0) {
                 motor_.preparation_failed(transport_, body);
                 message("电机初始化失败，详情见电机页");
@@ -526,7 +566,9 @@ void Runtime::packets() {
                         capacity_ = Capacity::idle;
                         message("完整ToolLoop容量样本已完成；结果见Web日志");
                     } else {
-                        message("本轮已完成；可继续输入");
+                        message(body.find("reply completed; voice failed") == 0
+                                    ? body
+                                    : std::string_view("本轮已完成；可继续输入"));
                     }
                 }
             } else if (turn_status(body) == TurnStatus::failed) {
@@ -822,17 +864,41 @@ void Runtime::tap(int x, int y) {
         return;
     }
     dirty_ = true;
-    if (motor_.active() && y < 24 && x >= 178) {
+    if (motor_.active() && y >= 2 && y < 26 && x >= 180 && x < 236) {
         motor_.stop(transport_);
         cancel();
         page_ = Page::motor;
         return;
     }
+    if (page_ != Page::launcher && y >= 2 && y < 26 && x >= 4 && x < 52) {
+        if (page_ == Page::keyboard) {
+            page_ = field_ < Settings::field_count ? Page::settings : Page::history;
+        } else if (page_ == Page::networks) {
+            page_ = Page::settings;
+        } else if (page_ == Page::settings && settings_view_ == SettingsView::options) {
+            settings_view_ = SettingsView::model;
+        } else {
+            page_ = Page::launcher;
+        }
+        return;
+    }
     switch (page_) {
+    case Page::launcher:
+        if (const auto app = app_at(x, y)) {
+            open_app(*app);
+        }
+        break;
+    case Page::voice:
+        if (x >= 8 && x < 232 && y >= 84 && y < 160) {
+            toggle_voice();
+        }
+        break;
     case Page::status:
-        if (y >= 270) {
+        if (!current_page_ && y >= 66 && y < 260) {
+            current_page_ = 1;
+        } else if (y >= 270) {
             if (x < 116) {
-                page_ = Page::conversation;
+                page_ = Page::launcher;
                 current_page_ = 0;
             } else if (x < 178 && current_page_) {
                 --current_page_;
@@ -846,11 +912,9 @@ void Runtime::tap(int x, int y) {
         tap_home(x, y);
         break;
     case Page::maintenance:
-        if (y >= 278) {
-            page_ = Page::history;
-        } else if (y >= 186 && y < 222) {
+        if (x >= 8 && x < 232 && y >= 84 && y < 148) {
             page_ = Page::confirm_clear;
-        } else if (y >= 228 && y < 268) {
+        } else if (x >= 8 && x < 232 && y >= 164 && y < 240) {
             begin_rebuild();
         }
         break;
@@ -869,10 +933,7 @@ void Runtime::tap(int x, int y) {
     case Page::motor: {
         const auto action = motor_.tap(
             transport_, x, y, ready() && station_.connected() && !busy() && !recognizing());
-        if (action == MotorPanel::Tap::back) {
-            page_ = Page::history;
-        } else if (action == MotorPanel::Tap::test_first ||
-                   action == MotorPanel::Tap::test_second) {
+        if (action == MotorPanel::Tap::test_first || action == MotorPanel::Tap::test_second) {
             start_motor_check(action == MotorPanel::Tap::test_first ? 0 : 1);
         }
     } break;
@@ -881,55 +942,90 @@ void Runtime::tap(int x, int y) {
         break;
     }
 }
-void Runtime::tap_home(int x, int y) {
-    if (y < 24) {
-        page_ = page_ == Page::history ? Page::conversation : Page::history;
-        current_page_ = 0;
+void Runtime::open_app(App app) {
+    current_page_ = 0;
+    switch (app) {
+    case App::chat:
+        page_ = Page::history;
+        break;
+    case App::voice:
+        page_ = Page::voice;
+        break;
+    case App::wifi:
+        settings_view_ = SettingsView::network;
+        page_ = Page::settings;
+        break;
+    case App::model:
+        settings_view_ = SettingsView::model;
+        page_ = Page::settings;
+        break;
+    case App::remote:
+        page_ = Page::remote;
+        break;
+    case App::motor:
+        page_ = Page::motor;
+        break;
+    case App::screen:
+        page_ = Page::conversation;
+        break;
+    case App::status:
+        page_ = Page::status;
+        break;
+    case App::maintenance:
+        page_ = Page::maintenance;
+        break;
     }
+}
+void Runtime::toggle_voice() {
+    if (!preferences_ok_ || !preferences_.set_voice_reply(!preferences_.voice_reply())) {
+        voice_hint_ = "保存失败，保持原状态";
+        message("语音开关未保存，保持原状态");
+        return;
+    }
+    voice_hint_ = "重启后保留";
+    voice_setting_ = VoiceSetting{++next_id_, preferences_.voice_reply(), false};
+    message(preferences_.voice_reply() ? "语音回复已开启" : "语音回复已关闭");
+}
+void Runtime::tap_home(int x, int y) {
     if (y >= 24 && y < 48) {
         page_ = Page::status;
         current_page_ = 0;
-    }
-    if (y >= 252 && y < 282) {
-        if (x < 60) {
-            page_ = Page::settings;
-        } else if (x < 120) {
-            page_ = Page::remote;
-        } else if (x < 180) {
-            page_ = Page::motor;
-        } else {
+    } else if (y >= 252 && y < 282) {
+        if (x < 80) {
+            page_ = Page::launcher;
+        } else if (x < 160) {
             field_ = Settings::field_count;
             editing_.fill(0);
             page_ = Page::keyboard;
+        } else {
+            cancel();
         }
     } else if (y >= 286) {
-        if (x < 60) {
-            cancel();
-        } else if (x < 120) {
-            page_ = Page::maintenance;
-        } else if (x < 180 && current_page_) {
+        if (x < 80 && current_page_) {
             --current_page_;
-        } else if (x >= 180 && current_page_ + 1 < pages_) {
+        } else if (x >= 80 && x < 160) {
+            page_ = page_ == Page::history ? Page::conversation : Page::history;
+            current_page_ = 0;
+        } else if (x >= 160 && current_page_ + 1 < pages_) {
             ++current_page_;
         }
     }
 }
 void Runtime::tap_settings(int x, int y) {
-    if (y < 26) {
-        model_settings_ = !model_settings_;
-        return;
-    }
-    if (model_settings_ && y >= 30 && y < 246) {
-        const size_t option = size_t((y - 30) / 60);
+    if (settings_view_ == SettingsView::options && y >= preference_top &&
+        y < preference_top + 3 * option_pitch) {
+        const auto option = (y - preference_top) / option_pitch;
+        if ((y - preference_top) % option_pitch >= 52) {
+            return;
+        }
         if (option == 0) {
             std::strcpy(settings_.api_type.data(),
-                        std::strcmp(settings_.api_type.data(), "responses") == 0
+                        settings_.model_api() == ayni::providers::model_protocol::Api::responses
                             ? "chat_completions"
                             : "responses");
         } else if (option == 1) {
-            std::strcpy(settings_.stream.data(),
-                        std::strcmp(settings_.stream.data(), "true") == 0 ? "false" : "true");
-        } else if (option == 2) {
+            std::strcpy(settings_.stream.data(), settings_.model_streaming() ? "false" : "true");
+        } else {
             std::strcpy(settings_.output_limit.data(),
                         std::strcmp(settings_.output_limit.data(), "max_tokens") == 0
                             ? "max_completion_tokens"
@@ -937,8 +1033,16 @@ void Runtime::tap_settings(int x, int y) {
         }
         return;
     }
-    if (y >= 30 && y < 246) {
-        field_ = size_t((y - 30) / 36);
+    if (y >= preference_top && y < preference_top + 4 * preference_pitch &&
+        settings_view_ != SettingsView::options) {
+        const auto index = size_t((y - preference_top) / preference_pitch);
+        const auto count = settings_view_ == SettingsView::network ? std::size(network_fields)
+                                                                   : std::size(model_fields);
+        if (index >= count || (y - preference_top) % preference_pitch >= preference_height) {
+            return;
+        }
+        field_ =
+            settings_view_ == SettingsView::network ? network_fields[index] : model_fields[index];
         if (!field_) {
             page_ = Page::networks;
             station_.scan();
@@ -946,18 +1050,12 @@ void Runtime::tap_settings(int x, int y) {
             std::snprintf(editing_.data(), editing_.size(), "%s", settings_.field(field_));
             page_ = Page::keyboard;
         }
-    } else if (y >= 276) {
-        if (x < 100) {
-            page_ = Page::conversation;
-        } else {
-            save_restart();
-        }
-    } else if (y >= 246) {
-        if (station_.connected() && api_started_) {
-            api_.submit(Request::health, ++next_id_);
-        } else {
-            message("Wi-Fi 未连接，请保存配置后重启");
-        }
+    } else if (y >= 248 && y < 276 && settings_view_ == SettingsView::model) {
+        settings_view_ = SettingsView::options;
+    } else if (y >= 284) {
+        save_restart();
+    } else if (y >= 246 && y < 274 && station_.connected() && api_started_) {
+        api_.submit(Request::health, ++next_id_);
     }
 }
 void Runtime::tap_keyboard(int x, int y) {
@@ -1007,8 +1105,8 @@ void Runtime::tap_keyboard(int x, int y) {
     }
 }
 void Runtime::tap_networks(int x, int y) {
-    if (y >= 40 && y < 264) {
-        const auto selected = size_t((y - 40) / 28);
+    if (y >= 62 && y < 270) {
+        const auto selected = size_t((y - 62) / 26);
         if (selected < network_count_) {
             std::memcpy(settings_.ssid.data(), networks_[selected].ssid, 32);
             settings_.ssid[32] = 0;
@@ -1041,7 +1139,7 @@ void Runtime::tap_remote(int x, int y) {
         }
     } else if (y >= 282) {
         if (x < 60) {
-            page_ = Page::conversation;
+            page_ = Page::launcher;
         } else if (x < 120) {
             remote_.scan();
         } else if (x < 180) {
@@ -1075,8 +1173,23 @@ void Runtime::tap_confirmation(int x, int y) {
 
 void Runtime::draw() {
     canvas_.clear();
-    canvas_.label(8, 6, station_.connected() ? "Ayni · Wi-Fi 已连接" : "Ayni · Wi-Fi 未连接");
+    canvas_.label(92, 8, "Ayni", Canvas::muted);
+    canvas_.rounded_rectangle(154, 12, 6, 6, 3,
+                              station_.connected() ? Canvas::positive : Canvas::muted);
+    if (page_ != Page::launcher) {
+        canvas_.button(4, 2, 48, 24, "返回");
+    }
     switch (page_) {
+    case Page::launcher:
+        canvas_.label(12, 28, ready() ? "应用" : "应用 · 连接中", Canvas::muted);
+        draw_app_menu(canvas_, preferences_.voice_reply());
+        break;
+    case Page::voice:
+        draw_voice_preferences(canvas_, preferences_.voice_reply(),
+                               !preferences_ok_ ? "读取失败，原设置保留"
+                               : voice_setting_ ? "同步中…"
+                                                : voice_hint_);
+        break;
     case Page::status:
         draw_status();
         break;
@@ -1107,19 +1220,27 @@ void Runtime::draw() {
         break;
     }
     if (motor_.active()) {
-        canvas_.button(178, 0, 60, 24, "停止");
+        canvas_.button(180, 2, 56, 24, "停止", Canvas::danger, Canvas::background);
     }
     dirty_ = false;
 }
 void Runtime::draw_status() {
+    canvas_.heading("设备状态");
     const std::string detail =
         "会话：\n" + session_detail_ + "\n\n遥控器：\n" + remote_snapshot_.message.data() +
         "\n\n模型网络：\n" + (model_clock_ready() ? "校时已就绪" : "等待网络校时，尚不能对话") +
         "\n\n当前提示：\n" + status_ + "\n\n执行过程：\n" + stages(stage_capacity);
-    pages_ = canvas_.document(detail, current_page_, 32, 250);
-    canvas_.button(0, 270, 114, 44, "返回");
-    canvas_.button(118, 270, 58, 44, "上页");
-    canvas_.button(180, 270, 58, 44, "下页");
+    pages_ = 1 + canvas_.document(detail, current_page_ ? current_page_ - 1 : SIZE_MAX, 66, 260);
+    if (!current_page_) {
+        canvas_.setting_row(66, 44, "会话", ready() ? "就绪" : "未就绪");
+        canvas_.setting_row(116, 44, "遥控器",
+                            remote_snapshot_.state == Remote::State::ready ? "已连接" : "未就绪");
+        canvas_.setting_row(166, 44, "网络校时", model_clock_ready() ? "已同步" : "等待同步");
+        canvas_.setting_row(216, 44, "当前状态", status_);
+    }
+    canvas_.button(8, 278, 104, 36, "返回");
+    canvas_.button(118, 278, 54, 36, "上页");
+    canvas_.button(178, 278, 54, 36, current_page_ ? "下页" : "详情");
 }
 void Runtime::draw_home() {
     const std::string_view activity = remote_snapshot_.state == Remote::State::recording
@@ -1138,18 +1259,14 @@ void Runtime::draw_home() {
     const std::string_view content =
         page_ == Page::history ? std::string_view(history) : std::string_view(document_);
     pages_ = canvas_.document(
-        content.empty()
-            ? "按住遥控器语音键说话。\n松开后自动转写并提交。\n\n首次使用：设置 Wi-Fi 和 "
-              "API，再扫描配对遥控器。\n点击顶栏切换会话和屏幕文档。\n此配置未启用电机。"
-            : content,
+        content.empty() ? (page_ == Page::history ? "按住语音键，开始对话" : "暂无屏幕内容")
+                        : content,
         current_page_, 52, 244);
-    const char *navigation[] = {"设置", "遥控器", "电机", "输入"};
-    for (int i = 0; i < 4; ++i) {
-        canvas_.button(i * 60, 252, 58, 30, navigation[i]);
-    }
-    const char *buttons[] = {"取消", "清理", "上页", "下页"};
-    for (int i = 0; i < 4; ++i) {
-        canvas_.button(i * 60, 286, 58, 30, buttons[i]);
+    const char *navigation[]{"应用", "输入", "取消"};
+    const char *pages[]{"上页", page_ == Page::history ? "文档" : "聊天", "下页"};
+    for (int at = 0; at < 3; ++at) {
+        canvas_.button(at * 80, 252, 76, 30, navigation[at]);
+        canvas_.button(at * 80, 286, 76, 30, pages[at]);
     }
 }
 void Runtime::draw_maintenance() {
@@ -1157,49 +1274,54 @@ void Runtime::draw_maintenance() {
         canvas_.document(status_ + "\n\n重建期间请勿断电。", 0, 40, 270);
         return;
     }
-    canvas_.label(8, 30, "清理任务与会话");
-    canvas_.document("仅清对话：保留任务记录。\n重建：删除任务、会话和实验历史。\n保留Wi-"
-                     "Fi、模型Key和遥控器配对。\n确认后先停止输出，再重建。",
-                     0, 54, 180);
-    canvas_.button(8, 186, 224, 34, "仅清空对话");
-    canvas_.button(8, 228, 224, 40, "确认重建任务与会话");
-    canvas_.button(8, 278, 224, 36, "返回");
+    canvas_.heading("清理");
+    canvas_.setting_row(84, 64, "清空对话", "保留任务记录");
+    canvas_.setting_row(164, 76, "确认重建任务与会话", "删除任务与对话");
+    canvas_.label(18, 168, "确认重建任务与会话", Canvas::danger);
+    canvas_.label(16, 256, "保留网络、密钥及配对", Canvas::muted);
 }
 void Runtime::draw_settings() {
-    canvas_.button(126, 0, 114, 26, model_settings_ ? "网络设置" : "模型选项");
-    if (model_settings_) {
-        canvas_.label(8, 30, "模型接口（点击切换）");
-        canvas_.label(8, 54, settings_.api_type.data(), Canvas::accent);
-        canvas_.label(8, 90, "生成时预览（暂定文字）");
-        canvas_.label(8, 114, std::strcmp(settings_.stream.data(), "true") == 0 ? "开启" : "关闭",
-                      Canvas::accent);
-        canvas_.label(8, 150, "Chat 输出预算格式");
-        canvas_.label(8, 174, settings_.output_limit.data(), Canvas::accent);
-        canvas_.label(8, 210, "修改后保存重启生效");
-    }
-    for (size_t i = 0; !model_settings_ && i < Settings::legacy_field_count; ++i) {
-        const int y = 30 + int(i) * 36;
-        canvas_.label(8, y, labels[i]);
-        canvas_.label(8, y + 16,
-                      (i == 1 || i == 4) ? (*settings_.field(i) ? "********" : "未设置")
-                                         : settings_.field(i),
-                      Canvas::accent);
+    std::array<PreferenceRow, 4> rows{};
+    size_t count = 0;
+    if (settings_view_ == SettingsView::options) {
+        const char *titles[]{"接口", "流式预览", "Chat 输出字段"};
+        const char *values[]{
+            settings_.model_api() == ayni::providers::model_protocol::Api::responses
+                ? "Responses"
+                : "Chat Completions",
+            settings_.model_streaming() ? "开启" : "关闭", settings_.output_limit.data()};
+        count = std::size(titles);
+        for (size_t at = 0; at < count; ++at) {
+            rows[at] = {titles[at], values[at]};
+        }
+    } else {
+        count = settings_view_ == SettingsView::network ? std::size(network_fields)
+                                                        : std::size(model_fields);
+        for (size_t at = 0; at < count; ++at) {
+            const auto field =
+                settings_view_ == SettingsView::network ? network_fields[at] : model_fields[at];
+            rows[at] = {labels[field], (field == 1 || field == 4)
+                                           ? (*settings_.field(field) ? "已设置" : "未设置")
+                                           : settings_.field(field)};
+        }
     }
     const auto url = WebConfig::address();
-    canvas_.button(0, 246, 240, 26, *url.data() ? url.data() : "联网后显示 Web 配置地址");
-    canvas_.button(0, 278, 96, 36, "返回");
-    canvas_.button(100, 278, 140, 36, "保存并重启");
+    draw_endpoint_preferences(canvas_,
+                              settings_view_ == SettingsView::network ? "网络"
+                              : settings_view_ == SettingsView::model ? "模型与语音"
+                                                                      : "模型选项",
+                              rows.data(), count, settings_view_ == SettingsView::options,
+                              settings_view_ == SettingsView::model, url.data());
 }
 void Runtime::draw_keyboard() {
-    canvas_.label(8, 30,
-                  field_ < Settings::field_count ? labels[field_] : "输入消息（中文请用遥控器）");
+    canvas_.heading(field_ < Settings::field_count ? labels[field_] : "输入消息");
     std::string shown = field_ == 1 || field_ == 4 ? std::string(std::strlen(editing_.data()), '*')
                                                    : editing_.data();
     if (shown.size() > 28) {
         shown = shown.substr(shown.size() - 28);
     }
-    canvas_.label(8, 58, shown);
-    canvas_.label(8, 84, "完成只更新本页；配置需保存重启");
+    canvas_.rounded_rectangle(8, 64, 224, 42, 8, Canvas::surface);
+    canvas_.label(16, 78, shown, Canvas::accent, 208);
     const auto keys = keyboard_keys(symbols_);
     for (int i = 0; i < 40; ++i) {
         char key[2]{size_t(i) < keys.size() ? keys[i] : ' ', 0};
@@ -1214,17 +1336,30 @@ void Runtime::draw_keyboard() {
     }
 }
 void Runtime::draw_networks() {
-    canvas_.label(8, 26, "选择 2.4 GHz Wi-Fi");
+    canvas_.heading("Wi-Fi 网络");
     for (size_t i = 0; i < network_count_; ++i) {
-        canvas_.button(4, 40 + int(i) * 28, 232, 26,
-                       reinterpret_cast<const char *>(networks_[i].ssid));
+        canvas_.button(8, 62 + int(i) * 26, 224, 24, {});
+        canvas_.label(16, 66 + int(i) * 26, reinterpret_cast<const char *>(networks_[i].ssid),
+                      Canvas::foreground, 208);
+    }
+    if (!network_count_) {
+        canvas_.label(16, 100, "暂无网络，点击扫描", Canvas::muted);
     }
     canvas_.button(0, 280, 78, 34, "返回");
     canvas_.button(81, 280, 78, 34, "扫描");
     canvas_.button(162, 280, 78, 34, "手输");
 }
 void Runtime::draw_remote() {
-    canvas_.document(remote_snapshot_.message.data(), 0, 28, remote_candidates_top);
+    canvas_.heading("遥控器");
+    const char *state = remote_snapshot_.state == Remote::State::ready       ? "已连接"
+                        : remote_snapshot_.state == Remote::State::recording ? "录音中"
+                        : remote_snapshot_.state == Remote::State::scanning  ? "扫描中…"
+                        : remote_snapshot_.state == Remote::State::failed ? "连接失败 · 查看状态"
+                        : remote_snapshot_.state == Remote::State::disconnected ? "未连接"
+                                                                                : "连接中…";
+    canvas_.label(12, 66, state,
+                  remote_snapshot_.state == Remote::State::ready ? Canvas::positive
+                                                                 : Canvas::muted);
     for (size_t i = 0; i < remote_snapshot_.count; ++i) {
         const auto &candidate = remote_snapshot_.candidates[i];
         const auto *a = candidate.address.val;
@@ -1232,9 +1367,7 @@ void Runtime::draw_remote() {
         std::snprintf(address, sizeof(address), "%02X:%02X:%02X:%02X:%02X:%02X", a[5], a[4], a[3],
                       a[2], a[1], a[0]);
         const int top = remote_candidates_top + int(i) * remote_candidate_pitch;
-        canvas_.button(4, top, 232, 42, {});
-        canvas_.label(12, top + 3, candidate.name.data());
-        canvas_.label(12, top + 23, address);
+        canvas_.setting_row(top, 42, candidate.name.data(), address);
     }
     const char *buttons[] = {"返回", "扫描", "断开", "忘记"};
     for (int i = 0; i < 4; ++i) {
@@ -1254,6 +1387,10 @@ void Runtime::draw_confirmation() {
 void Runtime::run() {
     update_.initialize(transport_.diagnostics());
     storage_ok_ = settings_.load();
+    preferences_ok_ = storage_ok_ && preferences_.load();
+    if (!preferences_ok_) {
+        message("语音偏好读取失败；原数据保留");
+    }
     touch_ok_ = touch_.initialize();
     if (!touch_ok_) {
         message("触摸初始化失败，请检查连线");
@@ -1309,6 +1446,13 @@ void Runtime::run() {
         }
         configure();
         packets();
+        if (configured_ && voice_setting_ && !voice_setting_->queued) {
+            const uint8_t enabled = voice_setting_->enabled ? 1 : 0;
+            if (transport_.post(Kind::voice_reply_setting, voice_setting_->id, &enabled,
+                                sizeof(enabled))) {
+                voice_setting_->queued = true;
+            }
+        }
         if (api_started_) {
             results();
         }

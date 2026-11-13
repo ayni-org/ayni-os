@@ -158,11 +158,16 @@ void MotorExecution::request_stop() {
     local_stop_.store(true, std::memory_order_release);
 }
 ayni_status_t MotorExecution::advance() {
+    if (initialization_ == Initialization::failed && !worker_ && !initialization_reported_) {
+        constexpr char failure[] = "motor initialization failed";
+        initialization_reported_ = transport_.send(Kind::status, 0, failure, sizeof(failure) - 1);
+    }
     return worker_error_.load(std::memory_order_acquire);
 }
 void MotorExecution::publish_snapshot() {
     const uint32_t value =
         limit_ | (uint32_t(mode_) << snapshot_mode_shift) | (pending_ ? snapshot_busy : 0);
+    state_notice_ = state_notice_ || value != snapshot_.load(std::memory_order_relaxed);
     snapshot_.store(value, std::memory_order_release);
 }
 void MotorExecution::drain_inbox() {

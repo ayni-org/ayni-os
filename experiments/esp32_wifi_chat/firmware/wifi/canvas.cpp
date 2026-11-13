@@ -1,5 +1,6 @@
 #include "canvas.h"
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <miniz.h>
 extern const uint8_t font_start[] asm("_binary_ayni_font_bin_start");
@@ -77,6 +78,41 @@ void Canvas::rectangle(int x, int y, int width, int height, uint16_t color) {
         }
     }
 }
+void Canvas::line(int x0, int y0, int x1, int y1, uint16_t color) {
+    const int dx = std::abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+    const int dy = -std::abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    int error = dx + dy;
+    for (;;) {
+        rectangle(x0, y0, 1, 1, color);
+        if (x0 == x1 && y0 == y1) {
+            break;
+        }
+        const int next = 2 * error;
+        if (next >= dy) {
+            error += dy;
+            x0 += sx;
+        }
+        if (next <= dx) {
+            error += dx;
+            y0 += sy;
+        }
+    }
+}
+void Canvas::rounded_rectangle(int x, int y, int width, int height, int radius, uint16_t color) {
+    for (int row = 0; row < height; ++row) {
+        for (int column = 0; column < width; ++column) {
+            const int dx = column < radius            ? radius - column
+                           : column >= width - radius ? column - (width - radius - 1)
+                                                      : 0;
+            const int dy = row < radius             ? radius - row
+                           : row >= height - radius ? row - (height - radius - 1)
+                                                    : 0;
+            if (dx * dx + dy * dy <= radius * radius) {
+                rectangle(x + column, y + row, 1, 1, color);
+            }
+        }
+    }
+}
 void Canvas::glyph(int x, int y, uint32_t code, uint16_t color) {
     const auto *bits = cell(code) + 1;
     for (int row = 0; row < 16; ++row) {
@@ -87,20 +123,44 @@ void Canvas::glyph(int x, int y, uint32_t code, uint16_t color) {
         }
     }
 }
-void Canvas::label(int x, int y, std::string_view text, uint16_t color) {
+int Canvas::text_width(std::string_view text) {
+    int width = 0;
+    for (size_t at = 0; at < text.size();) {
+        width += cell(next(text, at))[0];
+    }
+    return width;
+}
+void Canvas::label(int x, int y, std::string_view text, uint16_t color, int max_width) {
+    const int end = std::min(x + max_width, int(screen_width));
     for (size_t at = 0; at < text.size();) {
         const auto code = next(text, at);
         const auto width = cell(code)[0];
-        if (x + width > int(screen_width)) {
+        if (code == '\n' || x + width > end) {
             break;
         }
         glyph(x, y, code, color);
         x += width;
     }
 }
-void Canvas::button(int x, int y, int width, int height, std::string_view text) {
-    rectangle(x, y, width, height, accent);
-    label(x + 4, y + (height - 16) / 2, text);
+void Canvas::button(int x, int y, int width, int height, std::string_view text, uint16_t fill,
+                    uint16_t ink) {
+    rounded_rectangle(x, y, width, height, std::min(8, height / 4), fill);
+    label(x + std::max(4, (width - text_width(text)) / 2), y + (height - 16) / 2, text, ink,
+          width - 8);
+}
+void Canvas::heading(std::string_view title) {
+    rounded_rectangle(10, 38, 3, 17, 1, accent);
+    label(22, 38, title);
+}
+void Canvas::setting_row(int top, int height, std::string_view title, std::string_view value) {
+    rounded_rectangle(8, top, 224, height, 8, surface);
+    label(18, top + 4, title, muted, 190);
+    label(18, top + height - 20, value.empty() ? "未设置" : value, foreground, 188);
+    label(214, top + (height - 16) / 2, ">", muted);
+}
+void Canvas::toggle(int x, int y, bool enabled) {
+    rounded_rectangle(x, y, 42, 24, 12, enabled ? positive : muted);
+    rounded_rectangle(x + (enabled ? 21 : 3), y + 3, 18, 18, 9, foreground);
 }
 size_t Canvas::document(std::string_view text, size_t page, int top, int bottom) {
     int x = 8, y = top;

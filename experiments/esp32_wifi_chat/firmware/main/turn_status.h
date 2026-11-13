@@ -5,7 +5,7 @@ enum class TurnStatus { progress, complete, failed };
 // The owner/UI protocol has one terminal classifier. Legacy input errors are
 // still terminal so a queued old diagnostic cannot leave the frontend busy.
 inline TurnStatus turn_status(std::string_view text) {
-    if (text == "reply completed") {
+    if (text == "reply completed" || text.find("reply completed; voice failed") == 0) {
         return TurnStatus::complete;
     }
     if (text.find("turn failed") == 0 || text.find("input refused") == 0 ||
