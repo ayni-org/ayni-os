@@ -153,8 +153,7 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
             "Compute a TA6586 software plan without output.",
             "Run a bounded TA6586 PWM procedure while local motor control is enabled; no "
             "per-action approval.",
-            "Request latched local motor output stop. Reconnection with driver power off is "
-            "required to rearm."};
+            "Request latched local motor output stop. Restart the device to rearm."};
         constexpr const char *parameters[]{
             "UNARY: use operation=\"invoke\" or omit operation; start is unsupported. Empty "
             "object.",
