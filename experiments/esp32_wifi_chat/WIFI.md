@@ -320,3 +320,7 @@ Native正常检查68/68通过，覆盖完整长答复、零额外模型请求、
 - 裸数字：preferences.cpp:8命名两字节偏好记录，ReplyVoice复用body_reference_bytes；没有新的Core记录布局或ABI数字。图标几何为本地像素布局。
 
 预览使用同一Canvas、字体和实际页面绘图代码生成，非实机照片：[应用首页](screenshots/app-launcher-preview.png)、[语音开关](screenshots/voice-reply-preview.png)、[电机控制](screenshots/motor-controls-preview.png)、[网络](screenshots/network-settings-preview.png)、[模型与语音](screenshots/endpoint-settings-preview.png)、[模型选项](screenshots/model-options-preview.png)。预览使用合成配置值，不含凭据。本轮尚未实际试听、触摸操作、调用线上模型或驱动轮轴，也未验证独立硬件停止链、长动作或掉电恢复；本机build/app-ui-20261113/日志属于仓库外证据。
+
+最终固件为`198be0b`，应用0x28bae0（2669280）字节，最小3 MiB槽余量15%；镜像checksum及validation hash有效，固定分区布局、项目身份及软件回退配置检查通过。clang-format18、契约与diff检查通过。界面美化后追加只读定向复查，确认启用／停用、自检间隙、底部及全局停止触区与绘图一致，语音保存失败有独立可见提示；不重复无关全面审查。最终六张预览已用当前renderer重建并目检。
+
+沿用本次会话已确认的驱动断电条件，一次正常Wi-Fi上传37.39秒，HTTP200及updated/restarting=true，从ota_1切到ota_0。新启动约3.46秒电机自动初始化stage=ready/status=0，18.44秒会话就绪，23.47秒OTA验证status=0；查询version=198be0b、pending_verify=false、error=0，网络校时就绪。password_set/model_key_set及接口、流式、输出字段与升级前一致，保留配置、配对及Core卷；无USB、擦卷、模型请求或电机动作测试。实际语音开关操作、听感及轮轴运动留待用户使用确认，正常OTA不作为这些功能的硬件验收。
