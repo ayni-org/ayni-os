@@ -333,4 +333,17 @@ Native正常检查68/68通过，覆盖完整长答复、零额外模型请求、
 
 SpeechText使用SHA256锁定的MD4C 0.5.2及其实体表，替代简单符号删除：保留正文、代码字面符号、链接标签及图片替代文字；列表／标题分隔为段落，表格逐行按单元格分隔，任务列表保留完成状态。原始HTML按字面文本保留。输出缓冲明确限定32 KiB、分配失败或超限拒绝，不截断或回退到原始Markdown；纯格式回复不请求TTS。分段优先句末／段末，其次词语或分句边界，最后以完整UTF-8前缀满足原1024字节限额。显式speaker文本不被二次解释。
 
-正常检查新增Markdown结构、代码和负数、实体、未闭合语法、容量拒绝、句末／词语／四字节UTF-8分段，以及公开Core/Sim的转换后调用、原文保留和纯格式回复；相关Wi-Fi检查74/74通过。ESP-IDF6.0.3/GCC15.2.0候选编译通过，最小3 MiB应用槽仍有13%余量。第三方解析器在Xtensa GCC15 -Os下的一项已核对的maybe-uninitialized告警保持可见、仅不提升为错误；其余源码警告策略保持。最终镜像、OTA和检查结果随后补记；尚未以实际试听替代软件检查，也不扩展新的运动、掉电或恢复专项。
+正常检查新增Markdown结构、代码和负数、实体、未闭合语法、容量拒绝、句末／词语／四字节UTF-8分段，以及公开Core/Sim的转换后调用、原文保留和纯格式回复；相关Wi-Fi检查74/74通过。ESP-IDF6.0.3/GCC15.2.0候选编译通过，最小3 MiB应用槽仍有13%余量。第三方解析器在Xtensa GCC15 -Os下的一项已核对的maybe-uninitialized告警保持可见、仅不提升为错误；其余源码警告策略保持。最终镜像、OTA和检查结果见下文；尚未以实际试听替代软件检查，也不扩展新的运动、掉电或恢复专项。
+
+最终功能镜像`cfaaa16`为0x29eba0（2747296）字节，较198be0b增加78016字节，最小槽余量13%；项目、固定分区布局、软件回退配置、checksum及validation hash检查通过。检查器98/98、依赖／契约／可读性检查、clang-format18及diff检查通过；可读性工具无新增违规，保留19项已有public-code-comment基线。Native和固件各1任务，编译不超过2个并发任务。
+
+按用户最新决定直接进行一次正常OTA，未要求或测量驱动断电。上传38.73秒返回HTTP200及updated/restarting=true，由ota_0切换到ota_1；新启动3.57秒电机资源初始化成功，29.86秒会话就绪，34.90秒OTA验证status=0。查询version=cfaaa16、pending_verify=false、error=0；网络校时就绪，password_set/model_key_set及模型接口、流式、输出字段与升级前一致。配置、配对和Core卷保留；无USB、擦卷、线上模型请求或电机动作测试。原文及转换后speaker输入已由公开Core/Sim测试核对，本版实机朗读听感尚未确认；脱敏镜像／构建／OTA记录在本机忽略目录build/speech-text-20261114/，属于仓库外证据。
+
+作者自查四项结论：
+
+- 删除注释：reply_voice.h:35保留“借用期间不移动、从不记录正文”约束，完整原文说明改为独立拥有朗读呈现，匹配新行为。
+- Kernel字段：对比main，core/及include/无变化；SpeechText仅拥有呈现缓冲，原Context基线和正文借用仍由ReplyVoice维护。
+- 重复机制：speech_text.cpp:169单独拥有Markdown转换，:196单独拥有分段规则；ReplyVoice调用它们，继续复用Rules、BodyRef与原speaker执行通道，不修改TTS服务或另建调用链。
+- 裸数字：原始答复及呈现使用tx_bytes限额，分段使用SpeechProfile::text_bytes；MD4C版本和源码校验仅在AyniMarkdown.cmake锁定，未新增Core记录布局或ABI数字。
+
+停止与关闭路径另经独立只读定向复核：驱动供电不属于软件准入条件，只有API排空、Core STOPPED、电机／扬声器worker真实关闭、Host关闭和Kernel销毁后才允许写备用槽。GPIO低电平读回属于软件停止事实；复位／bootloader窗口无毛刺、轮轴静止和独立硬件超时仍未验证。该复核不等同硬件测试，也不作为新的人工断电审批门槛。
