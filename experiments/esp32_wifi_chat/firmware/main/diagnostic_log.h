@@ -13,7 +13,7 @@ namespace wifichat {
 // contended producers drop diagnostics rather than delaying Core or motor control.
 class DiagnosticLog {
   public:
-    static constexpr size_t slots = 64, line_bytes = 384, batch = 12;
+    static constexpr size_t slots = 128, line_bytes = 384, batch = 12;
     using Clock = uint64_t (*)();
     void initialize(uint32_t boot, Clock clock) {
         boot_ = boot;

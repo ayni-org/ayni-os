@@ -62,14 +62,44 @@ uint32_t model_input_bytes(ayni_string_v1 destination) {
     ayni_value_v1 value{};
     return shape.finish(value) == AYNI_OK ? ayni::encoded_bytes(value) : 0U;
 }
-void Chat::trace(const char *phase) const {
+void Chat::trace(const char *phase) {
     if (turn_) {
         transport_.diagnostics().record(
             "wifi turn phase=%s model_requests=%lu elapsed_ms=%llu\n", phase,
             static_cast<unsigned long>(model_requests_),
             static_cast<unsigned long long>((uint64_t(esp_timer_get_time()) - turn_started_) /
                                             1000));
+        trace_latency(phase);
     }
+}
+// Phase-local storage deltas plus cumulative owner work distinguish asynchronous waits from
+// time spent running Core. These wall times overlap; they must not be summed as a turn total.
+void Chat::trace_latency(const char *phase) {
+    if (!host_) {
+        return;
+    }
+    const auto current = host_->storage_metrics();
+    const auto &last = timing_.storage;
+    auto &log = transport_.diagnostics();
+    log.record(
+        "wifi latency phase=%s n=%llu queue_ms=%llu io_ms=%llu space_ms=%llu "
+        "post_us=%llu idle_space_ms=%llu max_queue_ms=%llu max_io_ms=%llu max_space_ms=%llu\n",
+        phase, current.completed - last.completed, (current.queue_us - last.queue_us) / 1000,
+        (current.io_us - last.io_us) / 1000, (current.space_us - last.space_us) / 1000,
+        current.post_us - last.post_us, (current.idle_space_us - last.idle_space_us) / 1000,
+        current.max_queue_us / 1000, current.max_io_us / 1000, current.max_space_us / 1000);
+    log.record("wifi io phase=%s append_ms=%llu value_ms=%llu scan_frames=%llu reads=%llu "
+               "read_bytes=%llu read_ms=%llu write_ms=%llu sync_ms=%llu "
+               "turn_core_ms=%llu steps=%llu max_step_us=%llu turn_converse_ms=%llu\n",
+               phase, (current.append_us - last.append_us) / 1000,
+               (current.value_us - last.value_us) / 1000, current.scan_frames - last.scan_frames,
+               current.files.read_calls - last.files.read_calls,
+               current.files.read_bytes - last.files.read_bytes,
+               (current.files.read_us - last.files.read_us) / 1000,
+               (current.files.write_us - last.files.write_us) / 1000,
+               (current.files.sync_us - last.files.sync_us) / 1000, timing_.step_us / 1000,
+               timing_.step_calls, timing_.max_step_us, timing_.conversation_us / 1000);
+    timing_.storage = current;
 }
 // Only protocol identities/modes, never business arguments or assistant/user text, cross
 // this progress lane. The UI labels them as proposals until a Provider reports work.
@@ -790,6 +820,8 @@ void Chat::incoming(const Packet &p) {
         }
         turn_ = p.id;
         turn_started_ = uint64_t(esp_timer_get_time());
+        timing_ = {};
+        timing_.storage = host_->storage_metrics();
         model_requests_ = 0;
         reply_intent_ = ReplyIntent::present;
         hold_reported_ = false;
@@ -1009,7 +1041,14 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
     auto rc = ayni_get_kernel_info(kernel_, &info);
     // STOPPED cannot be stepped again while asynchronous device workers are joining.
     if (rc == AYNI_OK && info.lifecycle != AYNI_LIFECYCLE_STOPPED) {
+        const auto started = uint64_t(esp_timer_get_time());
         rc = ayni_step(kernel_, step_units, step_us, &report);
+        if (turn_) {
+            const auto elapsed = uint64_t(esp_timer_get_time()) - started;
+            ++timing_.step_calls;
+            timing_.step_us += elapsed;
+            timing_.max_step_us = std::max(timing_.max_step_us, elapsed);
+        }
         if (rc == AYNI_OK) {
             rc = ayni_get_kernel_info(kernel_, &info);
         }
@@ -1085,7 +1124,11 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
         motor_check_.tick(kernel_, instance_, info.durable_seq);
     }
     if (rc == AYNI_OK && announced_) {
+        const auto started = uint64_t(esp_timer_get_time());
         rc = converse(info);
+        if (turn_) {
+            timing_.conversation_us += uint64_t(esp_timer_get_time()) - started;
+        }
     }
     again = progress_;
     return rc;
@@ -1315,6 +1358,7 @@ void Chat::end_turn(const char *message) {
         bodies_.collect(probe_record_id, {}); // No diagnostic checkpoint becomes chat history.
     }
     probe_.reset();
+    trace_latency("terminal");
     transport_.diagnostics().record(
         "wifi turn model_requests=%lu elapsed_ms=%llu\n",
         static_cast<unsigned long>(model_requests_),

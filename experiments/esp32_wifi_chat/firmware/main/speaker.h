@@ -41,6 +41,7 @@ class Speaker {
     struct Job {
         Operation operation{};
         uint32_t frequency = 0, samples = 0, volume = 0;
+        uint64_t call = 0; // Copied by the owner at enqueue; worker never borrows Pending.
     };
     struct Worker;
     struct Pending {
@@ -56,6 +57,7 @@ class Speaker {
     static ayni_submit_result_t cancel(void *, ayni_attempt_ref_v1);
     static void run(void *);
     bool enqueue(Job);
+    void trace_audio(const char *phase, uint64_t call, uint32_t samples = 0, int error = 0);
     ayni_status_t begin_speech(uint64_t id, std::string_view text);
     void request_cancel();
     void status(const char *);

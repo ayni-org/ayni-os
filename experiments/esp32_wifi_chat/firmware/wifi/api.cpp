@@ -210,9 +210,11 @@ void *Api::work(void *context) {
             continue;
         }
         auto &job = self.jobs_[index];
-        self.transport_->diagnostics().record("wifi api phase=begin request=%u id=%llu\n",
-                                              unsigned(job.request),
-                                              static_cast<unsigned long long>(job.input.id));
+        self.transport_->diagnostics().record(
+            "wifi api phase=begin request=%u id=%llu queue_ms=%lld\n", unsigned(job.request),
+            static_cast<unsigned long long>(job.input.id),
+            static_cast<long long>(
+                (esp_timer_get_time() - job.deadline + request_budget_us(job.request)) / 1000));
         if (self.current(job)) {
             if (esp_timer_get_time() < job.deadline) {
                 self.perform(job);
@@ -395,6 +397,7 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
     }
     if ((stream || model_stream) && ok) {
         stage = model_stream ? "模型流" : "语音流";
+        bool first_body = true;
         std::array<uint8_t, network_chunk> chunk{};
         while (ok && alive()) {
             const int got =
@@ -409,6 +412,15 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
                 }
                 ok = got == 0 && esp_http_client_is_complete_data_received(client);
                 break;
+            }
+            if (first_body) {
+                first_body = false;
+                transport_->diagnostics().record(
+                    "wifi api phase=first_body request=%u id=%llu elapsed_ms=%lld\n",
+                    unsigned(job.request), static_cast<unsigned long long>(job.input.id),
+                    static_cast<long long>(
+                        (esp_timer_get_time() - job.deadline + request_budget_us(job.request)) /
+                        1000));
             }
             ok = wire_limit.received(job.response_bytes, size_t(got));
             if (ok) {

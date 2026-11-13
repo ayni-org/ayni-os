@@ -85,6 +85,9 @@ class FileLog {
     // UNKNOWN when the sync failed; a retry rescans and rewrites the entire
     // uncertain frame before proving it durable. size > 0.
     Result append(uint64_t commit_seq, const uint8_t *data, uint32_t size);
+    // I/O thread only. Lifetime header probes in append's duplicate search, including failures;
+    // observational only, never used to authorize or skip a scan.
+    uint64_t append_scan_frames() const { return append_scan_frames_; }
 
     // The whole stored batches whose commit_seq is at least from_commit_seq,
     // in log order, as many as fit; value is the bytes written. A read stops
@@ -146,6 +149,7 @@ class FileLog {
     bool is_open() const { return opened_ && opened_->log != Files::invalid_handle; }
     int log_handle() const { return opened_ ? opened_->log : Files::invalid_handle; }
     Files &files_; // Exclusive namespace adapter; no OS/SDK representation lives here.
+    uint64_t append_scan_frames_ = 0;
     std::array<char, 64> file_name_{};
     uint32_t writer_epoch_ = 1;
     uint64_t file_size_ = 0;   // at open, for the scan

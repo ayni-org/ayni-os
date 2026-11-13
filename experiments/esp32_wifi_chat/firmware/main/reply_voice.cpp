@@ -111,7 +111,10 @@ ayni_status_t ReplyVoice::begin(std::string answer, const ayni_context_info_v1 &
         return AYNI_INVALID_ARGUMENT;
     }
     reset();
-    text_ = std::move(answer);
+    const auto rendered = text_.render(answer, tx_bytes);
+    if (rendered != AYNI_OK) {
+        return rendered;
+    }
     source_ =
         Source{source.context_id, source.owner_instance_id, source.generation, source.revision};
     return AYNI_OK;
@@ -139,23 +142,20 @@ ayni_status_t ReplyVoice::advance(ayni_kernel_t *kernel, ayni::CommandClient &co
 }
 ayni_status_t ReplyVoice::prepare_chunk(ayni_kernel_t *kernel, ayni::CommandClient &commands,
                                         uint64_t session, uint64_t owner) {
-    if ((cancelling_ && !chunk_) || offset_ == text_.size()) {
+    const auto presentation = text_.view();
+    if ((cancelling_ && !chunk_) || offset_ == presentation.size()) {
         return failure_;
     }
     if (commands.pending() && !chunk_) {
         return AYNI_BUSY;
     }
     if (!chunk_) {
-        auto count = uint32_t(std::min(size_t(chunk_bytes), text_.size() - offset_));
-        while (offset_ + count < text_.size() && (uint8_t(text_[offset_ + count]) & 0xc0) == 0x80) {
-            --count;
-        }
-        chunk_ = count;
+        chunk_ = uint32_t(speech_chunk_bytes(presentation.substr(offset_), chunk_bytes));
     }
     if (!body_.id) {
         const auto stored = bodies_->write(
             bodies_->context, speech_scope,
-            {reinterpret_cast<const uint8_t *>(text_.data() + offset_), *chunk_}, &body_);
+            {reinterpret_cast<const uint8_t *>(presentation.data() + offset_), *chunk_}, &body_);
         if (stored == AYNI_NOT_READY || stored == AYNI_BUSY) {
             return AYNI_BUSY;
         }
@@ -258,7 +258,7 @@ ayni_status_t ReplyVoice::poll_goal(ayni_kernel_t *kernel, ayni::CommandClient &
         }
         offset_ += *chunk_;
         chunk_.reset();
-        return offset_ == text_.size() ? AYNI_OK : AYNI_BUSY;
+        return offset_ == text_.view().size() ? AYNI_OK : AYNI_BUSY;
     }
     if (cancelling_ && !commands.pending() && !terminal) {
         const ayni_goal_target_v1 body{sizeof(body), 0, goal_};
