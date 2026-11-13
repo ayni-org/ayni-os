@@ -1,4 +1,5 @@
 #pragma once
+#include "speech_text.h"
 #include <ayni/ayni.hpp>
 #include <ayni/bodies.h>
 #include <ayni/commands.hpp>
@@ -19,7 +20,7 @@ class ReplyVoice {
     // BUSY retains state; every other status is terminal after the Goal has settled durably.
     ayni_status_t advance(ayni_kernel_t *, ayni::CommandClient &, uint64_t session, uint64_t owner,
                           uint64_t durable);
-    bool active() const { return !text_.empty(); }
+    bool active() const { return !text_.view().empty(); }
     uint64_t goal() const { return goal_; }
     ayni_status_t failure_status() const { return failure_; }
     void reset();
@@ -31,7 +32,9 @@ class ReplyVoice {
     static ayni_status_t decide(void *, const ayni_task_snapshot_v1 *, ayni_policy_output_v1 *);
     static ayni_status_t validate(void *, ayni_bytes_v1);
     static ayni_status_t requirements(void *, ayni_bytes_v1, const ayni_goal_requirement_sink_v1 *);
-    std::string text_; // Owned complete answer; never logged or moved while a chunk is borrowed.
+    // Owned rendered speech, never logged or moved while a chunk is borrowed.
+    // The saved Markdown answer remains unchanged.
+    SpeechText text_;
     const ayni_body_store_v1 *bodies_ = nullptr; // Borrowed stable port through Core/Host close.
     ayni_body_ref_v1 body_{}; // Current durable chunk, released only after its Goal ends.
     bool accepting_ = false;  // Owner opens after restored Goals have been cancelled.

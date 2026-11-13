@@ -326,6 +326,12 @@ ESP部署配置及自动语音的公开Core/Sim集成测试位于`tests/integrat
 根工程目标`ayni_esp32_chat_integration_tests`纳入日常ASan/UBSan；独立Wi-Fi检查也构建同一目标。
 Sim Host只属于这些测试夹具，不加入实验生产代码的依赖许可。
 
+自动语音的Markdown呈现使用`cmake/AyniMarkdown.cmake`固定MD4C 0.5.2源码及SHA256，
+可用`FETCHCONTENT_SOURCE_DIR_MD4C`指定已解压源码进行离线构建；基础SDK和Core不依赖此解析器。
+MIT声明在`experiments/esp32_wifi_chat/third_party/md4c-LICENSE.md`。
+Xtensa GCC15的`-Os`对上游链接标签成功路径产生maybe-uninitialized告警；已核对成功前必写输出索引，
+仅第三方目标保留该告警且不升为错误，Ayni源码的警告策略不变。
+
 ### 共享交互运行时的源码接口
 
 `Session::Config::bodies`使用`BodyCollection`，FileBodies调用方传入`collection()`；端口和所有异步缓冲保持到Host join。默认保留草稿，交互应用可显式选`UnfinishedTurn::discard`并使用cancel/abandon/take_result；关闭前反复quiesce并继续step，完成文件/ACK排空后再shutdown。旧工作必须先由组合根取消并确认终态；Core shutdown不等于取消所有持久Goal。FileBodies的set_cache_limit/trim_cache管理驻留正文，ready检查包含未受理删除。ValueAdmission的额度由部署选择；portable Profile的外层值为4槽，调用方打开的Host队列至少5槽。CommandClient要求每principal一个独占命令流；多命令窗口的Native CLI复用CommandSequence生成身份并保持原回执窗口。详见ADR-0100。

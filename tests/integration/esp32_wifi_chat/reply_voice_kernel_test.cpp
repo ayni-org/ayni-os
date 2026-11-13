@@ -9,6 +9,7 @@
 #include <cstring>
 #include <gtest/gtest.h>
 #include <map>
+#include <vector>
 namespace {
 using ayni::initialized;
 ayni_string_v1 text(const char *value) {
@@ -70,6 +71,7 @@ class ReplyVoiceKernel : public testing::Test {
     ayni_provider_completion_t *pending_audio = nullptr;
     ayni_attempt_ref_v1 audio_attempt{};
     std::string heard;
+    std::vector<std::string> segments;
     std::array<ayni_schema_node_v1, 2> input{};
     ayni_schema_node_v1 output{};
     ayni_business_contract_v1 business{};
@@ -86,6 +88,7 @@ class ReplyVoiceKernel : public testing::Test {
         EXPECT_LE(value->value.text.size, wifichat::SpeechProfile::text_bytes);
         EXPECT_EQ(ayni_validate_utf8(value->value.text), AYNI_OK);
         self.heard.append(value->value.text.data, value->value.text.size);
+        self.segments.emplace_back(value->value.text.data, value->value.text.size);
         ++self.calls;
         if (self.hold_audio) {
             self.pending_audio = completion;
@@ -278,6 +281,41 @@ TEST_F(ReplyVoiceKernel, CompleteLongAnswerUsesBoundedUtf8ChunksWithoutModelRequ
     EXPECT_EQ(result, AYNI_OK);
     EXPECT_EQ(heard, answer);
     EXPECT_EQ(calls, 4U);
+    EXPECT_TRUE(bodies.values.empty());
+}
+// ADR-0101: render after saving; the authorized speaker receives readable text, not Markdown.
+TEST_F(ReplyVoiceKernel, MarkdownSpeechKeepsTheStoredConversationAnswerUnchanged) {
+    grant();
+    const std::string answer = "# 结果\n\n**速度**：-20%。\n- 查看[文档](https://example.com)。";
+    ayni_body_ref_v1 retained{};
+    ASSERT_EQ(
+        Bodies::write(&bodies, context_id,
+                      {reinterpret_cast<const uint8_t *>(answer.data()), uint32_t(answer.size())},
+                      &retained),
+        AYNI_OK);
+    ASSERT_EQ(start(answer), AYNI_OK);
+    ASSERT_TRUE(until([&] { return advance() != AYNI_BUSY; }));
+    EXPECT_EQ(heard, "结果\n速度：-20%。\n查看文档。");
+    EXPECT_EQ(calls, 1U);
+    EXPECT_EQ(bodies.values.at(retained.id), answer);
+}
+// ADR-0101: segment the rendered answer at a sentence boundary before the hard byte limit.
+TEST_F(ReplyVoiceKernel, LongPresentationEndsTheFirstChunkAtTheSentenceBoundary) {
+    grant();
+    const auto sentence = std::string(900, 'a') + "。";
+    const auto answer = sentence + std::string(300, 'b');
+    ASSERT_EQ(start(answer), AYNI_OK);
+    ASSERT_TRUE(until([&] { return advance() != AYNI_BUSY; }));
+    ASSERT_EQ(segments.size(), 2U);
+    EXPECT_EQ(segments.front(), sentence);
+    EXPECT_EQ(heard, answer);
+}
+// ADR-0101: a reply containing formatting alone has no text to synthesize or Goal to replay.
+TEST_F(ReplyVoiceKernel, FormattingOnlyReplyFinishesWithoutCreatingSpeakerWork) {
+    ASSERT_EQ(start("---\n\n#\n"), AYNI_OK);
+    EXPECT_EQ(advance(), AYNI_OK);
+    EXPECT_FALSE(speech.active());
+    EXPECT_EQ(calls, 0U);
     EXPECT_TRUE(bodies.values.empty());
 }
 // No Grant is an ordinary admission outcome, not a storage/transport fault campaign.
