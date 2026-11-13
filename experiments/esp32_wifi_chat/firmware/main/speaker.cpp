@@ -28,7 +28,7 @@ constexpr uint32_t minimum_hz = 100, maximum_hz = 4000, minimum_tone_ms = 50,
                    maximum_tone_ms = 3000;
 constexpr uint32_t synthesis_timeout_ms = SpeechProfile::timeout_ms,
                    legacy_tone_timeout_ms = 120000, write_timeout_ms = 200,
-                   maximum_text_bytes = 1024;
+                   maximum_text_bytes = SpeechProfile::text_bytes;
 constexpr float tau = 6.2831853071795864769F;
 constexpr gpio_num_t speaker_bclk = GPIO_NUM_4, speaker_ws = GPIO_NUM_5, speaker_data = GPIO_NUM_6;
 constexpr uint32_t result_limit = Speaker::result_bytes;

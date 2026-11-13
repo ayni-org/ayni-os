@@ -127,8 +127,8 @@ esp_err_t MotorOutput::prepare(size_t motor, int32_t percent) {
         return ESP_OK;
     }
     auto &output = outputs_[motor];
-    const size_t input = motor * 2 + (percent < 0 ? 1 : 0);
-    const auto magnitude = uint32_t(percent < 0 ? -percent : percent);
+    const size_t input = motor_input(motor, percent);
+    const auto magnitude = motor_duty_percent(percent);
     rmt_symbol_word_t symbol{};
     symbol.level0 = 1;
     symbol.duration0 = period_ticks * magnitude / motor_percent_scale;
@@ -180,7 +180,7 @@ esp_err_t MotorOutput::start(const MotorCommand &command) {
         if (!outputs_[motor].channel) {
             continue;
         }
-        const size_t input = motor * 2 + (speeds[motor] < 0 ? 1 : 0);
+        const size_t input = motor_input(motor, speeds[motor]);
         expected_[input] = command.duration_ms;
         rmt_transmit_config_t tx{};
         tx.loop_count = command.duration_ms / motor_duration_step_ms;

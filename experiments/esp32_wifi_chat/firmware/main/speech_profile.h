@@ -9,6 +9,7 @@ struct SpeechProfile {
     static constexpr uint32_t timeout_ms = (maximum_seconds + 30) * 1000;
     static constexpr size_t buffer_bytes = 64 * 1024;
     static constexpr uint32_t capability_version = 2;
+    static constexpr uint32_t text_bytes = 1024;
 };
 // full means zero bytes accepted, allowing an I/O worker to wait without replaying audio.
 enum class AudioWrite { accepted, full, rejected };

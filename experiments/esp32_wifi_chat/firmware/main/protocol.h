@@ -72,7 +72,9 @@ enum class Kind : uint8_t {
     motor_check_state = 39,
     model_result = 40,
     context_template = 41, // Fixed synthetic ToolLoop turn; never saved in the real conversation.
-    template_model_request = 42 // Explicit local diagnostic route; ordinary model calls stay HTTP.
+    template_model_request = 42, // Explicit local diagnostic route; ordinary model calls stay HTTP.
+    voice_reply_setting = 43,    // Desired automatic speech mode; explicit tools stay available.
+    voice_reply_state = 44       // Owner acknowledgement of a live preference update.
 };
 // A bounded in-process lane; network protocols are owned by their adapters.
 struct Packet {

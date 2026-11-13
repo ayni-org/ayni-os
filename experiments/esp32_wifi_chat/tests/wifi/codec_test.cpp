@@ -279,7 +279,22 @@ TEST(WifiMotor, ModelCommandsAcceptSixtySecondsAndRetainFinitePwmLimits) {
     EXPECT_FALSE(valid_motor_command({50, 0, 60005}));
     EXPECT_FALSE(valid_motor_command({91, 0, 1000}));
     EXPECT_FALSE(valid_motor_command({50, 0, 999}));
-    EXPECT_EQ(motor_duties(50, -40), (std::array<uint32_t, 4>{50, 0, 0, 40}));
+    EXPECT_EQ(motor_duties(50, -40), (std::array<uint32_t, 4>{50, 0, 40, 0}));
+}
+
+TEST(WifiMotor, BoardCalibrationReversesOnlySecondMotorAndPreservesCoast) {
+    // ADR-0097, 2026-11-13: only motor 2 changes polarity; plans and output share motor_input.
+    EXPECT_EQ(motor_pins[motor_input(0, 50)], 38U);
+    EXPECT_EQ(motor_pins[motor_input(0, -50)], 39U);
+    EXPECT_EQ(motor_pins[motor_input(1, 50)], 41U);
+    EXPECT_EQ(motor_pins[motor_input(1, -50)], 40U);
+    EXPECT_EQ(motor_duties(50, 0), (std::array<uint32_t, 4>{50, 0, 0, 0}));
+    EXPECT_EQ(motor_duties(-50, 0), (std::array<uint32_t, 4>{0, 50, 0, 0}));
+    EXPECT_EQ(motor_duties(0, 50), (std::array<uint32_t, 4>{0, 0, 0, 50}));
+    EXPECT_EQ(motor_duties(0, -50), (std::array<uint32_t, 4>{0, 0, 50, 0}));
+    EXPECT_EQ(motor_duties(90, 90), (std::array<uint32_t, 4>{90, 0, 0, 90}));
+    EXPECT_EQ(motor_duties(-90, -90), (std::array<uint32_t, 4>{0, 90, 90, 0}));
+    EXPECT_EQ(motor_duties(0, 0), (std::array<uint32_t, 4>{0, 0, 0, 0}));
 }
 
 TEST(WifiModel, ProgressOutlineDisclosesOnlyProtocolMetadata) {

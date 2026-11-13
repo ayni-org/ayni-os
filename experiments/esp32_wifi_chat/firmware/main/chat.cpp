@@ -232,6 +232,20 @@ ayni_status_t Chat::configure() {
         rc = check("motor check", configure_motor_check());
     }
     if (rc == AYNI_OK) {
+        auto speech = reply_voice_.strategy(bodies_.store());
+        rc = check("reply voice strategy", ayni_register_strategy(kernel_, &speech));
+        if (rc == AYNI_OK) {
+            const auto type = ReplyVoice::goal_type();
+            rc = check("reply voice type", ayni_register_goal_type(kernel_, &type));
+        }
+    }
+    if (rc == AYNI_OK) {
+        const auto prepared = motor_.execution().initialize();
+        status(0,
+               prepared == AYNI_OK ? "motor resources initialized" : "motor initialization failed");
+        // A device failure is explicit, but does not prevent software-only conversation.
+    }
+    if (rc == AYNI_OK) {
         transport_.attach_speaker(&speaker_);
     }
     return rc;
@@ -645,6 +659,14 @@ ayni_status_t Chat::command(ayni_intent_kind_t kind, const void *body, uint64_t 
     return out.status;
 }
 void Chat::incoming(const Packet &p) {
+    if (p.kind == Kind::voice_reply_setting && p.size == 1 && p.body[0] <= 1) {
+        voice_reply_enabled_ = p.body[0] != 0;
+        voice_notice_ = VoiceNotice{p.id, p.body[0]};
+        if (!voice_reply_enabled_) {
+            reply_voice_.cancel();
+        }
+        return;
+    }
     if (p.kind == Kind::motor_check) {
         auto code = AYNI_INVALID_ARGUMENT;
         if (p.size == sizeof(uint32_t)) {
@@ -666,6 +688,7 @@ void Chat::incoming(const Packet &p) {
     }
     if (p.kind == Kind::cancel || p.kind == Kind::shutdown || p.kind == Kind::maintenance_stop) {
         motor_check_.cancel();
+        reply_voice_.cancel();
     }
     if (p.kind == Kind::maintenance_stop) {
         // Keep file ports alive while the API worker exits its borrowed reads.
@@ -826,9 +849,12 @@ ayni_status_t Chat::settle_session(uint64_t durable_seq, bool &settled) {
                                (same({goal.goal_type_id, goal.goal_type_id_size}, strategy_id) ||
                                 same({goal.goal_type_id, goal.goal_type_id_size}, chat_type) ||
                                 same({goal.goal_type_id, goal.goal_type_id_size}, probe_type));
+        const bool voice_goal =
+            goal.goal_type_version == ReplyVoice::version &&
+            same({goal.goal_type_id, goal.goal_type_id_size}, ReplyVoice::type_id);
         const bool check_goal =
             MotorCheck::owns({goal.goal_type_id, goal.goal_type_id_size}, goal.goal_type_version);
-        if (goal.owner_instance_id != instance_ || (!chat_goal && !check_goal)) {
+        if (goal.owner_instance_id != instance_ || (!chat_goal && !check_goal && !voice_goal)) {
             continue;
         }
         if (goal.lifecycle == AYNI_GOAL_PROPOSED || goal.lifecycle == AYNI_GOAL_ACTIVE ||
@@ -964,6 +990,10 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
     publish_model();
     publish_screen();
     auto audio = speaker_.advance();
+    if (voice_notice_ && transport_.send(Kind::voice_reply_state, voice_notice_->id,
+                                         &voice_notice_->enabled, sizeof(voice_notice_->enabled))) {
+        voice_notice_.reset();
+    }
     if (audio != AYNI_OK && audio != AYNI_BUSY) {
         return audio;
     }
@@ -1212,6 +1242,7 @@ ayni_status_t Chat::prepare_history(const ayni_kernel_info_v1 &info) {
         announced_ = true;
         progress_ = true; // Held Tasks may decide from the next step on.
         speaker_.set_accepting(true);
+        reply_voice_.set_accepting(true);
         motor_.execution().set_accepting(true);
         diagnostics();
         status(0, "ready");
@@ -1290,6 +1321,8 @@ void Chat::end_turn(const char *message) {
         static_cast<unsigned long long>((uint64_t(esp_timer_get_time()) - turn_started_) / 1000));
     input_.clear();
     answer_.clear();
+    reply_voice_.reset();
+    reported_voice_failure_ = AYNI_OK;
     reply_deadline_ = 0;
     reply_end_ = nullptr;
     reply_intent_ = ReplyIntent::present;
@@ -1582,13 +1615,14 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
         reply_deadline_ = uint64_t(esp_timer_get_time()) + presentation_wait_us;
         goal_ = 0; // The completed task has no further device work.
     }
-    if (turn_state_ == Turn::answer || turn_state_ == Turn::reply_done) {
+    if (turn_state_ == Turn::answer || turn_state_ == Turn::speaking ||
+        turn_state_ == Turn::reply_done) {
         return present_reply();
     }
     return AYNI_OK;
 }
-// The Task has ended. Publish its saved final text to the chat view only;
-// device use, including speech, is exclusively decided inside the ToolLoop.
+// Publish the saved text first. Opt-in automatic speech then runs as separate authorized Goals;
+// the original Task and its conversation publication are never replayed for presentation.
 ayni_status_t Chat::present_reply() {
     if (turn_state_ == Turn::answer) {
         if (reply_intent_ == ReplyIntent::cancelled) {
@@ -1602,8 +1636,42 @@ ayni_status_t Chat::present_reply() {
             turn_state_ = Turn::reply_done;
         } else if (transport_.send(Kind::answer, turn_, answer_.data(), answer_.size())) {
             reply_end_ = "reply completed";
-            turn_state_ = Turn::reply_done;
+            if (voice_reply_enabled_) {
+                auto source = sized<ayni_context_info_v1>();
+                const auto queried = ayni_get_context(kernel_, session_, instance_, &source);
+                const auto started =
+                    queried == AYNI_OK ? reply_voice_.begin(std::move(answer_), source) : queried;
+                if (started == AYNI_OK) {
+                    turn_state_ = Turn::speaking;
+                    status(turn_, "automatic voice reply started");
+                } else {
+                    finish_voice(started);
+                }
+            } else {
+                turn_state_ = Turn::reply_done;
+            }
             progress_ = true;
+        }
+    }
+    if (turn_state_ == Turn::speaking) {
+        if (reply_intent_ == ReplyIntent::cancelled || closing_ != Closing::open) {
+            reply_voice_.cancel();
+        }
+        auto info = sized<ayni_kernel_info_v1>();
+        const auto queried = ayni_get_kernel_info(kernel_, &info);
+        if (queried != AYNI_OK) {
+            return queried;
+        }
+        const auto result =
+            reply_voice_.advance(kernel_, commands_, session_, instance_, info.durable_seq);
+        if (result == AYNI_BUSY && reply_voice_.failure_status() != reported_voice_failure_) {
+            reported_voice_failure_ = reply_voice_.failure_status();
+            status(turn_, "automatic voice reply draining after error");
+            transport_.diagnostics().record("wifi voice draining status=%ld\n",
+                                            long(reported_voice_failure_));
+        }
+        if (result != AYNI_BUSY) {
+            finish_voice(result);
         }
     }
     if (turn_state_ == Turn::reply_done &&
@@ -1611,5 +1679,13 @@ ayni_status_t Chat::present_reply() {
         end_turn(nullptr); // Terminal UI status is accepted before reopening input.
     }
     return AYNI_OK;
+}
+void Chat::finish_voice(ayni_status_t result) {
+    if (result != AYNI_OK) {
+        std::snprintf(terminal_text_.data(), terminal_text_.size(),
+                      "reply completed; voice failed status=%ld; no automatic retry", long(result));
+        reply_end_ = terminal_text_.data();
+    }
+    turn_state_ = Turn::reply_done;
 }
 } // namespace wifichat

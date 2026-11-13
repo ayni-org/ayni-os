@@ -3,6 +3,7 @@
 #include "model_tools.h"
 #include "motor.h"
 #include "motor_check.h"
+#include "reply_voice.h"
 #include "speaker.h"
 #include "transport.h"
 #include <array>
@@ -25,7 +26,8 @@ class Chat {
     explicit Chat(Transport &transport)
         : transport_(transport), speaker_(transport), motor_(transport) {}
     // Owner startup before the UI/radios: reserve contiguous control/audio stacks.
-    // The audio worker stays idle; motor hardware/worker still require local preparation.
+    // The audio worker stays idle; motor hardware/worker initialize automatically during
+    // composition.
     ayni_status_t reserve_control_memory();
     ayni_status_t initialize(const ModelSelection &selection);
     // Advances the devices, steps Core once and moves the session on. report is that step's
@@ -33,6 +35,7 @@ class Chat {
     ayni_status_t tick(ayni_step_report_v1 &report, bool &again);
     void incoming(const Packet &);
     void stop_outputs() {
+        reply_voice_.set_accepting(false);
         speaker_.set_accepting(false);
         speaker_.request_stop();
         motor_.execution().set_accepting(false);
@@ -64,6 +67,7 @@ class Chat {
     ayni_status_t observe_probe(const ayni_kernel_info_v1 &);
     ayni_status_t converse(const ayni_kernel_info_v1 &);
     ayni_status_t present_reply();
+    void finish_voice(ayni_status_t);
     void end_turn(const char *);
     void wait_for(const char *phase, const char *label, ayni_status_t);
     void status(uint64_t, const char *);
@@ -75,7 +79,15 @@ class Chat {
     Speaker speaker_;
     Motor motor_;
     MotorCheck motor_check_; // Local manual checks share Core/PermitGate, without model calls.
-    ayni::hosts::esp_idf::Host *host_ = nullptr; // Internal RAM, outlives Kernel/producers.
+    ReplyVoice reply_voice_;
+    bool voice_reply_enabled_ = false; // UI-selected automatic presentation only, not tool access.
+    struct VoiceNotice {
+        uint64_t id;
+        uint8_t enabled;
+    };
+    ayni_status_t reported_voice_failure_ = AYNI_OK; // Last displayed drain failure, per turn.
+    std::optional<VoiceNotice> voice_notice_;        // Matching acknowledgement waits for UI space.
+    ayni::hosts::esp_idf::Host *host_ = nullptr;     // Internal RAM, outlives Kernel/producers.
     ayni_kernel_t *kernel_ = nullptr;
     void *arena_ = nullptr;
     // Every conversation text and model request body, on the Host's value files (ADR-0096).
@@ -102,7 +114,7 @@ class Chat {
     enum class ReplyIntent { present, cancelled };
     ReplyIntent reply_intent_ = ReplyIntent::present; // Independent of Core Goal cancellation.
     // One turn at a time: its text until the Goal exists, then the Goal until its answer.
-    enum class Turn { idle, preparing_input, input, running, saving, answer, reply_done };
+    enum class Turn { idle, preparing_input, input, running, saving, answer, speaking, reply_done };
     Turn turn_state_ = Turn::idle;
     struct ProbeTurn {
         uint32_t characters = 0; // Zero only primes the transport template; otherwise Han text.

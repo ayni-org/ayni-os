@@ -153,7 +153,11 @@ ayni_status_t MotorExecution::challenge(const ayni_permit_epochs_v1 &expected,
     } else if (!same(epochs_, expected)) {
         return AYNI_STALE;
     }
-    return ayni_control_nonce(gate_, now(), &nonce);
+    const auto issued = ayni_control_nonce(gate_, now(), &nonce);
+    if (issued == AYNI_OK) {
+        admission_.issued(nonce.nonce);
+    }
+    return issued;
 }
 ayni_status_t MotorExecution::status(uint64_t permit, ayni_executor_status_v1 &out) {
     if (!gate_ || permit > current_permit_) {
@@ -218,7 +222,8 @@ void MotorExecution::reject(const Pending &request, ayni_status_t cause) {
 }
 void MotorExecution::begin(Pending incoming) {
     if (pending_ || terminal_notice_ || !gate_ || !live().interlocks_ok ||
-        incoming.permit.permit_id <= refused_through_ || !output_->disabled() ||
+        incoming.permit.permit_id <= refused_through_ ||
+        !admission_.permits(incoming.permit.echoed_nonce) || !output_->disabled() ||
         incoming.command.first_percent < -int32_t(limit_) ||
         incoming.command.first_percent > int32_t(limit_) ||
         incoming.command.second_percent < -int32_t(limit_) ||
@@ -366,7 +371,7 @@ ayni_status_t MotorExecution::post_result() {
     return posted;
 }
 void MotorExecution::publish_terminal() {
-    if (!terminal_notice_) {
+    if (!terminal_notice_ && !state_notice_) {
         return;
     }
     publish_snapshot();
@@ -375,6 +380,7 @@ void MotorExecution::publish_terminal() {
     if (count > 0 && size_t(count) < sizeof(state) &&
         transport_.send(Kind::motor_state, terminal_notice_, state, size_t(count))) {
         terminal_notice_ = 0;
+        state_notice_ = false;
     }
 }
 // Hardware and executor port answers run on the control worker; Core never waits here.
@@ -386,6 +392,16 @@ ayni_status_t MotorExecution::advance_owner() {
     if (transport_.motor_stop_requested() ||
         local_stop_.exchange(false, std::memory_order_acq_rel)) {
         stop_owner();
+    }
+    if (transport_.motor_disable_requested() && mode_ != Mode::latched && mode_ != Mode::closed) {
+        admission_.disable();
+        mode_ = Mode::disarmed;
+        if (pending_ && pending_->phase != Phase::result) {
+            end(AYNI_CALL_CANCELLED, AYNI_DENIED);
+        } else if (stop_output() != AYNI_OK) {
+            mode_ = Mode::latched;
+        }
+        publish_snapshot();
     }
     // A Core STOP queued by the previous step must win before even the first sample.
     auto &stop = requests_[AYNI_EXECUTOR_STOP - 1];
@@ -481,11 +497,6 @@ void MotorExecution::receive_owner(Kind kind, uint64_t, const uint8_t *data, siz
         }
     }
     publish_snapshot();
-    char state[512];
-    const auto count = describe(state, sizeof(state));
-    if (count > 0 && size_t(count) < sizeof(state)) {
-        transport_.send(Kind::motor_state, current_permit_, state, size_t(count));
-    }
 }
 int MotorExecution::describe(char *out, size_t capacity) const {
     const auto snapshot = snapshot_.load(std::memory_order_acquire);
@@ -496,11 +507,12 @@ int MotorExecution::describe(char *out, size_t capacity) const {
         "{\"driver\":\"TA6586\",\"gpio_d0_d1_d2_d3\":[%lu,%lu,%lu,%lu],\"configured_supply_mv\":"
         "10000,"
         "\"power_state\":\"not-measured\",\"max_percent\":%lu,\"hard_max_percent\":%lu,\"busy\":%s,"
-        "\"motion_enabled\":%s,\"mode\":\"locally-prepared-model-control\",\"stop_chain\":"
-        "\"unverified\"}",
+        "\"motion_enabled\":%s,\"mode\":\"locally-enabled-model-control\",\"stop_chain\":"
+        "\"unverified\",\"control_mode\":%u}",
         (unsigned long)motor_pins[0], (unsigned long)motor_pins[1], (unsigned long)motor_pins[2],
         (unsigned long)motor_pins[3], (unsigned long)limit, (unsigned long)motor_percent_max,
-        (snapshot & snapshot_busy) ? "true" : "false", mode == Mode::armed ? "true" : "false");
+        (snapshot & snapshot_busy) ? "true" : "false", mode == Mode::armed ? "true" : "false",
+        unsigned(mode));
 }
 bool MotorExecution::close_owner() {
     if (mode_ == Mode::closed) {
