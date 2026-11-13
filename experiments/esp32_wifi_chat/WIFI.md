@@ -283,3 +283,11 @@ API校时拒绝明确返回NOT_READY/FAILED/EFFECT_NONE，客户端分配失败�
 实验删除本地History、BodyCache和ValueQueue，复用Session的取消、终态、发布/ACK和清空；正常聊天使用Core上下文锚点，容量诊断独立且不写真实历史。旧独立历史按用户决定不迁移；不擦Core卷、不改变配置和配对。缓存清退、正文请求配额和命令客户端由共享组件实现，关闭前先quiesce排空文件/ACK，再停止Core及Host。
 
 本轮软件正常检查、隔离Native完整程序及正常重开、独立实验和共同消费者的ESP-IDF编译通过；独立审查由用户后续安排。没有烧录、OTA、线上模型或运动，也不替代128K实机峰值、独立停止链或故障/恢复验收。具体检查和资源查询集中在统一提交说明，设计见[ADR-0100](../../docs/adr/0100-shared-interactive-runtime.md)。
+
+## 2026-11-13 共享会话部署配置与OTA
+
+用户要求拉取最新main并OTA升级，确认电机驱动断电。main `877c9c1` 的应用完整上传并从ota_0启动，但CONTEXT_OPEN返回UNSUPPORTED(-4)，未通过就绪确认，随后自动回退至原0fed423/ota_1，原会话再次就绪。此次是正常升级中自然观测到的启动失败，没有制造故障、擦卷或重试未知动作。
+
+根因是独立实验的chat_config未设置memory_capacity；Core按该值是否非零决定是否分配每Agent一个上下文。ADR-0100已迁移到共享Session，启动必须打开Core锚点；只验证配置可分配内存不足以发现上下文被禁用。修复在实验部署中设置memory_capacity=1，沿用现有单Agent及默认正文/依赖边界，不改变Core、C ABI0.54或schema9。新正常测试用实际chat_config、Sim Host和公开API完成启动、打开管理会话、创建并等待可用上下文及正常关闭，不调用模型或执行设备。
+
+Wi-Fi Native检查53/53、契约及diff检查通过。部署的应用版本、启动确认和资源观测在完成更新后补记；首轮及最终脱敏记录保存于本机忽略目录build/ota-main-20261113/，属于仓库外证据。两路方向映射未修改，GPIO脉冲不能证明实际轮轴方向。

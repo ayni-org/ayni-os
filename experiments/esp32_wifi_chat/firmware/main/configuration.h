@@ -39,6 +39,8 @@ inline ayni_config_v1 chat_config(uint32_t call_input_bytes, uint32_t call_resul
     c.grant_capacity = grant_slots;
     c.grant_delegation_depth_max = AYNI_GRANT_DELEGATION_DEPTH_MAX_DEFAULT;
     c.goal_requirement_capacity = 2;
+    // ADR-0100: shared Session opens a Core context; zero memory capacity disables it.
+    c.memory_capacity = 1;
     c.memory_body_max_bytes = AYNI_MEMORY_BODY_BYTES_DEFAULT;
     c.memory_dependency_capacity = AYNI_MEMORY_DEPENDENCY_CAPACITY_DEFAULT;
     c.call_capacity = call_slots;
