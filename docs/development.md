@@ -322,6 +322,10 @@ ABI 0.48 的 `business_contract_max_bytes` 独立于 Scope 和业务正文，默
 `Protocol::projection`，见[组件说明](../providers/model_protocol/README.md)。
 独立ESP实验编译还需要按其README准备固定字体；编译不运行deploy或串口。
 
+ESP部署配置及自动语音的公开Core/Sim集成测试位于`tests/integration/esp32_wifi_chat/`，
+根工程目标`ayni_esp32_chat_integration_tests`纳入日常ASan/UBSan；独立Wi-Fi检查也构建同一目标。
+Sim Host只属于这些测试夹具，不加入实验生产代码的依赖许可。
+
 ### 共享交互运行时的源码接口
 
 `Session::Config::bodies`使用`BodyCollection`，FileBodies调用方传入`collection()`；端口和所有异步缓冲保持到Host join。默认保留草稿，交互应用可显式选`UnfinishedTurn::discard`并使用cancel/abandon/take_result；关闭前反复quiesce并继续step，完成文件/ACK排空后再shutdown。旧工作必须先由组合根取消并确认终态；Core shutdown不等于取消所有持久Goal。FileBodies的set_cache_limit/trim_cache管理驻留正文，ready检查包含未受理删除。ValueAdmission的额度由部署选择；portable Profile的外层值为4槽，调用方打开的Host队列至少5槽。CommandClient要求每principal一个独占命令流；多命令窗口的Native CLI复用CommandSequence生成身份并保持原回执窗口。详见ADR-0100。

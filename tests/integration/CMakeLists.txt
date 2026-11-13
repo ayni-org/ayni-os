@@ -16,6 +16,8 @@ add_test(NAME NativeCli.scripted_sessions COMMAND ${Python3_EXECUTABLE}
     ${CMAKE_CURRENT_SOURCE_DIR}/native_cli_test.py $<TARGET_FILE:ayni>)
 set_tests_properties(NativeCli.scripted_sessions PROPERTIES TIMEOUT 90)
 
+add_subdirectory(esp32_wifi_chat)
+
 add_executable(ayni_normal_fixture_tests normal_fixture_test.cpp)
 target_link_libraries(ayni_normal_fixture_tests PRIVATE ayni_sim_normal_fixtures
     ayni_warnings GTest::gtest_main)

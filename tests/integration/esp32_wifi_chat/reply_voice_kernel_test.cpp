@@ -138,10 +138,10 @@ class ReplyVoiceKernel : public testing::Test {
             sizeof(capability), 2, text("speaker.speech"), 0, 0, nullptr};
         ASSERT_EQ(ayni_register_capability(kernel.get(), &capability), AYNI_OK);
         input[0].kind = AYNI_VALUE_OBJECT;
-        input[0].subtree_end = input.size();
+        input[0].subtree_end = uint32_t(input.size());
         input[1].kind = AYNI_VALUE_TEXT;
         input[1].field_id = 1;
-        input[1].subtree_end = input.size();
+        input[1].subtree_end = uint32_t(input.size());
         input[1].name = text("text");
         input[1].flags = AYNI_SCHEMA_REQUIRED;
         input[1].min_count = 1;

@@ -9,7 +9,7 @@ include("${AYNI_ROOT}/cmake/AyniYyjson.cmake")
 include("${AYNI_ROOT}/cmake/AyniGoogleTest.cmake")
 enable_testing()
 add_subdirectory("${AYNI_ROOT}/hosts/sim" "sim-host")
-add_executable(ayni_wifi_checks codec_test.cpp configuration_test.cpp preferences_test.cpp reply_voice_test.cpp reply_voice_kernel_test.cpp app_menu_test.cpp nvs_stub.cpp
+add_executable(ayni_wifi_checks codec_test.cpp preferences_test.cpp reply_voice_test.cpp app_menu_test.cpp nvs_stub.cpp
     ../../firmware/main/model_tools.cpp
     ../../firmware/wifi/model_codec.cpp
     ../../firmware/wifi/settings_codec.cpp ../../firmware/wifi/settings.cpp ../../firmware/wifi/capture.cpp
@@ -20,3 +20,4 @@ target_compile_definitions(ayni_wifi_checks PRIVATE CONFIG_AYNI_WIFI_CHAT=1)
 target_link_libraries(ayni_wifi_checks PRIVATE Ayni::Core Ayni::Strategies Ayni::Conversation Ayni::PermitGate Ayni::ModelProtocol ayni_host_sim yyjson GTest::gtest_main)
 include(GoogleTest)
 gtest_discover_tests(ayni_wifi_checks)
+add_subdirectory("${AYNI_ROOT}/tests/integration/esp32_wifi_chat" "esp32-integration")
