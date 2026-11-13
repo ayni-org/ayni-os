@@ -290,4 +290,6 @@ API校时拒绝明确返回NOT_READY/FAILED/EFFECT_NONE，客户端分配失败�
 
 根因是独立实验的chat_config未设置memory_capacity；Core按该值是否非零决定是否分配每Agent一个上下文。ADR-0100已迁移到共享Session，启动必须打开Core锚点；只验证配置可分配内存不足以发现上下文被禁用。修复在实验部署中设置memory_capacity=1，沿用现有单Agent及默认正文/依赖边界，不改变Core、C ABI0.54或schema9。新正常测试用实际chat_config、Sim Host和公开API完成启动、打开管理会话、创建并等待可用上下文及正常关闭，不调用模型或执行设备。
 
-Wi-Fi Native检查53/53、契约及diff检查通过。部署的应用版本、启动确认和资源观测在完成更新后补记；首轮及最终脱敏记录保存于本机忽略目录build/ota-main-20261113/，属于仓库外证据。两路方向映射未修改，GPIO脉冲不能证明实际轮轴方向。
+Wi-Fi Native检查53/53、clang-format18、契约及diff检查通过，ESP-IDF6.0.3编译和镜像校验通过。修复版本e3a379f的应用为2659808字节，小槽余量约15%；正常Wi-Fi上传31.73秒返回HTTP200。设备从ota_0启动，约10.58秒会话就绪，15.62秒OTA启动确认status=0，随后查询pending_verify=false；原两组Goal/Task/Call元数据仍在，未清空Core卷。password_set/model_key_set及接口、流式、输出限制选项保持，网络校时就绪；配对区未写入，不声称本轮遥控器重连或语音/模型已实测。
+
+实机Core arena从未修复main的2530976增至2539200字节（增加8224），workspace仍为668568字节；最终只读查询内部空闲58879、PSRAM空闲1630996字节，不作为对话/媒体峰值保证。首轮及最终脱敏记录保存于本机忽略目录build/ota-main-20261113/，属于仓库外证据。新增上下文需要兼容的部署容量，不能从ABI/schema相同推定memory_capacity=0旧应用可读新卷；本轮未开展新的回退、掉电或恢复专项。两路方向映射未修改，GPIO脉冲不能证明实际轮轴方向。
