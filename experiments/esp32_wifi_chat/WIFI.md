@@ -354,7 +354,7 @@ SpeechText使用SHA256锁定的MD4C 0.5.2及其实体表，替代简单符号删
 
 诊断只增加观察，不调整调度、持久接受、派发屏障、空间预算、许可、停止或自动语音行为；Core、C ABI和存储格式不改。ESP Host提供owner线程的有界、加锁累计快照；存储worker保持执行→刷新空间及释放预留→投递完成的原顺序，随后发布计数。计时包含任务抢占，不代表纯CPU或裸Flash时间。共享FileLog仅累计append查重扫描的记录头探测次数，仍执行完整原查重与同步。
 
-- `wifi latency phase=...`：从上一采样点起已完成请求数量，以及排队、实际I/O、请求后的空间统计、投递完成耗时；空闲空间统计另计。`max_*`是本Host生命周期最大值，不是该阶段增量。
+- `wifi latency phase=...`：从上一采样点起已完成请求数量，以及排队、实际I/O、请求后的空间统计、投递完成耗时；空闲空间统计另计。`max_*`是本次存储打开周期最大值，不是该阶段增量；关闭重开会清零。
 - `wifi io phase=...`：append/外层文件值的I/O子集、扫描记录头次数、文件read次数/返回字节及read/write/sync耗时。`turn_core_ms`、`steps`、`max_step_us`、`turn_converse_ms`是本回合已完成owner工作累计值；采样回调可能位于当前step内。不同线程及子集计时有重叠，不能相加为回合时长。
 - 模型请求、结果交接、正文缓存就绪、答案保存及terminal沿用固定阶段名输出摘要。异步请求在采样时仍未完成的耗时会计入后续快照；完成通知也可能先于计数发布被owner观察到。
 - `wifi api phase=begin`增加排队耗时；流式模型/语音的`first_body`只表示首批HTTP正文，未必是可播放音频。`wifi speaker phase=first_pcm/first_i2s_write/drained`分别记录首批PCM接纳、首次I²S写入和排空；I²S接纳不是麦克风测得的首声。
@@ -365,7 +365,25 @@ SpeechText使用SHA256锁定的MD4C 0.5.2及其实体表，替代简单符号删
 
 作者自查：
 
-- 删除注释：检查本次git diff，既有持久与关闭注释保留；trace说明扩展为固定阶段计时。
-- Kernel字段：本次core/及include/无改动；计数归ESP Storage/LittleFiles、共享FileLog及实验Chat，快照只供诊断，不参与决策。
-- 重复机制：复用原存储队列、文件接口、DiagnosticLog及阶段trace；不引入另一条任务、执行或TTS通道。
-- 裸数字：时间字段均用us或ms命名；日志容量沿用slots常量，C ABI和记录版本/布局没有新增数字。
+- 删除注释：检查本次git diff，既有持久与关闭注释保留；chat.h:76扩展trace说明为固定阶段计时。
+- Kernel字段：搜索本次core/及include/差异为空；chat.h:138及storage_host.cpp:61的计数属于实验和Host，不参与决策。
+- 重复机制：storage_host.cpp:179保留原serve_work及post顺序，chat.cpp:76复用DiagnosticLog及阶段trace；不引入另一条任务、执行或TTS通道。
+- 裸数字：metrics.h:11规定时间单位，diagnostic_log.h:16沿用slots常量；C ABI和记录版本/布局没有新增数字。
+
+固件`ceb462b`应用2750624字节，最小3 MiB槽余量13%；镜像checksum及validation hash、固定分区布局及回退配置检查通过。一次正常Wi-Fi上传41.081秒，HTTP200、updated/restarting=true，从ota_1切到ota_0。新启动3.77秒电机资源ready/status=0，48.18秒会话ready；后续查询pending_verify=false、error=0，配置存在标记及协议选项均与更新前一致。没有USB或擦卷操作。
+
+用现有`/api/diagnostics/context-test?characters=12`连续取两份相同的正常合成样本，均明确记录`template_only=1 no_model_http=1 status=0`，没有云端模型、电机动作或TTS请求；真实对话轮数保持14。观察结果如下，计时不可跨线程相加：
+
+| 指标 | 样本1 | 样本2 |
+|---|---:|---:|
+| 回合墙钟 | 7612 ms | 7856 ms |
+| ayni_step累计墙钟 | 4315 ms | 4260 ms |
+| 最长单次ayni_step | 853322 us | 847254 us |
+| 已完成存储请求 | 18 | 14 |
+| 存储I/O累计墙钟 | 2326 ms | 2893 ms |
+| 请求后空间统计 | 691 ms | 457 ms |
+| 空闲空间统计 | 614 ms | 492 ms |
+| append记录头扫描 | 3059次 | 3108次 |
+| 文件read / write / sync | 699 / 581 / 12 ms | 669 / 550 / 12 ms |
+
+两份日志lost=0、dropped=0；原始元数据、OTA与构建日志保存在忽略的本机build/latency-20261114/及build/latency-*.log，属于仓库外证据。结果复现了无需云端或物理操作的本地延迟，且最长step约0.85秒，值得继续细分Core推进路径；墙钟包含抢占及可能的跨核Flash停顿，尚不能归为纯Core计算。空间统计和append扫描确有成本，文件显式sync在这两个样本中占比较小；不能据此断言已定位此前42.66秒的全部根因。本轮只交付诊断，未做性能修复，也未自动复现真实电机/语音场景。

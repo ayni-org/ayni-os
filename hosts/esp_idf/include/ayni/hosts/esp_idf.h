@@ -73,6 +73,7 @@ class Host {
     uint32_t worker_stack_free_bytes() const;
     // Owner only while open: bounded lock/copy, never performs I/O or resets counters.
     // A completion may be visible just before its accounting snapshot is published.
+    // Close/reopen starts new counters; a closed Host returns a zero snapshot.
     StorageMetrics storage_metrics() const;
     // Startup accounting for one internal-RAM Storage including queue, caches and worker stack.
     static void storage_memory_requirements(std::size_t &bytes, std::size_t &alignment);

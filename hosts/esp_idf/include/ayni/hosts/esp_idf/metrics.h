@@ -1,4 +1,4 @@
-// Read-only, Host-lifetime ESP storage counters. No payloads or persistent state.
+// Read-only ESP counters for one open storage instance. No payloads or persistent state.
 #ifndef AYNI_HOSTS_ESP_IDF_METRICS_H
 #define AYNI_HOSTS_ESP_IDF_METRICS_H
 #include <cstdint>
