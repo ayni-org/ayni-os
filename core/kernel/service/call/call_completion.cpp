@@ -155,8 +155,8 @@ ayni_status_t CallRuntime::normalize_result(uint32_t index, ayni_bytes_v1 body,
             return AYNI_CAPACITY_EXCEEDED;
         }
         auto &proof = *proof_lease;
-        const auto status = catalog::decode_business(work_.workspace, work_.calls.domain(index),
-                                                     contract.business_contract, proof);
+        const auto status =
+            catalog::read_admitted_business(work_.workspace, contract.business_contract, proof);
         if (status != AYNI_OK) {
             return status;
         }
@@ -175,8 +175,8 @@ ayni_status_t CallRuntime::normalize_result(uint32_t index, ayni_bytes_v1 body,
         return AYNI_CAPACITY_EXCEEDED;
     }
     auto &proof = *proof_lease;
-    auto status = catalog::decode_business(work_.workspace, work_.calls.domain(index),
-                                           contract.business_contract, proof);
+    auto status =
+        catalog::read_admitted_business(work_.workspace, contract.business_contract, proof);
     auto raw_lease = work_.workspace.make<catalog::DecodedValue>();
     if (!raw_lease) {
         return AYNI_CAPACITY_EXCEEDED;

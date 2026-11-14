@@ -572,11 +572,7 @@ ayni::providers::model_protocol::RequestOptions Api::model_options(bool tools_al
     options.result_format = tools_allowed ? AYNI_CALL_RESULT_TOOL_CALLS : AYNI_CALL_RESULT_TEXT;
     if (std::strstr(settings_.model_url.data(), "https://api.deepseek.com") ==
         settings_.model_url.data()) {
-        options.extra_parameters =
-            tools_allowed ? R"({"parallel_tool_calls":false,"thinking":{"type":"disabled"}})"
-                          : R"({"thinking":{"type":"disabled"}})";
-    } else if (tools_allowed) {
-        options.extra_parameters = R"({"parallel_tool_calls":false})";
+        options.extra_parameters = R"({"thinking":{"type":"disabled"}})";
     }
     return options;
 }

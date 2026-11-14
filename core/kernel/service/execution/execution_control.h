@@ -83,10 +83,6 @@ class ExecutionControl {
     // Immediately before dispatch and at every renewal: the saved Scene
     // generation, boot, owner binding and observations still hold.
     bool allowed(uint32_t index, uint64_t now_us, uint64_t durable_seq) const;
-    // Same live gate checks when the dispatcher already owns the exact immutable proof/input.
-    bool allowed_with_proof(uint32_t index, uint64_t now_us, uint64_t durable_seq,
-                            const catalog::DecodedBusiness &proof,
-                            const work::CallInputView &input) const;
     // After the durable DISPATCHING barrier, called again until it settles:
     // the first call sends a challenge, and its answer's fresh nonce anchors
     // the executor's deadline. The caller rechecks authority, resources and
@@ -128,12 +124,8 @@ class ExecutionControl {
     bool ready(uint64_t now_us, uint64_t durable_seq, RuntimeMode mode) const;
 
   private:
-    // Cheap stop/boot/owner-binding rejection precedes any proof decoding on the renewal path.
+    // Reject a stopped, old-boot or differently owned execution before checking its Scene.
     bool execution_current(uint32_t index) const;
-    // Project the already validated input against the current Scene and observations.
-    bool allowed_input(uint32_t index, uint64_t now_us, uint64_t durable_seq,
-                       const catalog::DecodedBusiness &proof,
-                       const work::CallInputView &input) const;
 
     // One unchanged enabled Scene must cover every row of the canonical input.
     ayni_status_t authorize_input(const catalog::ExecutionBinding &binding,

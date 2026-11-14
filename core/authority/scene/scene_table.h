@@ -99,6 +99,10 @@ class Scenes {
     // Prepared owner-thread mutation; new object ID only for first state, otherwise unchanged.
     void apply(const SceneChange &change, const PreparedSceneChange &prepared, uint64_t object_id,
                foundation::TransitionStamp stamp);
+    // Current enabled, exact configured and durable Scene; no input or scope admission.
+    // Reuses an accepted input only while its saved generation remains unchanged.
+    ayni_status_t current(ayni_string_v1 id, uint32_t version, uint64_t durable_seq,
+                          uint32_t &definition_index) const;
     // Exact enabled/configuration/durable gate, followed by this Scene's allowed capability scope.
     ayni_status_t authorize(ayni_string_v1 id, uint32_t version, ayni_string_v1 capability,
                             uint32_t capability_version, ayni_bytes_v1 arguments,

@@ -454,6 +454,41 @@ TEST_F(ManagedExecution, procedure_finishes_only_with_independent_stop_and_relea
     EXPECT_EQ(resource().quarantine_id, 0U);
     EXPECT_EQ(resource().used, 0U);
 }
+// ADR-0103/C-STOP-006: white-box erasure closes the gate before ordinary Call work; the
+// coordinated Privacy journal/replay flow is covered separately by the existing tests.
+TEST_F(ManagedExecution, erased_input_immediately_latches_the_existing_execution_for_stop) {
+    start(AYNI_FORM_SESSION, 60);
+    create();
+    wait_submission();
+    pump(5);
+    change_scene(true); // An already-enabled Scene retains its generation.
+    auto &model = ayni::kernel::KernelTestProbe::work(work.kernel());
+    auto *lease =
+        ayni::kernel::KernelTestProbe::permits(work.kernel()).find(executor.logical_call());
+    ASSERT_NE(lease, nullptr);
+    ASSERT_EQ(lease->phase, ayni::resources::PermitLease::Phase::issued);
+    uint32_t index = 0;
+    ASSERT_TRUE(model.calls.find(executor.logical_call(), index));
+    ASSERT_GT(model.transitions.latest().commit_seq,
+              model.calls.state(index).latest.transition.commit_seq);
+    // White-box gate check at the applied frontier; do not allocate an unjournaled transition.
+    ASSERT_EQ(
+        model.calls.erase_content(index, {model.ids.boot_epoch(), model.transitions.latest()}),
+        AYNI_OK);
+    ASSERT_TRUE(ayni::kernel::KernelTestProbe::calls(work.kernel())
+                    .refresh_live_gates(work.node().sim().now_us(), work.node().info().durable_seq,
+                                        ayni::kernel::RuntimeMode::running));
+    EXPECT_EQ(lease->phase, ayni::resources::PermitLease::Phase::stopping);
+    const auto produced = executor.samples();
+    const auto renewed = executor.renewals();
+    ASSERT_EQ(work.cancel_task(task_id).status, AYNI_OK);
+    step_core(); // Deliver the latched stop before the executor's next sample.
+    pump(20);
+    EXPECT_EQ(executor.samples(), produced);
+    EXPECT_EQ(executor.renewals(), renewed);
+    EXPECT_EQ(execution().phase, AYNI_EXECUTION_STOPPED);
+}
+
 TEST_F(ManagedExecution,
        session_renews_with_fresh_nonce_and_normal_close_never_resumes_old_motion) {
     start(AYNI_FORM_SESSION, 60);

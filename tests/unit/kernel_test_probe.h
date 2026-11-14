@@ -24,6 +24,9 @@ class KernelTestProbe {
     static ayni_host_v1 &host(ayni_kernel_t *kernel) { return kernel->host; }
     static WorkModel &work(ayni_kernel_t *kernel) { return kernel->work; }
     static const WorkModel &work(const ayni_kernel_t *kernel) { return kernel->work; }
+    // Execution gates are observable before ordinary journal-admitted work advances.
+    static CallRuntime &calls(ayni_kernel_t *kernel) { return kernel->calls; }
+    static resources::PermitTable &permits(ayni_kernel_t *kernel) { return kernel->permits; }
     static WorkReplay &replay(ayni_kernel_t *kernel) { return kernel->replay; }
     static BootSequence &boot(ayni_kernel_t *kernel) { return kernel->boot; }
     static CommitLog &log(ayni_kernel_t *kernel) { return kernel->log; }

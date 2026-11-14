@@ -132,13 +132,17 @@ TEST_F(StrategiesFixture, eight_tools_are_executed_sequentially) {
     propose(0, AYNI_CALL_TOOL_COUNT_MAX);
     for (uint32_t at = 1; at <= AYNI_CALL_TOOL_COUNT_MAX; ++at) {
         ASSERT_EQ(pending.size(), at + 1U);
+        // ADR-0103: a whole model batch runs serially, without an intervening model request.
+        EXPECT_EQ(pending[at].capability, "echo");
         post(at, text("ok"));
         pump();
     }
     ASSERT_EQ(pending.size(), 10U);
+    EXPECT_EQ(pending.back().capability, "model");
     post(9, text("done"));
     pump();
     EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+    EXPECT_EQ(work.task(task).model_calls_used, 2U);
 }
 // ADR-0085: serving-model token observations trigger compression of older groups.
 TEST_F(StrategiesFixture, summary_replaces_history_only_after_all_budget_chunks_succeed) {

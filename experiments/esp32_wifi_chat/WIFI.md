@@ -417,3 +417,37 @@ SpeechText使用SHA256锁定的MD4C 0.5.2及其实体表，替代简单符号删
 部署后运行一次现有12字符本地合成回合，`template_only=1 no_model_http=1 status=0`，共5205 ms正常收尾，没有云端模型、电机或语音动作请求。该回合完成14个存储请求，append记录头扫描为0、文件read为0；I/O累计794 ms、请求后空间统计32 ms、空闲空间统计0 ms；Core累计墙钟4261 ms、最长单次810094 us。之前两个12字符样本为7612/7856 ms，但保留数据和启动环境不同，本次单样本不作为真实指令的严格性能对照。真实动作前后时延仍需用户按原指令复测。
 
 OTA及本地回合脱敏元数据保存在忽略的本机build/performance-ota-20261114/，属于仓库外证据；本次log lost=0/dropped=0。正常启动、配置标记与合成回合结果不替代掉电、耐久或独立停止链验收。
+
+## 2026-11-14 运行期准入复用与多工具批次
+
+用户真实复测的最新回合保存答案52299 ms，5次模型请求合计12896 ms、4次电机输出合计1605 ms，其余37798 ms是本地流程。完整回合含语音64528 ms；累计Core墙钟29760 ms，最长step为1072729 us。原始日志与对比脚本在忽略的build/performance-ota-20261114/，属于仓库外证据；线程及子集计时不能相加，也不能把不同模型轮数的整回合直接当优化收益。
+
+用户要求先处理本地开销并放开一次多个工具、保留串行，完成提交推送。实现见[ADR-0103](../../docs/adr/0103-reuse-immutable-admission-in-live-calls.md)：
+
+- CallRuntime读取已由catalog关闭/Call恢复完整验证的自有不可变proof，不再每次重做Schema语义校验与规范重编码；新输入和Provider结果仍验证、规范化，外部和恢复入口完整验证。
+- 物理prepare仍逐行核对Scene范围。运行期执行门复用本boot准入，只核对内容清除、停止/boot/owner、Scene配置/版本/持久边界/代际及当前观察，授权和资源检查保持。无常驻缓存、新Kernel字段或arena扩容。
+- Schema临时对象仅初始化、复制活动节点/选项/默认值，并重定位内部指针；失败原子性、未使用尾部不可见及整个工作区释放清除保持。
+- ESP移除`parallel_tool_calls:false`。共享解析器保持最多8项，ToolLoop按顺序等待各前台工具结果，整批完成后才请求下一模型轮；同Task单action、UNKNOWN阻断及资源冲突规则保持。
+
+AppleClang21.0.0/CMake4.0.3，Release、Sim/Mock夹具、相同的20000次正常调用对照如下；基线是修改前4520331的只读源码快照，修改后使用相同夹具。没有时钟推进、网络或设备动作混入计时。该机制测量不是ESP端到端、Linux Native Host或硬实时验收：
+
+| 机制（每次平均） | 修改前 | 修改后 |
+|---|---:|---:|
+| 已准入契约物化：旧完整decoder / 新owner reader | 6.718 us | 2.532 us |
+| 活跃物理执行门轮询：相同有效输入/Scene | 10.169 us | 0.212 us |
+
+契约读取约快2.65倍，执行门轮询约快48倍；不能据此推算37798 ms降至多少。测量程序和原始输出在忽略的build/local-latency-bench-*，属于仓库外证据。
+
+实际软件验证：
+
+- AppleClang21.0.0，ASan/UBSan定向196/196通过：原Call/Tool、受管执行、执行事实、共享文件及空间账目，另含Schema/值/投影/参数、业务调用、Scene、workspace和ToolLoop。保留既有故障/恢复回归，没有新专项；新输入擦除用纯gate白盒检查，并不宣称验证Privacy日志配对或持久恢复。小scratch可读已准入契约但不足以重新完整解码；默认值指针及再次编码一致；同批8工具严格串行且仅两次模型调用。
+- Wi-Fi正常检查74/74通过，包含两工具批次穿过共享模型协议和ESP codec后保持协议ID及参数所有权。工具规则98/98、覆盖聚合工具在真实/private/tmp路径下12/12通过；clang-format18、依赖/契约/diff及机械可读性通过，后者维持19项既有public-code-comment基线。
+- 额外全工具发现检查在macOS系统Bash3.2运行Linux CI脚本时失败，临时目录/var符号链接也触发覆盖工具路径错误；后者用真实路径重跑通过。未改无关CI脚本，也不报告全工具或Linux CI通过。ASan配置保留此前本地AppleClang shadow告警例外，CI策略不变。
+- ESP-IDF6.0.3/GCC15.2.0固件编译通过，应用0x29fa60（2751072）字节，比97c77da小352字节，最小3 MiB槽余量13%；实际编译与测试日志在忽略的build/local-latency-*。按资源检查选择每次构建1～2任务，测试串行。本次尚未OTA或执行真实模型/电机/语音，板上实际回合与最长step待部署复测。
+
+独立只读审查发现优化初稿遗漏输入清除后的执行门拒绝，已用content_erased快拒绝修复并复核；正常白盒回归确认在普通Call推进和取消前原许可已进入stopping。独立审查未运行测试，当前生产差异无剩余实质发现。作者自查及独立逐项复核：
+
+- 删除注释：原“每次重新投影输入”不再成立，execution_control.cpp:130改为本boot已逐行准入及动态代际说明；schema/business完整边界与失败不发布的说明保留。
+- Kernel字段：检查kernel_state.h、arena及ABI差异，无新增Kernel状态或内存布局。DecodedSchema仅改变活动前缀初始化/复制，sizeof及工作区需求不变。
+- 重复机制：business_encoding.cpp:166、schema_encoding.cpp:242分别只有一个布局reader；scene_table.cpp:184集中当前门控，authorize及运行期复用。没有新授权、执行或日志通道。
+- 裸数字：新reader继续使用原具名版本/长度/容量及sizeof；没有新增记录偏移、阈值或ABI/schema字面量。8工具上限继续由AYNI_CALL_TOOL_COUNT_MAX定义。

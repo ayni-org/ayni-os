@@ -245,8 +245,8 @@ CallRuntime::Advance CallRuntime::renew_subscription(uint32_t index, uint64_t no
     }
     auto &input = *input_lease;
     const auto *proof = &*proof_lease;
-    const auto decoded = catalog::decode_business(work_.workspace, work_.calls.domain(index),
-                                                  contract.business_contract, *proof_lease);
+    const auto decoded =
+        catalog::read_admitted_business(work_.workspace, contract.business_contract, *proof_lease);
     if (decoded != AYNI_OK) {
         return Advance::internal;
     }

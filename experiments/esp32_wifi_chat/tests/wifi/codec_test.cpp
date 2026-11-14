@@ -239,10 +239,10 @@ TEST(WifiSettings, EndpointAndCredentialSyntaxRejectsHiddenAuthorities) {
     EXPECT_EQ(normalized_api_root("https://api.deepseek.com///"), "https://api.deepseek.com");
 }
 
-TEST(WifiModel, ActionToolsRoundTripThroughPublicSdkWithOwnedArguments) {
-    // ADR-0097: reuse the public complete tool-list codec, keeping arguments alive until post.
+TEST(WifiModel, MultipleToolsRoundTripThroughPublicSdkWithOwnedArguments) {
+    // ADR-0103: retain a whole model batch and its argument ownership through the ESP codec.
     std::string response =
-        R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":"查询台架","tool_calls":[{"id":"call-1","type":"function","function":{"name":"ayni_call_capability","arguments":"{\"capability_id\":\"motor.status\",\"parameters\":{}}"}}]}}]})";
+        R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":"查询台架","tool_calls":[{"id":"call-1","type":"function","function":{"name":"ayni_call_capability","arguments":"{\"capability_id\":\"motor.status\",\"parameters\":{}}"}},{"id":"call-2","type":"function","function":{"name":"ayni_call_capability","arguments":"{\"capability_id\":\"motor.status\",\"parameters\":{}}"}}]}}]})";
     auto packet = std::make_unique<Packet>();
     EXPECT_FALSE(decode_model(response, false, *packet));
     ASSERT_TRUE(decode_model(response, true, *packet));
@@ -259,8 +259,10 @@ TEST(WifiModel, ActionToolsRoundTripThroughPublicSdkWithOwnedArguments) {
               AYNI_OK);
     response.clear();
     packet.reset();
-    ASSERT_EQ(tools->count(), 1U);
+    ASSERT_EQ(tools->count(), 2U);
     EXPECT_EQ(std::string_view(tools->assistant().data, tools->assistant().size), "查询台架");
+    const auto &second = tools->calls()[1];
+    EXPECT_EQ(std::string_view(second.protocol_id.data, second.protocol_id.size), "call-2");
     const auto &call = tools->calls()[0];
     EXPECT_EQ(std::string_view(call.protocol_id.data, call.protocol_id.size), "call-1");
     EXPECT_EQ(std::string_view(call.function_name.data, call.function_name.size),

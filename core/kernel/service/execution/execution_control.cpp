@@ -1,5 +1,4 @@
 #include "kernel/service/execution/execution_control.h"
-#include "foundation/workspace.h"
 
 #include "authority/scope/scope.h"
 #include "catalog/capability/business_encoding.h"
@@ -113,9 +112,10 @@ authority::GrantCheck ExecutionControl::prepare(
 // Used immediately before dispatch and every local renewal. Scene close/reopen,
 // a new observation version or a new boot cannot revive an accepted old action.
 bool ExecutionControl::execution_current(uint32_t index) const {
-    const auto &fact = *work_.calls.state(index).execution;
+    const auto &state = work_.calls.state(index);
+    const auto &fact = *state.execution;
     const auto *owner = work_.principals.binding();
-    return !work::execution_stopped(fact) &&
+    return !state.content_erased && !work::execution_stopped(fact) &&
            fact.epochs.kernel_boot_epoch == work_.ids.boot_epoch() && owner != nullptr &&
            fact.epochs.authority_epoch == owner->binding_revision;
 }
@@ -127,37 +127,13 @@ bool ExecutionControl::allowed(uint32_t index, uint64_t now_us, uint64_t durable
     if (!execution_current(index)) {
         return false;
     }
-    auto input = work_.workspace.make<work::CallInputView>();
-    auto proof = work_.workspace.make<catalog::DecodedBusiness>();
-    if (!input || !proof) {
-        return false;
-    }
-    const auto domain = work_.calls.domain(index);
-    const auto &contract = work_.calls.contract(index);
-    return catalog::decode_business(work_.workspace, domain, contract.business_contract, *proof) ==
-               AYNI_OK &&
-           work::read_call_input_with_proof(work_.workspace, *proof, domain,
-                                            work_.calls.input(index), contract,
-                                            *input) == AYNI_OK &&
-           allowed_input(index, now_us, durable_seq, *proof, *input);
-}
-
-bool ExecutionControl::allowed_with_proof(uint32_t index, uint64_t now_us, uint64_t durable_seq,
-                                          const catalog::DecodedBusiness &proof,
-                                          const work::CallInputView &input) const {
-    return !work_.calls.state(index).execution ||
-           (execution_current(index) && allowed_input(index, now_us, durable_seq, proof, input));
-}
-
-bool ExecutionControl::allowed_input(uint32_t index, uint64_t now_us, uint64_t durable_seq,
-                                     const catalog::DecodedBusiness &proof,
-                                     const work::CallInputView &input) const {
+    // prepare admitted every projection row against this immutable Scene/input in this boot.
+    // Only its live generation and prerequisites can change (ADR-0103); a new boot was refused
+    // above, and disable/re-enable cannot revive the old accepted generation.
     const auto &fact = *work_.calls.state(index).execution;
-    const auto &identity = work_.calls.identity(index);
     uint32_t scene = 0, state = 0;
-    return authorize_input(fact.binding, view(identity.capability_id), identity.capability_version,
-                           work_.calls.domain(index), work_.calls.contract(index), input, proof,
-                           durable_seq, scene) == AYNI_OK &&
+    return work_.scenes.current(view(fact.binding.scene), fact.binding.scene_version, durable_seq,
+                                scene) == AYNI_OK &&
            work_.scenes.find_state(view(fact.binding.scene), state) &&
            work_.scenes.state(state).stamp.commit_seq == fact.scene_seq &&
            dependencies_current(index, now_us);

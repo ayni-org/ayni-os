@@ -144,7 +144,7 @@ ayni_status_t CallRuntime::stage_business(const ayni_call_request_v1 &request, P
     auto &input = *input_lease;
     const auto *proof = &*proof_lease;
     auto status =
-        catalog::decode_business(work_.workspace, domain, contract.business_contract, *proof_lease);
+        catalog::read_admitted_business(work_.workspace, contract.business_contract, *proof_lease);
     if (status != AYNI_OK) {
         return status;
     }
@@ -513,8 +513,8 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
     auto &input = *input_lease;
     auto proof_lease = work_.workspace.make<catalog::DecodedBusiness>();
     if (!proof_lease ||
-        catalog::decode_business(work_.workspace, domain, contract.business_contract,
-                                 *proof_lease) != AYNI_OK ||
+        catalog::read_admitted_business(work_.workspace, contract.business_contract,
+                                        *proof_lease) != AYNI_OK ||
         work::read_call_input_with_proof(work_.workspace, *proof_lease, domain,
                                          {staging_, proposal.input_size}, contract,
                                          input) != AYNI_OK) {

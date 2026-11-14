@@ -252,6 +252,30 @@ TEST_F(CallInputTest, validated_proof_is_shared_by_input_encoding_and_reading) {
     EXPECT_EQ(std::string(body_text(*view).data, body_text(*view).size), "shared");
 }
 
+// ADR-0103: live owner proofs need no schema-validation/re-encoding scratch; their views still
+// normalize the actual input exactly as the fully validated proof does.
+TEST_F(CallInputTest, admitted_owner_proof_materializes_without_the_full_decoder_scratch) {
+    auto decoded = std::make_unique<ayni::catalog::DecodedBusiness>();
+    const auto bytes = sizeof(ayni::catalog::DecodedBusiness) +
+                       sizeof(ayni::catalog::DecodedSchema) +
+                       ayni::foundation::Workspace::alignment;
+    std::vector<uint64_t> scratch((bytes + sizeof(uint64_t) - 1) / sizeof(uint64_t));
+    ayni::foundation::Workspace workspace(scratch.data(), scratch.size() * sizeof(uint64_t));
+    EXPECT_EQ(
+        ayni::catalog::decode_business(workspace, domain(), contract.business_contract, *decoded),
+        AYNI_CAPACITY_EXCEEDED);
+    ASSERT_EQ(
+        ayni::catalog::read_admitted_business(workspace, contract.business_contract, *decoded),
+        AYNI_OK);
+    nodes[2].value.text = {"owner", 5};
+    ASSERT_EQ(encode_business_input_with_proof(ayni::test::codec_workspace(), *decoded, contract,
+                                               input, body.data(), capacity, size),
+              AYNI_OK);
+    auto output = std::make_unique<CallInputView>();
+    ASSERT_EQ(read(*output), AYNI_OK);
+    EXPECT_EQ(std::string(body_text(*output).data, body_text(*output).size), "owner");
+}
+
 // White-box ADR-0102: reuse preserves normal canonical input and projection behavior.
 TEST_F(CallInputTest, a_shared_contract_still_validates_each_new_business_input) {
     nodes[2].value.text = {"hello", 5};

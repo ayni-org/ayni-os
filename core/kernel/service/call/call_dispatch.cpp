@@ -177,8 +177,8 @@ CallRuntime::Advance CallRuntime::dispatch(uint32_t index, uint32_t task_index, 
     }
     auto &input = *input_lease;
     const auto *proof = &*proof_lease;
-    const auto decoded = catalog::decode_business(work_.workspace, work_.calls.domain(index),
-                                                  contract.business_contract, *proof_lease);
+    const auto decoded =
+        catalog::read_admitted_business(work_.workspace, contract.business_contract, *proof_lease);
     if (decoded != AYNI_OK) {
         return Advance::internal;
     }
@@ -194,7 +194,7 @@ CallRuntime::Advance CallRuntime::dispatch(uint32_t index, uint32_t task_index, 
         return authority.status == AYNI_BUSY ? Advance::idle : cancel_local(index, task_index);
     }
     if (!resources_.executable(slots_[index].active->claim) ||
-        !control_.allowed_with_proof(index, now_us, durable_seq, *proof, input)) {
+        !control_.allowed(index, now_us, durable_seq)) {
         return cancel_local(index, task_index);
     }
     // The permit's challenge is answered in a later item, so this recheck

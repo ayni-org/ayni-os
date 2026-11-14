@@ -42,6 +42,10 @@ ayni_status_t encode_admitted_business(ayni::foundation::Workspace &workspace,
 // Failure preserves out; all decoded text borrows body until that body changes.
 ayni_status_t decode_business(ayni::foundation::Workspace &workspace, ayni_bytes_v1 domain,
                               ayni_bytes_v1 body, DecodedBusiness &out);
+// Internal immutable owner proof, already admitted against its original domain at catalog close
+// or Call replay. Materializes views without revalidating/re-encoding the same schemas.
+ayni_status_t read_admitted_business(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body,
+                                     DecodedBusiness &out);
 // Copies an already canonical proof or compiles the same-call admitted definition
 // into the receiving owner's unused slot. Nothing is published on failure.
 ayni_status_t store_business_contract(ayni::foundation::Workspace &workspace,
