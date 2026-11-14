@@ -402,7 +402,7 @@ SpeechText使用SHA256锁定的MD4C 0.5.2及其实体表，替代简单符号删
 
 - AppleClang21.0.0/CMake4.0.3，ASan/UBSan定向126/126通过，含调用输入、共享文件机制、空间账目、公开Call/Tool ABI、arena布局、受管理物理执行和执行事实；通过Sim及真实POSIX文件适配器执行，不是Linux Native Host整套验收。ASAN_OPTIONS=detect_leaks=0:halt_on_error=1、UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1；本地SDK编译保留既有AppleClang shadow告警例外，Linux CI策略不变。
 - Wi-Fi普通检查74/74通过，继续覆盖自动朗读、上下文和实验应用正常路径。正常共享视图测试在小scratch上直接解码完整契约返回CAPACITY_EXCEEDED，而同一scratch可完成已验证视图的编码/读取，且新的越界输入仍拒绝。账目覆盖同块去重、零空间、回收仅靠测量、阈值及跟踪容量；未新增介质故障或恢复专项。
-- ESP-IDF6.0.3/GCC15.2.0单任务编译通过，应用0x29fbc0（2751424）字节，最小3 MiB槽余量13%。本轮未上传设备，现有诊断固件仍为ceb462b；真实提速需后续同指令对比，不以编译或模拟结果预估秒数。
+- ESP-IDF6.0.3/GCC15.2.0单任务编译通过，应用0x29fbc0（2751424）字节，最小3 MiB槽余量13%。上述软件验证时尚未上传设备，当时诊断固件为ceb462b；真实提速需后续同指令对比，不以编译或模拟结果预估秒数。
 - 工具检查98/98、clang-format18、依赖/契约/diff及机械可读性检查通过；可读性维持19项原有public-code-comment基线。原始构建与测试日志在忽略的本机build/performance-*.log，属于仓库外证据。
 
 独立代理已只读审查最终生产diff及执行许可调用链，无阻塞发现；该审查没有运行测试。作者自查及独立审查的四项证据为：
@@ -411,3 +411,9 @@ SpeechText使用SHA256锁定的MD4C 0.5.2及其实体表，替代简单符号删
 - Kernel字段：搜索core/kernel/runtime/kernel_state.h及arena/ABI差异，无新字段或布局变化；新增状态仅为FileLog最大序号和LittleFiles中的SpaceLedger。
 - 重复机制：call_input.cpp:98集中保存输入预检和正文读取；execution_control.cpp:115、:152共用停止/owner及Scene/观察门检查，没有第二条授权或TTS通道。
 - 裸数字：space_ledger.h:10命名块大小、跟踪容量、重测阈值；没有新的记录偏移、格式或ABI版本字面量。
+
+用户随后明确要求OTA：以已提交的`97c77da`重建应用，大小2751424字节、最小3 MiB槽余量13%；镜像checksum/validation hash、项目身份、固定分区及软件回退配置核对通过。一次正常Wi-Fi上传40.224秒，HTTP200及updated/restarting=true，从ota_0切到ota_1。新启动3.77秒电机资源ready/status=0，47.50秒会话ready，52.53秒OTA验证status=0；最终version=97c77da、pending_verify=false、error=0，校时就绪。password_set/model_key_set及api_type/stream/output_limit与升级前一致。旧UNKNOWN记录仍保留，未自动重试；没有USB或擦卷操作。
+
+部署后运行一次现有12字符本地合成回合，`template_only=1 no_model_http=1 status=0`，共5205 ms正常收尾，没有云端模型、电机或语音动作请求。该回合完成14个存储请求，append记录头扫描为0、文件read为0；I/O累计794 ms、请求后空间统计32 ms、空闲空间统计0 ms；Core累计墙钟4261 ms、最长单次810094 us。之前两个12字符样本为7612/7856 ms，但保留数据和启动环境不同，本次单样本不作为真实指令的严格性能对照。真实动作前后时延仍需用户按原指令复测。
+
+OTA及本地回合脱敏元数据保存在忽略的本机build/performance-ota-20261114/，属于仓库外证据；本次log lost=0/dropped=0。正常启动、配置标记与合成回合结果不替代掉电、耐久或独立停止链验收。
