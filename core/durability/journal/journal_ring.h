@@ -39,6 +39,8 @@ class JournalRing {
     const uint8_t *front(uint32_t &out_size) const;
     // Drops and erases the oldest batch; only after its Host borrow ended and not empty().
     void pop_front();
+    // Borrow queued batch at ordinal, or null after the retained prefix. No cursor changes.
+    const uint8_t *peek(uint32_t ordinal, uint32_t &out_size) const;
     void clear(); // Erases the entire buffer; caller must own it without any I/O borrow.
 
   private:

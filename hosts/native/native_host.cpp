@@ -175,8 +175,18 @@ void Host::Storage::serve_queue() {
             }
             has_request = count_ != 0U;
             if (has_request) {
-                request = queue_[head_];
-                head_ = (head_ + 1U) % capacity_;
+                uint32_t selected = 0;
+                for (uint32_t at = 1; at < count_; ++at) {
+                    if (storage::work_priority(queue_[(head_ + at) % capacity_]) >
+                        storage::work_priority(queue_[(head_ + selected) % capacity_])) {
+                        selected = at;
+                    }
+                }
+                request = queue_[(head_ + selected) % capacity_];
+                // Stable removal preserves ordering within each priority and every Core prefix.
+                for (uint32_t at = selected; at + 1U < count_; ++at) {
+                    queue_[(head_ + at) % capacity_] = queue_[(head_ + at + 1U) % capacity_];
+                }
                 --count_;
             }
         }
@@ -240,6 +250,7 @@ ayni_host_v1 Host::table() {
     host.ingress_unlock = &Host::ingress_unlock;
     if (storage_ != nullptr) {
         host.storage_append = &Host::storage_append;
+        host.storage_append_many = &Host::storage_append_many;
         host.storage_read_prefix = &Host::storage_read_prefix;
         host.storage_read_log = &Host::storage_read_log;
         host.storage_fence_writers = &Host::storage_fence_writers;
@@ -311,6 +322,16 @@ void Host::ingress_unlock(void *ctx) {
 
 // Without a whole batch there is no work to keep; an empty one could not be
 // told from the end of the log when read back.
+ayni_submit_result_t Host::storage_append_many(void *ctx, const ayni_storage_batch_v1 *batches,
+                                               uint32_t count, ayni_attempt_ref_v1 attempt,
+                                               ayni_completion_t *completion) {
+    auto &self = *static_cast<Host *>(ctx);
+    storage::Request request{};
+    if (!storage::append_group_request(batches, count, attempt, completion, request)) {
+        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    }
+    return self.storage_ ? self.storage_->submit(request) : AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+}
 ayni_submit_result_t Host::storage_append(void *ctx, const ayni_storage_batch_v1 *batch,
                                           ayni_attempt_ref_v1 attempt,
                                           ayni_completion_t *completion) {

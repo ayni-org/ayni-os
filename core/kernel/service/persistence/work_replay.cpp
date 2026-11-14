@@ -240,7 +240,7 @@ RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
     case work::task_record_type:
         return restore_task(body, size, stamp);
     case work::call_record_type:
-        return restore_call(body, size, {boot_epoch_limit, stamp});
+        return restore_call(body, size, {boot_epoch_limit, stamp}, header.version);
     case work::task_state_record_type:
         return restore_task_state(body, size, stamp);
     case work::task_steps_record_type:

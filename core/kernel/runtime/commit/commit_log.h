@@ -25,6 +25,7 @@
 
 #include <ayni/ayni.h>
 
+#include <array>
 #include <cstdint>
 
 namespace ayni::kernel {
@@ -100,6 +101,9 @@ class CommitLog {
     uint64_t next_seq_ = 0;    // of the batch begin() begins next
     uint64_t durable_seq_ = 0; // of the last batch stored
     uint32_t batch_max_ = 0;
+    // Frozen across same-identity retries; ring bytes remain borrowed until whole-group OK.
+    std::array<ayni_storage_batch_v1, AYNI_STORAGE_APPEND_COUNT_MAX> append_group_{};
+    uint32_t append_count_ = 0; // Zero before selection or after confirmed completion.
     bool in_flight_ = false;
     ayni_restriction_t failure_ = AYNI_RESTRICTION_NONE;
 };

@@ -87,6 +87,7 @@ ayni_host_v1 Host::table() {
     host.ingress_unlock = &Host::ingress_unlock;
     if (storage_) {
         host.storage_append = &Host::storage_append;
+        host.storage_append_many = &Host::storage_append_many;
         host.storage_read_prefix = &Host::storage_read_prefix;
         host.storage_read_log = &Host::storage_read_log;
         host.storage_fence_writers = &Host::storage_fence_writers;

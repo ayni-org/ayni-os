@@ -1,5 +1,5 @@
-// CALL_STATE v1, contracts/storage/records.md. A full row keeps Task progress,
-// original input/contract and the embedded action fact in one atomic batch.
+// CALL_STATE full v2 / journal delta v3, contracts/storage/records.md. A full row keeps Task
+// progress, original input/contract and the embedded action fact in one atomic batch.
 #ifndef AYNI_CORE_WORK_CALL_CALL_RECORDS_H
 #define AYNI_CORE_WORK_CALL_CALL_RECORDS_H
 
@@ -8,16 +8,19 @@
 #include "work/call/call_table.h"
 
 namespace ayni::work {
-// One complete current row in journal and snapshot (schema 9).
+// One complete current row in journal and snapshot (schema 10).
 constexpr uint16_t call_record_type = durability::record_type::call;
-constexpr uint16_t call_record_version = 1;
+constexpr uint16_t call_record_version = 2;
+constexpr uint16_t call_delta_version = 3;        // Journal updates only; schema 10, records.md.
+constexpr uint32_t call_delta_identity_bytes = 8; // Original logical Call ID.
+constexpr uint32_t call_delta_fixed_size = 264;   // Mutable layout plus ID, records.md.
 constexpr uint32_t call_subscription_fixed_bytes = 44; // Attachment now belongs to common state.
 // Execution/erasure markers, erasure stamp and result kind are always encoded.
 constexpr uint32_t call_metadata_tail_size = 36;
 // Original optional Grant ID/revision, contracts/storage/records.md.
 constexpr uint32_t call_authorization_size = 12;
 constexpr uint32_t call_mode_attachment_bytes = 8; // Two u32, contracts/storage/records.md.
-// Result body reference (id, digest, size) and its tool call count; schema 9 (ADR-0096).
+// Result body reference (id, digest, size) and its tool call count; schema 10 (ADR-0104).
 constexpr uint32_t call_result_body_bytes = 24;
 constexpr uint32_t call_record_fixed_size =
     292 + call_metadata_tail_size + call_authorization_size + call_mode_attachment_bytes +
@@ -34,5 +37,10 @@ void write_call_record(const CallRecord &record, uint8_t *body);
 // preserves out; success borrows domain, input and result from body.
 bool read_call_record(ayni::foundation::Workspace &workspace, const uint8_t *body, uint32_t size,
                       CallRecord &out);
+// A delta borrows immutable facts from an existing original row; it cannot create a Call.
+uint32_t call_delta_size(const CallRecord &record);
+void write_call_delta(const CallRecord &record, uint8_t *body);
+bool read_call_delta(foundation::Workspace &, const CallRecord &previous, const uint8_t *body,
+                     uint32_t size, CallRecord &out);
 } // namespace ayni::work
 #endif

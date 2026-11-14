@@ -141,6 +141,22 @@ void CallRuntime::release_body(const ayni_body_ref_v1 &ref) const {
     }
 }
 
+bool CallRuntime::model_input_due(uint32_t index, uint64_t durable_seq) const {
+    const auto &state = work_.calls.state(index);
+    return host_.bodies && host_.bodies->release_temporary && state.outcome != 0U &&
+           work_.calls.contract(index).category == catalog::CallClass::model &&
+           state.latest.transition.commit_seq <= durable_seq &&
+           slots_[index].expired_model_input != work_.calls.identity(index).call_id;
+}
+void CallRuntime::release_model_input(uint32_t index) {
+    std::array<ayni_body_ref_v1, AYNI_VALUE_BODY_COUNT_MAX> refs{};
+    const auto count =
+        catalog::value_bodies(work_.calls.input(index), refs.data(), AYNI_VALUE_BODY_COUNT_MAX);
+    for (uint32_t at = 0; at < count; ++at) {
+        host_.bodies->release_temporary(host_.bodies->context, &refs[at]);
+    }
+    slots_[index].expired_model_input = work_.calls.identity(index).call_id;
+}
 CallRuntime::Advance CallRuntime::advance(uint64_t now_us, uint64_t durable_seq, Mode mode) {
     // Bodies whose last durable record is gone; the queue is not a transition (ADR-0096).
     // Without a store the composition root owns them, and the queue still drains.
@@ -168,6 +184,10 @@ CallRuntime::Advance CallRuntime::advance(uint64_t now_us, uint64_t durable_seq,
         cursor_ = (cursor_ + 1U) % limits_.capacity;
         if (!work_.calls.occupied(index)) {
             continue;
+        }
+        if (model_input_due(index, durable_seq)) {
+            release_model_input(index);
+            return Advance::applied; // Volatile lease cleanup; no new journal fact.
         }
         const auto result = advance_call(index, now_us, durable_seq, mode);
         if (result != Advance::idle) {
@@ -254,7 +274,7 @@ CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,
 }
 
 // Resource admission determines order; table scanning never bypasses its fair
-// choice. Preparation follows acquisition, and each persisted barrier is separate.
+// choice. Preparation follows acquisition; DISPATCHING waits for their durable prefix.
 CallRuntime::Advance CallRuntime::progress_dispatch(uint32_t index, uint32_t task_index,
                                                     uint64_t now_us, uint64_t durable_seq) {
     auto &active = *slots_[index].active;
@@ -279,8 +299,7 @@ CallRuntime::Advance CallRuntime::progress_dispatch(uint32_t index, uint32_t tas
         return Advance::applied;
     }
     if (active.stage == Stage::prepared) {
-        if (state.latest.transition.commit_seq > durable_seq ||
-            mailbox_.in_flight() == limits_.capacity) {
+        if (mailbox_.in_flight() == limits_.capacity) {
             return Advance::idle;
         }
         ayni_attempt_ref_v1 attempt{};
@@ -298,9 +317,8 @@ CallRuntime::Advance CallRuntime::progress_dispatch(uint32_t index, uint32_t tas
         if (mailbox_.reserve(attempt, reservation, written_limit) != AYNI_OK) {
             return Advance::internal;
         }
-        if (work_.calls.begin_dispatch(index, attempt,
-                                       {work_.ids.boot_epoch(), work_.transitions.next()},
-                                       durable_seq) != AYNI_OK) {
+        if (work_.calls.begin_dispatch(
+                index, attempt, {work_.ids.boot_epoch(), work_.transitions.next()}) != AYNI_OK) {
             static_cast<void>(mailbox_.withdraw(reservation));
             return Advance::internal;
         }

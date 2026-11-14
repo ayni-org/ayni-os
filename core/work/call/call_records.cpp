@@ -119,6 +119,65 @@ CallState read_state(foundation::BodyReader &reader) {
     }
     return state;
 }
+void write_mutable(const CallRecord &record, foundation::BodyWriter &writer) {
+    write_state(record.state, writer);
+    writer.bytes(record.result.data, record.result.size);
+    std::array<uint8_t, action_state_record_max_size> action{};
+    const uint32_t action_size = record.action ? action_state_record_size(*record.action) : 0U;
+    if (record.action) {
+        write_action_state_record(*record.action, action.data());
+    }
+    writer.bytes(action.data(), action_size);
+    writer.u32(record.state.execution ? 1U : 0U);
+    writer.u32(record.state.content_erased ? 1U : 0U);
+    write_action_stamp(record.state.content_erased.value_or(ActionStamp{}), writer);
+    writer.u32(static_cast<uint32_t>(record.result_kind));
+    if (record.state.execution) {
+        write_execution(*record.state.execution, writer);
+    }
+    if (record.state.subscription) {
+        write_subscription(record, writer);
+    }
+}
+bool read_mutable(foundation::BodyReader &reader, CallRecord &record) {
+    record.state = read_state(reader);
+    record.result.data = reinterpret_cast<const char *>(
+        reader.bytes(AYNI_CALL_RESULT_BYTES_MAX, record.result.size));
+    uint32_t action_size = 0;
+    const auto *action = reader.bytes(action_state_record_max_size, action_size);
+    if (action_size != 0U) {
+        ActionFact fact{};
+        if (!read_action_state_record(action, action_size, fact)) {
+            return false;
+        }
+        record.action = fact;
+    }
+    const auto has_execution = reader.u32();
+    const auto erased = reader.u32();
+    const auto erasure_stamp = read_action_stamp(reader);
+    record.result_kind = static_cast<CallResultKind>(reader.u32());
+    if (has_execution > 1 || erased > 1 ||
+        (erased == 0 &&
+         (erasure_stamp.boot_epoch != 0 || erasure_stamp.transition.transition_id != 0 ||
+          erasure_stamp.transition.commit_seq != 0))) {
+        return false;
+    }
+    if (erased != 0) {
+        record.state.content_erased = erasure_stamp;
+    }
+    if (has_execution != 0) {
+        ExecutionFact execution{};
+        if (!read_execution(reader, execution)) {
+            return false;
+        }
+        record.state.execution = execution;
+    }
+    if (record.contract.form == catalog::CallForm::subscription &&
+        !read_subscription(reader, record)) {
+        return false;
+    }
+    return reader.valid();
+}
 } // namespace
 
 uint32_t call_record_max(CallTable::Limits limits) {
@@ -169,26 +228,9 @@ void write_call_record(const CallRecord &record, uint8_t *body) {
     write_id(id.endpoint, writer);
     write_id(id.destination, writer);
     catalog::write_execution_contract(record.contract, writer);
-    write_state(record.state, writer);
     writer.bytes(record.domain.data, record.domain.size);
     writer.bytes(record.input.data, record.input.size);
-    writer.bytes(record.result.data, record.result.size);
-    std::array<uint8_t, action_state_record_max_size> action{};
-    const uint32_t action_size = record.action ? action_state_record_size(*record.action) : 0U;
-    if (record.action) {
-        write_action_state_record(*record.action, action.data());
-    }
-    writer.bytes(action.data(), action_size);
-    writer.u32(record.state.execution ? 1U : 0U);
-    writer.u32(record.state.content_erased ? 1U : 0U);
-    write_action_stamp(record.state.content_erased.value_or(ActionStamp{}), writer);
-    writer.u32(static_cast<uint32_t>(record.result_kind));
-    if (record.state.execution) {
-        write_execution(*record.state.execution, writer);
-    }
-    if (record.state.subscription) {
-        write_subscription(record, writer);
-    }
+    write_mutable(record, writer);
     writer.bytes(record.contract.business_contract.data, record.contract.business_contract.size);
     writer.u64(record.identity.authorization.grant_id);
     writer.u32(record.identity.authorization.revision);
@@ -229,42 +271,9 @@ bool read_call_record(ayni::foundation::Workspace &workspace, const uint8_t *bod
         !catalog::read_execution_contract(reader, record.contract)) {
         return false;
     }
-    record.state = read_state(reader);
     record.domain.data = reader.bytes(AYNI_AUTHORITY_SCOPE_MAX_BYTES_MAX, record.domain.size);
     record.input.data = reader.bytes(AYNI_CALL_INPUT_BYTES_MAX, record.input.size);
-    record.result.data = reinterpret_cast<const char *>(
-        reader.bytes(AYNI_CALL_RESULT_BYTES_MAX, record.result.size));
-    uint32_t action_size = 0;
-    const auto *action = reader.bytes(action_state_record_max_size, action_size);
-    if (action_size != 0U) {
-        ActionFact fact{};
-        if (!read_action_state_record(action, action_size, fact)) {
-            return false;
-        }
-        record.action = fact;
-    }
-    const auto has_execution = reader.u32();
-    const auto erased = reader.u32();
-    const auto erasure_stamp = read_action_stamp(reader);
-    record.result_kind = static_cast<CallResultKind>(reader.u32());
-    if (has_execution > 1 || erased > 1 ||
-        (erased == 0 &&
-         (erasure_stamp.boot_epoch != 0 || erasure_stamp.transition.transition_id != 0 ||
-          erasure_stamp.transition.commit_seq != 0))) {
-        return false;
-    }
-    if (erased != 0) {
-        record.state.content_erased = erasure_stamp;
-    }
-    if (has_execution != 0) {
-        ExecutionFact execution{};
-        if (!read_execution(reader, execution)) {
-            return false;
-        }
-        record.state.execution = execution;
-    }
-    if (record.contract.form == catalog::CallForm::subscription &&
-        !read_subscription(reader, record)) {
+    if (!read_mutable(reader, record)) {
         return false;
     }
     record.contract.business_contract = reader.bytes(AYNI_BUSINESS_CONTRACT_BYTES_MAX);
@@ -282,6 +291,34 @@ bool read_call_record(ayni::foundation::Workspace &workspace, const uint8_t *bod
         context.samples[at] = {reader.u64(), reader.u64(), reader.u64()};
     }
     if (!reader.ok() || !CallTable::valid_record(workspace, record)) {
+        return false;
+    }
+    out = record;
+    return true;
+}
+uint32_t call_delta_size(const CallRecord &record) {
+    return call_delta_fixed_size + record.result.size +
+           (record.action ? action_state_record_size(*record.action) : 0U) +
+           (record.state.execution ? execution_record_size(*record.state.execution) : 0U) +
+           (record.state.subscription
+                ? call_subscription_fixed_bytes + record.contract.subscription->source.size()
+                : 0U);
+}
+void write_call_delta(const CallRecord &record, uint8_t *body) {
+    foundation::BodyWriter writer(body, call_delta_size(record));
+    writer.u64(record.identity.call_id);
+    write_mutable(record, writer);
+}
+bool read_call_delta(foundation::Workspace &workspace, const CallRecord &previous,
+                     const uint8_t *body, uint32_t size, CallRecord &out) {
+    foundation::BodyReader reader(body, size);
+    if (reader.u64() != previous.identity.call_id) {
+        return false;
+    }
+    CallRecord record = previous;
+    record.action.reset();
+    if (!read_mutable(reader, record) || !reader.ok() ||
+        !CallTable::valid_record(workspace, record)) {
         return false;
     }
     out = record;

@@ -1,4 +1,5 @@
 add_executable(ayni_unit_tests
+    commit_group_test.cpp
     binding_instances_test.cpp
     kernel_shell_call_test.cpp
     kernel_business_call_test.cpp

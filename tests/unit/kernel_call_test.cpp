@@ -1068,6 +1068,12 @@ TEST_F(ManagedCall, journal_call_updates_require_original_task_route_and_batch_i
         });
     ASSERT_NE(row, original.records.end());
     const auto row_index = static_cast<std::size_t>(row - original.records.begin());
+    // White-box: schema 10 deltas borrow immutable admission facts; they cannot encode a route
+    // replacement.
+    const auto &calls = ayni::kernel::KernelTestProbe::work(work.kernel()).calls;
+    uint32_t call_index = 0;
+    ASSERT_TRUE(calls.find(call, call_index));
+    const auto admitted = calls.record(call_index);
     struct Variant {
         const char *name;
         std::function<void(ayni::work::CallRecord &)> change;
@@ -1115,15 +1121,28 @@ TEST_F(ManagedCall, journal_call_updates_require_original_task_route_and_batch_i
     for (const auto &variant : variants) {
         SCOPED_TRACE(variant.name);
         ayni::work::CallRecord record{};
-        ASSERT_TRUE(ayni::work::read_call_record(::ayni::test::codec_workspace(), row->body.data(),
-                                                 row->header.length, record));
+        ASSERT_TRUE(ayni::work::read_call_delta(::ayni::test::codec_workspace(), admitted,
+                                                row->body.data(), row->header.length, record));
         ASSERT_EQ(record.identity.call_id, call);
         ASSERT_TRUE(record.action.has_value());
         variant.change(record);
         ASSERT_TRUE(ayni::work::CallTable::valid_record(::ayni::test::codec_workspace(), record));
         auto changed = original;
-        std::vector<uint8_t> bytes(ayni::work::call_record_size(record));
-        ayni::work::write_call_record(record, bytes.data());
+        const bool replacement =
+            record.identity.task_id != admitted.identity.task_id ||
+            record.identity.owner_instance_id != admitted.identity.owner_instance_id ||
+            record.identity.binding_version != admitted.identity.binding_version;
+        const auto size = replacement ? ayni::work::call_record_size(record)
+                                      : ayni::work::call_delta_size(record);
+        std::vector<uint8_t> bytes(size);
+        if (replacement) {
+            ayni::work::write_call_record(record, bytes.data());
+        } else {
+            ayni::work::write_call_delta(record, bytes.data());
+        }
+        changed.records[row_index].header.version =
+            replacement ? ayni::work::call_record_version : ayni::work::call_delta_version;
+        changed.records[row_index].header.length = size;
         changed.records[row_index].body = std::move(bytes);
         auto candidate = log;
         candidate[selected] = write_stored_batch(changed);

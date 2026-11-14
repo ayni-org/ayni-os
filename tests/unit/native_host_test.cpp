@@ -59,6 +59,26 @@ using ayni::test::StorageRequests;
 using ayni::test::TempDirectory;
 using ayni::test::test_batch;
 
+// ADR-0104: a bounded consecutive group writes complete frames and one final durable prefix.
+TEST(NativeHost, grouped_frames_preserve_exact_bytes_through_normal_close_and_reopen) {
+    TempDirectory directory;
+    ayni::hosts::native::PosixFiles files;
+    ayni::hosts::storage::FileLog log(files);
+    ASSERT_EQ(log.open(directory.path().c_str(), "commit_log").status, FileLog::OpenStatus::ok);
+    const auto first = test_batch(1, 40), second = test_batch(2, 50);
+    const std::array<ayni_bytes_v1, 2> group{
+        {{first.data(), static_cast<uint32_t>(first.size())},
+         {second.data(), static_cast<uint32_t>(second.size())}}};
+    ASSERT_EQ(log.append_many(1, group.data(), static_cast<uint32_t>(group.size())).outcome,
+              AYNI_WRITE_OK);
+    log.close();
+    ASSERT_EQ(log.open(directory.path().c_str(), "commit_log").status, FileLog::OpenStatus::ok);
+    std::vector<uint8_t> bytes(first.size() + second.size());
+    const auto read = log.read_prefix(1, bytes.data(), static_cast<uint32_t>(bytes.size()));
+    ASSERT_EQ(read.outcome, AYNI_WRITE_OK);
+    EXPECT_EQ(bytes, joined({first, second}));
+}
+
 // A failed observation is distinct from a valid zero-byte observation.
 // ADR-0086 / C-STORE-004: reject an old native prefix before new outer-store creation.
 TEST(NativeHost, unsupported_snapshot_schema_is_preserved_before_log_creation) {

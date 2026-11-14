@@ -131,6 +131,42 @@ ayni_status_t CallRuntime::apply_delivery(uint32_t index, uint32_t task_index,
                                 host_.monotonic_now_us(host_.ctx), durable_seq))) {
         work_.calls.discard_unusable_result(index);
     }
+    if (applied == AYNI_OK && terminal && host_.bodies && host_.bodies->stage &&
+        host_.bodies->confirm && (host_.bodies->reserved & AYNI_BODY_STORE_SHARED_RESULTS) != 0U &&
+        work_.calls.contract(index).category != catalog::CallClass::model &&
+        work_.calls.state(index).outcome == AYNI_CALL_COMPLETED &&
+        !work_.calls.state(index).content_erased && !work_.calls.state(index).result_body.id) {
+        const auto record = work_.calls.record(index);
+        if (record.result_kind == work::CallResultKind::text ||
+            record.result_kind == work::CallResultKind::value) {
+            ayni_body_ref_v1 shared{};
+            const auto copied = host_.bodies->stage(
+                host_.bodies->context, record.identity.call_id,
+                {reinterpret_cast<const uint8_t *>(record.result.data), record.result.size},
+                &shared);
+            if (copied == AYNI_OK) {
+                const auto requested = host_.bodies->confirm(host_.bodies->context, &shared);
+                if (requested == AYNI_OK || requested == AYNI_NOT_READY) {
+                    if (work_.calls.externalize_result(index, shared) != AYNI_OK) {
+                        return AYNI_INTERNAL;
+                    }
+                } else {
+                    release_body(shared);
+                }
+            }
+            // C-CALL-012 / ADR-0104: sharing may backpressure, but never lose an accepted
+            // receipt. Its bounded inline ledger remains authoritative until sharing succeeds;
+            // the conversation store reports its capacity/persistence failure before progression.
+        }
+    }
+    if (applied == AYNI_OK && terminal && host_.bodies && host_.bodies->confirm &&
+        message.body_ref.id != 0U &&
+        work_.calls.state(index).result_body.id == message.body_ref.id) {
+        // Preserve the raw model proposal once; conversation fields share or reference it.
+        // The result is already accepted. A save failure remains visible in the body store
+        // and blocks its reader/publication; it cannot fabricate another execution outcome.
+        static_cast<void>(host_.bodies->confirm(host_.bodies->context, &message.body_ref));
+    }
     // A body this transition does not keep was never named by a durable record.
     if (message.body_ref.id != 0U &&
         (applied != AYNI_OK || !work_.calls.occupied(index) ||
@@ -353,79 +389,91 @@ bool CallRuntime::calls_ready(uint64_t now_us, uint64_t durable_seq, Mode mode) 
     resources::AdmissionChoice choice{};
     const bool resource_ready = resources_.next(now_us, choice);
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
-        if (!work_.calls.occupied(at)) {
-            continue;
-        }
-        const auto &state = work_.calls.state(at);
-        const auto &id = work_.calls.identity(at);
-        if (control_.stop_measured(id.call_id) && state.execution &&
-            !work::execution_stopped(*state.execution)) {
-            return true;
-        }
-        if (slots_[at].active && slots_[at].active->stage == Stage::retiring) {
-            continue;
-        }
-        uint32_t task_index = 0;
-        if (!work_.tasks.find(id.task_id, task_index)) {
-            return true; // advance reports the invariant failure, instead of hiding it.
-        }
-        const auto &task = work_.tasks.at(task_index);
-        if (subscription_stop_pending(at) ||
-            subscription_reopen_ready(at, now_us, durable_seq, mode) ||
-            subscription_renew_ready(at, now_us, durable_seq)) {
-            return true;
-        }
-        if (state.outcome != 0U) {
-            if (task.call.id == id.call_id && task.call.end != work::TaskCall::End::none) {
-                return mode != Mode::fenced;
-            }
-            if (work_.calls.query_pending(at) && query_ready(at, now_us, durable_seq, mode)) {
-                return true;
-            }
-            continue;
-        }
-        const auto &active = slots_[at].active;
-        if (!active) {
-            // ADR-0086: detached queued work still drains on pause/end, even under a wait hold.
-            if (!work::TaskTable::is_live(task.lifecycle) ||
-                task.call.end != work::TaskCall::End::none ||
-                (state.attachment == work::CallAttachment::background &&
-                 task.lifecycle == AYNI_TASK_PAUSED)) {
-                return true;
-            }
-            if (work::TaskTable::is_held(task) || task.lifecycle == AYNI_TASK_PAUSED) {
-                continue;
-            }
-            if (mode != Mode::fenced && resources_.has_room()) {
-                return true;
-            }
-            continue;
-        }
-        const auto authority = work_.check_task_authority(task_index, now_us, durable_seq);
-        const bool stopping = (active->delivery && active->delivery->inhibition) ||
-                              !task_content_current({work_, now_us, durable_seq}, task_index) ||
-                              mode != Mode::running || task.call.end != work::TaskCall::End::none ||
-                              task.lifecycle == AYNI_TASK_PAUSED ||
-                              !work::TaskTable::is_live(task.lifecycle) ||
-                              state.cancel_cause != work::CallCancelCause::none ||
-                              (authority.status != AYNI_OK && authority.status != AYNI_BUSY) ||
-                              delivery_expired(at, now_us);
-        if (stopping) {
-            if (submitted(active->stage) ? active->delivery->cancel == Delivery::Cancel::none
-                                         : mode != Mode::fenced) {
-                return true;
-            }
-            continue;
-        }
-        if (active->stage == Stage::queued && resource_ready && choice.call_id == id.call_id) {
-            return true;
-        }
-        if ((active->stage == Stage::prepared ||
-             (active->stage == Stage::barrier && control_.issue_ready(at, now_us))) &&
-            state.latest.transition.commit_seq <= durable_seq && authority.status == AYNI_OK) {
+        if (work_.calls.occupied(at) &&
+            call_ready(at, now_us, durable_seq, mode, resource_ready ? &choice : nullptr)) {
             return true;
         }
     }
     return false;
 }
+
+// One occupied slot projects its next lifecycle transition. PREPARED may enqueue
+// DISPATCHING immediately; only the final dispatch needs the durable prefix.
+bool CallRuntime::call_ready(uint32_t at, uint64_t now_us, uint64_t durable_seq, Mode mode,
+                             const resources::AdmissionChoice *choice) const {
+    if (model_input_due(at, durable_seq)) {
+        return true;
+    }
+    const auto &state = work_.calls.state(at);
+    const auto &id = work_.calls.identity(at);
+    if (control_.stop_measured(id.call_id) && state.execution &&
+        !work::execution_stopped(*state.execution)) {
+        return true;
+    }
+    if (slots_[at].active && slots_[at].active->stage == Stage::retiring) {
+        return false;
+    }
+    uint32_t task_index = 0;
+    if (!work_.tasks.find(id.task_id, task_index)) {
+        return true; // advance reports the invariant failure, instead of hiding it.
+    }
+    const auto &task = work_.tasks.at(task_index);
+    if (subscription_stop_pending(at) || subscription_reopen_ready(at, now_us, durable_seq, mode) ||
+        subscription_renew_ready(at, now_us, durable_seq)) {
+        return true;
+    }
+    if (state.outcome != 0U) {
+        if (task.call.id == id.call_id && task.call.end != work::TaskCall::End::none) {
+            return mode != Mode::fenced;
+        }
+        if (work_.calls.query_pending(at) && query_ready(at, now_us, durable_seq, mode)) {
+            return true;
+        }
+        return false;
+    }
+    const auto &active = slots_[at].active;
+    if (!active) {
+        // ADR-0086: detached queued work still drains on pause/end, even under a wait hold.
+        if (!work::TaskTable::is_live(task.lifecycle) ||
+            task.call.end != work::TaskCall::End::none ||
+            (state.attachment == work::CallAttachment::background &&
+             task.lifecycle == AYNI_TASK_PAUSED)) {
+            return true;
+        }
+        if (work::TaskTable::is_held(task) || task.lifecycle == AYNI_TASK_PAUSED) {
+            return false;
+        }
+        if (mode != Mode::fenced && resources_.has_room()) {
+            return true;
+        }
+        return false;
+    }
+    const auto authority = work_.check_task_authority(task_index, now_us, durable_seq);
+    const bool stopping = (active->delivery && active->delivery->inhibition) ||
+                          !task_content_current({work_, now_us, durable_seq}, task_index) ||
+                          mode != Mode::running || task.call.end != work::TaskCall::End::none ||
+                          task.lifecycle == AYNI_TASK_PAUSED ||
+                          !work::TaskTable::is_live(task.lifecycle) ||
+                          state.cancel_cause != work::CallCancelCause::none ||
+                          (authority.status != AYNI_OK && authority.status != AYNI_BUSY) ||
+                          delivery_expired(at, now_us);
+    if (stopping) {
+        if (submitted(active->stage) ? active->delivery->cancel == Delivery::Cancel::none
+                                     : mode != Mode::fenced) {
+            return true;
+        }
+        return false;
+    }
+    if (active->stage == Stage::queued && choice && choice->call_id == id.call_id) {
+        return true;
+    }
+    if ((active->stage == Stage::prepared ||
+         (active->stage == Stage::barrier && control_.issue_ready(at, now_us) &&
+          state.latest.transition.commit_seq <= durable_seq)) &&
+        authority.status == AYNI_OK) {
+        return true;
+    }
+    return false;
+}
+
 } // namespace ayni::kernel

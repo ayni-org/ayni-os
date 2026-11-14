@@ -86,10 +86,9 @@ class ActionRecord {
     // Immutable view until the next successful transition; valid only after prepare.
     const ActionFact &fact() const { return fact_; }
 
-    // Enters the possible-delivery boundary only after PREPARED is durable.
-    // durable_seq belongs to stamp.boot_epoch's current writer, not a public
-    // floor from a fenced writer. Current live records never cross boots.
-    ayni_status_t begin_dispatch(ActionStamp stamp, uint64_t durable_seq);
+    // Enters the possible-delivery boundary after PREPARED is queued; claim still waits for the
+    // complete durable prefix.
+    ayni_status_t begin_dispatch(ActionStamp stamp);
     // Owner calls exactly once immediately before submit, after final authority
     // checks. Refuses until this boot's DISPATCHING fact is durable. A claim is
     // volatile: future replay must reconcile DISPATCHING, never re-claim it.

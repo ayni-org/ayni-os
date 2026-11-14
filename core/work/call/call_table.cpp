@@ -346,14 +346,14 @@ ayni_status_t CallTable::prepare(uint32_t index, ActionStamp stamp) {
 }
 
 ayni_status_t CallTable::begin_dispatch(uint32_t index, ayni_attempt_ref_v1 attempt,
-                                        ActionStamp stamp, uint64_t durable_seq) {
+                                        ActionStamp stamp) {
     auto &entry = *slots_[index].entry;
     if (!pending(entry) || !advances(entry, stamp) || !entry.action ||
         entry.state.attempt.request_id != 0U || attempt.request_id == 0U ||
         attempt.boot_epoch != stamp.boot_epoch) {
         return AYNI_INVALID_STATE;
     }
-    const auto status = entry.action->begin_dispatch(stamp, durable_seq);
+    const auto status = entry.action->begin_dispatch(stamp);
     if (status == AYNI_OK) {
         entry.state.attempt = attempt;
         entry.state.latest = stamp;
@@ -534,6 +534,21 @@ ayni_status_t CallTable::finish(ayni::foundation::Workspace &workspace, uint32_t
 }
 
 // The original input ceases to exist as a body, not as a fictional successful/failed action.
+ayni_status_t CallTable::externalize_result(uint32_t index, const ayni_body_ref_v1 &ref) {
+    auto &entry = *slots_[index].entry;
+    const auto original = body(index);
+    if (entry.state.outcome != AYNI_CALL_COMPLETED || entry.state.result_body.id ||
+        entry.state.content_erased ||
+        (entry.result_kind != CallResultKind::text && entry.result_kind != CallResultKind::value) ||
+        ayni_body_verify(&ref, {reinterpret_cast<const uint8_t *>(original.data), original.size}) !=
+            AYNI_OK) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    std::memset(bytes(index) + limits_.domain_bytes + limits_.input_bytes, 0, limits_.result_bytes);
+    entry.result_size = 0;
+    entry.state.result_body = ref;
+    return AYNI_OK;
+}
 void CallTable::discard_result(uint32_t index) {
     auto &entry = *slots_[index].entry;
     std::memset(bytes(index) + limits_.domain_bytes + limits_.input_bytes, 0, limits_.result_bytes);

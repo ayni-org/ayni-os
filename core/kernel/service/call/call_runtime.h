@@ -151,7 +151,9 @@ class CallRuntime {
             collection{}; // Subscription lease outlives an uncertain ended borrow.
     };
     struct Slot {
-        std::optional<Active> active;
+        std::optional<Active> active; // Exact boot-local delivery/claim owner, absent when idle.
+        uint64_t expired_model_input =
+            0; // Call ID already checked for temporary expiry; zero before use.
     }; // Empty has no boot-local ownership.
     struct Proposal {
         uint64_t task_id; // Task selected before callback; no mutable table index persists here.
@@ -346,6 +348,9 @@ class CallRuntime {
     Advance end_query(uint32_t index, ayni_status_t status, ayni_reason_t reason);
     // Scan domain calls and their shared admission queue after reliable ingress.
     bool calls_ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const;
+    // One occupied slot; choice is null when resource admission cannot advance.
+    bool call_ready(uint32_t index, uint64_t now_us, uint64_t durable_seq, Mode mode,
+                    const resources::AdmissionChoice *choice) const;
     Advance advance_call(uint32_t index, uint64_t now_us, uint64_t durable_seq, Mode mode);
     Advance restore_wait(uint32_t index, uint32_t task_index, uint64_t now_us, uint64_t durable_seq,
                          Mode mode);
@@ -359,6 +364,9 @@ class CallRuntime {
     void release(uint32_t index, uint64_t now_us); // Exact claim/waiter; delivery already drained.
     // Hands a body Core no longer names to the host body store, when one is installed.
     void release_body(const ayni_body_ref_v1 &ref) const;
+    // Model input lease expiry is separate from durable Call/result ownership.
+    bool model_input_due(uint32_t index, uint64_t durable_seq) const;
+    void release_model_input(uint32_t index);
 
     bool active_index(uint64_t call_id,
                       uint32_t &index) const; // Stable identity lookup survives work-table discard.

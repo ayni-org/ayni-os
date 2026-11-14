@@ -105,13 +105,12 @@ void ActionRecord::restore_validated(const ActionFact &fact) {
         fact.phase == ActionPhase::prepared ? Delivery::restored_prepared : Delivery::restored;
 }
 
-ayni_status_t ActionRecord::begin_dispatch(ActionStamp stamp, uint64_t durable_seq) {
+ayni_status_t ActionRecord::begin_dispatch(ActionStamp stamp) {
     if (fact_.phase != ActionPhase::prepared || !advances(stamp)) {
         return AYNI_INVALID_STATE;
     }
-    if (durable_seq < fact_.prepared.transition.commit_seq) {
-        return AYNI_BUSY;
-    }
+    // ADR-0104: PREPARED and DISPATCHING queue in order. claim_dispatch still
+    // requires the complete prefix through DISPATCHING to be durable.
     fact_.phase = ActionPhase::dispatching;
     fact_.effect = ActionEffect::unknown;
     fact_.latest = stamp;

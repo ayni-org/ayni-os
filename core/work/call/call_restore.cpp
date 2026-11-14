@@ -137,7 +137,7 @@ bool valid_business_content(ayni::foundation::Workspace &workspace, const CallRe
                 return false;
             }
         }
-        if (record.result_kind == CallResultKind::value) {
+        if (record.result_kind == CallResultKind::value && record.state.result_body.id == 0U) {
             auto result_lease = workspace.make<catalog::DecodedValue>();
             if (!result_lease) {
                 return false;
@@ -266,6 +266,34 @@ bool valid_subscription_record(const CallRecord &record) {
 
 // Decode and live admission share the canonical input validator and contract
 // normalizer. Original schemas are never substituted by this boot's registration.
+// Saved external results retain the original normalized kind and proof. The consumer verifies
+// the immutable body bytes; replay validates reference shape without platform I/O (ADR-0104).
+bool CallTable::valid_result_body(foundation::Workspace &workspace, const CallRecord &record) {
+    const auto &state = record.state;
+    return !((
+        state.result_body.id == 0U
+            ? state.result_body.digest != 0U || state.result_body.size != 0U ||
+                  state.result_body_calls != 0U ||
+                  check_body(workspace, record.contract, record.result, record.result_kind) !=
+                      AYNI_OK
+            : state.outcome != AYNI_CALL_COMPLETED || record.result.size != 0U ||
+                  record.state.content_erased ||
+                  (record.contract.category == catalog::CallClass::model &&
+                   record.contract.result_format == catalog::call_value_result_format) ||
+                  state.result_body_calls > AYNI_CALL_TOOL_COUNT_MAX ||
+                  (record.contract.category == catalog::CallClass::model
+                       ? record.result_kind != (state.result_body_calls ? CallResultKind::tool_calls
+                                                                        : CallResultKind::text)
+                       : state.result_body_calls != 0U ||
+                             (record.result_kind != CallResultKind::text &&
+                              record.result_kind != CallResultKind::value) ||
+                             (record.result_kind == CallResultKind::value &&
+                              record.contract.result_format != catalog::call_value_result_format) ||
+                             state.result_body.size > record.contract.result_text_limit) ||
+                  (state.result_body_calls != 0U &&
+                   record.contract.result_format != catalog::call_tool_calls_result_format)));
+}
+
 bool CallTable::valid_record(ayni::foundation::Workspace &workspace, const CallRecord &record) {
     const auto &state = record.state;
     catalog::CallContract normalized{};
@@ -292,20 +320,7 @@ bool CallTable::valid_record(ayni::foundation::Workspace &workspace, const CallR
         catalog::normalize_call_contract(record.contract, normalized) != AYNI_OK ||
         !catalog::same_call_contract(record.contract, normalized) ||
         !valid_business_content(workspace, record) || !valid_content(workspace, record, input) ||
-        (state.result_body.id == 0U
-             ? state.result_body.digest != 0U || state.result_body.size != 0U ||
-                   state.result_body_calls != 0U ||
-                   check_body(workspace, record.contract, record.result, record.result_kind) !=
-                       AYNI_OK
-             : state.outcome != AYNI_CALL_COMPLETED || record.result.size != 0U ||
-                   record.state.content_erased ||
-                   record.contract.category != catalog::CallClass::model ||
-                   record.contract.result_format == catalog::call_value_result_format ||
-                   state.result_body_calls > AYNI_CALL_TOOL_COUNT_MAX ||
-                   record.result_kind != (state.result_body_calls ? CallResultKind::tool_calls
-                                                                  : CallResultKind::text) ||
-                   (state.result_body_calls != 0U &&
-                    record.contract.result_format != catalog::call_tool_calls_result_format)) ||
+        !valid_result_body(workspace, record) ||
         (record.result_kind == CallResultKind::tool_calls &&
          state.outcome != AYNI_CALL_COMPLETED) ||
         (state.attempt.boot_epoch == 0U) != (state.attempt.request_id == 0U) ||

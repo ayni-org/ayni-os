@@ -12,6 +12,14 @@ struct WorkItem {
     WorkItem(const Request &request) : value(request) {}
     WorkItem(const FileValueRequest &request) : value(request) {}
 };
+inline uint32_t work_priority(const WorkItem &work) {
+    if (std::holds_alternative<Request>(work.value)) {
+        return 2U;
+    }
+    return std::get<FileValueRequest>(work.value).priority == FileValueRequest::Priority::normal
+               ? 1U
+               : 0U;
+}
 inline uint64_t work_reservation(const WorkItem &work) {
     if (const auto *request = std::get_if<Request>(&work.value)) {
         return request_reservation(*request);

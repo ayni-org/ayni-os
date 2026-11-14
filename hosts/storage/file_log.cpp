@@ -337,6 +337,40 @@ bool FileLog::check_payload(const Frame &frame, uint8_t *out, int &error) const 
 }
 
 FileLog::Result FileLog::append(uint64_t commit_seq, const uint8_t *data, uint32_t size) {
+    return append_frame(commit_seq, data, size, Sync::immediate);
+}
+// Preserve every frame identity. Only synchronization is combined; a partial write cannot
+// acknowledge a suffix or authorize dispatch, and retries retain the original group bytes.
+FileLog::Result FileLog::append_many(uint64_t first_seq, const ayni_bytes_v1 *batches,
+                                     uint32_t count) {
+    if (!batches || !count || count > AYNI_STORAGE_APPEND_COUNT_MAX ||
+        first_seq > UINT64_MAX - count) {
+        return {AYNI_WRITE_FAILED, 0};
+    }
+    if (sync_failed_ && !rescan_after_unknown()) {
+        return {AYNI_WRITE_UNKNOWN, 0};
+    }
+    const auto start = end_;
+    for (uint32_t at = 0; at < count; ++at) {
+        const auto result =
+            append_frame(first_seq + at, batches[at].data, batches[at].size, Sync::deferred);
+        if (result.outcome != AYNI_WRITE_OK) {
+            if (end_ != start) {
+                sync_failed_ = true;
+                uncertain_start_ = std::min(uncertain_start_, start);
+                return {AYNI_WRITE_UNKNOWN, 0};
+            }
+            return result;
+        }
+    }
+    if (!sync()) {
+        uncertain_start_ = std::min(uncertain_start_, start);
+        return {AYNI_WRITE_UNKNOWN, 0};
+    }
+    return {AYNI_WRITE_OK, 0};
+}
+FileLog::Result FileLog::append_frame(uint64_t commit_seq, const uint8_t *data, uint32_t size,
+                                      Sync mode) {
     if (!is_open()) {
         return {AYNI_WRITE_FAILED, 0};
     }
@@ -397,7 +431,7 @@ FileLog::Result FileLog::append(uint64_t commit_seq, const uint8_t *data, uint32
         tail_dirty_ = true;
         return {AYNI_WRITE_FAILED, 0};
     }
-    if (!sync()) {
+    if (mode == Sync::immediate && !sync()) {
         // The frame may be on the device or not. Reads keep ending at end_;
         // reopening the log finds out.
         tail_dirty_ = true;
