@@ -25,6 +25,9 @@ class Provider {
              const ayni_body_store_v1 *bodies = nullptr);
     Provider(const Provider &) = delete;
     Provider &operator=(const Provider &) = delete;
+    // Explicit background fixture mode: framed raw replies are staged like the ESP adapter.
+    // Select before registration; requires a staging-capable body store.
+    void use_staged_framed_replies() { staged_replies_ = true; }
     // Descriptor views borrow this object through Kernel destroy. Null clock is invalid.
     ayni_status_t describe(ayni_provider_v1 &out) const;
     // Exactly one terminal post per accepted request. Failed post retains the borrow.
@@ -47,10 +50,12 @@ class Provider {
         uint64_t logical_call;                  // Stable protocol identity, positive.
         uint64_t deadline_us;                   // Kernel monotonic domain, positive.
         ayni_provider_completion_t *completion; // Borrow until successful terminal post.
+        ayni_body_ref_v1 body{}; // Staged output owned here until post transfers it to Core.
     };
     static ayni_submit_result_t submit(void *, const ayni_provider_request_v1 *,
                                        ayni_provider_completion_t *);
     static ayni_submit_result_t cancel(void *, ayni_attempt_ref_v1);
+    bool staged_replies_ = false; // Inline text is the existing default fixture contract.
     Variant variant_;
     Service service_;
     void *clock_context_;        // Borrowed through destruction; null permitted by clock.

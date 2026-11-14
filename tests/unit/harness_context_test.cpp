@@ -109,7 +109,16 @@ TEST(ContextConfiguration, rejects_incomplete_archive_callbacks_and_history_life
 struct DeferOnce {
     const ayni_body_store_v1 *inner = nullptr;
     bool deferred = false;
-    ayni_body_store_v1 store{sizeof(ayni_body_store_v1), 0, this, write, read, release};
+    ayni_body_store_v1 store{sizeof(ayni_body_store_v1),
+                             0,
+                             this,
+                             write,
+                             read,
+                             release,
+                             nullptr,
+                             nullptr,
+                             nullptr,
+                             nullptr};
     static ayni_status_t write(void *context, uint64_t scope, ayni_bytes_v1 bytes,
                                ayni_body_ref_v1 *out) {
         auto &self = *static_cast<DeferOnce *>(context);

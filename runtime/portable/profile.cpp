@@ -116,6 +116,8 @@ struct Profile::Impl {
                   host.ctx, host.monotonic_now_us, bodies.store()),
           summary(providers::fixture_model::Variant::a, providers::fixture_model::Service::summary,
                   host.ctx, host.monotonic_now_us, bodies.store()) {}
+    strategies::Persistence persistence =
+        strategies::Persistence::durable; // Deployment-selected save policy.
     ayni_host_v1 host;
     hosts::storage::ValueAdmission<value_request_capacity> value_admission;
     hosts::storage::FileValuePort values; // All outer values use the same bounded admission.
@@ -358,6 +360,10 @@ struct Profile::Impl {
             c.limits = {harness.context_window_tokens, harness.max_output_tokens,
                         harness.compact_target_tokens, harness.tool_result_max_tokens};
             c.bodies = bodies.store();
+            c.persistence = persistence;
+            if (persistence == strategies::Persistence::background) {
+                c.reply_encoding = c.summary_reply_encoding = model::ReplyEncoding::framed;
+            }
             c.history = {&bodies, runtime::FileBodies::ready, nullptr, nullptr};
             c.model.kind = c.summary.kind = AYNI_POLICY_REQUEST_MODEL;
             c.model.binding_id = text(model_bindings[at]);
@@ -456,7 +462,8 @@ ayni_status_t Profile::memory_requirements(Memory &out) {
     return status;
 }
 ayni_status_t Profile::create_in(void *data, size_t bytes, const ayni_host_v1 &host,
-                                 hosts::storage::FileValuePort files) {
+                                 hosts::storage::FileValuePort files,
+                                 strategies::Persistence persistence) {
     if (impl_) {
         return AYNI_INVALID_STATE;
     }
@@ -478,6 +485,18 @@ ayni_status_t Profile::create_in(void *data, size_t bytes, const ayni_host_v1 &h
     status = impl_->bodies.configure(impl_->values);
     if (status != AYNI_OK) {
         return status;
+    }
+    impl_->persistence = persistence;
+    if (persistence == strategies::Persistence::background) {
+        constexpr size_t background_cache_bytes = 2U * 1024U * 1024U;
+        status = impl_->bodies.set_cache_limit(background_cache_bytes);
+        if (status != AYNI_OK) {
+            return status;
+        }
+        impl_->bodies.set_shared_call_results();
+        impl_->model_a.use_staged_framed_replies();
+        impl_->model_b.use_staged_framed_replies();
+        impl_->summary.use_staged_framed_replies();
     }
     auto config = configuration();
     size_t kernel_bytes = 0, alignment = 0;
@@ -635,9 +654,7 @@ ayni_status_t Profile::open_conversations(conversation::UnfinishedTurn unfinishe
         if (context.commit_seq > kernel_info.durable_seq) {
             return AYNI_BUSY;
         }
-        if (!context.usable || context.pending_action != AYNI_CONTEXT_IDLE) {
-            return AYNI_NOT_READY;
-        }
+        // Session owns the allowed context phases, including a completed background publication.
         status = self.conversations[at].configure({self.kernel,
                                                    self.session,
                                                    self.instances[at],
@@ -646,7 +663,8 @@ ayni_status_t Profile::open_conversations(conversation::UnfinishedTurn unfinishe
                                                    self.values,
                                                    self.bodies.collection(),
                                                    {&self, Impl::command},
-                                                   unfinished});
+                                                   unfinished,
+                                                   self.persistence});
         if (status != AYNI_OK) {
             return status;
         }

@@ -37,7 +37,8 @@ class Profile {
     // Host queue capacity must be at least host_request_capacity_min.
     // Existing Providers make bounded nothrow startup allocations outside this region.
     // On partial registration/allocation failure, retain the region; destroy after Host join.
-    ayni_status_t create_in(void *, size_t, const ayni_host_v1 &, hosts::storage::FileValuePort);
+    ayni_status_t create_in(void *, size_t, const ayni_host_v1 &, hosts::storage::FileValuePort,
+                            strategies::Persistence persistence = strategies::Persistence::durable);
     ayni_status_t start();
     // Progresses concrete fixture Providers outside the bounded Core step, then Core and app.
     // No waiting; caller's OS loop owns wake/yield and its overall deadline.

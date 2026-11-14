@@ -13,6 +13,8 @@
 #include <ayni/directory.h>
 #include <ayni/model_messages.hpp>
 #include <ayni/workspace.h>
+#include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -48,7 +50,8 @@ struct ConversationRecord {
     uint64_t summary_first = 0;
     uint64_t summary_last = 0;
     BodyRef summary{};
-    BodyRef history{}; // Complete standard messages, without fixed system instructions.
+    uint32_t history_bytes = 0; // Composed framing bytes; zero for explicit raw histories.
+    BodyRef history{};          // Complete standard messages, without fixed system instructions.
     ayni_model_usage_v1 last_usage{}; // Last serving-model observation; NONE after context reset.
     uint64_t last_request_characters = 0; // Unicode characters in the last sent messages/tools.
     uint64_t last_input_estimate =
@@ -104,10 +107,16 @@ class Conversation {
     // Body reads verify length and digest; NOT_READY while the store is still loading.
     static ayni_status_t text(const ayni_body_store_v1 &bodies, const BodyRef &ref,
                               std::string &out);
+    // Resolves this record's ordered history index; ordinary text() never interprets body contents.
+    static ayni_status_t history(const ayni_body_store_v1 &, const ConversationRecord &,
+                                 std::string &);
     static ayni_status_t rounds(const ayni_body_store_v1 &bodies, const ConversationRecord &record,
                                 std::vector<Round> &out);
-    // Every body a record names, for a store that collects what no record references.
+    // Direct record roots only. Collection must use the transitive body-store overload below.
     static void references(const ConversationRecord &record, std::vector<BodyRef> &out);
+    // Includes the transitive shared payloads in the message index; NOT_READY defers collection.
+    static ayni_status_t references(const ayni_body_store_v1 &, const ConversationRecord &,
+                                    std::vector<BodyRef> &);
     // Bodies a turn's parameters or checkpoint name, in addition to its record's.
     static ayni_status_t turn_references(const ayni_workspace_v1 *workspace, ayni_bytes_v1 bytes,
                                          std::vector<BodyRef> &out);
@@ -204,6 +213,7 @@ struct TokenLimits {
 // Discovery preserves existing consumers; preloaded sends the current authorized directory
 // as request-only tools. Neither mode changes Core authorization.
 enum class ToolExposure { discovery, preloaded };
+enum class Persistence { durable, background };
 struct ToolLoopConfig {
     Identity identity;
     Call model;
@@ -215,6 +225,8 @@ struct ToolLoopConfig {
     // rest of the config. Bodies of conversation id use scope id.
     const ayni_body_store_v1 *bodies = nullptr;
     HistoryPort history{};
+    Persistence persistence = Persistence::durable; // Background is explicit and requires staging.
+    uint32_t cached_turns = 4; // Bounded owner working sets; eviction never drops store ownership.
     ToolExposure tool_exposure = ToolExposure::discovery; // Captured anew on every decision.
     model::ReplyEncoding reply_encoding = model::ReplyEncoding::text; // Main Provider encoding.
     model::ReplyEncoding summary_reply_encoding = model::ReplyEncoding::text; // Summary encoding.
@@ -222,6 +234,10 @@ struct ToolLoopConfig {
 };
 class ToolLoop {
   public:
+    ToolLoop();
+    ~ToolLoop();
+    ToolLoop(const ToolLoop &) = delete;
+    ToolLoop &operator=(const ToolLoop &) = delete;
     // Declared checkpoint and turn-parameter size; independent of message length.
     static constexpr uint32_t checkpoint_bytes = encoded_bytes_max;
     // Since 0.53: the region remains alive through Kernel destruction. Its scratch
@@ -235,6 +251,8 @@ class ToolLoop {
   private:
     static ayni_status_t decide(void *, const ayni_task_snapshot_v1 *, ayni_policy_output_v1 *);
     static uint32_t ready(void *, uint64_t);
+    struct Cache; // Owns decoded turns and immutable tool JSON; never authority decisions.
+    std::unique_ptr<Cache> cache_;
     ToolLoopConfig config_{};
     bool configured_ = false;
     ayni_workspace_v1 workspace_{}; // Borrowed bytes; present only after successful configure.

@@ -1,3 +1,4 @@
+#include "history.h"
 #include "support.h"
 #include <ayni/detail/model_usage.hpp>
 #include <ayni/model_messages.hpp>
@@ -10,8 +11,8 @@ using namespace detail;
 constexpr uint32_t record_magic = 0x434E5941U; // AYNC, little endian.
 constexpr uint32_t turn_magic = 0x544E5941U;   // AYNT.
 constexpr uint32_t bits_per_byte = 8;
-constexpr uint32_t conversation_format = 5;   // Texts are body references (ADR-0096).
-constexpr uint32_t canonical_turn_format = 6; // Canonical summary offsets (ADR-0098).
+constexpr uint32_t conversation_format = 6;   // Texts are body references (ADR-0096).
+constexpr uint32_t canonical_turn_format = 7; // Canonical summary offsets (ADR-0098).
 constexpr uint32_t word_bytes = 4;
 constexpr uint32_t wide_bytes = 8;
 
@@ -140,6 +141,7 @@ template <typename Archive, typename Record> void fields(Archive &a, Record &r) 
     a.ref(r.summary);
     a.ref(r.draft);
     a.ref(r.history);
+    a.u32(r.history_bytes);
     a.u32(r.last_usage.kind);
     a.u32(r.last_usage.reserved);
     a.u64(r.last_usage.input_tokens);
@@ -211,8 +213,7 @@ ayni_status_t header(Decoder &reader, uint32_t expected, uint32_t *version = nul
     if (version) {
         *version = format;
     }
-    return format == conversation_format ||
-                   (expected == turn_magic && format == canonical_turn_format)
+    return format == (expected == turn_magic ? canonical_turn_format : conversation_format)
                ? AYNI_OK
                : AYNI_UNSUPPORTED_VERSION;
 }
@@ -226,7 +227,6 @@ ayni_status_t decode_turn(ayni_bytes_v1 bytes, Turn &out) {
         return status;
     }
     Turn parsed;
-    parsed.canonical_summary = format == canonical_turn_format;
     uint32_t done = 0;
     reader.u32(done);
     reader.u64(parsed.base_revision);
@@ -240,10 +240,11 @@ ayni_status_t decode_turn(ayni_bytes_v1 bytes, Turn &out) {
     if (phase > static_cast<uint32_t>(TurnPhase::result_summary) ||
         resume > static_cast<uint32_t>(TurnPhase::result_summary) ||
         parsed.model_round > max_model_rounds || parsed.tool_index > AYNI_CALL_TOOL_COUNT_MAX ||
-        parsed.group_start > parsed.record.history.size ||
-        parsed.compact_prefix > parsed.record.history.size ||
+        parsed.group_start > (parsed.record.history_bytes ? parsed.record.history_bytes
+                                                          : parsed.record.history.size) ||
+        parsed.compact_prefix > (parsed.record.history_bytes ? parsed.record.history_bytes
+                                                             : parsed.record.history.size) ||
         parsed.history_summary.offset > parsed.history_summary.next ||
-        (!parsed.canonical_summary && parsed.history_summary.next > parsed.compact_prefix) ||
         parsed.result_summary.offset > parsed.result_summary.next ||
         parsed.result_summary.next > parsed.archived_result.json_bytes) {
         return AYNI_INVALID_ARGUMENT;
@@ -268,7 +269,7 @@ ayni_status_t encode_turn(const Turn &turn, uint8_t *data, uint32_t capacity, ui
     }
     Encoder writer(data, capacity);
     writer.u32(turn_magic);
-    writer.u32(turn.canonical_summary ? canonical_turn_format : conversation_format);
+    writer.u32(canonical_turn_format);
     writer.u32(turn.done ? 1U : 0U);
     writer.u64(turn.base_revision);
     writer.u64(turn.memory_id);
@@ -357,57 +358,71 @@ ayni_status_t get_body(const ayni_body_store_v1 &bodies, const BodyRef &ref, std
     out = std::move(bytes);
     return AYNI_OK;
 }
-ayni_status_t encode_rounds(const std::vector<Round> &rounds, std::string &out) {
-    out.clear();
-    const auto add = [&](uint64_t value, uint32_t bytes) {
-        for (uint32_t at = 0; at < bytes; ++at) {
-            out.push_back(static_cast<char>(static_cast<uint8_t>(value)));
-            value >>= bits_per_byte;
-        }
-    };
+ayni_status_t encode_rounds(const ayni_body_store_v1 &bodies, uint64_t scope,
+                            const std::vector<Round> &rounds, std::string &out) {
+    constexpr uint32_t round_bytes = wide_bytes + 2U * sizeof(BodyRef);
+    out.assign(rounds.size() * round_bytes, '\0');
+    uint32_t at = 0;
     for (const auto &round : rounds) {
-        if (round.user.size() > UINT32_MAX || round.answer.size() > UINT32_MAX) {
-            return AYNI_CAPACITY_EXCEEDED;
+        BodyRef user{}, answer{};
+        auto status = keep(bodies, scope, round.user, user);
+        if (status == AYNI_OK) {
+            status = keep(bodies, scope, round.answer, answer);
         }
-        add(round.number, wide_bytes);
-        add(round.user.size(), word_bytes);
-        out += round.user;
-        add(round.answer.size(), word_bytes);
-        out += round.answer;
+        if (status != AYNI_OK) {
+            return status;
+        }
+        Encoder writer(reinterpret_cast<uint8_t *>(out.data()) + at, round_bytes);
+        writer.u64(round.number);
+        writer.ref(user);
+        writer.ref(answer);
+        at += round_bytes;
     }
     return AYNI_OK;
 }
-ayni_status_t decode_rounds(ayni_string_v1 bytes, uint32_t count, uint64_t last_round,
-                            std::vector<Round> &out) {
+ayni_status_t decode_rounds(const ayni_body_store_v1 &bodies, ayni_string_v1 bytes, uint32_t count,
+                            uint64_t last_round, std::vector<Round> &out,
+                            std::vector<BodyRef> *references) {
+    constexpr uint32_t round_bytes = wide_bytes + 2U * sizeof(BodyRef);
+    if (count > bytes.size / round_bytes || bytes.size != count * round_bytes) {
+        return AYNI_INVALID_ARGUMENT;
+    }
     std::vector<Round> parsed;
-    uint64_t at = 0;
-    const auto take = [&](uint32_t width, uint64_t &value) {
-        if (width > bytes.size - at) {
-            return false;
-        }
-        value = 0;
-        for (uint32_t index = 0; index < width; ++index) {
-            value |= uint64_t{static_cast<uint8_t>(bytes.data[at++])} << (index * bits_per_byte);
-        }
-        return true;
-    };
-    const auto text = [&](std::string &value) {
-        uint64_t size = 0;
-        if (!take(word_bytes, size) || size > bytes.size - at) {
-            return false;
-        }
-        value.assign(bytes.data + at, static_cast<std::size_t>(size)); // Bounded by bytes.size.
-        at += size;
-        return true;
-    };
     for (uint32_t index = 0; index < count; ++index) {
+        Decoder reader(
+            {reinterpret_cast<const uint8_t *>(bytes.data) + index * round_bytes, round_bytes});
         Round round;
-        if (!take(wide_bytes, round.number) || !text(round.user) || !text(round.answer)) {
+        BodyRef user{}, answer{};
+        reader.u64(round.number);
+        reader.ref(user);
+        reader.ref(answer);
+        if (!reader.complete()) {
             return AYNI_INVALID_ARGUMENT;
+        }
+        if (!references) {
+            auto status = load(bodies, user, round.user);
+            if (status == AYNI_OK) {
+                status = load(bodies, answer, round.answer);
+            }
+            if (status != AYNI_OK) {
+                return status;
+            }
+        }
+        if (!user.id || !user.size || !round.number || round.number > last_round ||
+            (!parsed.empty() && parsed.back().number >= round.number)) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        if (references) {
+            if (user.id) {
+                references->push_back(user);
+            }
+            if (answer.id) {
+                references->push_back(answer);
+            }
         }
         parsed.push_back(std::move(round));
     }
-    if (at != bytes.size || !valid_rounds(parsed, last_round)) {
+    if (!references && !valid_rounds(parsed, last_round)) {
         return AYNI_INVALID_ARGUMENT;
     }
     out = std::move(parsed);
@@ -428,37 +443,49 @@ ayni_status_t read_turn(Workspace &, const ayni_body_store_v1 &bodies, ayni_byte
           {&parsed.record.rounds, &rounds},
           {&parsed.refs.history_summary, &parsed.history_summary.text},
           {&parsed.refs.result_summary, &parsed.result_summary.text}}) {
-        status = ref == &parsed.record.rounds
+        status = ref == &parsed.record.history ? Conversation::history(bodies, parsed.record, *text)
+                 : ref == &parsed.record.rounds
                      ? (present(*ref) ? get_body(bodies, *ref, *text) : AYNI_OK)
                      : load(bodies, *ref, *text);
         if (status != AYNI_OK) {
             return status;
         }
     }
-    status = decode_rounds(view(rounds), parsed.record.round_count, parsed.record.last_round,
-                           parsed.rounds);
+    status = decode_rounds(bodies, view(rounds), parsed.record.round_count,
+                           parsed.record.last_round, parsed.rounds);
     if (status != AYNI_OK) {
         return status;
     }
     if (!valid_history(parsed.history)) {
         return AYNI_INVALID_ARGUMENT;
     }
+    if (parsed.record.history_bytes) {
+        status = get_body(bodies, parsed.record.history, parsed.history_index);
+        if (status != AYNI_OK) {
+            return status;
+        }
+        parsed.history_saved = parsed.record.history_bytes;
+    }
     out = std::move(parsed);
     return AYNI_OK;
 }
 ayni_status_t write_turn(Turn &turn, const ayni_body_store_v1 &bodies, uint8_t *data,
                          uint32_t capacity, uint32_t &size) {
-    if (turn.input.empty() || !valid_text(view(turn.input)) || !valid_history(turn.history)) {
+    // read_turn and framed append operations own validation; unchanged history is not rewalked.
+    if (turn.input.empty()) {
         return AYNI_INVALID_ARGUMENT;
     }
     const auto scope = turn.record.id;
     std::string rounds;
-    auto status = encode_rounds(turn.rounds, rounds);
+    auto status = store_history(bodies, turn);
+    const bool changed_rounds = turn.record.round_count != turn.rounds.size() ||
+                                (!turn.record.rounds.id && !turn.rounds.empty());
+    if (status == AYNI_OK && changed_rounds) {
+        status = encode_rounds(bodies, turn.record.id, turn.rounds, rounds);
+    }
     for (const auto &[text, ref] :
          {std::pair<const std::string *, BodyRef *>{&turn.input, &turn.refs.input},
-          {&turn.history, &turn.record.history},
           {&turn.summary, &turn.record.summary},
-          {&rounds, &turn.record.rounds},
           {&turn.history_summary.text, &turn.refs.history_summary},
           {&turn.result_summary.text, &turn.refs.result_summary}}) {
         if (status != AYNI_OK) {
@@ -468,6 +495,12 @@ ayni_status_t write_turn(Turn &turn, const ayni_body_store_v1 &bodies, uint8_t *
     }
     if (status != AYNI_OK) {
         return status;
+    }
+    if (changed_rounds) {
+        status = keep(bodies, scope, rounds, turn.record.rounds);
+        if (status != AYNI_OK) {
+            return status;
+        }
     }
     turn.record.round_count = static_cast<uint32_t>(turn.rounds.size());
     return encode_turn(turn, data, capacity, size);
@@ -484,7 +517,7 @@ uint64_t scope_of(const ConversationRecord &record) {
 ayni_status_t store_rounds(const ayni_body_store_v1 &bodies, ConversationRecord &record,
                            const std::vector<Round> &rounds) {
     std::string encoded;
-    auto status = encode_rounds(rounds, encoded);
+    auto status = encode_rounds(bodies, record.id, rounds, encoded);
     if (status == AYNI_OK) {
         status = keep(bodies, scope_of(record), encoded, record.rounds);
     }
@@ -757,6 +790,14 @@ ayni_status_t Conversation::text(const ayni_body_store_v1 &bodies, const BodyRef
                                  std::string &out) {
     return valid_ref(ref) ? load(bodies, ref, out) : AYNI_INVALID_ARGUMENT;
 }
+ayni_status_t Conversation::history(const ayni_body_store_v1 &bodies,
+                                    const ConversationRecord &record, std::string &out) {
+    if (!valid(record)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    return record.history_bytes ? load_history(bodies, record.history, out)
+                                : load(bodies, record.history, out);
+}
 ayni_status_t Conversation::rounds(const ayni_body_store_v1 &bodies,
                                    const ConversationRecord &record, std::vector<Round> &out) {
     if (!valid(record)) {
@@ -769,7 +810,12 @@ ayni_status_t Conversation::rounds(const ayni_body_store_v1 &bodies,
             return status;
         }
     }
-    return decode_rounds(view(encoded), record.round_count, record.last_round, out);
+    return decode_rounds(bodies, view(encoded), record.round_count, record.last_round, out);
+}
+ayni_status_t Conversation::references(const ayni_body_store_v1 &bodies,
+                                       const ConversationRecord &record,
+                                       std::vector<BodyRef> &out) {
+    return detail::record_references(bodies, record, out);
 }
 void Conversation::references(const ConversationRecord &record, std::vector<BodyRef> &out) {
     for (const auto *ref : {&record.summary, &record.history, &record.draft, &record.rounds}) {

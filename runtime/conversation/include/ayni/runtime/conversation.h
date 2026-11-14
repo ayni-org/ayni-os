@@ -36,6 +36,7 @@ struct Config {
     BodyCollection bodies; // The ToolLoop body/collection ports, borrowed through Host join.
     Commands commands;
     UnfinishedTurn unfinished = UnfinishedTurn::retain;
+    strategies::Persistence persistence = strategies::Persistence::durable;
 };
 // Caller places this bounded object in suitable RAM (it contains large records).
 // Owner-thread, no reentry. poll performs bounded public-API/queue work, never waits.
@@ -99,6 +100,8 @@ class Session {
         publish,
         acknowledge,
         acknowledged,
+        collect,
+        collecting,
         erase,
         failed
     };
@@ -111,16 +114,26 @@ class Session {
     bool matches(const strategies::ConversationRecord &, const ayni_context_info_v1 &) const;
     ayni_status_t load(const ayni_context_info_v1 &);
     ayni_status_t save();
+    ayni_status_t confirm(const strategies::ConversationRecord &);
     ayni_status_t saved(const ayni_context_info_v1 &);
     ayni_status_t turn(const ayni_context_info_v1 &, uint64_t durable);
     ayni_status_t cancel_turn(uint64_t durable);
     ayni_status_t discard();
     ayni_status_t unfinished();
     ayni_status_t settled(uint64_t durable) const;
-    void collect_superseded(const strategies::ConversationRecord &);
+    ayni_status_t collect_superseded(const strategies::ConversationRecord &);
     ayni_status_t publish(const ayni_context_info_v1 &);
     ayni_status_t erase(const ayni_context_info_v1 &);
     ayni_status_t input();
+    struct Confirmed {
+        uint64_t generation = 0, revision = 0;
+        std::array<uint64_t, 4>
+            refs{}; // Immutable body identities whose complete graph was confirmed.
+    };
+    std::optional<strategies::ConversationRecord>
+        superseded_; // Exact old graph retained until deletion drains.
+    std::optional<Confirmed>
+        confirmed_; // Persistence proof only; all privacy gates still read Core.
     Config config_{};
     Phase phase_ = Phase::empty;      // Sole lifecycle/worker-buffer state.
     Save save_ = Save::initialize;    // Meaningful only in save/saving.

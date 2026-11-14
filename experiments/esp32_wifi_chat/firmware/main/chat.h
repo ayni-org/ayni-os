@@ -171,7 +171,8 @@ class Chat {
     bool summary_ = false; // The pending request asked for text only.
     enum class ModelState { idle, waiting, text, tools, failed, cancelled };
     ModelState model_ = ModelState::idle;
-    std::string model_answer_; // Complete selected reply encoding, stored before publication.
+    std::string model_answer_;      // Complete selected reply encoding, stored before publication.
+    ayni_body_ref_v1 model_body_{}; // Owned until successful post; cancellation releases it.
     uint32_t model_tool_count_ = 0;
     ayni_model_usage_v1 model_usage_{};
     ayni_provider_result_v1 model_failure_{}; // Explicit adapter refusal, otherwise UNKNOWN.

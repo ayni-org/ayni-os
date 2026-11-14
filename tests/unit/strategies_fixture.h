@@ -517,7 +517,10 @@ class StrategiesFixture : public ::testing::Test {
     }
     std::string text_of(const policies::BodyRef &ref) {
         std::string out;
-        EXPECT_EQ(policies::Conversation::text(bodies.store()[0], ref, out), AYNI_OK);
+        EXPECT_EQ(ref.id == conversation.history.id
+                      ? policies::Conversation::history(bodies.store()[0], conversation, out)
+                      : policies::Conversation::text(bodies.store()[0], ref, out),
+                  AYNI_OK);
         return out;
     }
     std::vector<policies::Round> rounds_of(const policies::ConversationRecord &record) {

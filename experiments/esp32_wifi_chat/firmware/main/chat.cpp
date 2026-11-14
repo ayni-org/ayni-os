@@ -163,6 +163,7 @@ ayni_status_t Chat::initialize(const ModelSelection &selection) {
     if (rc != AYNI_OK) {
         return rc;
     }
+    bodies_.set_shared_call_results();
     transport_.attach_bodies(bodies_.store());
     const uint32_t input_bytes =
         std::max({model_input_bytes(destination_), screen_input_bytes(), Speaker::input_bytes()});
@@ -464,6 +465,7 @@ ayni_status_t Chat::configure_strategy() {
     config.limits = {harness::context_window_tokens, harness::max_output_tokens,
                      harness::compact_target_tokens, harness::tool_result_max_tokens};
     config.bodies = bodies_.store();
+    config.persistence = ayni::strategies::Persistence::background;
     config.history = {&bodies_, ayni::runtime::FileBodies::ready, nullptr, nullptr};
     config.tool_exposure = ayni::strategies::ToolExposure::preloaded;
     config.reply_encoding = config.summary_reply_encoding = ayni::model::ReplyEncoding::framed;
@@ -613,11 +615,12 @@ void Chat::publish_model() {
         result.status = AYNI_OK;
         result.effect = AYNI_CALL_EFFECT_COMPLETE;
         const auto *store = bodies_.store();
-        ayni_body_ref_v1 ref{};
-        const auto stored = store->write(store->context, call_,
-                                         {reinterpret_cast<const uint8_t *>(model_answer_.data()),
-                                          static_cast<uint32_t>(model_answer_.size())},
-                                         &ref);
+        const auto stored =
+            model_body_.id ? AYNI_OK
+                           : store->stage(store->context, call_,
+                                          {reinterpret_cast<const uint8_t *>(model_answer_.data()),
+                                           static_cast<uint32_t>(model_answer_.size())},
+                                          &model_body_);
         if (stored == AYNI_NOT_READY) {
             return;
         }
@@ -631,10 +634,14 @@ void Chat::publish_model() {
             model_ = ModelState::failed;
             return;
         }
-        result.body = ref;
+        result.body = model_body_;
         result.tool_call_count = model_tool_count_;
         result.model_usage = model_usage_;
     } else {
+        if (model_body_.id) {
+            bodies_.store()->release(bodies_.store()->context, &model_body_);
+            model_body_ = {}; // Failed/cancelled delivery never transferred this output.
+        }
         if (model_failure_.struct_size) {
             result.outcome = model_failure_.outcome;
             result.status = model_failure_.status;
@@ -648,6 +655,7 @@ void Chat::publish_model() {
         }
     }
     if (ayni_provider_post(completion_, &result) == AYNI_OK) {
+        model_body_ = {}; // The successful post transfers the reference to Core.
         trace("model_result_posted");
         model_ = ModelState::idle;
         completion_ = nullptr;
@@ -1270,11 +1278,21 @@ ayni_status_t Chat::prepare_history(const ayni_kernel_info_v1 &info) {
                 return out;
             }};
         config.unfinished = ayni::runtime::conversation::UnfinishedTurn::discard;
+        config.persistence = ayni::strategies::Persistence::background;
         rc = history_.configure(config);
         if (rc != AYNI_OK) {
             return rc;
         }
         history_configured_ = true;
+    }
+    if (cancel_requested_ && !probe_ && history_.active()) {
+        // Stop admission precedes a sticky store error; receipt progress stays in prepare_owner.
+        const auto cancelled = history_.cancel();
+        if (cancelled == AYNI_OK) {
+            cancel_requested_ = false;
+        } else if (cancelled != AYNI_BUSY) {
+            return cancelled;
+        }
     }
     rc = history_.poll();
     if (rc != AYNI_OK && rc != AYNI_BUSY && !history_.held()) {
@@ -1524,13 +1542,6 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
     } else if (forget_ == Forget::saving && history_.ready()) {
         forget_ = Forget::none;
         status(0, "context cleared on device");
-    }
-    if (cancel_requested_ && !probe_ && history_.active()) {
-        const auto rc = history_.cancel();
-        if (rc != AYNI_OK) {
-            return rc;
-        }
-        cancel_requested_ = false;
     }
     if (cancel_requested_ && probe_ && goal_ && !commands_.pending()) {
         auto goal = sized<ayni_goal_info_v1>();

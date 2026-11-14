@@ -71,7 +71,8 @@ Provider::Provider(Variant variant, Service service, void *context, uint64_t (*n
         nullptr};
 }
 ayni_status_t Provider::describe(ayni_provider_v1 &out) const {
-    if (!now_us_ || (variant_ != Variant::a && variant_ != Variant::b) ||
+    if ((staged_replies_ && (!bodies_ || !bodies_->stage || !bodies_->release)) || !now_us_ ||
+        (variant_ != Variant::a && variant_ != Variant::b) ||
         (service_ != Service::tools && service_ != Service::summary)) {
         return AYNI_INVALID_ARGUMENT;
     }
@@ -143,8 +144,8 @@ ayni_submit_result_t Provider::submit(void *context, const ayni_provider_request
         }
     }
     ++self.submissions_;
-    self.pending_ = Pending{answer, request->attempt, request->logical_call_id,
-                            request->deadline_us, completion};
+    self.pending_ = Pending{
+        answer, request->attempt, request->logical_call_id, request->deadline_us, completion, {}};
     return AYNI_SUBMIT_ACCEPTED;
 }
 ayni_submit_result_t Provider::cancel(void *context, ayni_attempt_ref_v1 attempt) {
@@ -162,9 +163,13 @@ ayni_status_t Provider::advance() {
     if (!pending_) {
         return AYNI_OK;
     }
-    const auto &pending = *pending_;
+    auto &pending = *pending_;
     const bool cancelled = pending.answer == Answer::cancelled;
     const bool expired = now_us_(clock_context_) >= pending.deadline_us;
+    if ((cancelled || expired) && pending.body.id) {
+        bodies_->release(bodies_->context, &pending.body);
+        pending.body = {}; // No successful post named this producer-owned output.
+    }
     auto result = ayni_provider_result_v1{};
     result.struct_size = sizeof(result);
     result.attempt = pending.attempt;
@@ -207,6 +212,36 @@ ayni_status_t Provider::advance() {
         result.result = text(service_ == Service::summary ? "Fixture summary."
                              : variant_ == Variant::a     ? "A: fixture reply."
                                                           : "B: fixture reply.");
+    }
+    if (staged_replies_ && !cancelled && !expired) {
+        std::array<char, call_result_bytes> framed{};
+        model::Writer frame(framed.data(), static_cast<uint32_t>(framed.size()));
+        model::write_reply_frame(frame, result.result);
+        ayni_string_v1 reply{};
+        if (!frame.finish(reply)) {
+            return AYNI_CAPACITY_EXCEEDED;
+        }
+        std::array<uint8_t, call_result_bytes> proposals{};
+        ayni_bytes_v1 bytes{reinterpret_cast<const uint8_t *>(reply.data), reply.size};
+        if (result.tool_call_count) {
+            uint32_t size = 0;
+            const auto encoded = ayni_tool_calls_write(
+                result.tool_calls, result.tool_call_count, reply, proposals.data(),
+                static_cast<uint32_t>(proposals.size()), &size);
+            if (encoded != AYNI_OK) {
+                return encoded;
+            }
+            bytes = {proposals.data(), size};
+        }
+        const auto copied = pending.body.id ? AYNI_OK
+                                            : bodies_->stage(bodies_->context, pending.logical_call,
+                                                             bytes, &pending.body);
+        if (copied != AYNI_OK) {
+            return copied;
+        }
+        result.body = pending.body;
+        result.result = {};
+        result.tool_calls = nullptr;
     }
     const auto status = ayni_provider_post(pending.completion, &result);
     if (status == AYNI_OK) {

@@ -53,8 +53,9 @@ TEST(WifiVoiceReply, RequestsExistingSpeechCapabilityOnceAndFinishesFromItsLedge
     const std::string answer = "这段最终答复会自动朗读。";
     SpeechDecision serving;
     serving.stored = answer;
-    const ayni_body_store_v1 bodies{sizeof(bodies),       0,      &serving, nullptr,
-                                    SpeechDecision::read, nullptr};
+    const ayni_body_store_v1 bodies{
+        sizeof(bodies), 0,       &serving, nullptr, SpeechDecision::read,
+        nullptr,        nullptr, nullptr,  nullptr, nullptr};
     wifichat::ReplyVoice voice;
     const auto policy = voice.strategy(&bodies);
     auto snapshot = ayni::initialized<ayni_task_snapshot_v1>();

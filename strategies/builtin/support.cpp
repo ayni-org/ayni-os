@@ -134,6 +134,26 @@ ayni_strategy_v1 descriptor(Identity identity, void *context, ayni_decide_fn dec
     out.readers = identity.readers;
     return out;
 }
+ayni_status_t resolve_result_body(const ayni_body_store_v1 &bodies, ayni_task_call_result_v1 &call,
+                                  std::string &owned) {
+    if (!call.body.id || (call.result_kind == AYNI_CALL_RESULT_VALUE && call.encoded_value.size) ||
+        (call.result_kind == AYNI_CALL_RESULT_TEXT && call.text.size)) {
+        return AYNI_OK;
+    }
+    const auto status = get_body(bodies, call.body, owned);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    if (call.result_kind == AYNI_CALL_RESULT_VALUE) {
+        call.encoded_value = {reinterpret_cast<const uint8_t *>(owned.data()),
+                              static_cast<uint32_t>(owned.size())};
+    } else if (call.result_kind == AYNI_CALL_RESULT_TEXT) {
+        call.text = view(owned);
+    } else {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    return AYNI_OK;
+}
 ayni_status_t report(const ayni_task_snapshot_v1 &snapshot, ayni_policy_output_v1 &output,
                      ayni_policy_intent_kind_t kind) {
     if (!output.intents || output.intent_capacity == 0) {
@@ -154,7 +174,13 @@ ayni_status_t request(const Call &call, ayni_string_v1 key, ayni_string_v1 text,
     }
     BodyRef body{};
     if (bodies && !call.input && call.kind == AYNI_POLICY_REQUEST_MODEL) {
-        const auto stored = put_body(*bodies, scope, text, body);
+        // A Task may own several model/summary Calls. Their stable step keys give each
+        // request an independent body owner, including identical prompts (ADR-0104).
+        const auto step_digest =
+            ayni_body_digest({reinterpret_cast<const uint8_t *>(key.data), key.size});
+        constexpr uint64_t owner_mix = UINT64_C(0x9e3779b97f4a7c15);
+        const auto request_scope = step_digest ^ (scope * owner_mix);
+        const auto stored = put_body(*bodies, request_scope, text, body);
         if (stored == AYNI_NOT_READY) {
             output.disposition = AYNI_POLICY_OUTPUT_DEFER; // Sent once the body is durable.
         }
