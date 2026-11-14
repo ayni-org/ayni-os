@@ -443,7 +443,7 @@ AppleClang21.0.0/CMake4.0.3，Release、Sim/Mock夹具、相同的20000次正常
 - AppleClang21.0.0，ASan/UBSan定向196/196通过：原Call/Tool、受管执行、执行事实、共享文件及空间账目，另含Schema/值/投影/参数、业务调用、Scene、workspace和ToolLoop。保留既有故障/恢复回归，没有新专项；新输入擦除用纯gate白盒检查，并不宣称验证Privacy日志配对或持久恢复。小scratch可读已准入契约但不足以重新完整解码；默认值指针及再次编码一致；同批8工具严格串行且仅两次模型调用。
 - Wi-Fi正常检查74/74通过，包含两工具批次穿过共享模型协议和ESP codec后保持协议ID及参数所有权。工具规则98/98、覆盖聚合工具在真实/private/tmp路径下12/12通过；clang-format18、依赖/契约/diff及机械可读性通过，后者维持19项既有public-code-comment基线。
 - 额外全工具发现检查在macOS系统Bash3.2运行Linux CI脚本时失败，临时目录/var符号链接也触发覆盖工具路径错误；后者用真实路径重跑通过。未改无关CI脚本，也不报告全工具或Linux CI通过。ASan配置保留此前本地AppleClang shadow告警例外，CI策略不变。
-- ESP-IDF6.0.3/GCC15.2.0固件编译通过，应用0x29fa60（2751072）字节，比97c77da小352字节，最小3 MiB槽余量13%；实际编译与测试日志在忽略的build/local-latency-*。按资源检查选择每次构建1～2任务，测试串行。本次尚未OTA或执行真实模型/电机/语音，板上实际回合与最长step待部署复测。
+- ESP-IDF6.0.3/GCC15.2.0固件编译通过，应用0x29fa60（2751072）字节，比97c77da小352字节，最小3 MiB槽余量13%；实际编译与测试日志在忽略的build/local-latency-*。按资源检查选择每次构建1～2任务，测试串行。上述软件验证时尚未OTA；用户随后明确同意更新及现有无模型/无电机回合，实际结果见下文。
 
 独立只读审查发现优化初稿遗漏输入清除后的执行门拒绝，已用content_erased快拒绝修复并复核；正常白盒回归确认在普通Call推进和取消前原许可已进入stopping。独立审查未运行测试，当前生产差异无剩余实质发现。作者自查及独立逐项复核：
 
@@ -451,3 +451,23 @@ AppleClang21.0.0/CMake4.0.3，Release、Sim/Mock夹具、相同的20000次正常
 - Kernel字段：检查kernel_state.h、arena及ABI差异，无新增Kernel状态或内存布局。DecodedSchema仅改变活动前缀初始化/复制，sizeof及工作区需求不变。
 - 重复机制：business_encoding.cpp:166、schema_encoding.cpp:242分别只有一个布局reader；scene_table.cpp:184集中当前门控，authorize及运行期复用。没有新授权、执行或日志通道。
 - 裸数字：新reader继续使用原具名版本/长度/容量及sizeof；没有新增记录偏移、阈值或ABI/schema字面量。8工具上限继续由AYNI_CALL_TOOL_COUNT_MAX定义。
+
+### 正常OTA及同夹具实机复测
+
+已提交的d754ca4重新构建，应用2751072字节；项目身份、镜像checksum/validation hash、固定双槽布局及软件回退配置核对通过。一次正常Web上传38.770秒，HTTP200、updated/restarting=true，从ota_1切到ota_0。新启动3.378秒电机资源ready/status=0，11.286秒Ayni会话就绪，16.326秒OTA自验证status=0；最终version=d754ca4、pending_verify=false、error=0。校时就绪，password_set/model_key_set及api_type/stream/output_limit与更新前一致；原UNKNOWN仍保留，启动日志没有PWM或音频输出。
+
+在升级前紧邻采集一次现有`context-test?characters=12`，升级后采集首份及预热样本。三份均template_only=1、no_model_http=1、status=0，history_rounds保持43，lost=0/dropped=0；没有云端模型或真实电机/TTS动作。
+
+| 实机指标 | 97c77da更新前 | d754ca4首份 | d754ca4预热 |
+|---|---:|---:|---:|
+| 本地回合墙钟 | 5677 ms | 4732 ms | 4732 ms |
+| Core累计墙钟 | 4437 ms | 3300 ms | 3299 ms |
+| 最长单次step | 836584 us | 601267 us | 602944 us |
+| step次数 | 33 | 46 | 37 |
+| 已完成存储请求 | 14 | 24 | 14 |
+| 存储I/O累计墙钟 | 999 ms | 1260 ms | 1273 ms |
+| 文件write / sync | 629 / 12 ms | 565 / 59 ms | 634 / 13 ms |
+
+预热前后同为4732 ms，不能把剩余延迟归结于首份多出的加载请求。同夹具回合减少16.65%，Core累计墙钟减少25.65%，但本地流程仍耗时数秒、单次step仍约603 ms，尚未达到用户要求的毫秒级响应。文件write/sync在预热样本中基本没有变化；墙钟包含调度、抢占及潜在Flash停顿，不将Core累计墙钟称作纯CPU耗时。此合成回合没有物理执行，不能验证桌面门轮询48倍收益对真实动作交接的影响，也不能推算原37798 ms动作回合的新耗时。
+
+正常更新、自确认、配置存在标记及三份合成样本的元数据在忽略的build/local-latency-ota-20261114/，属于仓库外证据。结果不代替真实多工具模型响应、运动交接、独立硬件停止时限、掉电或耐久验收；本次没有USB、擦卷或未知动作重试。
