@@ -62,7 +62,7 @@ cmake --build build/native
 ctest --test-dir build/native --output-on-failure
 ```
 
-换用 Clang：在配置前设置 `CC=clang CXX=clang++`，并用 `-B` 指定另一个构建目录。只有带版本号的可执行文件时，使用对应的 `CC=clang-18 CXX=clang++-18`；GCC 同理可用 `CC=gcc-13 CXX=g++-13`。`AYNI_HOST` 目前只接受 `native`；ESP32 固件用下文的 `idf.py` 构建。`ayni-sim` 无参数时保留原演示；正常夹具入口见下节，完整 profile 已提供 `--experiment HARNESS`、`--experiment E2`、`--experiment E1`、`--experiment E3` 与 `--experiment E4`，均须加 `--output NEW_DIRECTORY`；精确切断和版本探针须启用 `AYNI_BUILD_TESTS`。无参数演示每次运行在系统临时目录（`TMPDIR`，默认 `/tmp`）下新建状态目录，Native Host 的日志文件写在其中，Kernel 完成恢复并停机后删除该目录。Native Host 的单元测试与 Host 存储契约测试同样在临时目录中创建并删除存储文件，所以运行它们需要可写、支持 `fdatasync`、文件锁、rename 和目录同步的临时目录。状态目录包含 `commit_log`、双槽文件 `snapshot_0` / `snapshot_1` 及稳定锁文件 `.ayni_storage_lock`，轮转还会产生临时输出；保留设备状态时须保留整个目录。当前批次与快照只读写 schema 9；schema 0..8 及其他不支持的 schema 在新写入前只读受限并保留，不迁移、不清空、不回退旧快照（ADR-0082）。开发使用新的状态目录；回退需原二进制与原状态目录。
+换用 Clang：在配置前设置 `CC=clang CXX=clang++`，并用 `-B` 指定另一个构建目录。只有带版本号的可执行文件时，使用对应的 `CC=clang-18 CXX=clang++-18`；GCC 同理可用 `CC=gcc-13 CXX=g++-13`。`AYNI_HOST` 目前只接受 `native`；ESP32 固件用下文的 `idf.py` 构建。`ayni-sim` 无参数时保留原演示；正常夹具入口见下节，完整 profile 已提供 `--experiment HARNESS`、`--experiment E2`、`--experiment E1`、`--experiment E3` 与 `--experiment E4`，均须加 `--output NEW_DIRECTORY`；精确切断和版本探针须启用 `AYNI_BUILD_TESTS`。无参数演示每次运行在系统临时目录（`TMPDIR`，默认 `/tmp`）下新建状态目录，Native Host 的日志文件写在其中，Kernel 完成恢复并停机后删除该目录。Native Host 的单元测试与 Host 存储契约测试同样在临时目录中创建并删除存储文件，所以运行它们需要可写、支持 `fdatasync`、文件锁、rename 和目录同步的临时目录。状态目录包含 `commit_log`、双槽文件 `snapshot_0` / `snapshot_1` 及稳定锁文件 `.ayni_storage_lock`，轮转还会产生临时输出；保留设备状态时须保留整个目录。当前批次与快照只读写 schema 10；schema 0..9 及其他不支持的 schema 在新写入前只读受限并保留，不迁移、不清空、不回退旧快照（ADR-0082）。开发使用新的状态目录；回退需原二进制与原状态目录。
 
 ESP-IDF 存储工作恢复时，需量测 schema 3 下典型操作的实际日志写入字节数、达到快照/轮转阈值的操作次数及快照写入量，并结合目标 Flash 的擦除块、擦写次数和写入策略评估代价。记录正文的固定部分长度不等于整次操作的写入量，变长字段、批次封装和快照也须计入；当前尚无这组测量，不以 Native arena 数字代替 Flash 耐久证据。此项随 ESP-IDF 存储验证进行，不启动 M2 或硬件工作。
 
@@ -233,7 +233,7 @@ if (status == AYNI_OK) {
 
 同源可重复导入和增补组件；同一构建不能混用不同源码来源。源码、平台上下文和arena的生命周期仍按公开契约处理。独立隔离验证位于`tests/portability/`，完整接入阶段见[实施计划](architecture/independent-consumption-plan.md)，编译结果不代表ESP实机通过。
 
-P5 提供源码级 `include/ayni/ayni.hpp` 和 [五个公开接入示例](../examples/README.md)（ADR-0067）。`ayni_cpp_sdk_smoke` 与示例客户端按 C++17、`-fno-exceptions -fno-rtti` 编译；当前 C ABI minor 为 0.54、Core schema 9；各阶段版本及兼容决定见对应 ADR。ESP-IDF 组合根包含同一 header，完整 CI 编译不能替代板级执行。
+P5 提供源码级 `include/ayni/ayni.hpp` 和 [五个公开接入示例](../examples/README.md)（ADR-0067）。`ayni_cpp_sdk_smoke` 与示例客户端按 C++17、`-fno-exceptions -fno-rtti` 编译；当前 C ABI minor 为 0.55、Core schema 10；各阶段版本及兼容决定见对应 ADR。ESP-IDF 组合根包含同一 header，完整 CI 编译不能替代板级执行。
 
 普通测试套件通过 CTest 运行 `CppSdk.*`、`cpp_sdk_without_exceptions_or_rtti`、`Examples.*`；`Examples.assistant_demo` 运行 Mock CLI 脚本。第二模型用本地 HTTP fixture，不使用真实服务或密钥。具体操作见示例 README；构建前仍按本页资源预算设置显式并行度。
 
@@ -337,3 +337,9 @@ Xtensa GCC15的`-Os`对上游链接标签成功路径产生maybe-uninitialized�
 `Session::Config::bodies`使用`BodyCollection`，FileBodies调用方传入`collection()`；端口和所有异步缓冲保持到Host join。默认保留草稿，交互应用可显式选`UnfinishedTurn::discard`并使用cancel/abandon/take_result；关闭前反复quiesce并继续step，完成文件/ACK排空后再shutdown。旧工作必须先由组合根取消并确认终态；Core shutdown不等于取消所有持久Goal。FileBodies的set_cache_limit/trim_cache管理驻留正文，ready检查包含未受理删除。ValueAdmission的额度由部署选择；portable Profile的外层值为4槽，调用方打开的Host队列至少5槽。CommandClient要求每principal一个独占命令流；多命令窗口的Native CLI复用CommandSequence生成身份并保持原回执窗口。详见ADR-0100。
 
 相关正常检查为`ayni_conversation_session_tests`、`FileValues.*`/`FileBodies.*`和独立ESP实验的Wi-Fi检查；`tests/portability/run_native.py`继续覆盖默认保留模式及隔离SDK正常关闭重开。板端部署和新故障专项不由这些命令启动。
+
+### 共享正文与后台会话
+
+ABI0.55要求完整body descriptor；旧write接口仍持久确认后成功。stage只在有界内存接收，share取得独立scope引用，confirm请求保存且不阻塞。FileBodies暂存需要正数cache预算；每次至多一个4 KiB文件借用，Core请求优先。Session/ToolLoop默认durable，ESP明确background；portable Profile::create_in可显式选择同一策略用于正常软件回归。模型临时输入在原Call终态持久后过期；原始模型提议及必要结果后台保存，不能以trim删除尚未保存的所有者。
+
+Core schema10、ConversationRecord6、turn7、SQLite4直接升级且拒旧保留。首次完整Call及快照type21/v2，后续journal状态type21/v3。新格式异常恢复未验证；本轮不执行板卡更新或清理，后续只通过既有停止/关闭后的指定分区流程处置旧数据，见ADR-0104。

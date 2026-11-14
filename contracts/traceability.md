@@ -26,7 +26,7 @@
 | [fixtures/experiments/README.md](fixtures/experiments/README.md) | 5 | 0 |
 | [fixtures/normal/README.md](fixtures/normal/README.md) | 10 | 0 |
 | [host/cpp_sdk.md](host/cpp_sdk.md) | 12 | 0 |
-| [host/file_values.md](host/file_values.md) | 6 | 4 |
+| [host/file_values.md](host/file_values.md) | 9 | 4 |
 | [host/host_ports.md](host/host_ports.md) | 21 | 14 |
 | [host/native_runtime.md](host/native_runtime.md) | 13 | 9 |
 | [host/policy_interface.md](host/policy_interface.md) | 12 | 8 |
@@ -35,7 +35,7 @@
 | [storage/records.md](storage/records.md) | 22 | 16 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 4 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 444 | 145 |
+| 合计 | 447 | 145 |
 
 ## 计划章节 → 契约文档
 

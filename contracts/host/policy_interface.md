@@ -99,11 +99,15 @@ Scene和PermitGate。preloaded必须注入真实协议Projection，使主请求�
 余量及两类摘要共用出站投影计量；预置Schema不能截断或摘要替代。
 
 FRAMED回复由部署显式选择；History/UI只展示规范回答。规范摘要不包含opaque续传，压缩、
-权限失效和清空与其所属历史组一起移除续传，保护最新工具往返。turn格式6改变摘要游标含义，
-保留格式5reader；会话记录仍为5。旧二进制须拒绝新turn，不能从头重执。服务usage与估算分开，
+权限失效和清空与其所属历史组一起移除续传，保护最新工具往返。当前turn格式7、会话记录6
+保存顺序和共享正文引用，删除旧reader（ADR-0104）。旧二进制须拒绝新turn，不能从头重执。服务usage与估算分开，
 注入投影不复用旧Chat字符锚点。
 正常证据：`SharedModelLoop.PreloadedToolsUseTheRealLoopAndNeverAccumulateInHistory`、
 `SharedModelLoop.CanonicalCompactionDoesNotDiscloseOpaqueContinuationToSummary`、
 `SmallResultBudget.SummaryEnvelopeStillObeysThePerToolResultBudget`、
 `PreloadedConfiguration.RequiresTheServingProtocolsProjection`。来源/撤权仍由原Core检查，
 本补充不新增权限、不启动新恢复或故障专项。
+
+## 共享表示与保存策略（ADR-0104）
+
+ToolLoop默认durable；background仅由组合根显式选择。策略缓存有界的已解码回合和不可变契约Schema表示，每次真正发出模型请求刷新当前可见工具，不能缓存实际授权结论。出站上下文每次只拼装、计量一次，实时Core权限、来源和停止门保持。回合检查点保存阶段、工具序号及正文引用；模型原始提议与实际采用的规范参数分别保留。后台保存失败和容量不足明确停止推进，独立停止/取消入口继续可用。历史正文与索引全部确认后才发布持久历史；正常关闭后从最后完整版本读取，不自动重跑旧物理命令。

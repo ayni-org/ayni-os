@@ -11,7 +11,7 @@ Ayni 有三个互相独立的版本域，以及随领域对象走的语义版本
 | 存储 | `storage_schema`、记录版本、迁移版本 | 日志批次、快照、NVS 记录（`storage/`） |
 | 领域语义 | 能力、Scene、GoalType、检查点各自的 `version` | 注册目录与 ActionRecord 绑定的语义 |
 
-当前 Core 存储只接受 schema 9（ADR-0096）；`ayni/storage_format.h` 的 `AYNI_STORAGE_SCHEMA_CURRENT` 是当前二进制的编译期声明，供编解码器与验证产物共用，不代替介质校验或授权迁移；记录版本按当前存储上下文唯一，详见 [记录格式](../storage/records.md) 与 ADR-0084。下文 ABI 演进中的旧 schema/布局说明保留历史含义，不是当前 reader 支持表。
+当前 Core 存储只接受 schema 10（ADR-0104）；`ayni/storage_format.h` 的 `AYNI_STORAGE_SCHEMA_CURRENT` 是当前二进制的编译期声明，供编解码器与验证产物共用，不代替介质校验或授权迁移；记录版本按当前存储上下文唯一，详见 [记录格式](../storage/records.md) 与 ADR-0084。下文 ABI 演进中的旧 schema/布局说明保留历史含义，不是当前 reader 支持表。
 
 ## ABI
 
@@ -100,3 +100,5 @@ ABI 0.50（ADR-0085，AP-03 第二部分）将模型提议改为固定 function_
 ABI 0.54（ADR-0096）让 Core 只存正文引用：新增 `ayni/bodies.h`（`ayni_body_ref_v1`、`ayni_body_store_v1`、`ayni_body_digest`、`ayni_body_verify`），值种类 `AYNI_VALUE_BODY`（11）与 schema 标志 `AYNI_SCHEMA_EXTERNAL`；`ayni_host_v1` 追加 `bodies`，`ayni_provider_result_v1`、`ayni_task_call_result_v1`（另加 `mode_reserved`）与 `ayni_call_info_v1` 各追加 `body`。快照的 `call_tool` 位置保留为 `reserved_call_tool`（恒为空），工具调用改由纯函数 `ayni_tool_calls_measure/write/read`、`ayni_tool_call_read` 读取；内联工具结果的 `text` 即列表编码。删除 `AYNI_CALL_TEXT_BYTES_MAX`；`ayni_config_v1.task_model_call_hard_limit` 原位改为 `max_turns`（新 Task 的模型调用次数，0 取 `AYNI_MAX_TURNS_DEFAULT` 8，上限 `AYNI_MAX_TURNS_MAX` 64），原 `AYNI_TASK_MODEL_CALL_*` 常量删除。主版本 0 只收本次布局（C-VER-006），Host、Provider、策略与 SDK 统一重编译。Core schema 升为 9（CALL_STATE 追加结果正文引用），schema 8 及更早介质只读受限并保留，不迁移（ADR-0038 决策 6）。
 
 ABI 0.53（ADR-0090）为Schema验证、值/参数规范化、值读取和业务证明检查增加调用方工作区，新增独立容量/对齐查询；Kernel arena计入owner暂存。C++ ToolLoop、Conversation及结果JSON接口借用查询工作区，所有消费者直接重编译升级。Core schema8、原业务证明、策略codec4、SQLite user_version2保持原格式；只改变临时内存与源码接口，不加旧大栈入口或迁移器。
+
+ABI 0.55（ADR-0104）为正文存储追加stage/share/confirm/release_temporary，显式SHARED_RESULTS选项保持默认内联结果策略；Host追加可选storage_append_many（至多8个连续批次，整组确认后推进持久前缀）。task call result的原reserved字段改为result_kind，区分共享的规范TEXT/VALUE/TOOL_CALLS。Host、Provider、策略、SDK及运行时消费者统一重编译，不接受0.54布局。Core schema10使用首次完整type21/v2和后续可变type21/v3；ConversationRecord6、turn7、SQLite4分别升级。旧格式保留并拒绝，无迁移或自动清空；正常关闭重开证据不代表新增格式异常恢复验证。

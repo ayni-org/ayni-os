@@ -1,7 +1,7 @@
 # Host 外层文件值
 
 - **关联**：ADR-0093；`ayni/hosts/storage/file_value.h`；C-HOST-018/019。C++源码端口，不是新增C ABI或Core记录。
-- **版本**：外层文件AYFV格式1，独立于ABI0.53、Core schema8、策略codec4和SQLite版本2。已有Native应用存储不迁移；未知外层格式保留并拒绝。
+- **版本**：外层文件AYFV仍为格式1；当前ABI0.55、Core schema10、会话6/turn7、SQLite4、正文manifest1分别版本化。已有Native应用存储不迁移；未知外层格式保留并拒绝。
 
 ## 条款
 
@@ -21,3 +21,13 @@
 文件值generation是自身CAS版本，独立于Core上下文generation；调用者还须核对payload携带的上下文、轮次及隐私版本。
 
 文件名按完整64位十六进制owner/object生成，候选以`.candidate`结束；命名空间由Host独占，FileLog拒绝使用保留的`value-`前缀，避免主日志与外层候选文件别名。替换前验证已存header和payload；一旦写请求成功受理，调用者必须等完成后再修改缓冲。Host不代替Core上下文版本准入，也不自动发出上下文ACK。真实Flash旧块擦除、掉电与耐久仍需各自证据。
+
+## 共享正文与排队（ADR-0104）
+
+| ID | 规则 | 违反例 | 验证 |
+|---|---|---|---|
+| C-HVAL-007 | stage在正数缓存额度内只接受不可变RAM正文且立即可读；confirm请求后台保存，只有全部正文及owner manifest持久后返回OK；write使用同一实现且保留原持久成功语义。share产生独立scope引用，重复同scope幂等；释放一个所有者不影响其他所有者，最后释放才删除文件 | 未保存正文被trim丢弃；Call退休删除聊天持有正文；只排队就声明持久 | `FileBodies.staged_shared_payload_survives_owner_release_and_normal_reopen`、`ConversationDatabase.staged_aliases_share_one_payload_and_release_independently`；正常路径，异常恢复未验证 |
+| C-HVAL-008 | 检查中的payload load也计入容量；单payload只计一次，引用/owner元数据另有界。负查询不占已接受正文额度；保存/删除失败明确可查询，拒绝清理时不得ACK。临时模型输入由对应原Call终态持久后的独立lease回收，不能释放另一Call或已确认owner | 多个等待加载绕过预算；删除队列满被静默丢弃；结束一个模型Call删掉另一个相同prompt | `FileBodies.pending_loads_and_absent_queries_respect_the_payload_budget`、`BackgroundSession.consecutive_turns_trim_then_reopen_and_delete_shared_history`；失败路径设计审查，新专项未执行 |
+| C-HVAL-009 | Native/ESP队列优先执行Core记录，再执行普通外层值，再执行后台正文；相同优先级保持FIFO，借用中的操作不中断。FileBodies每次至多一个4 KiB文件借用。上下文只有完整正文/索引及外层文件成功才发布；隐私GC保留旧图并在实际排空后ACK | 大正文一次塞满队列；不同Core批次重排；旧索引未加载就丢弃GC游标并ACK | `BackgroundSession.consecutive_turns_trim_then_reopen_and_delete_shared_history`、既有`FileValues.*`/`ConversationSession.*`正常检查；板端P95未测 |
+
+正文manifest为小端AYNB/版本1：magic/version/size/owner_count四u32、digest/reserved两u64，共32 B；每个owner为scope/id两u64，至多64个。canonical内容identity由digest导出，manifest使用base owner，4 KiB内容块使用base+1+chunk；manifest的CAS generation独立于Core及会话版本。每store至多4096个内容元数据项。只在全部chunk成功后写owner manifest；修改所有者时冻结写入镜像，后续变更须再次保存才确认。未保存正文不能清退，缓存清退保留owner metadata。

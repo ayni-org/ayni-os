@@ -159,3 +159,5 @@
 | [0101](0101-touch-apps-and-automatic-reply-voice.md) | 触屏应用入口、自动语音与电机启用 | 已接受用户选择；正常证据与限制见实验记录 | 独立ESP实验、UI偏好、受管语音、局部启停 |
 | [0102](0102-reuse-call-proofs-and-storage-accounting.md) | 复用调用契约与简化正常存储路径 | 已接受用户选择；软件验证与实机边界见实验记录 | Core调用链、共享FileLog、ESP空间账目 |
 | [0103](0103-reuse-immutable-admission-in-live-calls.md) | 运行期复用不可变准入并接收多工具批次 | 已接受用户选择；软件验证与实机边界见实验记录 | Core契约读取、执行门、ESP多工具串行 |
+
+| [0104](0104-shared-conversation-bodies-and-dispatch-prefix.md) | 共享对话正文、异步保存与连续派发前缀 | 已接受用户选择；本轮仅软件实现与编译，板端暂缓 | ABI0.55、schema10、ToolLoop、正文与Host队列 |
