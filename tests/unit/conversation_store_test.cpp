@@ -148,5 +148,34 @@ TEST_F(ConversationDatabase, erasing_the_conversation_removes_every_body) {
               AYNI_OK);
     commit(ConversationStore::Erasure::all);
     EXPECT_EQ(count("bodies"), 0);
+    EXPECT_EQ(count("body_data"), 0); // Privacy ACK includes physical shared payload deletion.
+}
+// ADR-0104: SQLite stores one payload for independent scope references, including normal reopen.
+TEST_F(ConversationDatabase, staged_aliases_share_one_payload_and_release_independently) {
+    const auto *bodies = store.bodies();
+    const std::string value = "shared staged value";
+    BodyRef call{}, chat{};
+    ASSERT_EQ(bodies->stage(bodies->context, 7,
+                            {reinterpret_cast<const uint8_t *>(value.data()),
+                             static_cast<uint32_t>(value.size())},
+                            &call),
+              AYNI_OK);
+    std::string observed;
+    ASSERT_EQ(read(call, observed), AYNI_OK);
+    EXPECT_EQ(observed, value);
+    EXPECT_EQ(count("body_data"), 0);
+    ASSERT_EQ(bodies->share(bodies->context, 8, &call, &chat), AYNI_OK);
+    ASSERT_EQ(await([&] { return bodies->confirm(bodies->context, &call); }), AYNI_OK);
+    ASSERT_EQ(await([&] { return bodies->confirm(bodies->context, &chat); }), AYNI_OK);
+    EXPECT_EQ(count("body_data"), 1);
+    bodies->release(bodies->context, &call);
+    store.close();
+    SavedConversation reopened;
+    ASSERT_EQ(store.open(directory.path().c_str(), reopened), AYNI_OK);
+    ASSERT_EQ(read(chat, observed), AYNI_OK);
+    EXPECT_EQ(observed, value);
+    store.bodies()->release(store.bodies()->context, &chat);
+    store.close();
+    EXPECT_EQ(count("body_data"), 0);
 }
 } // namespace

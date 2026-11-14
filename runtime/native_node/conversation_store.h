@@ -8,6 +8,7 @@
 #include <ayni/workspace.hpp>
 #include <condition_variable>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -47,13 +48,18 @@ class ConversationStore {
     struct Body {
         uint64_t scope = 0;
         uint64_t digest = 0;
-        std::string bytes;
-        enum class State { pending, durable, failed } state = State::pending;
+        std::shared_ptr<const std::string> bytes;
+        uint64_t content = 0; // Shared immutable payload row, independent of each scope reference.
+        enum class State { staged, pending, durable, failed } state = State::pending;
     };
     static uint32_t history_ready(void *, uint64_t);
+    static ayni_status_t body_stage(void *, uint64_t, ayni_bytes_v1, ayni_body_ref_v1 *);
+    static ayni_status_t body_share(void *, uint64_t, const ayni_body_ref_v1 *, ayni_body_ref_v1 *);
+    static ayni_status_t body_confirm(void *, const ayni_body_ref_v1 *);
     static ayni_status_t body_write(void *, uint64_t, ayni_bytes_v1, ayni_body_ref_v1 *);
     static ayni_status_t body_write_waiting(void *, uint64_t, ayni_bytes_v1, ayni_body_ref_v1 *);
     static ayni_status_t body_read(void *, const ayni_body_ref_v1 *, uint8_t *, uint32_t);
+    static void body_release_temporary(void *, const ayni_body_ref_v1 *);
     static void body_release(void *, const ayni_body_ref_v1 *);
     ayni_status_t load_bodies();
     ayni_status_t write_bodies(std::vector<std::pair<uint64_t, Body>> &, std::vector<uint64_t> &);
@@ -68,13 +74,32 @@ class ConversationStore {
     std::map<uint64_t, Body> bodies_; // Every live body; pending ones await the worker.
     std::vector<uint64_t> inserts_;   // Pending bodies in write order.
     std::vector<uint64_t> deletes_;   // Released bodies to remove from SQL.
-    uint64_t next_body_ = 1;          // Next identity; never reused within the database.
-    uint64_t collect_below_ = 0;      // Bodies older than the queued save it may collect.
-    std::condition_variable durable_; // Signalled after each body batch.
-    ayni_body_store_v1 bodies_port_{
-        sizeof(ayni_body_store_v1), 0, this, body_write, body_read, body_release};
-    ayni_body_store_v1 waiting_port_{sizeof(ayni_body_store_v1), 0,         this,
-                                     body_write_waiting,         body_read, body_release};
+    static constexpr size_t body_reference_limit = 4096;
+    static constexpr size_t body_cache_limit = 16U * 1024U * 1024U;
+    ayni_status_t body_status_ = AYNI_OK; // Sticky worker body I/O failure, including removals.
+    uint64_t next_body_ = 1;              // Next identity; never reused within the database.
+    uint64_t collect_below_ = 0;          // Bodies older than the queued save it may collect.
+    std::condition_variable durable_;     // Signalled after each body batch.
+    ayni_body_store_v1 bodies_port_{sizeof(ayni_body_store_v1),
+                                    0,
+                                    this,
+                                    body_write,
+                                    body_read,
+                                    body_release,
+                                    body_stage,
+                                    body_share,
+                                    body_confirm,
+                                    body_release_temporary};
+    ayni_body_store_v1 waiting_port_{sizeof(ayni_body_store_v1),
+                                     0,
+                                     this,
+                                     body_write_waiting,
+                                     body_read,
+                                     body_release,
+                                     body_stage,
+                                     body_share,
+                                     body_confirm,
+                                     body_release_temporary};
     struct ResultJob {
         Phase phase = Phase::idle;
         uint64_t task = 0;

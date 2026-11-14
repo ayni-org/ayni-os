@@ -172,9 +172,16 @@ AYNI_LAYOUT(body_store_context, offsetof(ayni_body_store_v1, context) == 8);
 AYNI_LAYOUT(body_store_write, offsetof(ayni_body_store_v1, write) == 8 + AYNI_PTR);
 AYNI_LAYOUT(body_store_read, offsetof(ayni_body_store_v1, read) == 8 + 2 * AYNI_PTR);
 AYNI_LAYOUT(body_store_release, offsetof(ayni_body_store_v1, release) == 8 + 3 * AYNI_PTR);
-AYNI_LAYOUT(body_store_bytes, sizeof(ayni_body_store_v1) == 8 + 4 * AYNI_PTR);
+/* C-VER-002 / ADR-0104: 0.55 appends the staged/shared body ownership ports. */
+AYNI_LAYOUT(body_store_stage, offsetof(ayni_body_store_v1, stage) == 8 + 4 * AYNI_PTR);
+AYNI_LAYOUT(body_store_share, offsetof(ayni_body_store_v1, share) == 8 + 5 * AYNI_PTR);
+AYNI_LAYOUT(body_store_confirm, offsetof(ayni_body_store_v1, confirm) == 8 + 6 * AYNI_PTR);
+AYNI_LAYOUT(body_store_release_temporary,
+            offsetof(ayni_body_store_v1, release_temporary) == 8 + 7 * AYNI_PTR);
+AYNI_LAYOUT(body_store_bytes, sizeof(ayni_body_store_v1) == 8 + 8 * AYNI_PTR);
 AYNI_LAYOUT(host_bodies, offsetof(ayni_host_v1, bodies) == 15 * AYNI_PTR);
-AYNI_LAYOUT(host_size, sizeof(ayni_host_v1) == 16 * AYNI_PTR);
+AYNI_LAYOUT(host_append_many, offsetof(ayni_host_v1, storage_append_many) == 16 * AYNI_PTR);
+AYNI_LAYOUT(host_size, sizeof(ayni_host_v1) == 17 * AYNI_PTR);
 
 AYNI_LAYOUT(attempt_boot_epoch, offsetof(ayni_attempt_ref_v1, boot_epoch) == 0);
 AYNI_LAYOUT(attempt_request_id, offsetof(ayni_attempt_ref_v1, request_id) == 8);
@@ -818,8 +825,8 @@ AYNI_LAYOUT(ayni_task_call_result_v1_reason, offsetof(ayni_task_call_result_v1, 
 AYNI_LAYOUT(ayni_task_call_result_v1_text, offsetof(ayni_task_call_result_v1, text) == 40);
 AYNI_LAYOUT(ayni_task_call_result_v1_tool_call_count,
             offsetof(ayni_task_call_result_v1, tool_call_count) == 40 + 2 * AYNI_PTR);
-AYNI_LAYOUT(ayni_task_call_result_v1_reserved,
-            offsetof(ayni_task_call_result_v1, reserved) == 44 + 2 * AYNI_PTR);
+AYNI_LAYOUT(ayni_task_call_result_v1_result_kind,
+            offsetof(ayni_task_call_result_v1, result_kind) == 44 + 2 * AYNI_PTR);
 AYNI_LAYOUT(ayni_task_call_result_v1_size,
             sizeof(ayni_task_call_result_v1) == AYNI_ROUND8(56 + 8 * AYNI_PTR) + 64);
 AYNI_LAYOUT(ayni_task_call_result_v1_mode_reserved,

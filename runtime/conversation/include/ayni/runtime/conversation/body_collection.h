@@ -12,6 +12,8 @@ struct BodyCollection {
     void (*collect)(void *, uint64_t, const std::vector<ayni_body_ref_v1> &) = nullptr;
     // Optional owner progress/drain callback; null means no asynchronous body work.
     uint32_t (*ready)(void *, uint64_t) = nullptr;
+    // Sticky background I/O status; null means the implementation has no separate failure lane.
+    ayni_status_t (*status)(void *) = nullptr;
 };
 } // namespace ayni::runtime
 #endif

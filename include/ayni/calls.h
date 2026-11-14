@@ -173,8 +173,8 @@ typedef struct ayni_task_call_result_v1 {
     ayni_string_v1 text;
     /* Since 0.37. Nonzero only for a completed TOOL_CALLS result that holds tool calls. */
     uint32_t tool_call_count;
-    uint32_t reserved; /* Written zero. */
-    uint32_t effect;   /* AYNI_CALL_EFFECT_* evidence; UNKNOWN must not be retried. Since 0.45. */
+    uint32_t result_kind; /* Since 0.55: AYNI_CALL_RESULT_* for inline or referenced body. */
+    uint32_t effect; /* AYNI_CALL_EFFECT_* evidence; UNKNOWN must not be retried. Since 0.45. */
     uint32_t effect_reserved;    /* Written zero. Since 0.45. */
     ayni_bytes_v1 encoded_value; /* Since 0.48. Canonical value bytes, borrowed through decide. */
     ayni_bytes_v1
@@ -322,7 +322,9 @@ typedef struct ayni_provider_result_v1 {
     /* Since 0.54 (ADR-0096). A COMPLETED MODEL result may give its body by reference
      * instead of inline: result, tool_calls and value empty, tool_call_count the list's
      * count (zero for text). The Provider writes the body (text, or the tool-call list
-     * encoding of ayni_tool_calls_write) and posts only once the store answered OK. */
+     * encoding of ayni_tool_calls_write). Since 0.55 stage OK may precede post;
+     * Core requests persistence. The producer owns it until post succeeds and must
+     * release it when cancellation or expiry replaces an undelivered result. */
     ayni_body_ref_v1 body;
 } ayni_provider_result_v1;
 
