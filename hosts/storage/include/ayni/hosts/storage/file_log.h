@@ -150,6 +150,9 @@ class FileLog {
     int log_handle() const { return opened_ ? opened_->log : Files::invalid_handle; }
     Files &files_; // Exclusive namespace adapter; no OS/SDK representation lives here.
     uint64_t append_scan_frames_ = 0;
+    // Maximum sequence among confirmed whole frames. Conservative across trim; open/rescan
+    // rebuild it before any append fast path. Never authorizes a retry or an uncertain tail.
+    uint64_t maximum_frame_seq_ = 0;
     std::array<char, 64> file_name_{};
     uint32_t writer_epoch_ = 1;
     uint64_t file_size_ = 0;   // at open, for the scan

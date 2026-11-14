@@ -18,6 +18,7 @@
 #define AYNI_CORE_KERNEL_EXECUTION_EXECUTION_CONTROL_H
 
 #include "catalog/binding/binding_registry.h"
+#include "catalog/capability/business_encoding.h"
 #include "kernel/ports/attempt_sequence.h"
 #include "kernel/ports/executor_mailbox.h"
 #include "kernel/service/model/work_model.h"
@@ -75,12 +76,17 @@ class ExecutionControl {
     // input; nothing for any other contract. No permit or nonce is issued.
     authority::GrantCheck prepare(const catalog::CallContract &contract,
                                   const catalog::Binding &binding, ayni_bytes_v1 domain,
-                                  const work::CallInputView &input, uint64_t now_us,
+                                  const work::CallInputView &input,
+                                  const catalog::DecodedBusiness &proof, uint64_t now_us,
                                   uint64_t durable_seq, uint64_t task_id,
                                   std::optional<work::ExecutionFact> &out_fact) const;
     // Immediately before dispatch and at every renewal: the saved Scene
     // generation, boot, owner binding and observations still hold.
     bool allowed(uint32_t index, uint64_t now_us, uint64_t durable_seq) const;
+    // Same live gate checks when the dispatcher already owns the exact immutable proof/input.
+    bool allowed_with_proof(uint32_t index, uint64_t now_us, uint64_t durable_seq,
+                            const catalog::DecodedBusiness &proof,
+                            const work::CallInputView &input) const;
     // After the durable DISPATCHING barrier, called again until it settles:
     // the first call sends a challenge, and its answer's fresh nonce anchors
     // the executor's deadline. The caller rechecks authority, resources and
@@ -122,11 +128,19 @@ class ExecutionControl {
     bool ready(uint64_t now_us, uint64_t durable_seq, RuntimeMode mode) const;
 
   private:
+    // Cheap stop/boot/owner-binding rejection precedes any proof decoding on the renewal path.
+    bool execution_current(uint32_t index) const;
+    // Project the already validated input against the current Scene and observations.
+    bool allowed_input(uint32_t index, uint64_t now_us, uint64_t durable_seq,
+                       const catalog::DecodedBusiness &proof,
+                       const work::CallInputView &input) const;
+
     // One unchanged enabled Scene must cover every row of the canonical input.
     ayni_status_t authorize_input(const catalog::ExecutionBinding &binding,
                                   ayni_string_v1 capability, uint32_t version, ayni_bytes_v1 domain,
                                   const catalog::CallContract &contract,
-                                  const work::CallInputView &input, uint64_t durable_seq,
+                                  const work::CallInputView &input,
+                                  const catalog::DecodedBusiness &proof, uint64_t durable_seq,
                                   uint32_t &scene) const;
     using Advance = RuntimeAdvance;
     using Mode = RuntimeMode;

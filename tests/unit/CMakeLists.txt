@@ -84,6 +84,7 @@ add_executable(ayni_unit_tests
     kernel_trigger_test.cpp
     kernel_work_test.cpp
     shared_storage_test.cpp
+    esp_space_ledger_test.cpp
     file_value_test.cpp
     native_host_test.cpp
     native_node_test.cpp

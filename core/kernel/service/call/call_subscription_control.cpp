@@ -239,20 +239,27 @@ CallRuntime::Advance CallRuntime::renew_subscription(uint32_t index, uint64_t no
     auto &lease = *slots_[index].active->collection;
     uint32_t task_index = 0, binding_index = 0;
     auto input_lease = work_.workspace.make<work::CallInputView>();
-    if (!input_lease) {
+    auto proof_lease = work_.workspace.make<catalog::DecodedBusiness>();
+    if (!input_lease || !proof_lease) {
         return Advance::internal;
     }
     auto &input = *input_lease;
+    const auto *proof = &*proof_lease;
+    const auto decoded = catalog::decode_business(work_.workspace, work_.calls.domain(index),
+                                                  contract.business_contract, *proof_lease);
+    if (decoded != AYNI_OK) {
+        return Advance::internal;
+    }
     if (!work_.tasks.find(id.task_id, task_index) ||
         !catalogs_.bindings.find({id.binding_id.data(), id.binding_id.size()}, id.binding_version,
                                  binding_index) ||
-        work::read_call_input(work_.workspace, work_.calls.domain(index), work_.calls.input(index),
-                              contract, input) != AYNI_OK) {
+        work::read_call_input_with_proof(work_.workspace, *proof, work_.calls.domain(index),
+                                         work_.calls.input(index), contract, input) != AYNI_OK) {
         return Advance::internal;
     }
     const auto authority =
         check_input(task_index, catalogs_.bindings.at(binding_index), work_.calls.domain(index),
-                    input, contract, host_.monotonic_now_us(host_.ctx), durable_seq,
+                    input, contract, *proof, host_.monotonic_now_us(host_.ctx), durable_seq,
                     work_.calls.identity(index).call_id);
     if (authority.status != AYNI_OK || !resources_.executable(slots_[index].active->claim)) {
         lease.inhibition = work::CallCancelCause::authority;

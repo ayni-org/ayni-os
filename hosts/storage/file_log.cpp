@@ -107,6 +107,7 @@ void FileLog::close() {
     uncertain_start_ = UINT64_MAX;
     read_from_ = 0;
     read_max_seq_ = 0;
+    maximum_frame_seq_ = 0;
 }
 
 int FileLog::read_up_to(int handle, uint64_t at, uint8_t *out, std::size_t size,
@@ -198,11 +199,13 @@ FileLog::Opened FileLog::check_file_header(bool &initialized) {
 
 FileLog::Opened FileLog::scan() {
     uint64_t at = file_header_size;
+    maximum_frame_seq_ = 0;
     while (at < file_size_) {
         Frame frame{};
         int error = 0;
         const FrameCheck check = check_frame(at, frame, error);
         if (check == FrameCheck::whole) {
+            maximum_frame_seq_ = std::max(maximum_frame_seq_, frame.commit_seq);
             if (frame.payload_size >= AYNI_STORAGE_BATCH_IDENTITY_PREFIX_BYTES) {
                 std::array<uint8_t, AYNI_STORAGE_BATCH_IDENTITY_PREFIX_BYTES> header{};
                 error = read_exact(log_handle(), frame.payload_at, header.data(), header.size());
@@ -343,9 +346,9 @@ FileLog::Result FileLog::append(uint64_t commit_seq, const uint8_t *data, uint32
     if (damaged_ || (tail_dirty_ && !truncate_tail())) {
         return {AYNI_WRITE_FAILED, 0};
     }
-    // A retry can follow an UNKNOWN whose full frame reached the medium.
-    // Compare every byte, rather than a checksum, before acknowledging it.
-    for (uint64_t at = file_header_size; at < end_;) {
+    // A sequence above every whole retained frame cannot be a duplicate. UNKNOWN/torn
+    // prefixes were reconfirmed above. Older/equal sequences keep C-HOST-010's exact check.
+    for (uint64_t at = file_header_size; commit_seq <= maximum_frame_seq_ && at < end_;) {
         ++append_scan_frames_;
         Frame frame{};
         int error = 0;
@@ -368,6 +371,7 @@ FileLog::Result FileLog::append(uint64_t commit_seq, const uint8_t *data, uint32
                     stored.transition_id == requested.transition_id;
             }
             if (same_identity) {
+                // A retry can follow UNKNOWN; compare every byte, never only a checksum.
                 if (!same_payload(frame, data, size, error)) {
                     return {AYNI_WRITE_FAILED, 0};
                 }
@@ -400,6 +404,7 @@ FileLog::Result FileLog::append(uint64_t commit_seq, const uint8_t *data, uint32
         return {AYNI_WRITE_UNKNOWN, 0};
     }
     end_ = payload_at + size + frame_trailer_size;
+    maximum_frame_seq_ = std::max(maximum_frame_seq_, commit_seq);
     return {AYNI_WRITE_OK, 0};
 }
 

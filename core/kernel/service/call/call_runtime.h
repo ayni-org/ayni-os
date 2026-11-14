@@ -244,6 +244,8 @@ class CallRuntime {
     // Normalize a copied structured terminal with this Call's original result schema.
     ayni_status_t normalize_result(uint32_t index, ayni_bytes_v1 body, work::CallResult &result);
     ayni_status_t stage(const ayni_call_request_v1 &request);
+    // Canonicalize and check one resolved proposal before publishing the policy intent.
+    ayni_status_t stage_business(const ayni_call_request_v1 &request, Proposal &proposal);
     // Preflight category/mode/occupancy without copying request bytes.
     ayni_status_t check_call_form(uint64_t task_id, const ayni_call_request_v1 &,
                                   const catalog::CallContract &) const;
@@ -260,7 +262,8 @@ class CallRuntime {
     void stage_intent(const Proposal &proposal);
     authority::GrantCheck check_input(uint32_t task_index, const catalog::Binding &binding,
                                       ayni_bytes_v1 domain, const work::CallInputView &input,
-                                      const catalog::CallContract &contract, uint64_t now_us,
+                                      const catalog::CallContract &contract,
+                                      const catalog::DecodedBusiness &proof, uint64_t now_us,
                                       uint64_t durable_seq, uint64_t source_call_id = 0,
                                       work::AuthorityReference *selected = nullptr) const;
     // Optional directory membership does not replace an existing required ceiling.

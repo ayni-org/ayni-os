@@ -118,6 +118,13 @@ ayni_status_t CallRuntime::stage(const ayni_call_request_v1 &request) {
     if (dispatchable != AYNI_OK) {
         return dispatchable;
     }
+    return stage_business(request, proposal);
+}
+
+// Normalize once against the shared machine proof, then apply fresh optional-tool authority.
+ayni_status_t CallRuntime::stage_business(const ayni_call_request_v1 &request, Proposal &proposal) {
+    const auto &task = work_.tasks.at(decision_->task_index);
+    const auto &binding = catalogs_.bindings.at(proposal.binding_index);
     const auto &contract = proposal.links.contract;
     const auto form = check_call_form(task.task_id, request, contract);
     if (form != AYNI_OK) {
@@ -130,13 +137,20 @@ ayni_status_t CallRuntime::stage(const ayni_call_request_v1 &request) {
     }
     const auto domain = catalogs_.capabilities.domain_view(proposal.links.capability);
     auto input_lease = work_.workspace.make<work::CallInputView>();
-    if (!input_lease) {
+    auto proof_lease = work_.workspace.make<catalog::DecodedBusiness>();
+    if (!input_lease || !proof_lease) {
         return AYNI_CAPACITY_EXCEEDED;
     }
     auto &input = *input_lease;
-    const auto status =
-        work::encode_business_input(work_.workspace, domain, contract, request.value, staging_,
-                                    limits_.input_bytes, proposal.input_size, &input.value);
+    const auto *proof = &*proof_lease;
+    auto status =
+        catalog::decode_business(work_.workspace, domain, contract.business_contract, *proof_lease);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    status = work::encode_business_input_with_proof(work_.workspace, *proof, contract,
+                                                    request.value, staging_, limits_.input_bytes,
+                                                    proposal.input_size, &input.value);
     if (status != AYNI_OK) {
         return status;
     }
@@ -148,8 +162,8 @@ ayni_status_t CallRuntime::stage(const ayni_call_request_v1 &request) {
         // A complete model proposal can receive a normal tool refusal before
         // the sink is consumed. Final preflight still rechecks live authority.
         const auto checked =
-            check_input(decision_->task_index, binding, domain, input, contract, decision_->now_us,
-                        decision_->durable_seq, 0, &proposal.authorization);
+            check_input(decision_->task_index, binding, domain, input, contract, *proof,
+                        decision_->now_us, decision_->durable_seq, 0, &proposal.authorization);
         if (checked.status != AYNI_OK) {
             return checked.status;
         }
@@ -312,21 +326,12 @@ bool CallRuntime::on_demand_tool(uint32_t task_index, const catalog::Binding &bi
 authority::GrantCheck
 CallRuntime::check_input(uint32_t task_index, const catalog::Binding &binding, ayni_bytes_v1 domain,
                          const work::CallInputView &input, const catalog::CallContract &contract,
-                         uint64_t now_us, uint64_t durable_seq, uint64_t source_call_id,
+                         const catalog::DecodedBusiness &proof, uint64_t now_us,
+                         uint64_t durable_seq, uint64_t source_call_id,
                          work::AuthorityReference *selected) const {
     const auto authority = work_.check_task_authority(task_index, now_us, durable_seq);
     if (authority.status != AYNI_OK) {
         return authority;
-    }
-    auto proof_lease = work_.workspace.make<catalog::DecodedBusiness>();
-    if (!proof_lease) {
-        return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE};
-    }
-    auto &proof = *proof_lease;
-    const auto decoded =
-        catalog::decode_business(work_.workspace, domain, contract.business_contract, proof);
-    if (decoded != AYNI_OK) {
-        return {decoded, AYNI_REASON_GRANT_SCOPE};
     }
     const auto policy = check_business_proof(task_index, binding, domain, input.value.view(),
                                              contract, proof.view());
@@ -506,13 +511,19 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
         return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE};
     }
     auto &input = *input_lease;
-    if (work::read_call_input(work_.workspace, domain, {staging_, proposal.input_size}, contract,
-                              input) != AYNI_OK) {
+    auto proof_lease = work_.workspace.make<catalog::DecodedBusiness>();
+    if (!proof_lease ||
+        catalog::decode_business(work_.workspace, domain, contract.business_contract,
+                                 *proof_lease) != AYNI_OK ||
+        work::read_call_input_with_proof(work_.workspace, *proof_lease, domain,
+                                         {staging_, proposal.input_size}, contract,
+                                         input) != AYNI_OK) {
         return {AYNI_INTERNAL, AYNI_REASON_NONE};
     }
+    const auto *proof = &*proof_lease;
     const auto authority =
         check_input(task_index, catalogs_.bindings.at(proposal.binding_index), domain, input,
-                    contract, now_us, durable_seq, 0, &proposal.authorization);
+                    contract, *proof, now_us, durable_seq, 0, &proposal.authorization);
     if (authority.status != AYNI_OK) {
         // An unused optional Grant can expire during decide. Discard the proposal
         // and checkpoint; the next callback observes refusal before consuming its sink.
@@ -528,7 +539,7 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
         return {exported, memory_reason(exported)};
     }
     return control_.prepare(contract, catalogs_.bindings.at(proposal.binding_index), domain, input,
-                            now_us, durable_seq, task.task_id, proposal_->execution);
+                            *proof, now_us, durable_seq, task.task_id, proposal_->execution);
 }
 
 // All bounded storage, lifecycle reserve and unique-source checks precede acceptance.

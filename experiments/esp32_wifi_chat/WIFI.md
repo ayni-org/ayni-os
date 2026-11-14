@@ -387,3 +387,27 @@ SpeechText使用SHA256锁定的MD4C 0.5.2及其实体表，替代简单符号删
 | 文件read / write / sync | 699 / 581 / 12 ms | 669 / 550 / 12 ms |
 
 两份日志lost=0、dropped=0；原始元数据、OTA与构建日志保存在忽略的本机build/latency-20261114/及build/latency-*.log，属于仓库外证据。结果复现了无需云端或物理操作的本地延迟，且最长step约0.85秒，值得继续细分Core推进路径；墙钟包含抢占及可能的跨核Flash停顿，尚不能归为纯Core计算。空间统计和append扫描确有成本，文件显式sync在这两个样本中占比较小；不能据此断言已定位此前42.66秒的全部根因。本轮只交付诊断，未做性能修复，也未自动复现真实电机/语音场景。
+
+## 2026-11-14 简化调用与存储热路径
+
+用户要求按“契约验证后复用、正常日志直接追加、空间维护账目”实施并提交推送，并要求控制新增管理代码。实现采用同一调用链内的词法视图复用；没有常驻契约缓存、跨调用视图或Kernel arena扩容。外部/恢复边界保留完整解码，实际输入、授权和执行条件仍逐次验证。决定见[ADR-0102](../../docs/adr/0102-reuse-call-proofs-and-storage-accounting.md)。
+
+- CallRuntime的规范化、最终准入、派发和订阅续租，各自在现有workspace中解码一次，复用于输入读取及权限核对。执行端prepare/allowed复用同一机器描述；派发已有输入时直接检查当前执行条件，普通续租解码一次后同时进行输入和Scene投影检查。停止/boot/owner快拒绝、逐行Scene、原Scene序列及观察依赖保持。
+- FileLog只对严格高于所有已知全帧commit_seq的新提交跳过历史查重；重复、较旧及UNKNOWN仍按原精确身份和字节处理。正常16批次追加的记录头扫描计数为0，旧批次正常重交仍只保留一份。
+- LittleFS在首次真实测量后记录program/erase前触及的不同块，每块保守扣4096字节；删除不提前返还，累计64 KiB、低水位或64块跟踪溢出后重新测量。普通读取和无变化的空闲轮询不再遍历卷，Host仍先更新空间/预留后投递完成。
+
+本轮生产源码增加282行、删除101行（净增181行，含注释和格式调整）；新增空间账目头61行，其余主要是保留完整边界入口并增加同步共享视图入口。测试及说明另计。新账目在当前ESP镜像中sizeof为280字节，FileLog序号上界为8字节，均由已有Host内存需求计算计入；未增加Kernel状态或ABI容量。未通过删除授权、持久化屏障、输入验证或私有字节清除来减少行数。
+
+实际软件验证：
+
+- AppleClang21.0.0/CMake4.0.3，ASan/UBSan定向126/126通过，含调用输入、共享文件机制、空间账目、公开Call/Tool ABI、arena布局、受管理物理执行和执行事实；通过Sim及真实POSIX文件适配器执行，不是Linux Native Host整套验收。ASAN_OPTIONS=detect_leaks=0:halt_on_error=1、UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1；本地SDK编译保留既有AppleClang shadow告警例外，Linux CI策略不变。
+- Wi-Fi普通检查74/74通过，继续覆盖自动朗读、上下文和实验应用正常路径。正常共享视图测试在小scratch上直接解码完整契约返回CAPACITY_EXCEEDED，而同一scratch可完成已验证视图的编码/读取，且新的越界输入仍拒绝。账目覆盖同块去重、零空间、回收仅靠测量、阈值及跟踪容量；未新增介质故障或恢复专项。
+- ESP-IDF6.0.3/GCC15.2.0单任务编译通过，应用0x29fbc0（2751424）字节，最小3 MiB槽余量13%。本轮未上传设备，现有诊断固件仍为ceb462b；真实提速需后续同指令对比，不以编译或模拟结果预估秒数。
+- 工具检查98/98、clang-format18、依赖/契约/diff及机械可读性检查通过；可读性维持19项原有public-code-comment基线。原始构建与测试日志在忽略的本机build/performance-*.log，属于仓库外证据。
+
+独立代理已只读审查最终生产diff及执行许可调用链，无阻塞发现；该审查没有运行测试。作者自查及独立审查的四项证据为：
+
+- 删除注释：保存输入不得补新默认值的说明随read_call_input移动至call_input.cpp:140；UNKNOWN完整字节比较说明保留于file_log.cpp:374。
+- Kernel字段：搜索core/kernel/runtime/kernel_state.h及arena/ABI差异，无新字段或布局变化；新增状态仅为FileLog最大序号和LittleFiles中的SpaceLedger。
+- 重复机制：call_input.cpp:98集中保存输入预检和正文读取；execution_control.cpp:115、:152共用停止/owner及Scene/观察门检查，没有第二条授权或TTS通道。
+- 裸数字：space_ledger.h:10命名块大小、跟踪容量、重测阈值；没有新的记录偏移、格式或ABI版本字面量。

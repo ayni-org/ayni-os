@@ -2,6 +2,7 @@
 // source tokens afterwards so later synced writes remain linked. VFS rejects open-file rename.
 #ifndef AYNI_ESP_LITTLEFS_FILES_H
 #define AYNI_ESP_LITTLEFS_FILES_H
+#include "space_ledger.h"
 #include <ayni/hosts/esp_idf/metrics.h>
 #include <ayni/hosts/storage/files.h>
 #include <esp_partition.h>
@@ -39,7 +40,7 @@ class LittleFiles final : public storage::Files {
     static constexpr std::size_t path_bytes = 80;
     static constexpr std::size_t cache_bytes = 256;
     static constexpr std::size_t lookahead_bytes = 128;
-    static constexpr uint32_t block_bytes = 4096;
+    static constexpr uint32_t block_bytes = SpaceLedger::block_bytes;
     static constexpr int block_cycles = 128;
     static constexpr uint32_t transfer_unit_bytes = 16;
     static constexpr uint32_t minimum_volume_blocks = 4;
@@ -64,6 +65,7 @@ class LittleFiles final : public storage::Files {
     // These structures and caches live in internal RAM with the owning Storage.
     mutable lfs_t filesystem_{};
     mutable FileIoMetrics metrics_{};
+    mutable SpaceLedger space_; // Same exclusive file-worker ownership; no pending Host debt here.
     lfs_config config_{};
     mutable std::array<Slot, file_capacity> slots_{};
     std::array<uint8_t, cache_bytes> read_cache_{}, program_cache_{};

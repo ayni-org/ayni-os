@@ -34,12 +34,40 @@ TEST(SharedStorage, reservations_match_actual_append_bytes_and_normal_reopen_kee
     const auto next = ayni::test::test_batch(2, 128);
     ASSERT_EQ(log.append(2, next.data(), static_cast<uint32_t>(next.size())).outcome,
               AYNI_WRITE_OK);
-    // Storage diagnostics count existing header probes without changing framing/reopen behavior.
-    EXPECT_EQ(log.append_scan_frames(), 1U);
+    // Normal higher sequences skip duplicate scans after normal reopen (C-HOST-010).
+    EXPECT_EQ(log.append_scan_frames(), 0U);
     found.resize(payload.size() + next.size());
     EXPECT_EQ(log.read_log(0, found.data(), static_cast<uint32_t>(found.size())).value,
               found.size());
     EXPECT_EQ(found, ayni::test::joined({payload, next}));
+}
+
+// C-HOST-010/ADR-0102: monotonic new batches avoid scans; old identity retries still compare bytes.
+TEST(SharedStorage, new_sequences_append_without_scanning_and_older_retries_keep_one_copy) {
+    const TempDirectory directory;
+    PosixFiles files;
+    FileLog log(files);
+    ASSERT_EQ(log.open(directory.path().c_str(), "commit_log").status, FileLog::OpenStatus::ok);
+    constexpr uint64_t batches = 16;
+    constexpr uint32_t payload_bytes = 128;
+    for (uint64_t sequence = 1; sequence <= batches; ++sequence) {
+        const auto payload = ayni::test::test_batch(sequence, payload_bytes);
+        ASSERT_EQ(
+            log.append(sequence, payload.data(), static_cast<uint32_t>(payload.size())).outcome,
+            AYNI_WRITE_OK);
+    }
+    EXPECT_EQ(log.append_scan_frames(), 0U);
+    const auto size = std::filesystem::file_size(directory.file("commit_log"));
+    constexpr uint64_t repeated = 3;
+    auto payload = ayni::test::test_batch(repeated, payload_bytes);
+    EXPECT_EQ(log.append(repeated, payload.data(), static_cast<uint32_t>(payload.size())).outcome,
+              AYNI_WRITE_OK);
+    EXPECT_EQ(std::filesystem::file_size(directory.file("commit_log")), size);
+    EXPECT_EQ(log.append_scan_frames(), repeated);
+    payload.back() ^= 1U;
+    EXPECT_EQ(log.append(repeated, payload.data(), static_cast<uint32_t>(payload.size())).outcome,
+              AYNI_WRITE_FAILED);
+    EXPECT_EQ(std::filesystem::file_size(directory.file("commit_log")), size);
 }
 
 TEST(SharedStorage, refused_second_engine_does_not_release_the_first_engine_namespace) {
