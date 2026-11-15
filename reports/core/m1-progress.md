@@ -135,6 +135,7 @@
 
 | [#122](https://github.com/RobotSe7en/ayni/pull/122) | 2026-10-31 | 外层文件值 | 共用Conversation正文CAS机制、Native/ESP后台端口；独立复审与完整CI通过 | ADR-0093 |
 | [#123](https://github.com/RobotSe7en/ayni/pull/123) | 2026-10-31 | 共同运行时与独立程序 | 会话发布/文件ACK闭环、双Agent组合及只读SDK消费者；Native正常执行、ESP编译、独立复审和完整CI通过 | ADR-0094 |
+| [#137](https://github.com/RobotSe7en/ayni/pull/137) | 2026-11-15 | 对话与派发流程 | 共享正文、后台历史、上下文复用、Call增量及连续持久前缀；独立审查修复、完整CI及ESP编译通过，ABI0.55/schema10；板端暂缓 | ADR-0102～0104 |
 
 ## 工作包日期
 
@@ -151,7 +152,7 @@
 
 ## 交接状态（2026-11-15）
 
-- **当前对话流程：** 原分支实施共享正文、异步历史与连续派发前缀，升级ABI0.55/schema10，见[ADR-0104](../../docs/adr/0104-shared-conversation-bodies-and-dispatch-prefix.md)。代码、正常软件/关闭重开、独立审查和ESP编译已通过，交付原分支；用户已暂缓板端验证，未OTA、未清旧卷，板端两段P95/最大值和新格式异常恢复仍未验证。
+- **当前对话流程：** 已随[#137](https://github.com/RobotSe7en/ayni/pull/137)合并main，实施共享正文、异步历史与连续派发前缀，升级ABI0.55/schema10，见[ADR-0104](../../docs/adr/0104-shared-conversation-bodies-and-dispatch-prefix.md)。代码、正常软件/关闭重开、独立复核、完整CI和ESP编译已通过；用户已暂缓板端验证，未OTA、未清旧卷，板端两段P95/最大值和新格式异常恢复仍未验证。
 - **共享交互运行时：** 会话取消/收尾、正文缓存清退、文件准入与命令辅助迁入共用组件，ESP改用Core上下文锚点；旧独立历史不迁移，见[ADR-0100](../../docs/adr/0100-shared-interactive-runtime.md)。已完成单子智能体独立审查，两项缓存问题按用户要求最小修复并提交推送；设备部署及既有重放未决项未启动。
 - **独立平台实验：** 用户另选Web OTA与内存修复一起部署，USB安装及一次Wi-Fi双槽切换/启动确认通过；实施与正常更新结果见[ADR-0099](../../docs/adr/0099-esp32-web-ota.md)，不扩大故障回退专项。触屏Wi-Fi/RC003-MS语音及原电机能力迁入独立实验目录，USB入口撤除，继续复用内置ToolLoop和公开SDK；Core不改。128K完整峰值、60秒带电动作及停止链仍待另行实证，见[ADR-0097](../../docs/adr/0097-esp32-touch-wifi-voice-experiment.md)。
 
