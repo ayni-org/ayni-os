@@ -132,7 +132,7 @@ git diff --check
 
 `python3 tools/check_readability.py --list` 列出现存问题。`tools/readability_baseline.json` 按规则、路径、声明或表达式记录历史债务，不依赖行号；问题消除后须同时删除对应项。非 Kernel ID 的位运算只能用带理由、精确表达式和次数上限的例外排除。CI 不生成基线；`--write-baseline` 仅供显式记录现状，并须逐项审查 diff，不能用来绕过新违例。
 
-GoogleTest测试列表统一在CTest开始阶段发现（`PRE_TEST`），避免并行链接时同时启动多个sanitizer进程。默认5秒发现时限及各用例运行时限不变；实际测试仍由可执行程序枚举，保留参数化用例（[CMake3.28文档](https://cmake.org/cmake/help/v3.28/module/GoogleTest.html#command:gtest_discover_tests)）。
+GoogleTest测试列表统一在CTest开始阶段发现（`PRE_TEST`），避免并行链接时同时启动多个sanitizer进程。最大单元二进制`ayni_unit_tests`使用30秒发现预算，避免1682项列表在ASan/LSan下触发默认5秒进程截止；其他二进制仍默认5秒，各用例运行时限不变。该预算只影响`--gtest_list_tests`；实际测试仍由可执行程序枚举，保留参数化用例（[CMake3.28文档](https://cmake.org/cmake/help/v3.28/module/GoogleTest.html#command:gtest_discover_tests)）。
 
 ## ESP32-S3 固件
 

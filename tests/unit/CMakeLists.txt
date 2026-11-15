@@ -124,7 +124,7 @@ target_compile_options(ayni_unit_tests PRIVATE
 # Release still builds Core at -O3. Building the test code that drives it at
 # -O3 made the Release build about 40% slower and checked nothing more.
 target_compile_options(ayni_unit_tests PRIVATE $<$<CONFIG:Release>:-O1>)
-gtest_discover_tests(ayni_unit_tests)
+gtest_discover_tests(ayni_unit_tests DISCOVERY_TIMEOUT ${AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS})
 
 # Separate protocol executable keeps network fixture dependencies out of Core tests.
 add_executable(ayni_openai_provider_tests openai_provider_test.cpp)
