@@ -581,3 +581,24 @@ Native arena实际查询：默认1489824 B，最小work596960 B，两Agent Call 
 最终GET确认version=c6fc731-storagefix/running=ota_1/pending_verify=false/error=0，boot=1479087488，应用健康；三次回合后仍可读配置与完整日志，没有此前34.156秒的-14收尾失败。最后内部空闲45955 B、PSRAM空闲1464424 B，仅为该快照。此次未调用云端模型、语音或真实电机，不把整回合时间当作真实工具交接P95，也不扩为新格式异常恢复、掉电、故障回退或耐久验收。
 
 正常复现前后输出、既有RAM NOR与ASan/UBSan、固件构建/镜像检查、部署和三次完整收尾日志在本机忽略的build/storage-fix-20261115/，属于仓库外证据。仓库中的正式回归保留在既有esp_files_emulated_normal_medium；文档契约/依赖/diff及clang-format18检查通过，适用远端CI本轮未运行。
+
+
+## 2026-11-15 内部RAM保留与TLS上传修复
+
+用户要求继续定位并修复，正常验证后再OTA。上次最新真实回合包含四段正常电机输出，第5次模型请求在HTTPS上传阶段失败，ESP_ERR_MBEDTLS_SSL_WRITE_FAILED/PSA_ERROR_GENERIC_ERROR（32792/-132），按RESULT_UNKNOWN/-17暂停；记录upload=0/17625不证明服务端没有收到任何字节，不能盲目重试。API请求构造前内部空闲依次28907、23683、17707、11099、10467 B，失败时6651 B、历史最低1104 B，而PSRAM仍约1.4 MiB。缺失删除的-14修复没有回退或复现；这是另一个资源/传输问题。
+
+固定IDF6.0.3源码确认：CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC只选择TLS分配，普通malloc/new仍按SPIRAM_MALLOC_ALWAYSINTERNAL阈值选堆。原阈值2048令小正文、map节点和owner向量优先占内部RAM；后台对话阶段允许尚未持久的正文被后续步骤读取，因此这类仍有所有者的对象不能直接trim丢弃。本地只运行生产FileBodies的普通stage/共享缓存分配跟踪：每轮四份1 KiB正文保留5120 B、8轮40960 B的≤2048字节分配，owner销毁后跟踪分配归零。该例证明正常保留占用的机制，不能作为实机所有下降字节的完整归账或其他组件无泄漏证明。
+
+HTTP完成路径的close/cleanup、Stream/ModelBuffer请求寿命及UI结果slot释放已沿调用链检查，未发现足以证明永久连接泄漏的路径。ESP AES在PSRAM参与加密时另需内部DMA bounce buffer/descriptor，分配失败可以经过PSA转换为通用-132；此前日志没有逐分配失败栈，不能将此可能路径写成已单独证实的历史根因。
+
+修复限于独立部署：默认正数malloc/new改为PSRAM优先（阈值0），显式INTERNAL/DMA的Host、worker栈/TCB、PermitGate、MotorOutput和RMT保持原分配；Core、ABI0.55/schema10、所有权与持久屏障不变，TLS证书/日期校验、期限和UNKNOWN不重试保持。SDK在首选堆不足时仍有自己的fallback，不声称普通分配永不使用内部RAM；大型模型scratch继续显式PSRAM并保留容量失败。CMake拒绝残留旧阈值，API结束后增加数值堆快照与最大内部块；不同worker会重叠，快照差不当作精确泄漏归因。
+
+本机正常Wi-Fi检查74/74及8轮普通分配跟踪通过，后者ASan/UBSan通过且销毁后归零。ESP-IDF6.0.3/GCC15.2.0编译和镜像校验通过，候选9e95582-memfix为2772240 B，最小3 MiB槽仍余12%；生成配置与前版唯一差异为阈值2048→0。Native/ESP各2构建任务，另一个短编译探针1任务，按主机内存/swap及其他作业留余量。clang-format18、契约、依赖和diff检查通过；本轮尚未进行远端CI、完整128K峰值、实机TLS或新的故障/恢复专项。
+
+作者自查分别确认：未删除仍成立的注释；无Kernel新字段；分配政策复用IDF已有阈值，没有新allocator或常驻管理模块；未引入记录长度/版本/公共代码裸值。控制关键对象的内部位置通过显式caps核对，未靠调低缓存或丢弃未保存内容释放内存。细节、构建和正常探针在本机忽略的build/internal-memory-20261115/，属于仓库外证据；实际部署结果补充如下。
+
+用户所指取消前错误为RESULT_UNKNOWN/-17，对应上述上传失败，不是新增存储故障。用户随后在屏幕取消，终态记录在5957070 ms，原未知Call证据保留；取消后的通用未发布答案提示为NOT_READY/-5，没有新的kernel stopped/held或session=3。按用户选择，暂缓真实模型/TLS验证。
+
+正常OTA一次上传2772240 B、HTTP200，用时40.447秒，从c6fc731-storagefix/ota_1切到9e95582-memfix/ota_0。新启动Core ABI0.55、schema10不变，Ayni就绪和OTA自确认status=0，pending_verify=false；密码/模型密钥存在标志、API类型、stream和输出限额前后相同，没有擦卷或旧请求重放。启动后就绪快照内部空闲61511 B、最大块31744 B、最低59832 B；仅为当前正常启动及局部工作集观察，不代表完整TLS峰值。
+
+板端连续三次现有characters=12本地ToolLoop模板探针通过，耗时1537/1300/947 ms，每次终态后继续观察15秒；均明确no_model_http=1，没有电机PWM。三次前后内部空闲均61511 B、最大连续块均31744 B、最低空闲59832 B；各API worker前后内部空闲相同，未见此夹具下的逐轮下降。PSRAM收尾快照依次1445432/1445224/1445192 B，首次额外占用含正常工作/缓存保留，不能据这三次小夹具声明全局无泄漏。首轮观察脚本曾把启动累计dropped=2误作新增丢弃，改为与排队前基线比较后只续读已接受探针、没有重复提交；所有观察窗口均无新增丢弃或游标覆盖，无kernel stopped/held、session=3及-14。该探针没有TLS握手或加密上传，真实TLS故障是否消除、完整多工具工作集及长期稳定性仍未验证。

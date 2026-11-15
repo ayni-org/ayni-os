@@ -210,6 +210,7 @@ void *Api::work(void *context) {
             continue;
         }
         auto &job = self.jobs_[index];
+        const auto internal_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         self.transport_->diagnostics().record(
             "wifi api phase=begin request=%u id=%llu queue_ms=%lld\n", unsigned(job.request),
             static_cast<unsigned long long>(job.input.id),
@@ -233,6 +234,15 @@ void *Api::work(void *context) {
         erase_free(job.audio, job.audio_bytes);
         job.audio = nullptr;
         job.audio_bytes = 0;
+        // perform has returned: its client, parser and scratch borrows are gone. Other
+        // owner/worker activity may overlap, so this is a heap snapshot, not leak attribution.
+        self.transport_->diagnostics().record(
+            "wifi api memory request=%u id=%llu internal_before=%zu internal_after=%zu "
+            "internal_largest=%zu psram_free=%zu\n",
+            unsigned(job.request), static_cast<unsigned long long>(job.input.id), internal_before,
+            heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+            heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+            heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
         // Every queued slot reserves one result slot, so this cannot block on UI work.
         xQueueSend(self.done_, &index, portMAX_DELAY);
         self.outstanding_.fetch_sub(1, std::memory_order_acq_rel);
@@ -500,10 +510,11 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
             static_cast<unsigned long long>(job.input.id));
         transport_->diagnostics().record(
             "wifi http_tls id=%llu status=%ld code=%d flags=%d internal_free=%zu "
-            "internal_min=%zu\n",
+            "internal_min=%zu internal_largest=%zu\n",
             static_cast<unsigned long long>(job.input.id), long(tls_status), tls_code, tls_flags,
             heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-            heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+            heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+            heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     }
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
@@ -653,10 +664,11 @@ void Api::model(Job &job, const char *url) {
     }
     transport_->diagnostics().record(
         "wifi context framed_bytes=%lu wire_bytes=%zu wire_est_tokens=%llu "
-        "internal_free=%zu psram_free=%zu psram_largest=%zu\n",
+        "internal_free=%zu internal_largest=%zu psram_free=%zu psram_largest=%zu\n",
         static_cast<unsigned long>(reference.size), size,
         static_cast<unsigned long long>(ayni::model::estimate_tokens(measured.characters())),
         heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
         heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
         heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     framed.reset(); // Only the projected JSON remains during the HTTP request.
