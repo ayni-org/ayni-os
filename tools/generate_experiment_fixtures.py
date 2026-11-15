@@ -141,6 +141,9 @@ def action(item):
     if op == "budget":
         keys(item, {"op", "items"})
         return f'w.items_per_step = {number(item["items"], 64, 1)}'
+    if op == "prepare_call":
+        keys(item, {"op"})
+        return 'w.await_prepared([&] { return w.call(); })'
     if op == "damage":
         keys(item, {"op", "region"})
         if item["region"] not in {"torn_tail", "committed"}:

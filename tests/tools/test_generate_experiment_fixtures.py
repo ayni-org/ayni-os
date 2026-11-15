@@ -129,6 +129,7 @@ class ExperimentGenerator(unittest.TestCase):
     def test_recovery_record_and_physical_controls_reject_unimplemented_inputs(self):
         for action in ({"op": "start", "expected_lifecycle": "FENCED"},
                        {"op": "budget", "items": 0}, {"op": "budget", "items": 65},
+                       {"op": "prepare_call", "items": 1},
                        {"op": "hold_record", "point": "byte_offset_99"},
                        {"op": "damage", "region": "all_files"},
                        {"op": "fault_pending", "fault": "reject"},

@@ -531,3 +531,5 @@ Native arena实际查询：默认1489824 B，最小work596960 B，两Agent Call 
 原正常关闭独立consumer（并非故障注入）在观察到COMPLETED/VALUE工具Call后正常关闭重开，旧代码保留结果事实却读正文NOT_FOUND；修复后同一用例读回OK。该场景已纳入会话正常回归，另增加取消缓存维护及WAITING公共隐私通知维护单元。ASan/UBSan重新通过Core/Host1682、策略63、会话10、Native助理29项；最终ESP-IDF编译通过，镜像0x2a4c00字节、3 MiB槽余量仍约12%。Core arena与上一表相同；与main的同配置对照及命令集中在PR。
 
 同一独立审查者复核修复并重新链接运行原关闭consumer1/1、ASan新增缓存用例2/2，通过且无剩余阻断发现。四项分别通过：PREPARED最终屏障注释保持（action_record.h:89）；Kernel主结构无新增字段，隐私序号归ToolLoop owner；mutable_payload_size只定义于call_records.cpp:182、round_bytes只定义于conversation.cpp:18；版本/长度/阈值均使用具名常量并与记录契约一致。独立复现日志位于仓库外/tmp/ayni-merge-review/normal_close_fixed.log。完整代码审查、实际适用CI及合并记录集中在[#137](https://github.com/RobotSe7en/ayni/pull/137)。本轮未新增异常恢复/故障/变异专项，板端与新格式异常恢复的未验证边界保持。
+
+完整CI随后暴露既有消费者遗漏：独立正常程序仍用text读新版历史索引，改为原history展开接口；记录切点探针仍按完整行读取delta，改用属主full/delta codec；F1及组合版本夹具依赖PREPARED单独等待，改用单item步与写就绪FakeClock选择同一持久前缀，原身份、权限、零派发和重启断言保留。独立正常程序仅替换历史读取调用后完整通过，日志在仓库外/tmp/ayni-portable-review/normal_fixed.log。最大单元二进制的用例枚举预算由5秒调为30秒，其他测试运行时限保持。既有完整套件的最终结果集中在PR，不把这些夹具适配解释为新增格式异常恢复验收。

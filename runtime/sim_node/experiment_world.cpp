@@ -449,6 +449,27 @@ bool World::until(const char *name, const std::function<bool()> &condition, uint
     }
     return evidence.equal(name, condition() ? 1 : 0, 1);
 }
+bool World::await_prepared(const std::function<ayni_call_info_v1()> &get_call) {
+    // ADR-0104 permits DISPATCHING to queue before PREPARED is durable. Keep the
+    // existing restart fixtures at their intended durable PREPARED boundary by
+    // making each append immediately eligible; its completion consumes the sole
+    // item in the following step, before another Call transition can run.
+    items_per_step = 1;
+    const auto interval = config.storage_write_interval_us ? config.storage_write_interval_us
+                                                           : AYNI_STORAGE_WRITE_INTERVAL_US_DEFAULT;
+    for (uint32_t at = 0; at < step_limit && evidence.ok(); ++at) {
+        const auto current = get_call();
+        if (current.phase == AYNI_CALL_PREPARED && current.requires_seq &&
+            current.requires_seq <= info().durable_seq) {
+            return evidence.equal("prepared before provider submission", service.submissions(), 0);
+        }
+        node.advance_clock(interval);
+        if (!step()) {
+            return false;
+        }
+    }
+    return evidence.equal("durable prepared boundary reached", 0, 1);
+}
 bool World::crash(hosts::sim::CutAppend append) {
     evidence.fact("fault", "pending_storage", node.simulation()->pending_storage());
     evidence.fact("fault", "append_disposition", static_cast<uint64_t>(append));

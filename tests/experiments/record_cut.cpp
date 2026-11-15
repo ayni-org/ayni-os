@@ -4,12 +4,30 @@
 #include "authority/grant/grant_records.h"
 #include "durability/batch/batch_codec.h"
 #include "experiment_support.h"
+#include "kernel/runtime/kernel_state.h"
 #include "work/call/call_records.h"
 #include <ayni/workspace.hpp>
 namespace ayni::runtime::experiments {
 namespace {
-std::optional<uint32_t> boundary(const hosts::sim::StoredBatch &stored, RecordPoint point,
-                                 const char *step) {
+// Schema 10 updates borrow immutable facts from their admitted live Call. Locate
+// that owner by the delta's routing ID, then use the same full/delta codecs as replay.
+bool read_call(const ayni_kernel_t &kernel, foundation::Workspace &workspace,
+               const durability::RecordHeader &header, const uint8_t *body, work::CallRecord &out) {
+    if (header.version == work::call_record_version) {
+        return work::read_call_record(workspace, body, header.length, out);
+    }
+    if (header.version != work::call_delta_version) {
+        return false;
+    }
+    foundation::BodyReader route(body, header.length);
+    const auto id = route.u64();
+    uint32_t index = 0;
+    const auto &calls = kernel.model().calls;
+    return route.valid() && calls.find(id, index) &&
+           work::read_call_delta(workspace, calls.record(index), body, header.length, out);
+}
+std::optional<uint32_t> boundary(const ayni_kernel_t &kernel, const hosts::sim::StoredBatch &stored,
+                                 RecordPoint point, const char *step) {
     durability::BatchView batch{};
     if (durability::read_batch(stored.bytes.data(), stored.bytes.size(), batch) !=
         durability::BatchCheck::ok) {
@@ -62,7 +80,7 @@ std::optional<uint32_t> boundary(const hosts::sim::StoredBatch &stored, RecordPo
             }
             foundation::Workspace workspace(memory.get()->data, memory.get()->byte_capacity);
             work::CallRecord call{};
-            if (!work::read_call_record(workspace, body, header.length, call) || !call.action) {
+            if (!read_call(kernel, workspace, header, body, call) || !call.action) {
                 break;
             }
             if (step && !call.identity.step_key.equals(text(step))) {
@@ -96,7 +114,7 @@ bool World::hold_record_append(RecordPoint point, const char *step) {
     storage = Storage::complete;
     return until("record append bound", [&] {
         const auto pending = node.simulation()->pending_append();
-        if (!pending || !boundary(*pending, point, step)) {
+        if (!pending || !boundary(*node.kernel(), *pending, point, step)) {
             return false;
         }
         storage = Storage::held;
@@ -108,7 +126,7 @@ bool World::hold_record_append(RecordPoint point, const char *step) {
 }
 bool World::crash_after_record(RecordPoint point, const char *step) {
     const auto pending = node.simulation()->pending_append();
-    const auto offset = pending ? boundary(*pending, point, step) : std::nullopt;
+    const auto offset = pending ? boundary(*node.kernel(), *pending, point, step) : std::nullopt;
     if (!pending || !offset) {
         return evidence.status("cut record must be pending", AYNI_NOT_FOUND);
     }
