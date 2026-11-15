@@ -445,6 +445,13 @@ ayni_status_t Session::poll() {
         // Idle Sessions must also advance queued body cleanup after ordinary backpressure.
         static_cast<void>(config_.bodies.ready(config_.bodies.context, 0));
     }
+    if (config_.bodies.status) {
+        const auto stored = config_.bodies.status(config_.bodies.context);
+        if (stored != AYNI_OK) {
+            failure_ = stored;
+            phase_ = Phase::failed;
+        } // An idle failed queue can be disposed, but cannot acknowledge a clean close.
+    }
     if (phase_ == Phase::failed) {
         return failure_;
     }

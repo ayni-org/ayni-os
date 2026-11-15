@@ -111,3 +111,5 @@ FRAMED回复由部署显式选择；History/UI只展示规范回答。规范摘�
 ## 共享表示与保存策略（ADR-0104）
 
 ToolLoop默认durable；background仅由组合根显式选择。策略缓存有界的已解码回合和不可变契约Schema表示，每次真正发出模型请求刷新当前可见工具，不能缓存实际授权结论。出站上下文每次只拼装、计量一次，实时Core权限、来源和停止门保持。回合检查点保存阶段、工具序号及正文引用；模型原始提议与实际采用的规范参数分别保留。后台保存失败和容量不足明确停止推进，独立停止/取消入口继续可用。历史正文与索引全部确认后才发布持久历史；正常关闭后从最后完整版本读取，不自动重跑旧物理命令。
+
+组合根在Core step后、历史/隐私ACK前调用ToolLoop::maintain，并传入公开privacy进度。策略自己释放取消/终结/held Task的私有回合缓存；活跃隐私清理保守清除全部私有回合，首次看到新的COMPLETE request_seq也清除一次，覆盖不会再decide的WAITING Task。同一已完成代际不再清掉后续有效回合；不可变Schema cache保留，仍须刷新可见工具。Native、portable和ESP均由运行时驱动，不在Core回调里查询Kernel。正常维护端口单元：`ManagedOperations.cache_maintenance_retires_cancelled_turn_without_another_decision`、`ManagedOperations.privacy_progress_clears_waiting_cache_and_preserves_later_valid_turns`；后者输入公共privacy元数据，不替代完整隐私介质/恢复验收。

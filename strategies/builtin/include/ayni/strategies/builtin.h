@@ -1,7 +1,8 @@
 // Policies and conversation values (ADR-0056). No I/O beyond an injected nonblocking clock
 // (ADR-0073) and the host body store (ADR-0096), no Kernel internals. Message texts live in the
 // body store; records, Goal parameters and checkpoints hold only references and control state.
-// Working copies are allocated on demand during a call and freed before it returns (ADR-0095).
+// Decoded turns have a bounded cache; the owner maintains it before history/privacy ACKs.
+// Other working copies are allocated on demand and freed before a call returns (ADR-0095).
 // Objects and borrowed configuration live through Kernel destroy; one owner thread uses each
 // strategy.
 #ifndef AYNI_STRATEGIES_BUILTIN_H
@@ -11,6 +12,7 @@
 #include <ayni/calendar.h>
 #include <ayni/calls.h>
 #include <ayni/directory.h>
+#include <ayni/memory.h>
 #include <ayni/model_messages.hpp>
 #include <ayni/workspace.h>
 #include <map>
@@ -247,6 +249,12 @@ class ToolLoop {
     static ayni_status_t workspace_requirements(size_t *bytes, size_t *alignment);
     ayni_status_t configure(const ToolLoopConfig &config, const ayni_workspace_v1 *workspace);
     ayni_strategy_v1 describe();
+    // Owner thread, outside Core callbacks, after stepping and before history/privacy ACKs.
+    // Uses public Task metadata; privacy progress clears even dormant WAITING copies.
+    // A completed privacy generation is consumed once, so later valid turns keep their cache.
+    ayni_status_t maintain(const ayni_kernel_t *kernel, const ayni_privacy_info_v1 &privacy);
+    size_t
+    cached_turns() const; // Count of decoded private turns, excluding immutable tool schemas.
 
   private:
     static ayni_status_t decide(void *, const ayni_task_snapshot_v1 *, ayni_policy_output_v1 *);

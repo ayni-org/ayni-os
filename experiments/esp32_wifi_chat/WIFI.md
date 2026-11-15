@@ -522,3 +522,12 @@ Native arena实际查询：默认1489824 B，最小work596960 B，两Agent Call 
 ### 板端边界
 
 当前没有本轮实机前后对比。短历史/固定长历史的“模型结果就绪→工具开始”和“工具实际结束→下一模型请求”均未测P95及最大值；两段P95≤100 ms目标尚未验收。上节4732 ms只是历史同夹具基线，不能与桌面/tmpfs结果作板端对照。新格式异常恢复行为明确未验证；正常重开不代表掉电恢复通过。后续经用户重新启动板端工作后，仍需指定分区停止/关闭清理、OTA、固定模型夹具及限定20次短动作验证；本轮没有清旧聊天/任务或触碰配置、密钥、配对和偏好。
+
+
+### 合并前独立审查与修复复核（#137）
+
+用户随后要求由一个子智能体独立审查完整main差异，修复并复核通过后由实施代理合并。新审查覆盖原分支全部8个未合并提交；发现并修复三项：通用Profile在Core STOPPED后漏掉内部未提交的正文分块；取消/隐私失效的Task不再decide，私有回合缓存仍常驻；full/delta及round布局长度计算重复。前两项分别在组合关闭屏障和策略owner维护入口修复，没有新增执行账本或C ABI。
+
+原正常关闭独立consumer（并非故障注入）在观察到COMPLETED/VALUE工具Call后正常关闭重开，旧代码保留结果事实却读正文NOT_FOUND；修复后同一用例读回OK。该场景已纳入会话正常回归，另增加取消缓存维护及WAITING公共隐私通知维护单元。ASan/UBSan重新通过Core/Host1682、策略63、会话10、Native助理29项；最终ESP-IDF编译通过，镜像0x2a4c00字节、3 MiB槽余量仍约12%。Core arena与上一表相同；与main的同配置对照及命令集中在PR。
+
+同一独立审查者复核修复并重新链接运行原关闭consumer1/1、ASan新增缓存用例2/2，通过且无剩余阻断发现。四项分别通过：PREPARED最终屏障注释保持（action_record.h:89）；Kernel主结构无新增字段，隐私序号归ToolLoop owner；mutable_payload_size只定义于call_records.cpp:182、round_bytes只定义于conversation.cpp:18；版本/长度/阈值均使用具名常量并与记录契约一致。独立复现日志位于仓库外/tmp/ayni-merge-review/normal_close_fixed.log。完整代码审查、实际适用CI及合并记录集中在[#137](https://github.com/RobotSe7en/ayni/pull/137)。本轮未新增异常恢复/故障/变异专项，板端与新格式异常恢复的未验证边界保持。

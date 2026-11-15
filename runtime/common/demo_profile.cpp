@@ -600,6 +600,9 @@ ayni_status_t DemoProfile::advance() {
     }
     return AYNI_OK;
 }
+ayni_status_t DemoProfile::maintain(const ayni_privacy_info_v1 &privacy) {
+    return impl_ ? impl_->loop.maintain(impl_->owner_kernel, privacy) : AYNI_INVALID_STATE;
+}
 ayni_status_t DemoProfile::close() {
     if (!impl_) {
         return AYNI_OK;

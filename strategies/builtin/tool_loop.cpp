@@ -1,5 +1,6 @@
 #include "harness.h"
 #include "history_result.h"
+#include <ayni/ayni.hpp>
 #include <ayni/call_result_json.hpp>
 #include <ayni/memory.h>
 #include <cstdio>
@@ -13,9 +14,41 @@ struct ToolLoop::Cache {
     };
     std::map<uint64_t, Saved> turns;
     std::map<std::string, std::string> definitions;
+    uint64_t privacy_request = 0; // Last observed invalidation sequence; zero before any request.
 };
 ToolLoop::ToolLoop() : cache_(std::make_unique<Cache>()) {}
 ToolLoop::~ToolLoop() = default;
+size_t ToolLoop::cached_turns() const {
+    return cache_->turns.size();
+}
+// The runtime owns public lifecycle observations; the strategy alone releases its
+// decoded representations. No message/body walk is needed to retire a cached turn.
+ayni_status_t ToolLoop::maintain(const ayni_kernel_t *kernel, const ayni_privacy_info_v1 &privacy) {
+    if (!kernel || privacy.struct_size != sizeof(privacy) ||
+        privacy.phase > AYNI_PRIVACY_COMPLETE) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (privacy.phase != AYNI_PRIVACY_IDLE && (privacy.phase != AYNI_PRIVACY_COMPLETE ||
+                                               cache_->privacy_request != privacy.request_seq)) {
+        // Source erasure need not wake a WAITING Task. Clear before any outer ACK,
+        // including the first observation of a completed generation (ADR-0104).
+        cache_->turns.clear();
+    }
+    cache_->privacy_request = privacy.request_seq;
+    for (auto at = cache_->turns.begin(); at != cache_->turns.end();) {
+        auto task = initialized<ayni_task_info_v1>();
+        const auto status = ayni_get_task(kernel, at->first, &task);
+        if (status != AYNI_OK && status != AYNI_NOT_FOUND) {
+            return status;
+        }
+        const bool active =
+            status == AYNI_OK && !task.cancel_revision &&
+            (task.lifecycle == AYNI_TASK_READY || task.lifecycle == AYNI_TASK_RUNNING ||
+             task.lifecycle == AYNI_TASK_WAITING);
+        at = active ? std::next(at) : cache_->turns.erase(at);
+    }
+    return AYNI_OK;
+}
 namespace {
 using namespace detail;
 ayni_string_v1 compact_key(const Turn &turn, char *buffer) {

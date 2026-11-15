@@ -178,6 +178,14 @@ bool read_mutable(foundation::BodyReader &reader, CallRecord &record) {
     }
     return reader.valid();
 }
+// Full rows and deltas share the same mutable tail (contracts/storage/records.md).
+uint32_t mutable_payload_size(const CallRecord &record) {
+    return record.result.size + (record.action ? action_state_record_size(*record.action) : 0U) +
+           (record.state.execution ? execution_record_size(*record.state.execution) : 0U) +
+           (record.state.subscription
+                ? call_subscription_fixed_bytes + record.contract.subscription->source.size()
+                : 0U);
+}
 } // namespace
 
 uint32_t call_record_max(CallTable::Limits limits) {
@@ -195,17 +203,12 @@ uint32_t call_record_size(const CallRecord &record) {
     uint32_t size = call_record_fixed_size + id.step_key.size() + id.binding_id.size() +
                     id.capability_id.size() + id.provider_id.size() + id.endpoint.size() +
                     id.destination.size() + record.domain.size + record.input.size +
-                    record.result.size + record.contract.business_contract.size +
+                    mutable_payload_size(record) + record.contract.business_contract.size +
                     id.model_context.sample_count * model_sample_record_bytes;
     for (uint32_t at = 0; at < record.contract.resource_count; ++at) {
         size += call_record_resource_fixed_size + record.contract.resources[at].id.size();
     }
-    return size +
-           (record.state.subscription
-                ? call_subscription_fixed_bytes + record.contract.subscription->source.size()
-                : 0) +
-           (record.action ? action_state_record_size(*record.action) : 0U) +
-           (record.state.execution ? execution_record_size(*record.state.execution) : 0U);
+    return size;
 }
 
 // The enclosing call owns the original action association; the action body uses
@@ -297,12 +300,7 @@ bool read_call_record(ayni::foundation::Workspace &workspace, const uint8_t *bod
     return true;
 }
 uint32_t call_delta_size(const CallRecord &record) {
-    return call_delta_fixed_size + record.result.size +
-           (record.action ? action_state_record_size(*record.action) : 0U) +
-           (record.state.execution ? execution_record_size(*record.state.execution) : 0U) +
-           (record.state.subscription
-                ? call_subscription_fixed_bytes + record.contract.subscription->source.size()
-                : 0U);
+    return call_delta_fixed_size + mutable_payload_size(record);
 }
 void write_call_delta(const CallRecord &record, uint8_t *body) {
     foundation::BodyWriter writer(body, call_delta_size(record));

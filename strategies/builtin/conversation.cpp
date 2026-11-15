@@ -15,6 +15,7 @@ constexpr uint32_t conversation_format = 6;   // Texts are body references (ADR-
 constexpr uint32_t canonical_turn_format = 7; // Canonical summary offsets (ADR-0098).
 constexpr uint32_t word_bytes = 4;
 constexpr uint32_t wide_bytes = 8;
+constexpr uint32_t round_bytes = wide_bytes + 2U * sizeof(BodyRef); // Round number and two refs.
 
 // A single field walk below defines the portable format for reader and writer.
 class Encoder {
@@ -360,7 +361,6 @@ ayni_status_t get_body(const ayni_body_store_v1 &bodies, const BodyRef &ref, std
 }
 ayni_status_t encode_rounds(const ayni_body_store_v1 &bodies, uint64_t scope,
                             const std::vector<Round> &rounds, std::string &out) {
-    constexpr uint32_t round_bytes = wide_bytes + 2U * sizeof(BodyRef);
     out.assign(rounds.size() * round_bytes, '\0');
     uint32_t at = 0;
     for (const auto &round : rounds) {
@@ -383,7 +383,6 @@ ayni_status_t encode_rounds(const ayni_body_store_v1 &bodies, uint64_t scope,
 ayni_status_t decode_rounds(const ayni_body_store_v1 &bodies, ayni_string_v1 bytes, uint32_t count,
                             uint64_t last_round, std::vector<Round> &out,
                             std::vector<BodyRef> *references) {
-    constexpr uint32_t round_bytes = wide_bytes + 2U * sizeof(BodyRef);
     if (count > bytes.size / round_bytes || bytes.size != count * round_bytes) {
         return AYNI_INVALID_ARGUMENT;
     }

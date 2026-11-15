@@ -1,6 +1,7 @@
 // Shared interactive lifecycle: public APIs, real asynchronous Native files and built-in ToolLoop.
 // ADR-0094 and the shared interactive runtime decision; no fault/recovery injection.
 #include "temp_directory.h"
+#include <ayni/calls.h>
 #include <ayni/commands.hpp>
 #include <ayni/hosts/native.h>
 #include <ayni/runtime/portable.h>
@@ -296,5 +297,47 @@ TEST_F(BackgroundSession, normal_close_at_publication_reopens_completed_checkpoi
                                                       rounds) == AYNI_OK;
     }));
     ASSERT_EQ(rounds.size(), 1U);
+}
+// ADR-0104: normal shutdown drains the accepted ledger result beyond Core STOPPED.
+TEST_F(BackgroundSession, normal_close_after_shared_tool_terminal_preserves_ledger_body) {
+    open();
+    ASSERT_EQ(session().begin(text("sum")), AYNI_OK);
+    std::vector<uint64_t> ids(ayni::runtime::portable::configuration().call_capacity);
+    auto saved = initialized<ayni_call_info_v1>();
+    ASSERT_TRUE(until([&] {
+        uint32_t count = 0;
+        if (ayni_list_objects(profile.kernel(), AYNI_OBJECT_CALL, ids.data(),
+                              static_cast<uint32_t>(ids.size()), &count) != AYNI_OK) {
+            return false;
+        }
+        for (uint32_t at = 0; at < count; ++at) {
+            auto info = initialized<ayni_call_info_v1>();
+            if (ayni_get_call(profile.kernel(), ids[at], &info) == AYNI_OK &&
+                info.outcome == AYNI_CALL_COMPLETED && info.result_kind == AYNI_CALL_RESULT_VALUE &&
+                info.body.id) {
+                saved = info;
+                return true;
+            }
+        }
+        return false;
+    }));
+    reopen();
+    auto restored = initialized<ayni_call_info_v1>();
+    ASSERT_EQ(ayni_get_call(profile.kernel(), saved.logical_call_id, &restored), AYNI_OK);
+    ASSERT_EQ(restored.outcome, AYNI_CALL_COMPLETED);
+    ASSERT_EQ(restored.effect, AYNI_CALL_EFFECT_COMPLETE);
+    ASSERT_EQ(restored.body.id, saved.body.id);
+    std::string body(restored.body.size, '\0');
+    auto read = AYNI_NOT_READY;
+    ASSERT_TRUE(until([&] {
+        read = profile.bodies()->read(profile.bodies()->context, &restored.body,
+                                      reinterpret_cast<uint8_t *>(body.data()), restored.body.size);
+        return read != AYNI_NOT_READY;
+    }));
+    ASSERT_EQ(read, AYNI_OK);
+    EXPECT_EQ(ayni_body_verify(&restored.body, {reinterpret_cast<const uint8_t *>(body.data()),
+                                                restored.body.size}),
+              AYNI_OK);
+    EXPECT_EQ(profile.model_submissions(), 0U); // Reopen reads facts; it does not re-execute work.
 }
 } // namespace

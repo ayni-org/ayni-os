@@ -31,6 +31,9 @@ class FileBodies {
     size_t cached_bytes() const;
     // Progress/drain only; it never hides errors returned by read/stage/confirm.
     static uint32_t ready(void *context, uint64_t task);
+    // Pure queue query: no worker borrow and all work drained, or blocked by a sticky failure.
+    // Unconfirmed chat tails need no persistence. Always check status for a successful close.
+    bool idle() const;
     static ayni_status_t status(void *context);
     void collect(uint64_t scope, const std::vector<ayni_body_ref_v1> &keep);
 

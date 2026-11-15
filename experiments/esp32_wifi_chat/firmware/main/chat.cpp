@@ -1127,6 +1127,16 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
     if (info.lifecycle != AYNI_LIFECYCLE_RUNNING) {
         return AYNI_OK;
     }
+    if (history_configured_) {
+        auto privacy = sized<ayni_privacy_info_v1>();
+        rc = ayni_get_privacy_status(kernel_, session_, &privacy);
+        if (rc == AYNI_OK) {
+            rc = loop_.maintain(kernel_, privacy);
+        }
+        if (rc != AYNI_OK) {
+            return rc;
+        }
+    }
     rc = prepare(info);
     if (rc == AYNI_OK) {
         motor_check_.tick(kernel_, instance_, info.durable_seq);

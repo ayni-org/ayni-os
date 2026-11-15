@@ -660,19 +660,25 @@ ayni_status_t FileBodies::status(void *context) {
 uint32_t FileBodies::ready(void *context, uint64_t) {
     auto &self = *static_cast<FileBodies *>(context);
     self.flush();
-    std::lock_guard<std::mutex> lock(self.mutex_);
-    if (!self.pending_.empty()) {
-        return 0;
+    return self.idle() ? 1U : 0U;
+}
+bool FileBodies::idle() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!pending_.empty()) {
+        return false;
     }
-    for (const auto &[id, entry] : self.entries_) {
+    if (failure_ != AYNI_OK) {
+        return true; // flush refuses new I/O; explicit disposal may report the error after join.
+    }
+    for (const auto &[id, entry] : entries_) {
         if (entry.state != State::failed &&
             (entry.persist_requested || !entry.staged || entry.deleting) &&
             (!entry.manifest_loaded || entry.deleting || entry.state == State::writing ||
              entry.state == State::loading || entry.saved_revision != entry.revision)) {
-            return 0;
+            return false;
         }
     }
-    return 1;
+    return true;
 }
 size_t FileBodies::cached_bytes_locked() const {
     size_t total = 0;
