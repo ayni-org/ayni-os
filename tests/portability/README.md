@@ -47,4 +47,4 @@ python3 tests/portability/build_esp.py --source . --output build/independent-esp
 | 执行许可 | 模拟Scene、真实permit gate、输出及独立停止事实；无物理输出 |
 | 持久化 | 实际两槽压缩、日志、正文与正常关闭/重开；不重发旧调用 |
 
-`esp_files/`另为生产LittleFiles+真实锁版LittleFS的RAM NOR正常检查，不运行FreeRTOS。Native运行、RAM介质、ESP编译、ESP实机分别报告；编译不能判定实际Flash、栈或板级验收通过。
+`esp_files/`另为生产LittleFiles+真实锁版LittleFS的RAM NOR正常检查，包含缺失/重复文件删除、未落盘正文清理及后续写入，不运行FreeRTOS。Native运行、RAM介质、ESP编译、ESP实机分别报告；编译不能判定实际Flash、栈或板级验收通过。

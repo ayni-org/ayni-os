@@ -394,7 +394,13 @@ int LittleFiles::remove(const char *name) {
     if (volume_state_ != VolumeState::mounted) {
         return unavailable();
     }
-    const int removed = namespace_result(lfs_remove(&filesystem_, name));
+    const int status = lfs_remove(&filesystem_, name);
+    // C-HVAL-004/007: cleanup may remove a never-persisted or already removed value.
+    // NOENT is a lookup miss, not an uncertain namespace mutation; keep the volume usable.
+    if (status == LFS_ERR_NOENT) {
+        return cause(status);
+    }
+    const int removed = namespace_result(status);
     if (removed == 0) {
         detach_name(name);
     }

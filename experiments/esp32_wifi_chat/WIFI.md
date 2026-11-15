@@ -533,3 +533,51 @@ Native arena实际查询：默认1489824 B，最小work596960 B，两Agent Call 
 同一独立审查者复核修复并重新链接运行原关闭consumer1/1、ASan新增缓存用例2/2，通过且无剩余阻断发现。四项分别通过：PREPARED最终屏障注释保持（action_record.h:89）；Kernel主结构无新增字段，隐私序号归ToolLoop owner；mutable_payload_size只定义于call_records.cpp:182、round_bytes只定义于conversation.cpp:18；版本/长度/阈值均使用具名常量并与记录契约一致。独立复现日志位于仓库外/tmp/ayni-merge-review/normal_close_fixed.log。完整代码审查、实际适用CI及合并记录集中在[#137](https://github.com/RobotSe7en/ayni/pull/137)。本轮未新增异常恢复/故障/变异专项，板端与新格式异常恢复的未验证边界保持。
 
 完整CI随后暴露既有消费者遗漏：独立正常程序仍用text读新版历史索引，改为原history展开接口；记录切点探针仍按完整行读取delta，改用属主full/delta codec；F1及组合版本夹具依赖PREPARED单独等待，改用单item步与写就绪FakeClock选择同一持久前缀，原身份、权限、零派发和重启断言保留。独立正常程序仅替换历史读取调用后完整通过，日志在仓库外/tmp/ayni-portable-review/normal_fixed.log。最大单元二进制的用例枚举预算由5秒调为30秒，其他测试运行时限保持。既有完整套件的最终结果集中在PR，不把这些夹具适配解释为新增格式异常恢复验收。
+
+## 2026-11-15 main正常OTA与指定旧卷清理
+
+用户要求拉取最新main并OTA，随后引用原对话记录确认继续。已从引用聊天的用户原始实施计划核实：允许不迁移并清空旧聊天/任务，保留配置、密钥、配对和偏好。本次仅恢复正常OTA及启动核对，不自动恢复先前暂缓的20次PWM、固定长历史或完整板端性能验收；沿用驱动不断电的软件停止、排空与真实关闭屏障。
+
+本地main快进至`c6fc731`，未跟踪的品牌素材保留。板上原为`d754ca4`/ABI0.54/schema9，现有4个Goal及旧UNKNOWN记录不能由schema10读取；不把格式不匹配变成启动自动擦卷。为避免要求USB，临时从原`d754ca4`源码构建`d754ca4-s10prep`过渡应用：保持原停止/关闭/镜像校验流程，只接受后续`c6fc731`版本；完整候选通过`esp_ota_end`后，复用原ResetWorker核对`ayni`/0x800000/8 MiB并等擦除完成，再选择新槽。整个过程不写bootloader、分区表或配置/配对区。临时源码及补丁保存在本机忽略目录，未加入main；不能据此自动开展未来擦卷。
+
+两份镜像均使用ESP-IDF6.0.3/Xtensa GCC15.2.0编译，Wi-Fi配置逐项一致，项目身份、checksum/validation hash、固定双槽及软件回退配置核对通过。资源检查后构建2任务、相关检查串行；现有UpdatePlan/ResetPlan正常检查4/4通过，提取实际过渡transfer/helper的正常完整包与分块接收检查2/2通过，验证完整候选校验→精确分区清理→启动槽选择的次序；没有执行新的异常/故障/恢复专项。过渡应用2751296 B，最终main应用2771968 B，最小3 MiB槽余373760 B（约12%）。
+
+首次过渡上传遇到用户正在使用的回合，入口返回HTTP409；只读复核phase=idle、received=0且没有OTA请求/关闭记录，确认未刷写。待该回合自然终态后再提交：过渡镜像正常上传32.126秒、HTTP200，切换至ota_1；启动23.950秒会话就绪、28.985秒自确认，原配置标记一致。随后上传最终main共56.544秒、HTTP200；旧应用日志明确记录Core/Host会话已关闭、指定清理开始及status=0、完整接收2771968/2771968且OTA status=0，之后才重启。
+
+最终设备运行`c6fc731`/ota_0，ABI0.55/schema10。启动5.729秒电机资源初始化ready/status=0、7.190秒会话就绪、12.232秒OTA自确认status=0；GET确认pending_verify=false/error=0。空卷正常初始化为goals=0/4，旧聊天/任务已按授权放弃；password_set/model_key_set及api_type/stream/output_limit与两次更新前一致。配置、密钥、配对和偏好所在分区均保留，未通过USB操作，也没有重试旧UNKNOWN动作。最终启动快照内部空闲54167 B、PSRAM空闲1466404 B；不作为完整上下文或媒体峰值验收。
+
+复跑现有12字符无模型/无电机合成诊断，template_only=1/no_model_http=1/status=0并记录loop_complete，完整回合1516 ms、最长step 639423 us，日志dropped=0；但紧随其后的存储收尾失败，不能判定该诊断整体通过（见下述纠正）。该样本来自清理后的空历史，与旧卷样本不能当严格同条件性能对比；它没有测量两段真实工具交接P95，不据此宣称达到100 ms目标。本次代理未发云端模型、语音或真实电机命令；用户在首次上传前自行使用产生的回合保留为当时事实，不记作本次验证。
+
+完整镜像、临时过渡源码/补丁、正常检查及脱敏部署记录保存在本机忽略的`build/ota-main-20261115/`，属于仓库外证据。新格式异常恢复、掉电/故障回退、耐久、固定长历史与两段交接P95/最大值、完整128K峰值和独立硬件停止链仍未验证。
+
+### 同日启动状态纠正
+
+用户随后报告启动失败。重新读取同一boot（1223410715）的完整日志，确认固件仍为c6fc731/ota_0，pending_verify=false/error=0，没有回退；7.190秒会话就绪、12.232秒OTA自确认属实。但是34.107秒诊断回合终态之后，34.156秒即出现`wifi session=3 kernel stopped/held=-14`。-14为AYNI_STORAGE_FAILED，应用已进入failed状态，不能按当前版本已正常可用交付。
+
+这条失败实际已包含在首次`probe-after.json`的末尾；原脚本只断言template成功/回合终态/dropped=0，漏检其后的失败事件，因而上一轮“诊断通过”的结论错误。固件Web的error=0仅描述OTA传输/启动确认，不表示聊天运行健康。错误来自Chat::tick的返回值，上层统一显示kernel stopped/held，现有日志没有底层文件名、errno或完整失败层级，不能据此断定Core journal、Flash损坏或空间耗尽。时序上位于诊断scope收集后的后台推进，具体根因尚未证实。
+
+本次仅只读查询固件、配置标记和完整日志，沿调用链检查状态传播；未再次运行诊断、请求模型、操作电机、重启、刷写或清空。现场和新快照保存在原本机忽略目录的`startup-investigation-*.json`，属于仓库外证据。后续修复及正常功能复核仍未完成，旧数据清理授权不扩为再次擦卷。
+
+
+## 2026-11-15 缺失正文删除导致的存储错误修复
+
+用户明确要求继续定位并修复，正常验证后再OTA。本地用生产LittleFiles、真实锁版LittleFS2.11（joltwallet/littlefs1.23.1）及RAM NOR介质重现：stage正文未请求持久化，collect最后一个scope后删除不存在的文件；lfs_remove返回正常LFS_ERR_NOENT，但namespace_result无差别把卷标为poisoned。共用外层值端口虽然按C-HVAL-004接受ENOENT，随后sync_namespace却得到EIO，FileBodies记录AYNI_STORAGE_FAILED（-14）。该普通路径足以重现板上的终态后错误，不需要Flash损坏、容量耗尽或故障注入。
+
+修复只在LittleFiles::remove识别这个正常查找缺失，复用原errno映射返回ENOENT，保留卷的mounted状态；其他remove及全部rename错误仍沿原不确定元数据处理。没有Core、ABI0.55、schema10或分区布局变化，也没有新增启动清空、迁移或错误吞并。初次隔离复现的三项正常检查在修复前均失败、修复后均通过，随后将正式回归并入既有tests/portability/esp_files，未保留第二套测试框架。
+
+既有RAM NOR完整正常检查及其ASan/UBSan配置通过，覆盖普通文件、打开文件替换、租约、共享日志重开/轮转、缺失及重复删除、未持久暂存正文回收后继续写入。编译环境AppleClang21.0.0/CMake4.0.3；clang-format18、依赖、契约及diff检查通过。ESP-IDF6.0.3/Xtensa GCC15.2.0编译和镜像校验通过，候选c6fc731-storagefix为2771968 B，3 MiB槽仍余373760 B。Native/ESP各2构建任务、测试串行，合计不超过4任务，按实际内存/swap及活动任务留余量。
+
+作者设计自查：删除注释无丢失，原namespace_result的不确定错误说明保留；无Kernel新增字段；errno规则复用cause，正式回归复用既有RAM介质；无新记录偏移、版本或公共代码，测试缓存、scope及推进上限具名。改动在ESP文件边界，未增加文件stat或另一层错误管理；共享正文与外层值的正常删除策略仍由原属主负责。以上是代码检查，不算故障路径执行；新的故障/恢复/掉电专项仍未运行。
+
+部署前设备仍为旧c6fc731失败锁定状态。owner在failed后忽略维护输入，不能正常关闭并进入OTA；用户随后按一次Reset/EN并确认Ayni就绪，只读观察到新boot后进入正常更新流程。新诊断校验在每次终态后继续观察15秒并检查session失败/held、重启及日志丢失，避免再次漏检收尾错误。
+
+
+### 修复版正常OTA及收尾复核
+
+修复版来自c6fc731加当前工作区最小修复，固件版本标签为c6fc731-storagefix，修复源码与部署记录同步交付。一次正常Web上传33.270秒、HTTP200及updated/restarting=true；日志确认会话真实关闭、接收2771968/2771968、OTA status=0，从ota_0切换ota_1。新启动3.286秒电机资源ready/status=0、5.420秒会话就绪、10.458秒OTA自确认status=0；保留旧schema10卷，启动重放goals=1/4，无擦卷或USB。配置password_set/model_key_set及api_type/stream/output_limit与更新前一致；配置、配对和偏好分区未修改。
+
+连续三次现有12字符合成本地诊断均记录template_only=1/no_model_http=1/status=0及loop_complete，回合耗时分别1490、1082、1040 ms；终态后又分别观察15.272、15.164、15.169秒，完整日志无session failed/held、Core storage restricted/fenced、重启或dropped/lost。第一轮校验脚本误把接口正常HTTP202受理当成HTTP200而提前退出，随后只从原游标继续观察同一已受理请求，没有重复发送第一轮；该校验问题及原记录保留在本机目录。
+
+最终GET确认version=c6fc731-storagefix/running=ota_1/pending_verify=false/error=0，boot=1479087488，应用健康；三次回合后仍可读配置与完整日志，没有此前34.156秒的-14收尾失败。最后内部空闲45955 B、PSRAM空闲1464424 B，仅为该快照。此次未调用云端模型、语音或真实电机，不把整回合时间当作真实工具交接P95，也不扩为新格式异常恢复、掉电、故障回退或耐久验收。
+
+正常复现前后输出、既有RAM NOR与ASan/UBSan、固件构建/镜像检查、部署和三次完整收尾日志在本机忽略的build/storage-fix-20261115/，属于仓库外证据。仓库中的正式回归保留在既有esp_files_emulated_normal_medium；文档契约/依赖/diff及clang-format18检查通过，适用远端CI本轮未运行。

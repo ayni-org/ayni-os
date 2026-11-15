@@ -152,8 +152,8 @@
 
 ## 交接状态（2026-11-15）
 
-- **当前对话流程：** 已随[#137](https://github.com/RobotSe7en/ayni/pull/137)合并main，实施共享正文、异步历史与连续派发前缀，升级ABI0.55/schema10，见[ADR-0104](../../docs/adr/0104-shared-conversation-bodies-and-dispatch-prefix.md)。代码、正常软件/关闭重开、独立复核、完整CI和ESP编译已通过；用户已暂缓板端验证，未OTA、未清旧卷，板端两段P95/最大值和新格式异常恢复仍未验证。
-- **共享交互运行时：** 会话取消/收尾、正文缓存清退、文件准入与命令辅助迁入共用组件，ESP改用Core上下文锚点；旧独立历史不迁移，见[ADR-0100](../../docs/adr/0100-shared-interactive-runtime.md)。已完成单子智能体独立审查，两项缓存问题按用户要求最小修复并提交推送；设备部署及既有重放未决项未启动。
+- **当前对话流程：** 共享正文、异步历史与连续派发前缀已随[#137](https://github.com/RobotSe7en/ayni/pull/137)合并，ABI0.55/schema10保持，见[ADR-0104](../../docs/adr/0104-shared-conversation-bodies-and-dispatch-prefix.md)。ESP缺失删除误报已修复，`c6fc731-storagefix` 已正常OTA并验证诊断收尾，现有数据和配置保留，见[实验记录](../../experiments/esp32_wifi_chat/WIFI.md#2026-11-15-缺失正文删除导致的存储错误修复)；真实工具交接P95/最大值和新格式异常恢复仍待验证。
+- **共享交互运行时：** 会话取消/收尾、正文缓存清退、文件准入与命令辅助迁入共用组件，ESP改用Core上下文锚点；旧独立历史不迁移，见[ADR-0100](../../docs/adr/0100-shared-interactive-runtime.md)。已完成单子智能体独立审查，两项缓存问题按用户要求最小修复并提交推送；设备部署见实验记录，旧卷重放的完整归因仍未完成，本次授权清理不替代根因修复。
 - **独立平台实验：** 用户另选Web OTA与内存修复一起部署，USB安装及一次Wi-Fi双槽切换/启动确认通过；实施与正常更新结果见[ADR-0099](../../docs/adr/0099-esp32-web-ota.md)，不扩大故障回退专项。触屏Wi-Fi/RC003-MS语音及原电机能力迁入独立实验目录，USB入口撤除，继续复用内置ToolLoop和公开SDK；Core不改。128K完整峰值、60秒带电动作及停止链仍待另行实证，见[ADR-0097](../../docs/adr/0097-esp32-touch-wifi-voice-experiment.md)。
 
 - **已交付：** AP-02～AP-06 基础软件见 #112～#117及[基础报告](foundation-acceptance.md)。独立源码SDK、低栈工作区、共用存储、Native/ESP Host、文件值、共同运行时和独立程序已随 #118～#123 合并，ABI0.53/schema8；所需代码完成。历史M1 Native/Sim证据见[Core Alpha Native报告](m1-core-alpha.md)。

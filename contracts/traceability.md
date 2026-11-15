@@ -287,7 +287,7 @@
 | C-HVAL-001 | M1 已实现（正常生命周期）；`FileValues.close_answers_an_accepted_value_and_old_ports_refuse_new_borrows`、既有HostStorage/NativeHost回归 |
 | C-HVAL-002 | M1 已实现（正常CAS与重开）；`FileValues.durable_generation_write_retry_and_normal_reopen_preserve_exact_bytes`、`esp_files_emulated_normal_medium`（RAM介质） |
 | C-HVAL-003 | M1 已实现（正常key与容量）；`FileValues.owner_object_keys_and_required_read_capacity_remain_explicit`；未知/损坏与介质故障拒绝路径已实现但未新增专项执行 |
-| C-HVAL-004 | M1 已实现（正常删除）；`FileBodies.released_bodies_leave_no_files` |
+| C-HVAL-004 | M1 已实现（正常删除）；`FileBodies.released_bodies_leave_no_files`、`esp_files_emulated_normal_medium`（ESP适配缺失/重复删除及未落盘尾部清理，RAM NOR） |
 | C-HOST-001 | M0 已实现：`KernelApi.create_copies_host_table_before_return` |
 | C-HOST-004 | M1 已实现（Kernel 侧）：`CompletionPoolTest.rejected_request_frees_the_slot_and_runs_no_handler`、`CompletionPoolTest.accept_unknown_waits_for_the_post`、`CompletionPoolTest.undefined_submit_result_counts_as_in_flight`、`CompletionPoolTest.post_before_a_rejection_is_still_applied`；E2 F10；C-OUT-003 |
 | C-HOST-006 | M1 已实现（完成槽部分）：`CompletionPoolTest.exhausted_slots_return_busy_without_calling_the_port`、`CompletionPoolTest.result_is_applied_once`、`CompletionPoolTest.late_post_cannot_complete_a_reused_slot`、`CompletionPoolTest.post_from_an_earlier_boot_is_ignored`、`CompletionPoolTest.stale_posts_racing_slot_reuse_are_ignored`、`CompletionPoolTest.concurrent_posts_apply_each_result_exactly_once`、`KernelCompletions.posts_succeed_while_the_event_queue_is_full`；遥测合并见 C-LIMIT-008，订阅的 gap 报告随订阅实现；E1 步骤 10；`MA-003` |

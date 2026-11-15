@@ -9,9 +9,12 @@ add_library(littlefs_test_medium STATIC
     "${LITTLEFS_COMPONENT_DIR}/src/littlefs/lfs.c"
     "${LITTLEFS_COMPONENT_DIR}/src/littlefs/lfs_util.c")
 target_include_directories(littlefs_test_medium PUBLIC "${LITTLEFS_COMPONENT_DIR}/src/littlefs")
-add_executable(esp_files_port normal.cpp "${AYNI_SOURCE_DIR}/hosts/esp_idf/littlefs_files.cpp")
+add_executable(esp_files_port normal.cpp "${AYNI_SOURCE_DIR}/hosts/esp_idf/littlefs_files.cpp"
+    "${AYNI_SOURCE_DIR}/runtime/conversation/file_bodies.cpp")
 target_compile_features(esp_files_port PRIVATE cxx_std_17)
-target_include_directories(esp_files_port PRIVATE shim "${AYNI_SOURCE_DIR}/hosts/esp_idf")
+target_include_directories(esp_files_port PRIVATE shim "${AYNI_SOURCE_DIR}/hosts/esp_idf"
+    "${AYNI_SOURCE_DIR}/hosts/esp_idf/include"
+    "${AYNI_SOURCE_DIR}/runtime/conversation/include")
 target_link_libraries(esp_files_port PRIVATE Ayni::HostStorage littlefs_test_medium)
 enable_testing()
 add_test(NAME esp_files_emulated_normal_medium COMMAND esp_files_port)
