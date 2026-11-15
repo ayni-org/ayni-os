@@ -12,8 +12,8 @@ extern "C" {
 
 /* Current compiled Core batch/snapshot schema, independent of ABI. Since 0.49.
  * This declaration does not validate media or authorize migration/recovery.
- * Schema 9 (ABI 0.54) adds call result body references (ADR-0096). */
-#define AYNI_STORAGE_SCHEMA_CURRENT 9u
+ * Schema 10 (ABI 0.55) separates original Call rows and mutable updates (ADR-0104). */
+#define AYNI_STORAGE_SCHEMA_CURRENT 10u
 
 /* Since 0.28. Bytes through transition_id in contracts/storage/records.md.
  * This is a prefix length, not a complete batch/header length. */

@@ -42,7 +42,10 @@ ayni_status_t Session::configure(Config config) {
     }
     if (!config.kernel || !config.session || !config.owner_instance || !config.goal_type.data ||
         !config.goal_type.size || !config.workspace || !config.files.submit ||
-        !config.bodies.store || !config.bodies.collect || !config.commands.submit) {
+        !config.bodies.store || !config.bodies.collect || !config.commands.submit ||
+        (config.persistence == strategies::Persistence::background &&
+         (!config.bodies.store->stage || !config.bodies.store->share ||
+          !config.bodies.store->confirm))) {
         return AYNI_INVALID_ARGUMENT;
     }
     config_ = config;
@@ -51,7 +54,11 @@ ayni_status_t Session::configure(Config config) {
     if (status != AYNI_OK) {
         return status;
     }
-    if (!anchor.usable || anchor.pending_action != AYNI_CONTEXT_IDLE) {
+    const bool finishing_saved_publication =
+        config.persistence == strategies::Persistence::background &&
+        anchor.pending_action == AYNI_CONTEXT_PUBLISH;
+    if (!anchor.usable ||
+        (anchor.pending_action != AYNI_CONTEXT_IDLE && !finishing_saved_publication)) {
         return AYNI_NOT_READY;
     }
     context_id_ = anchor.context_id;
@@ -109,10 +116,26 @@ ayni_status_t Session::load(const ayni_context_info_v1 &anchor) {
     if (status != AYNI_OK) {
         return status;
     }
+    value_version_ = answer_.generation;
+    if (config_.persistence == strategies::Persistence::background &&
+        anchor.pending_action == AYNI_CONTEXT_PUBLISH) {
+        if (matches(current_, anchor)) {
+            phase_ = Phase::acknowledge; // Exact complete file already saved; no action is resumed.
+            return AYNI_OK;
+        }
+        if (current_.id == anchor.context_id &&
+            current_.owner_instance_id == anchor.owner_instance_id &&
+            current_.generation == anchor.revision && current_.revision < UINT64_MAX &&
+            current_.last_round < UINT64_MAX && current_.revision + 1U == anchor.generation &&
+            current_.last_round + 1U == anchor.last_turn_id) {
+            phase_ =
+                Phase::publish; // Reuse the completed durable checkpoint, never re-run its Task.
+            return AYNI_OK;
+        }
+    }
     if (!matches(current_, anchor)) {
         return AYNI_NOT_READY;
     }
-    value_version_ = answer_.generation;
     if (current_.draft.size) {
         if (config_.unfinished != UnfinishedTurn::discard) {
             return AYNI_NOT_READY;
@@ -128,7 +151,37 @@ ayni_status_t Session::load(const ayni_context_info_v1 &anchor) {
     phase_ = Phase::ready;
     return AYNI_OK;
 }
+ayni_status_t Session::confirm(const strategies::ConversationRecord &record) {
+    const Confirmed key{record.generation,
+                        record.revision,
+                        {record.summary.id, record.history.id, record.draft.id, record.rounds.id}};
+    if (confirmed_ && confirmed_->generation == key.generation &&
+        confirmed_->revision == key.revision && confirmed_->refs == key.refs) {
+        return AYNI_OK;
+    }
+    const auto *store = config_.bodies.store;
+    if (!store->confirm) {
+        return AYNI_OK;
+    } // Legacy durable-only descriptor.
+    std::vector<strategies::BodyRef> refs;
+    auto status = Conversation::references(*store, record, refs);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    for (const auto &ref : refs) {
+        status = store->confirm(store->context, &ref);
+        if (status != AYNI_OK) {
+            return status;
+        }
+    }
+    confirmed_ = key;
+    return AYNI_OK;
+}
 ayni_status_t Session::save() {
+    const auto durable = confirm(candidate_);
+    if (durable != AYNI_OK) {
+        return durable == AYNI_NOT_READY ? AYNI_BUSY : durable;
+    }
     if (value_version_ == UINT64_MAX) {
         return AYNI_CAPACITY_EXCEEDED;
     }
@@ -167,11 +220,14 @@ ayni_status_t Session::saved(const ayni_context_info_v1 &anchor) {
     const auto previous = current_;
     current_ = candidate_;
     if (save_ == Save::publication || save_ == Save::erasure || save_ == Save::discard) {
-        collect_superseded(previous);
+        superseded_ = previous;
     }
     phase_ = save_ == Save::draft                                  ? Phase::start_turn
              : save_ == Save::initialize || save_ == Save::discard ? Phase::ready
                                                                    : Phase::acknowledge;
+    if (superseded_) {
+        phase_ = Phase::collect;
+    }
     if (save_ == Save::discard) {
         end_request_ = EndRequest::none;
     }
@@ -198,11 +254,19 @@ ayni_status_t Session::begin(ayni_string_v1 user, uint64_t memory_id) {
     end_request_ = EndRequest::none;
     held_ = false;
     phase_ = status == AYNI_OK ? Phase::save : Phase::input;
+    if (status == AYNI_OK && config_.persistence == strategies::Persistence::background) {
+        current_ = candidate_; // Volatile draft; only a completed durable file publishes history.
+        phase_ = Phase::start_turn;
+    }
     return AYNI_OK;
 }
 // Stores the accepted input as a body; NOT_READY until the body store made it durable.
 ayni_status_t Session::input() {
-    const auto status = Conversation::begin(config_.workspace, *config_.bodies.store, current_,
+    auto bodies = *config_.bodies.store;
+    if (config_.persistence == strategies::Persistence::background) {
+        bodies.write = bodies.stage;
+    }
+    const auto status = Conversation::begin(config_.workspace, bodies, current_,
                                             {input_.data(), static_cast<uint32_t>(input_.size())},
                                             parameters_, memory_id_);
     if (status != AYNI_OK) {
@@ -284,6 +348,22 @@ ayni_status_t Session::turn(const ayni_context_info_v1 &anchor, uint64_t durable
         return AYNI_OK;
     }
     if (task.lifecycle == AYNI_TASK_COMPLETED) {
+        if (config_.persistence == strategies::Persistence::background) {
+            auto copied = ayni_copy_task_checkpoint(
+                config_.kernel, task.task_id, parameters_.bytes.data(),
+                static_cast<uint32_t>(parameters_.bytes.size()), &parameters_.size);
+            if (copied != AYNI_OK) {
+                return copied;
+            }
+            copied =
+                Conversation::finish(config_.workspace, current_, parameters_.view(), candidate_);
+            if (copied == AYNI_OK) {
+                copied = confirm(candidate_);
+            }
+            if (copied != AYNI_OK) {
+                return copied == AYNI_NOT_READY ? AYNI_BUSY : copied;
+            }
+        }
         result_ = TurnResult{goal_, task.task_id, AYNI_OK, AYNI_REASON_NONE, false};
         const auto accepted = command(AYNI_INTENT_CONTEXT_PUBLISH, anchor, task.task_id,
                                       AYNI_CONTEXT_IDLE, anchor.last_turn_id + 1);
@@ -365,8 +445,23 @@ ayni_status_t Session::poll() {
         // Idle Sessions must also advance queued body cleanup after ordinary backpressure.
         static_cast<void>(config_.bodies.ready(config_.bodies.context, 0));
     }
+    if (config_.bodies.status) {
+        const auto stored = config_.bodies.status(config_.bodies.context);
+        if (stored != AYNI_OK) {
+            failure_ = stored;
+            phase_ = Phase::failed;
+        } // An idle failed queue can be disposed, but cannot acknowledge a clean close.
+    }
     if (phase_ == Phase::failed) {
         return failure_;
+    }
+    if (config_.persistence == strategies::Persistence::background && current_.id) {
+        const auto stored = confirm(current_);
+        if (stored != AYNI_OK && stored != AYNI_NOT_READY) {
+            failure_ = stored;
+            phase_ = Phase::failed;
+            return stored;
+        }
     }
     if (phase_ == Phase::empty) {
         return AYNI_INVALID_STATE;
@@ -389,7 +484,11 @@ ayni_status_t Session::poll() {
     case Phase::input:
         status = input();
         if (status == AYNI_OK) {
-            phase_ = Phase::save;
+            phase_ = config_.persistence == strategies::Persistence::background ? Phase::start_turn
+                                                                                : Phase::save;
+            if (config_.persistence == strategies::Persistence::background) {
+                current_ = candidate_;
+            }
         } else if (status == AYNI_NOT_READY) {
             status = AYNI_OK;
         }
@@ -412,6 +511,24 @@ ayni_status_t Session::poll() {
         break;
     case Phase::erase:
         status = erase(anchor);
+        break;
+    case Phase::collect:
+        status = collect_superseded(*superseded_);
+        if (status == AYNI_OK) {
+            phase_ = Phase::collecting;
+        }
+        break;
+    case Phase::collecting:
+        status = config_.bodies.status ? config_.bodies.status(config_.bodies.context) : AYNI_OK;
+        if (status != AYNI_OK) {
+            break;
+        }
+        if (!config_.bodies.ready || config_.bodies.ready(config_.bodies.context, 0)) {
+            if (status == AYNI_OK) {
+                superseded_.reset();
+                phase_ = save_ == Save::discard ? Phase::ready : Phase::acknowledge;
+            }
+        }
         break;
     case Phase::acknowledge:
         if (!matches(current_, anchor)) {
@@ -505,10 +622,15 @@ ayni_status_t Session::settled(uint64_t durable) const {
 }
 // File deletion and cache collection have one owner. Loaded bodies may have no cached
 // scope, so explicitly release the old record's references after its replacement is durable.
-void Session::collect_superseded(const strategies::ConversationRecord &old) {
+ayni_status_t Session::collect_superseded(const strategies::ConversationRecord &old) {
     std::vector<strategies::BodyRef> before, after;
-    Conversation::references(old, before);
-    Conversation::references(current_, after);
+    auto status = Conversation::references(*config_.bodies.store, old, before);
+    if (status == AYNI_OK) {
+        status = Conversation::references(*config_.bodies.store, current_, after);
+    }
+    if (status != AYNI_OK) {
+        return status == AYNI_NOT_READY ? AYNI_BUSY : status;
+    }
     const auto *store = config_.bodies.store;
     for (const auto &ref : before) {
         bool named = false;
@@ -520,6 +642,7 @@ void Session::collect_superseded(const strategies::ConversationRecord &old) {
         }
     }
     config_.bodies.collect(config_.bodies.context, current_.id, after);
+    return AYNI_OK;
 }
 bool Session::active() const {
     switch (phase_) {
@@ -529,9 +652,13 @@ bool Session::active() const {
     case Phase::terminal:
     case Phase::publish:
         return true;
+    case Phase::failed:
+        return goal_ != 0; // Storage failure retains the Goal so the stop entrance stays live.
     case Phase::save:
     case Phase::saving:
         return save_ == Save::draft || save_ == Save::publication || save_ == Save::discard;
+    case Phase::collect:
+    case Phase::collecting:
     case Phase::acknowledge:
     case Phase::acknowledged:
         return save_ == Save::publication;
@@ -540,6 +667,12 @@ bool Session::active() const {
     }
 }
 ayni_status_t Session::cancel() {
+    if (phase_ == Phase::failed && goal_) {
+        // Cancellation uses Core directly; a failed body store cannot block the stop entrance.
+        auto info = initialized<ayni_kernel_info_v1>();
+        const auto status = ayni_get_kernel_info(config_.kernel, &info);
+        return status == AYNI_OK ? cancel_turn(info.durable_seq) : status;
+    }
     if (!active()) {
         return phase_ == Phase::failed ? failure_ : AYNI_INVALID_STATE;
     }
@@ -608,7 +741,7 @@ ayni_status_t Session::cancel_turn(uint64_t durable) {
     auto goal = initialized<ayni_goal_info_v1>();
     auto status = ayni_get_goal(config_.kernel, goal_, &goal);
     if (status != AYNI_OK || goal.commit_seq > durable) {
-        return status;
+        return status == AYNI_OK ? AYNI_BUSY : status;
     }
     if (goal.lifecycle == AYNI_GOAL_ACTIVE || goal.lifecycle == AYNI_GOAL_PAUSED ||
         goal.lifecycle == AYNI_GOAL_PROPOSED) {

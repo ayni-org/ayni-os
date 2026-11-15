@@ -62,8 +62,8 @@ void write_value(const void *context, uint8_t *out, uint32_t size) {
     }
 }
 
-// A body by reference names a completed MODEL result the Provider already made durable.
-// Its tool list, if any, stays in the body; the owner checks the contract (ADR-0096).
+// A body by reference names an immediately readable completed MODEL result.
+// The owner confirms staged persistence and checks its contract (ADR-0104).
 bool by_reference(const ayni_provider_result_v1 &result) {
     return result.body.id != 0U || result.body.digest != 0U || result.body.size != 0U ||
            result.body.reserved != 0U;

@@ -118,7 +118,8 @@ ayni_status_t fit_summary_prefix(ayni_string_v1 source, Make make, uint32_t &cho
     return chosen ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
 }
 // Copies the current Task-visible registered definitions before snapshot borrows expire.
-ayni_status_t preload_tools(Workspace &, const ayni_task_snapshot_v1 &, std::string &);
+ayni_status_t preload_tools(Workspace &, const ayni_task_snapshot_v1 &, std::string &,
+                            std::map<std::string, std::string> &);
 // Local errors are matching tool responses. A successful requested=true means
 // Core copied a concrete business Call; no local response may then be fabricated.
 ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &proposal,

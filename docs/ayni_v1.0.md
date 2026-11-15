@@ -1,12 +1,12 @@
 # Ayni：通用原生 AgentOS 基础能力与实验实施计划
 
 > **文档性质**：工程实施计划与待实现契约，不代表已有软件能力。\
-> **文档版本**：v1.113 · 2026-11-14；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
+> **文档版本**：v1.117 · 2026-11-15；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
 > **产品定位**：跨平台、跨设备的通用原生 AgentOS；宿主与扩展决定提供哪些设备或软件能力，统一助理只是应用示例。\
 > **架构路线**：按 Ayni 的共享 Agent 状态、授权、资源及恢复需求设计原生 Core，复用宿主 OS，模型优先通过外部 API 获得；架构图仅参考 AIOS 的分层分组表达样式。\
 > **实施顺序**：先完成基础通用能力，再开展 ESP32-S3、Linux 系统等实验；设备与能力组合按实验目标选取，不要求宿主具备语音、视觉、运动或特定外设。\
 > **基准投入**：单人全职；阶段周期是相对工作量估算，不是开工日期或交付日期承诺。\
-> **当前状态**：通用基础与独立源码SDK已交付，见[基础报告](../reports/core/foundation-acceptance.md)和[独立接入报告](../reports/core/independent-consumption.md)。共享交互运行时及ESP部署配置修复已正常OTA启动，见[ADR-0100](adr/0100-shared-interactive-runtime.md)和[实验记录](../experiments/esp32_wifi_chat/WIFI.md)。独立实验的图标配置页、持久化自动语音开关和默认电机启用已部署，本轮Markdown朗读转换修复也已正常OTA启动，见[ADR-0101](adr/0101-touch-apps-and-automatic-reply-voice.md)；新版本实际朗读听感仍待确认。ABI0.54/schema9保持；旧卷重放问题的完整归因、线上Responses、完整128K峰值、60秒动作及独立硬件停止链仍待验证。
+> **当前状态**：通用基础与独立源码SDK已交付；历史证据见[基础报告](../reports/core/foundation-acceptance.md)和[独立接入报告](../reports/core/independent-consumption.md)。本轮按已定计划实施共享正文、异步对话和连续派发提交，升级ABI0.55/schema10，见[ADR-0104](adr/0104-shared-conversation-bodies-and-dispatch-prefix.md)。软件检查、正常关闭重开、独立审查和ESP编译已通过，交付原分支；用户已暂缓板端验证，未部署、未擦旧卷，交接P95≤100 ms仍待实测。新格式异常恢复、完整128K峰值、60秒动作及独立硬件停止链保持未验证。
 
 > **本轮范围**：用户2026-10-31要求实施[独立工程接入与验收计划](architecture/independent-consumption-plan.md)：通用源码SDK、低栈工作区、Native/ESP存储及Host、共同应用和验收。平台适配保持独立目录，必要接口直接升级，正常存储和最小重开获授权；实机操作、付费模型及其他新专项不启动。
 
@@ -1097,6 +1097,14 @@ idf.py -p <SERIAL_PORT> flash monitor
 ## 14. 默认值与仍需用户决策的问题
 
 ### 14.1 已接受的实施默认值
+
+本次修订（v1.117，2026-11-15）：按用户计划实施共享不可变正文和独立引用、后台对话保存、工具/回合表示复用、首次完整Call与后续状态增量、有界连续提交及执行记录优先。ABI0.55/schema10、ConversationRecord6/turn7直接升级，不迁移或自动清空。用户随后要求先只完成代码、板载先不验证；OTA、指定区清理、20次短动作及板端短/长历史P95与最大值保持未执行，新格式异常恢复未验证。见[ADR-0104](adr/0104-shared-conversation-bodies-and-dispatch-prefix.md)。
+
+本次修订（v1.116，2026-11-14）：用户补充确认正常OTA及现有无模型/无电机合成验证，d754ca4正常启动、自确认；同夹具回合5677→4732 ms，仍为秒级。记录实际改善与未达成的毫秒级目标，不把桌面门检查收益推定为整回合收益，不扩大硬件或新专项。见[ADR-0103](adr/0103-reuse-immutable-admission-in-live-calls.md)。
+
+本次修订（v1.115，2026-11-14）：运行期从已准入且不可变的catalog/Call字节读取机器契约，执行门复用本boot静态输入准入，动态失效逐次检查；Schema只初始化/复制活动前缀，工作区仍完整清除。ESP放开模型多工具批次并沿用串行ToolLoop；不新增并行或硬实时承诺，ABI/schema及原持久/授权/停止语义保持。见[ADR-0103](adr/0103-reuse-immutable-admission-in-live-calls.md)。
+
+本次修订（v1.114，2026-11-14）：用户要求简化本地热路径并提交推送：同一调用链复用已验证契约，正常新日志跳过历史查重，ESP独占卷维护保守空间账目。保留实时授权、停止和持久化屏障，无新增常驻契约缓存、Kernel状态、ABI或存储格式变化；实机提速待后续验证。见[ADR-0102](adr/0102-reuse-call-proofs-and-storage-accounting.md)。
 
 本次修订（v1.113，2026-11-14）：用户确认修正自动语音中的Markdown符号，先转换朗读文本再按句子／词语边界分段，保留聊天原文及显式语音能力，不增加模型请求；随后明确要求正常OTA，并取消刷写前驱动断电的人工前置要求，仍保留软件停止、排空及真实关闭屏障和硬件复位失能未验证事实。仅改独立实验呈现和相关正常测试，原Context、授权、停止与未知结果规则保持，见[ADR-0101](adr/0101-touch-apps-and-automatic-reply-voice.md)及实验记录。
 

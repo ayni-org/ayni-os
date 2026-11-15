@@ -310,6 +310,27 @@ class SubscriptionFixture : public testing::Test {
             work.node().sim().complete_storage();
         }
     }
+    // C-SUB-005 / ADR-0104: drain a finite accepted burst without creating new samples.
+    // Readiness can sit behind a storage interval; fixed zero-time pump counts cannot settle it.
+    void drain_to_wait(uint64_t goal) {
+        constexpr uint32_t drain_rounds = 64;
+        for (uint32_t round = 0; round < drain_rounds; ++round) {
+            work.node().sim().complete_storage();
+            const auto report = work.node().step();
+            const auto current = work.task(task(goal));
+            if (current.lifecycle == AYNI_TASK_WAITING &&
+                current.commit_seq <= report.durable_seq && !report.more_ready &&
+                !work.node().sim().pending_storage()) {
+                return;
+            }
+            const auto now = work.node().sim().now_us();
+            if (!report.more_ready && !work.node().sim().pending_storage() &&
+                report.next_deadline_us != UINT64_MAX && report.next_deadline_us > now) {
+                work.node().sim().advance_us(report.next_deadline_us - now);
+            }
+        }
+        FAIL() << "finite subscription work did not reach its durable wait";
+    }
     void shutdown() {
         if (work.node().lifecycle() == AYNI_LIFECYCLE_STOPPED) {
             return;

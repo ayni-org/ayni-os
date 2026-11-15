@@ -246,6 +246,9 @@ class World {
     bool exhaust_storage();
     void restore_storage();
     bool hold_record_append(RecordPoint point, const char *step = nullptr);
+    // Observe the PREPARED durable prefix with one-item steps and a write-ready fake clock.
+    // This fixture boundary does not add a production dispatch wait (ADR-0104).
+    bool await_prepared(const std::function<ayni_call_info_v1()> &get_call);
     bool crash_after_record(RecordPoint point, const char *step = nullptr);
     bool damage_log(Damage damage);
     // Simulated catalog revisions, selected only while no Kernel exists.

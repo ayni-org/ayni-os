@@ -64,6 +64,19 @@ TEST(BusinessSchema, canonical_proof_sorts_declarations_and_retains_exact_decima
     EXPECT_NE(copy.nodes[1].default_value, decoded.nodes[1].default_value);
     EXPECT_NE(copy.nodes[1].default_value->nodes, decoded.nodes[1].default_value->nodes);
     EXPECT_EQ(copy.nodes[1].default_value->nodes[0].value.text.size, 7U);
+    // ADR-0103: owner-view reads retain defaults and rebase their active internal pointers.
+    ayni::catalog::DecodedSchema admitted;
+    ASSERT_EQ(ayni::catalog::read_admitted_schema(::ayni::test::codec_workspace(),
+                                                  {bytes.data(), size}, admitted),
+              AYNI_OK);
+    ASSERT_NE(admitted.nodes[1].default_value, nullptr);
+    EXPECT_NE(admitted.nodes[1].default_value, decoded.nodes[1].default_value);
+    ASSERT_EQ(ayni::catalog::encode_schema(::ayni::test::codec_workspace(), admitted.view(),
+                                           other.data(), static_cast<uint32_t>(other.size()),
+                                           other_size),
+              AYNI_OK);
+    ASSERT_EQ(other_size, size);
+    EXPECT_EQ(std::memcmp(bytes.data(), other.data(), size), 0);
     nodes[1].scale = 3;
     ASSERT_EQ(ayni::catalog::encode_schema(::ayni::test::codec_workspace(), schema, other.data(),
                                            static_cast<uint32_t>(other.size()), other_size),

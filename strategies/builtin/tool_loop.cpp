@@ -1,10 +1,54 @@
 #include "harness.h"
+#include "history_result.h"
+#include <ayni/ayni.hpp>
 #include <ayni/call_result_json.hpp>
 #include <ayni/memory.h>
 #include <cstdio>
 #include <iterator>
 #include <limits>
 namespace ayni::strategies {
+struct ToolLoop::Cache {
+    struct Saved {
+        std::string source;
+        detail::Turn turn;
+    };
+    std::map<uint64_t, Saved> turns;
+    std::map<std::string, std::string> definitions;
+    uint64_t privacy_request = 0; // Last observed invalidation sequence; zero before any request.
+};
+ToolLoop::ToolLoop() : cache_(std::make_unique<Cache>()) {}
+ToolLoop::~ToolLoop() = default;
+size_t ToolLoop::cached_turns() const {
+    return cache_->turns.size();
+}
+// The runtime owns public lifecycle observations; the strategy alone releases its
+// decoded representations. No message/body walk is needed to retire a cached turn.
+ayni_status_t ToolLoop::maintain(const ayni_kernel_t *kernel, const ayni_privacy_info_v1 &privacy) {
+    if (!kernel || privacy.struct_size != sizeof(privacy) ||
+        privacy.phase > AYNI_PRIVACY_COMPLETE) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (privacy.phase != AYNI_PRIVACY_IDLE && (privacy.phase != AYNI_PRIVACY_COMPLETE ||
+                                               cache_->privacy_request != privacy.request_seq)) {
+        // Source erasure need not wake a WAITING Task. Clear before any outer ACK,
+        // including the first observation of a completed generation (ADR-0104).
+        cache_->turns.clear();
+    }
+    cache_->privacy_request = privacy.request_seq;
+    for (auto at = cache_->turns.begin(); at != cache_->turns.end();) {
+        auto task = initialized<ayni_task_info_v1>();
+        const auto status = ayni_get_task(kernel, at->first, &task);
+        if (status != AYNI_OK && status != AYNI_NOT_FOUND) {
+            return status;
+        }
+        const bool active =
+            status == AYNI_OK && !task.cancel_revision &&
+            (task.lifecycle == AYNI_TASK_READY || task.lifecycle == AYNI_TASK_RUNNING ||
+             task.lifecycle == AYNI_TASK_WAITING);
+        at = active ? std::next(at) : cache_->turns.erase(at);
+    }
+    return AYNI_OK;
+}
 namespace {
 using namespace detail;
 ayni_string_v1 compact_key(const Turn &turn, char *buffer) {
@@ -76,6 +120,23 @@ ayni_status_t save(Turn &turn, const ToolLoopConfig &config, ayni_policy_output_
                                    output.checkpoint_capacity, output.checkpoint_size);
     if (status == AYNI_NOT_READY) {
         output.disposition = AYNI_POLICY_OUTPUT_DEFER;
+    }
+    if (status == AYNI_OK && config.persistence == Persistence::background) {
+        std::vector<BodyRef> refs;
+        auto saved = Conversation::references(*config.bodies, turn.record, refs);
+        if (saved != AYNI_OK) {
+            return saved;
+        }
+        refs.push_back(turn.refs.input);
+        for (const auto &ref : refs) {
+            if (!ref.id) {
+                continue;
+            }
+            saved = config.bodies->confirm(config.bodies->context, &ref);
+            if (saved != AYNI_OK && saved != AYNI_NOT_READY) {
+                return saved;
+            }
+        }
     }
     return status;
 }
@@ -329,7 +390,8 @@ ayni_status_t alone(const ToolLoopConfig &config, const std::string &input,
     return context(config, single, {}, scratch, body, tokens);
 }
 ayni_status_t revalidate(Workspace &workspace, Turn &turn, const ToolLoopConfig &config,
-                         const ayni_task_snapshot_v1 &snapshot) {
+                         const ayni_task_snapshot_v1 &snapshot,
+                         std::map<std::string, std::string> &definitions, bool &visible_prepared) {
     if (!snapshot.capability_context) {
         return AYNI_UNSUPPORTED;
     }
@@ -345,12 +407,17 @@ ayni_status_t revalidate(Workspace &workspace, Turn &turn, const ToolLoopConfig 
         if (status != AYNI_OK) {
             return status;
         }
+        turn.definitions
+            .clear(); // Never reuse a previous visibility set after source invalidation.
         turn.history.clear();
+        turn.history_saved = 0;
+        turn.history_index.clear();
         turn.record.last_usage = {};
         turn.record.last_request_characters = 0;
         turn.summary.clear();
         turn.record.summary_first = turn.record.summary_last = 0;
         ++turn.record.context_version;
+        turn.record.rounds = {}; // Answers changed even when retained user count stays equal.
         for (auto &round : turn.rounds) {
             round.answer.clear();
         }
@@ -371,6 +438,14 @@ ayni_status_t revalidate(Workspace &workspace, Turn &turn, const ToolLoopConfig 
     }
     turn.record.disclosure = current;
     if (turn.phase == TurnPhase::initial) {
+        if (config.tool_exposure == ToolExposure::preloaded &&
+            (!visible_prepared || turn.definitions.empty())) {
+            status = preload_tools(workspace, snapshot, turn.definitions, definitions);
+            if (status != AYNI_OK) {
+                return status;
+            }
+            visible_prepared = true;
+        }
         // One input that cannot fit beside the answer is refused, never truncated.
         uint64_t tokens = 0;
         status = alone(config, turn.input, turn.definitions, tokens);
@@ -441,6 +516,7 @@ ayni_status_t complete(Turn &turn, const ToolLoopConfig &config, ayni_string_v1 
     turn.rounds.push_back(
         {++turn.record.last_round, turn.input, std::string(answer.data, answer.size)});
     retain_inputs(turn.rounds, config.limits.compact_target_tokens);
+    turn.record.rounds = {}; // A rolling window can change contents while retaining the same count.
     turn.record.revision = turn.base_revision + 1U;
     turn.done = true;
     status = save(turn, config, output);
@@ -451,22 +527,6 @@ ayni_status_t summary_source(const Turn &turn, std::string &source) {
         return AYNI_INVALID_ARGUMENT;
     }
     const ayni_string_v1 prefix{turn.history.data(), turn.compact_prefix};
-    if (!turn.canonical_summary) {
-        // Reader compatibility for an already-active v5 summary. v5 writers never supported
-        // provider continuation; refuse any such state rather than expose it as summary data.
-        model::Reader reader(prefix);
-        model::Message message;
-        while (reader.next(message)) {
-            if (message.continuation.codec.size) {
-                return AYNI_UNSUPPORTED_VERSION;
-            }
-        }
-        if (!reader.finished()) {
-            return AYNI_INVALID_ARGUMENT;
-        }
-        source.assign(turn.history.data(), turn.compact_prefix);
-        return AYNI_OK;
-    }
     auto measure = json::Writer::measuring();
     auto status = model::write_messages(measure, prefix, model::Completeness::complete,
                                         model::Continuations::canonical);
@@ -621,6 +681,8 @@ ayni_status_t compact(Workspace &workspace, Turn &turn, const ToolLoopConfig &co
     turn.record.last_request_characters = 0;
     turn.record.last_input_estimate = 0;
     turn.history = std::move(replacement);
+    turn.history_saved = 0;
+    turn.history_index.clear();
     status = known_operations(turn, snapshot);
     LocalTimeLines time;
     ayni_string_v1 body{};
@@ -737,6 +799,16 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
     const auto key = function_key(model.logical_call_id, turn.tool_index, key_buffer);
     ayni_task_call_result_v1 call{};
     const auto call_status = result(snapshot, key, call);
+    std::string shared_result;
+    if (call_status == AYNI_OK) {
+        status = resolve_result_body(*config.bodies, call, shared_result);
+        if (status == AYNI_NOT_READY) {
+            output.disposition = AYNI_POLICY_OUTPUT_DEFER;
+        }
+        if (status != AYNI_OK) {
+            return status;
+        }
+    }
     ayni_string_v1 response{};
     ToolBudget budget;
     status = current_tool_budget(config, turn, proposal.call.protocol_id, budget);
@@ -824,6 +896,19 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
     if (!budget.fits(response)) {
         return AYNI_CAPACITY_EXCEEDED;
     }
+    if (call.body.id && turn.phase != TurnPhase::result_summary && !config.history.archive &&
+        call.mode != AYNI_CALL_MODE_MANAGED) {
+        BodyRef projection{};
+        status = store_result_view(*config.bodies, turn.record.id, call, projection);
+        if (status == AYNI_NOT_READY) {
+            output.disposition = AYNI_POLICY_OUTPUT_DEFER;
+        }
+        if (status != AYNI_OK) {
+            return status;
+        }
+        turn.result_views[std::string(proposal.call.protocol_id.data,
+                                      proposal.call.protocol_id.size)] = projection;
+    }
     status = append_history(
         turn, [&](model::Writer &out) { out.tool(proposal.call.protocol_id, response); });
     if (status != AYNI_OK) {
@@ -902,15 +987,19 @@ ayni_status_t accept_model(Workspace &workspace, Turn &turn, const ayni_task_sna
 // Controller cursors describe only handling progress. The original Call ledger
 // owns requests/results, and compaction never resets their monotone source keys.
 ayni_status_t run(Workspace &workspace, Turn &turn, const ToolLoopConfig &config,
-                  const ayni_task_snapshot_v1 &snapshot, ayni_policy_output_v1 &output) {
+                  const ayni_task_snapshot_v1 &snapshot, ayni_policy_output_v1 &output,
+                  std::map<std::string, std::string> &definitions) {
     auto status = AYNI_OK;
-    if (config.tool_exposure == ToolExposure::preloaded) {
-        status = preload_tools(workspace, snapshot, turn.definitions);
+    bool visible_prepared = false;
+    if (config.tool_exposure == ToolExposure::preloaded && turn.definitions.empty() &&
+        turn.phase != TurnPhase::initial) {
+        status = preload_tools(workspace, snapshot, turn.definitions, definitions);
         if (status != AYNI_OK) {
             return status;
         }
+        visible_prepared = true;
     }
-    status = revalidate(workspace, turn, config, snapshot);
+    status = revalidate(workspace, turn, config, snapshot, definitions, visible_prepared);
     if (status != AYNI_OK) {
         return status;
     }
@@ -975,12 +1064,18 @@ ayni_status_t run(Workspace &workspace, Turn &turn, const ToolLoopConfig &config
                 return status;
             }
         } else {
+            if (config.tool_exposure == ToolExposure::preloaded && !visible_prepared) {
+                status = preload_tools(workspace, snapshot, turn.definitions, definitions);
+                if (status != AYNI_OK) {
+                    return status;
+                }
+            }
             LocalTimeLines time;
             const auto suffix = local_time(config.clock, time);
             std::string prompt;
             ayni_string_v1 body{};
-            uint64_t cost = 0;
-            status = context(config, turn, suffix, prompt, body, cost);
+            uint64_t cost = 0, characters = 0;
+            status = context(config, turn, suffix, prompt, body, cost, &characters);
             // Compaction keeps room for one more tool result beside the answer (ADR-0095).
             const uint64_t trigger = input_budget(config) - config.limits.tool_result_max_tokens;
             const bool pressure = cost > trigger;
@@ -989,7 +1084,6 @@ ayni_status_t run(Workspace &workspace, Turn &turn, const ToolLoopConfig &config
                     return AYNI_CAPACITY_EXCEEDED;
                 }
                 turn.compact_prefix = turn.group_start;
-                turn.canonical_summary = true;
                 turn.history_summary.offset = 0;
                 turn.history_summary.next = turn.history_summary.offset;
                 turn.history_summary.chunk = 0;
@@ -1008,9 +1102,7 @@ ayni_status_t run(Workspace &workspace, Turn &turn, const ToolLoopConfig &config
                     return status;
                 }
             }
-            uint64_t characters = 0;
-            status = context(config, turn, {}, prompt, body, cost, &characters);
-            if (status == AYNI_OK && cost > input_budget(config)) {
+            if (cost > input_budget(config)) {
                 return AYNI_CAPACITY_EXCEEDED;
             }
             if (status != AYNI_OK) {
@@ -1098,6 +1190,10 @@ ayni_status_t ToolLoop::configure(const ToolLoopConfig &config, const ayni_works
         !valid_call(config.summary) || config.model.input || config.summary.input ||
         config.model.kind != AYNI_POLICY_REQUEST_MODEL ||
         config.summary.kind != AYNI_POLICY_REQUEST_MODEL || !valid_limits(config.limits) ||
+        !config.cached_turns || config.cached_turns > AYNI_TASK_CAPACITY_MAX ||
+        (config.persistence == Persistence::background &&
+         (!config.bodies || !config.bodies->stage || !config.bodies->share ||
+          !config.bodies->confirm)) ||
         !config.bodies || config.bodies->struct_size != sizeof(ayni_body_store_v1) ||
         !config.bodies->write || !config.bodies->read ||
         (static_cast<bool>(config.history.archive) !=
@@ -1130,7 +1226,8 @@ ayni_strategy_v1 ToolLoop::describe() {
 }
 uint32_t ToolLoop::ready(void *context, uint64_t task) {
     auto &self = *static_cast<ToolLoop *>(context);
-    return self.config_.history.ready(self.config_.history.context, task);
+    const auto ready = self.config_.history.ready(self.config_.history.context, task);
+    return self.config_.persistence == Persistence::background ? 1U : ready;
 }
 ayni_status_t ToolLoop::decide(void *context, const ayni_task_snapshot_v1 *snapshot,
                                ayni_policy_output_v1 *output) {
@@ -1143,10 +1240,16 @@ ayni_status_t ToolLoop::decide(void *context, const ayni_task_snapshot_v1 *snaps
     }
     Workspace workspace(self.workspace_.data, self.workspace_.byte_capacity);
     Turn turn;
-    auto status = read_turn(workspace, *self.config_.bodies,
-                            snapshot->checkpoint.state.size ? snapshot->checkpoint.state
-                                                            : snapshot->goal_parameters,
-                            turn);
+    const auto source =
+        snapshot->checkpoint.state.size ? snapshot->checkpoint.state : snapshot->goal_parameters;
+    const std::string identity(reinterpret_cast<const char *>(source.data), source.size);
+    const auto cached = self.cache_->turns.find(snapshot->task_id);
+    auto status = AYNI_OK;
+    if (cached != self.cache_->turns.end() && cached->second.source == identity) {
+        turn = cached->second.turn; // Validated immutable bodies; privacy is rechecked in run.
+    } else {
+        status = read_turn(workspace, *self.config_.bodies, source, turn);
+    }
     if (status == AYNI_NOT_READY) {
         output->disposition = AYNI_POLICY_OUTPUT_DEFER; // A body is still loading.
     } else if (status == AYNI_OK) {
@@ -1156,7 +1259,26 @@ ayni_status_t ToolLoop::decide(void *context, const ayni_task_snapshot_v1 *snaps
         if (turn.record.owner_instance_id != snapshot->owner_instance_id) {
             return AYNI_DENIED;
         }
-        status = run(workspace, turn, self.config_, *snapshot, *output);
+        auto config = self.config_;
+        auto bodies = *config.bodies;
+        if (config.persistence == Persistence::background) {
+            bodies.write = bodies.stage;
+        }
+        config.bodies = &bodies;
+        status = run(workspace, turn, config, *snapshot, *output, self.cache_->definitions);
+        if (turn.done) {
+            self.cache_->turns.erase(snapshot->task_id);
+        } else if (status == AYNI_OK && output->disposition != AYNI_POLICY_OUTPUT_DEFER &&
+                   output->checkpoint_size) {
+            if (self.cache_->turns.size() == self.config_.cached_turns &&
+                cached == self.cache_->turns.end()) {
+                self.cache_->turns.erase(self.cache_->turns.begin());
+            }
+            self.cache_->turns[snapshot->task_id] = {
+                std::string(reinterpret_cast<const char *>(output->checkpoint),
+                            output->checkpoint_size),
+                std::move(turn)};
+        }
     }
     // A body still being written or loaded holds this decision; nothing it staged is kept.
     if (output->disposition == AYNI_POLICY_OUTPUT_DEFER &&

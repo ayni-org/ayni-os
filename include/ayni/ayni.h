@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 54u
+#define AYNI_ABI_MINOR 55u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -354,6 +354,7 @@ typedef struct ayni_bytes_v1 {
  * attempt is posted, and the host may read it from any thread until then
  * (C-HOST-019).
  */
+#define AYNI_STORAGE_APPEND_COUNT_MAX 8u /* Bounded append group. Since 0.55. */
 typedef struct ayni_storage_batch_v1 {
     uint32_t struct_size;
     uint32_t writer_epoch;
@@ -489,10 +490,20 @@ typedef struct ayni_host_v1 {
      * at least once per second while a calendar Goal exists. Since 0.41. */
     void (*utc_now)(void *ctx, ayni_utc_sample_v1 *out_sample);
     /* Since 0.54 (ADR-0096). Optional body store that call inputs and results
-     * name by reference. Core never reads or writes a body: it only releases a
-     * reference once the commit that dropped Core's last record of it is durable.
-     * Null leaves such bodies to the composition root. */
+     * name by reference. Core releases owners after their durable lifetime ends.
+     * Since 0.55 an explicit SHARED_RESULTS store may stage Core's own normalized
+     * result without blocking; no body file I/O runs in Core. Null leaves bodies
+     * to the composition root. Temporary model inputs have the shorter lifetime
+     * documented by release_temporary in bodies.h. */
     const struct ayni_body_store_v1 *bodies;
+    /* Since 0.55: optional bounded contiguous-prefix append. count is 1..8,
+     * identities are consecutive, descriptors are copied during submission and
+     * each encoded buffer is borrowed through completion. OK confirms the whole
+     * prefix; any other result confirms none to Core. Retries use identical bytes
+     * and identities, including a possibly stored prefix (C-HOST-010/019). */
+    ayni_submit_result_t (*storage_append_many)(void *ctx, const ayni_storage_batch_v1 *batches,
+                                                uint32_t count, ayni_attempt_ref_v1 attempt,
+                                                ayni_completion_t *completion);
 } ayni_host_v1;
 
 /*

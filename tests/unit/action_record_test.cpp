@@ -40,7 +40,7 @@ class ActionRecordTest : public ::testing::Test {
         ASSERT_EQ(ActionRecord::prepare(identity(), stamp(1), record), AYNI_OK);
     }
     void dispatch() {
-        ASSERT_EQ(record->begin_dispatch(stamp(2), 1), AYNI_OK);
+        ASSERT_EQ(record->begin_dispatch(stamp(2)), AYNI_OK);
         ASSERT_TRUE(record->claim_dispatch(epoch, 2));
     }
 };
@@ -143,11 +143,9 @@ TEST_F(ActionRecordTest, invalid_saved_identity_and_stamp_fields_are_rejected) {
     }
 }
 
-TEST_F(ActionRecordTest, preparation_and_dispatch_have_separate_durable_barriers) {
-    EXPECT_EQ(record->begin_dispatch(stamp(2), 0), AYNI_BUSY);
-    EXPECT_EQ(record->fact().phase, ActionPhase::prepared);
-    EXPECT_FALSE(record->claim_dispatch(epoch, 1));
-    ASSERT_EQ(record->begin_dispatch(stamp(2), 1), AYNI_OK);
+TEST_F(ActionRecordTest, ordered_preparation_and_dispatch_share_the_final_durable_barrier) {
+    // ADR-0104: queuing preparation needs no separate sync; actual delivery still does.
+    ASSERT_EQ(record->begin_dispatch(stamp(2)), AYNI_OK);
     EXPECT_EQ(record->fact().phase, ActionPhase::dispatching);
     EXPECT_EQ(record->fact().effect, ActionEffect::unknown);
     EXPECT_FALSE(record->claim_dispatch(epoch, 1));
@@ -179,7 +177,7 @@ TEST_F(ActionRecordTest, progress_and_known_failure_retain_partial_effects) {
     EXPECT_EQ(record->fact().phase, ActionPhase::failed);
     EXPECT_EQ(record->fact().effect, ActionEffect::partial);
     EXPECT_TRUE(ActionRecord::valid(record->fact()));
-    EXPECT_EQ(record->begin_dispatch(stamp(6), 5), AYNI_INVALID_STATE);
+    EXPECT_EQ(record->begin_dispatch(stamp(6)), AYNI_INVALID_STATE);
 }
 
 TEST_F(ActionRecordTest, unary_failure_does_not_require_synthetic_progress) {
@@ -197,7 +195,7 @@ TEST_F(ActionRecordTest, final_check_can_cancel_before_delivery_on_either_side_o
     EXPECT_EQ(record->fact().phase, ActionPhase::cancelled);
     std::optional<ActionRecord> other;
     ASSERT_EQ(ActionRecord::prepare(identity(), stamp(1), other), AYNI_OK);
-    ASSERT_EQ(other->begin_dispatch(stamp(2), 1), AYNI_OK);
+    ASSERT_EQ(other->begin_dispatch(stamp(2)), AYNI_OK);
     ASSERT_EQ(other->cancel_before_delivery(stamp(3)), AYNI_OK);
     EXPECT_FALSE(other->claim_dispatch(epoch, 3));
     EXPECT_TRUE(ActionRecord::valid(other->fact()));
@@ -227,7 +225,7 @@ TEST_F(ActionRecordTest, abandonment_never_becomes_an_ordinary_failure_or_a_new_
     EXPECT_EQ(record->fact().effect, ActionEffect::unknown);
     EXPECT_EQ(record->fail(ActionEffect::none, stamp(4)), AYNI_INVALID_STATE);
     EXPECT_EQ(record->complete(stamp(4)), AYNI_INVALID_STATE);
-    EXPECT_EQ(record->begin_dispatch(stamp(4), 3), AYNI_INVALID_STATE);
+    EXPECT_EQ(record->begin_dispatch(stamp(4)), AYNI_INVALID_STATE);
     EXPECT_FALSE(record->claim_dispatch(epoch, 4));
     EXPECT_TRUE(ActionRecord::valid(record->fact()));
 }
@@ -257,15 +255,15 @@ TEST_F(ActionRecordTest,
     EXPECT_EQ(record->fact().phase, ActionPhase::failed);
     EXPECT_EQ(record->fact().effect, ActionEffect::none);
     EXPECT_EQ(record->fact().evidence, ActionEvidence::authoritative_not_accepted);
-    EXPECT_EQ(record->begin_dispatch(stamp(5), 4), AYNI_INVALID_STATE);
+    EXPECT_EQ(record->begin_dispatch(stamp(5)), AYNI_INVALID_STATE);
     EXPECT_FALSE(record->claim_dispatch(epoch, 5));
 }
 
 TEST_F(ActionRecordTest, nonadvancing_or_foreign_writer_stamps_preserve_the_fact) {
-    EXPECT_EQ(record->begin_dispatch(stamp(1), 1), AYNI_INVALID_STATE);
+    EXPECT_EQ(record->begin_dispatch(stamp(1)), AYNI_INVALID_STATE);
     auto foreign = stamp(2);
     foreign.boot_epoch = epoch + 1;
-    EXPECT_EQ(record->begin_dispatch(foreign, 1), AYNI_INVALID_STATE);
+    EXPECT_EQ(record->begin_dispatch(foreign), AYNI_INVALID_STATE);
     EXPECT_EQ(record->fact().phase, ActionPhase::prepared);
     dispatch();
     EXPECT_EQ(record->complete(stamp(2)), AYNI_INVALID_STATE);

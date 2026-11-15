@@ -42,7 +42,8 @@ class Files {
     // Tokens for the replaced destination may retain the old, now unlinked file.
     virtual int rename(const char *from, const char *to) = 0;
     virtual int remove(const char *name) = 0;
-    // Actual currently usable bytes, before the asynchronous Host's pending reservations.
+    // Currently usable lower bound, before the asynchronous Host's pending reservations.
+    // An exclusive adapter may debit observed mutations conservatively and reconcile later.
     virtual int free_bytes(uint64_t &bytes) const = 0;
 };
 } // namespace ayni::hosts::storage

@@ -219,6 +219,9 @@ ayni_status_t Assistant::Impl::pump(std::vector<Notice> &notices) {
     ayni_privacy_info_v1 privacy{};
     privacy.struct_size = sizeof(privacy);
     status = ayni_get_privacy_status(node.kernel(), session, &privacy);
+    if (status == AYNI_OK) {
+        status = profile.maintain(privacy);
+    }
     if (status != AYNI_OK || privacy.progress_status != AYNI_OK) {
         return status != AYNI_OK ? status : privacy.progress_status;
     }

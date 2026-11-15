@@ -91,7 +91,7 @@ HTTP 分类与非法参数、列表数量/编码上限由 `OpenaiHttpError`、`O
 
 ## 共用模型协议补充（ADR-0098，C-PROV-004/006/011）
 
-可选ModelProtocol支持Chat Completions/Responses及SSE；Core ABI0.54与schema9不变。
+可选ModelProtocol支持Chat Completions/Responses及SSE；当前ABI0.55/schema10，见ADR-0104。
 默认旧TEXT消费者继续Chat非流式。Responses必须使用显式FRAMED回复，Provider与策略匹配编码；
 旧工具列表assistant_text或TEXT正文承载版本化回复，历史assistant/calls的v2帧绑定续传。
 有序output Items、reasoning/encrypted_content与规范回答/调用一同从完成响应生成；续传的API、
@@ -107,3 +107,7 @@ ABANDONED/RESULT_UNKNOWN且不重试；已知HTTP及模型输出拒绝保留clas
 `ModelProtocol.OptionalAmbiguousUsageNeverDiscardsAnOtherwiseCompletedStream`、
 `WifiModel.CompleteOutputRefusalKeepsSharedStatusReasonAndEffect`。
 这些是本地协议/HTTP检查，不代表线上厂商、硬件或新增故障/恢复验证。
+
+### 共享规范结果（ABI0.55）
+
+Provider仍提交原有TEXT/VALUE供Core按原契约校验，不能用未经验证的外部工具结果绕过规范化。组合根明确选择SHARED_RESULTS后，Core可把自己已验证的规范结果转为body引用；task result的result_kind明确其TEXT/VALUE编码。策略、受管operation read/wait及archive使用同一resolver读取并核对引用。保存不足时保留原有有界内联账本和实际outcome/effect，正文错误阻止后续会话推进，不丢回执、不重复工具。默认部署仍保留原保存策略。临时MODEL请求的独立引用只保留至该Call终态持久且Provider借用结束，Call保留原引用元数据，不能假定临时正文永久可读；模型原始答复/提议明确确认后台保存。

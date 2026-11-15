@@ -13,7 +13,7 @@ namespace ayni::runtime {
 namespace {
 constexpr char filename[] = "conversation.sqlite3";
 constexpr int application_id = 0x41594E49;
-constexpr int database_version = 3; // Conversation format 5: texts are bodies (ADR-0096).
+constexpr int database_version = 4; // Conversation6 and shared immutable body_data (ADR-0104).
 using Statement = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>;
 Statement statement(sqlite3 *db, const char *sql) {
     sqlite3_stmt *out = nullptr;
@@ -109,9 +109,10 @@ ayni_status_t ConversationStore::open(const char *directory, SavedConversation &
         "BEGIN IMMEDIATE;"
         "CREATE TABLE IF NOT EXISTS state(singleton INTEGER PRIMARY KEY CHECK(singleton=1),"
         "context INTEGER NOT NULL,pending INTEGER NOT NULL,body BLOB NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS body_data(id INTEGER PRIMARY KEY,body BLOB NOT NULL);"
         "CREATE TABLE IF NOT EXISTS bodies(id INTEGER PRIMARY KEY AUTOINCREMENT,scope INTEGER NOT "
         "NULL,"
-        "digest INTEGER NOT NULL,body BLOB NOT NULL);"
+        "digest INTEGER NOT NULL,content INTEGER NOT NULL REFERENCES body_data(id));"
         "CREATE TABLE IF NOT EXISTS results(id INTEGER PRIMARY KEY AUTOINCREMENT,conversation "
         "INTEGER NOT NULL,"
         "owner INTEGER NOT NULL,generation INTEGER NOT NULL,task INTEGER NOT NULL,call INTEGER NOT "
@@ -123,7 +124,7 @@ ayni_status_t ConversationStore::open(const char *directory, SavedConversation &
         "input_tokens INTEGER NOT NULL,output_tokens INTEGER NOT NULL,total_tokens INTEGER NOT "
         "NULL,"
         "UNIQUE(conversation,owner,generation,call,sequence));"
-        "PRAGMA application_id=1096371785; PRAGMA user_version=3; COMMIT;";
+        "PRAGMA application_id=1096371785; PRAGMA user_version=4; COMMIT;";
     // The application id is independent from Core journal/schema and message-frame versions.
     if (!sql(database_, schema)) {
         close();
@@ -196,6 +197,9 @@ ayni_status_t ConversationStore::save(const SavedConversation &state, Erasure er
     if (!database_) {
         return AYNI_INVALID_STATE;
     }
+    if (body_status_ != AYNI_OK) {
+        return body_status_;
+    }
     if (phase_ != Phase::idle) {
         return AYNI_BUSY;
     }
@@ -240,7 +244,9 @@ ayni_status_t ConversationStore::write() {
     // written after this save was queued belong to a later operation and stay.
     if (!pending_.pending_goal) {
         std::vector<ayni_body_ref_v1> keep;
-        strategies::Conversation::references(pending_.record, keep);
+        if (strategies::Conversation::references(bodies_port_, pending_.record, keep) != AYNI_OK) {
+            return finish(false);
+        }
         std::string kept;
         for (const auto &ref : keep) {
             kept += (kept.empty() ? "" : ",") + std::to_string(ref.id);
@@ -256,6 +262,9 @@ ayni_status_t ConversationStore::write() {
         if (sqlite3_step(collect.get()) != SQLITE_DONE) {
             return finish(false);
         }
+    }
+    if (!sql(database_, "DELETE FROM body_data WHERE id NOT IN (SELECT content FROM bodies)")) {
+        return finish(false);
     }
     auto write = statement(database_,
                            "INSERT INTO state VALUES(1,?,?,?) ON CONFLICT(singleton) DO UPDATE SET "
@@ -299,6 +308,9 @@ void ConversationStore::run() {
                 result = AYNI_CAPACITY_EXCEEDED;
             }
             lock.lock();
+            if (result != AYNI_OK) {
+                body_status_ = result;
+            }
             for (const auto &[id, body] : inserts) {
                 const auto found = bodies_.find(id);
                 if (found != bodies_.end()) {
@@ -306,7 +318,7 @@ void ConversationStore::run() {
                         result == AYNI_OK ? Body::State::durable : Body::State::failed;
                 }
             }
-            // A failed delete leaves an unreferenced row; the next collecting save removes it.
+            // Sticky failures prevent later queued history saves from acknowledging cleanup.
             durable_.notify_all();
             wake_.notify_all();
             continue;
@@ -317,10 +329,12 @@ void ConversationStore::run() {
         } else {
             phase_ = Phase::writing;
         }
+        ayni_status_t result = body_status_; // Also covers saves queued before a body failure.
         lock.unlock();
-        ayni_status_t result = AYNI_INTERNAL;
         try {
-            result = archive ? write_result() : write();
+            if (result == AYNI_OK) {
+                result = archive ? write_result() : write();
+            }
         } catch (const std::bad_alloc &) {
             sql(database_, "ROLLBACK");
             result = AYNI_CAPACITY_EXCEEDED;
@@ -338,7 +352,13 @@ void ConversationStore::run() {
                 generation_ = pending_.record.generation;
                 if (!pending_.pending_goal) {
                     std::vector<ayni_body_ref_v1> keep;
-                    strategies::Conversation::references(pending_.record, keep);
+                    lock.unlock();
+                    const auto referenced =
+                        strategies::Conversation::references(bodies_port_, pending_.record, keep);
+                    lock.lock();
+                    if (referenced != AYNI_OK) {
+                        status_ = referenced;
+                    }
                     for (auto at = bodies_.begin(); at != bodies_.end();) {
                         bool kept =
                             at->second.scope != pending_.record.id || at->first >= collect_below_;
@@ -397,6 +417,7 @@ void ConversationStore::close() {
     pending_ = {};
     archiving_ = {};
     bodies_.clear();
+    body_status_ = AYNI_OK;
     inserts_.clear();
     deletes_.clear();
     phase_ = Phase::idle;

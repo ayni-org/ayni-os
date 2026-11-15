@@ -171,17 +171,24 @@ CallRuntime::Advance CallRuntime::dispatch(uint32_t index, uint32_t task_index, 
         return Advance::internal;
     }
     auto input_lease = work_.workspace.make<work::CallInputView>();
-    if (!input_lease) {
+    auto proof_lease = work_.workspace.make<catalog::DecodedBusiness>();
+    if (!input_lease || !proof_lease) {
         return Advance::internal;
     }
     auto &input = *input_lease;
-    if (work::read_call_input(work_.workspace, work_.calls.domain(index), work_.calls.input(index),
-                              contract, input) != AYNI_OK) {
+    const auto *proof = &*proof_lease;
+    const auto decoded =
+        catalog::read_admitted_business(work_.workspace, contract.business_contract, *proof_lease);
+    if (decoded != AYNI_OK) {
+        return Advance::internal;
+    }
+    if (work::read_call_input_with_proof(work_.workspace, *proof, work_.calls.domain(index),
+                                         work_.calls.input(index), contract, input) != AYNI_OK) {
         return Advance::internal;
     }
     const auto authority =
         check_input(task_index, catalogs_.bindings.at(binding_index), work_.calls.domain(index),
-                    input, contract, host_.monotonic_now_us(host_.ctx), durable_seq,
+                    input, contract, *proof, host_.monotonic_now_us(host_.ctx), durable_seq,
                     work_.calls.identity(index).call_id);
     if (authority.status != AYNI_OK) {
         return authority.status == AYNI_BUSY ? Advance::idle : cancel_local(index, task_index);

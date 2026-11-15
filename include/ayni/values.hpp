@@ -116,7 +116,8 @@ template <uint32_t Capacity = AYNI_VALUE_NODE_COUNT_MAX> class ValueBuilder {
     ayni_status_t text(uint32_t field, ayni_string_v1 value) {
         return string(AYNI_VALUE_TEXT, field, value);
     }
-    // A body already durable in the host body store, for an EXTERNAL TEXT field. Since 0.54.
+    // An EXTERNAL TEXT body reference. Side-effect arguments must already be durable;
+    // explicitly asynchronous model inputs may be temporary (Since 0.55, ADR-0104).
     ayni_status_t body(uint32_t field, ayni_body_ref_v1 value) {
         if (auto *node = scalar(AYNI_VALUE_BODY, field)) {
             node->value.body = value;

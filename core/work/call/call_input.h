@@ -4,6 +4,7 @@
 #ifndef AYNI_CORE_WORK_CALL_CALL_INPUT_H
 #define AYNI_CORE_WORK_CALL_CALL_INPUT_H
 
+#include "catalog/capability/business_encoding.h"
 #include "catalog/capability/call_contract.h"
 #include "catalog/capability/value_encoding.h"
 #include "foundation/workspace.h"
@@ -36,11 +37,23 @@ ayni_status_t encode_business_input(ayni::foundation::Workspace &workspace, ayni
                                     const ayni_value_v1 &input, uint8_t *out, uint32_t capacity,
                                     uint32_t &size,
                                     catalog::DecodedValue *normalized_out = nullptr);
+// Same boundary with a previously validated exact contract; proof views stay alive throughout.
+ayni_status_t encode_business_input_with_proof(ayni::foundation::Workspace &workspace,
+                                               const catalog::DecodedBusiness &proof,
+                                               const catalog::CallContract &contract,
+                                               const ayni_value_v1 &input, uint8_t *out,
+                                               uint32_t capacity, uint32_t &size,
+                                               catalog::DecodedValue *normalized_out = nullptr);
 // Optional normalized_out borrows input/proof text through the synchronous admission only.
 // Original proof interprets saved values. First-row control view is reconstructed,
 // while authorization independently proves every row under one saved requirement.
 ayni_status_t read_call_input(ayni::foundation::Workspace &workspace, ayni_bytes_v1 domain,
                               ayni_bytes_v1 body, const catalog::CallContract &contract,
                               CallInputView &out);
+// Reuses immutable proof validation; saved input still undergoes complete canonical admission.
+ayni_status_t read_call_input_with_proof(ayni::foundation::Workspace &workspace,
+                                         const catalog::DecodedBusiness &proof,
+                                         ayni_bytes_v1 domain, ayni_bytes_v1 body,
+                                         const catalog::CallContract &contract, CallInputView &out);
 } // namespace ayni::work
 #endif

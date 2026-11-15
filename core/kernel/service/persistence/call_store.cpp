@@ -10,8 +10,23 @@
 namespace ayni::kernel {
 namespace {
 
-bool knows(uint16_t, uint16_t version, WorkRecordContext) {
-    return version == work::call_record_version;
+bool knows(uint16_t, uint16_t version, WorkRecordContext context) {
+    return version == work::call_record_version ||
+           (context == WorkRecordContext::journal && version == work::call_delta_version);
+}
+// Journal updates may only borrow an already accepted row; full rows cannot replace one.
+bool read_journal_call(WorkModel &model, const uint8_t *body, uint32_t size, uint16_t version,
+                       work::CallRecord &record) {
+    uint32_t index = 0;
+    if (version == work::call_delta_version) {
+        return size >= work::call_delta_identity_bytes &&
+               model.calls.find(foundation::load_le64(body), index) &&
+               work::read_call_delta(model.workspace, model.calls.record(index), body, size,
+                                     record);
+    }
+    return version == work::call_record_version &&
+           work::read_call_record(model.workspace, body, size, record) &&
+           !model.calls.find(record.identity.call_id, index);
 }
 uint32_t capacity(const KernelCapacities &capacities) {
     return capacities.call_capacity;
@@ -39,13 +54,19 @@ bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
         if (++written > 1U || record.state.latest.transition.transition_id != stamp.transition_id) {
             return false;
         }
-        auto *at =
-            writer.add_record_body({work::call_record_type, work::call_record_version,
-                                    durability::record_required, work::call_record_size(record)});
+        const bool initial = record.state.created.transition.commit_seq == stamp.commit_seq;
+        const auto version = initial ? work::call_record_version : work::call_delta_version;
+        const auto size = initial ? work::call_record_size(record) : work::call_delta_size(record);
+        auto *at = writer.add_record_body(
+            {work::call_record_type, version, durability::record_required, size});
         if (at == nullptr) {
             return false;
         }
-        work::write_call_record(record, at);
+        if (initial) {
+            work::write_call_record(record, at);
+        } else {
+            work::write_call_delta(record, at);
+        }
     }
     return true;
 }
@@ -129,12 +150,12 @@ bool WorkReplay::pair_tool_acceptance(const work::CallRecord &record) {
 // Journal-only: a first row is an acceptance, while snapshot rows may already
 // be terminal. No registration or callback is consulted when restoring facts.
 durability::RecordUse WorkReplay::restore_call(const uint8_t *body, uint32_t size,
-                                               work::ActionStamp stamp) {
+                                               work::ActionStamp stamp, uint16_t version) {
     using durability::RecordUse;
     work::CallRecord record{};
     uint32_t task_index = 0;
     uint32_t call_index = 0;
-    if (!work::read_call_record(model_.workspace, body, size, record) ||
+    if (!read_journal_call(model_, body, size, version, record) ||
         record.state.latest.boot_epoch != stamp.boot_epoch ||
         record.state.latest.transition.commit_seq != stamp.transition.commit_seq ||
         record.state.latest.transition.transition_id != stamp.transition.transition_id ||

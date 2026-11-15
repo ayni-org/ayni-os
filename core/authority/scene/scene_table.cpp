@@ -181,9 +181,8 @@ void Scenes::apply(const SceneChange &change, const PreparedSceneChange &prepare
         states_[index] = next;
     }
 }
-ayni_status_t Scenes::authorize(ayni_string_v1 id, uint32_t version, ayni_string_v1 capability,
-                                uint32_t capability_version, ayni_bytes_v1 arguments,
-                                uint64_t durable_seq, uint32_t &definition_index) const {
+ayni_status_t Scenes::current(ayni_string_v1 id, uint32_t version, uint64_t durable_seq,
+                              uint32_t &definition_index) const {
     uint32_t configured = 0;
     uint32_t saved = 0;
     if (!find_definition(id, configured) || !find_state(id, saved) ||
@@ -195,6 +194,17 @@ ayni_status_t Scenes::authorize(ayni_string_v1 id, uint32_t version, ayni_string
     }
     if (states_[saved].stamp.commit_seq > durable_seq) {
         return AYNI_BUSY;
+    }
+    definition_index = configured;
+    return AYNI_OK;
+}
+ayni_status_t Scenes::authorize(ayni_string_v1 id, uint32_t version, ayni_string_v1 capability,
+                                uint32_t capability_version, ayni_bytes_v1 arguments,
+                                uint64_t durable_seq, uint32_t &definition_index) const {
+    uint32_t configured = 0;
+    const auto status = current(id, version, durable_seq, configured);
+    if (status != AYNI_OK) {
+        return status;
     }
     const auto &definition = definitions_[configured];
     const auto *bytes = definition_bytes(configured);

@@ -83,7 +83,7 @@ class CallTableTest : public ::testing::Test {
     void dispatch() {
         insert();
         ASSERT_EQ(calls.prepare(index, stamp(2)), AYNI_OK);
-        ASSERT_EQ(calls.begin_dispatch(index, {boot, 5}, stamp(3), 2), AYNI_OK);
+        ASSERT_EQ(calls.begin_dispatch(index, {boot, 5}, stamp(3)), AYNI_OK);
         ASSERT_TRUE(calls.claim_dispatch(index, boot, 3));
     }
     std::vector<uint8_t> encoded() const {
@@ -122,7 +122,7 @@ TEST_F(CallTableTest, skipped_wait_encodes_non_delivery_and_does_not_allow_a_dis
     EXPECT_EQ(decoded.state.attempt.request_id, 0U);
     EXPECT_FALSE(decoded.action.has_value());
     EXPECT_EQ(ayni::kernel::WorkReplay::classify_header(
-                  {call_record_type, static_cast<uint16_t>(call_record_version + 1),
+                  {call_record_type, static_cast<uint16_t>(call_delta_version + 1),
                    ayni::durability::record_required, 0}),
               ayni::durability::RecordUse::unknown);
     calls.clear();
@@ -209,13 +209,12 @@ TEST_F(CallTableTest, invalid_admission_identity_and_stamps_leave_the_slot_uncla
     EXPECT_EQ(calls.size(), 1U);
 }
 
-TEST_F(CallTableTest, both_durable_barriers_precede_the_only_dispatch_claim) {
+TEST_F(CallTableTest, whole_prepared_dispatch_prefix_precedes_the_only_dispatch_claim) {
     insert();
     EXPECT_FALSE(calls.claim_dispatch(index, boot, UINT64_MAX));
     ASSERT_EQ(calls.prepare(index, stamp(2)), AYNI_OK);
-    EXPECT_EQ(calls.begin_dispatch(index, {boot, 5}, stamp(3), 1), AYNI_BUSY);
-    EXPECT_EQ(calls.state(index).attempt.request_id, 0U);
-    ASSERT_EQ(calls.begin_dispatch(index, {boot, 5}, stamp(3), 2), AYNI_OK);
+    // ADR-0104: preparation and dispatch remain ordered, with one final durable claim.
+    ASSERT_EQ(calls.begin_dispatch(index, {boot, 5}, stamp(3)), AYNI_OK);
     EXPECT_FALSE(calls.claim_dispatch(index, boot, 2));
     EXPECT_TRUE(calls.claim_dispatch(index, boot, 3));
     EXPECT_FALSE(calls.claim_dispatch(index, boot, 3));
@@ -336,7 +335,7 @@ TEST_F(CallTableTest, abandoned_outcome_retains_identity_and_cannot_be_retried_o
     ASSERT_EQ(calls.finish(::ayni::test::codec_workspace(), index, unknown, stamp(4)), AYNI_OK);
     EXPECT_EQ(calls.action(index)->phase, ActionPhase::result_unknown);
     EXPECT_FALSE(calls.can_retire_task(identity.task_id, UINT64_MAX));
-    EXPECT_EQ(calls.begin_dispatch(index, {boot, 6}, stamp(5), 4), AYNI_INVALID_STATE);
+    EXPECT_EQ(calls.begin_dispatch(index, {boot, 6}, stamp(5)), AYNI_INVALID_STATE);
     EXPECT_FALSE(calls.claim_dispatch(index, boot, UINT64_MAX));
     EXPECT_EQ(calls.state(index).attempt.request_id, 5U);
 }
@@ -421,7 +420,7 @@ TEST_F(CallTableTest, rejected_lifecycle_operations_preserve_acceptance_and_acti
     };
     reject([&] { return calls.progress(index, 1, stamp(2)); });
     reject([&] { return calls.rejected_not_retained(index, stamp(2)); });
-    reject([&] { return calls.begin_dispatch(index, {boot, 1}, stamp(2), 1); });
+    reject([&] { return calls.begin_dispatch(index, {boot, 1}, stamp(2)); });
     reject([&] { return calls.prepare(index, stamp(1)); });
     auto stale = stamp(2);
     --stale.boot_epoch;
@@ -435,9 +434,9 @@ TEST_F(CallTableTest, rejected_lifecycle_operations_preserve_acceptance_and_acti
     ASSERT_EQ(calls.prepare(index, stamp(2)), AYNI_OK);
     reject([&] { return calls.prepare(index, stamp(3)); });
     reject([&] { return calls.progress(index, 1, stamp(3)); });
-    reject([&] { return calls.begin_dispatch(index, {boot, 0}, stamp(3), 2); });
-    reject([&] { return calls.begin_dispatch(index, {boot + 1, 1}, stamp(3), 2); });
-    ASSERT_EQ(calls.begin_dispatch(index, {boot, 1}, stamp(3), 2), AYNI_OK);
+    reject([&] { return calls.begin_dispatch(index, {boot, 0}, stamp(3)); });
+    reject([&] { return calls.begin_dispatch(index, {boot + 1, 1}, stamp(3)); });
+    ASSERT_EQ(calls.begin_dispatch(index, {boot, 1}, stamp(3)), AYNI_OK);
     ASSERT_TRUE(calls.claim_dispatch(index, boot, 3));
     reject([&] { return calls.cancel_response(index, AYNI_CALL_CANNOT_CANCEL, stamp(4)); });
     reject([&] { return calls.progress(index, 0, stamp(4)); });
@@ -484,7 +483,7 @@ TEST_F(CallTableTest, full_record_codec_roundtrips_acceptance_barrier_and_termin
     roundtrip();
     ASSERT_EQ(calls.prepare(index, stamp(2)), AYNI_OK);
     roundtrip();
-    ASSERT_EQ(calls.begin_dispatch(index, {boot, 5}, stamp(3), 2), AYNI_OK);
+    ASSERT_EQ(calls.begin_dispatch(index, {boot, 5}, stamp(3)), AYNI_OK);
     roundtrip();
     ASSERT_TRUE(calls.claim_dispatch(index, boot, 3));
     ASSERT_EQ(
@@ -494,6 +493,42 @@ TEST_F(CallTableTest, full_record_codec_roundtrips_acceptance_barrier_and_termin
             stamp(4)),
         AYNI_OK);
     roundtrip();
+}
+
+// ADR-0104 / schema 10: mutable deltas reuse original identities/contracts and normalized input.
+TEST_F(CallTableTest, delta_roundtrips_preparation_dispatch_and_result_without_repeating_input) {
+    insert();
+    auto previous = calls.record(index);
+    const auto check = [&] {
+        const auto current = calls.record(index);
+        std::vector<uint8_t> bytes(ayni::work::call_delta_size(current));
+        ayni::work::write_call_delta(current, bytes.data());
+        CallRecord decoded{};
+        ASSERT_TRUE(ayni::work::read_call_delta(::ayni::test::codec_workspace(), previous,
+                                                bytes.data(), static_cast<uint32_t>(bytes.size()),
+                                                decoded));
+        EXPECT_EQ(decoded.identity.call_id, current.identity.call_id);
+        EXPECT_EQ(decoded.input.data, previous.input.data);
+        EXPECT_EQ(decoded.state.latest.transition.commit_seq,
+                  current.state.latest.transition.commit_seq);
+        EXPECT_EQ(decoded.state.outcome, current.state.outcome);
+        EXPECT_EQ(std::string(decoded.result.data, decoded.result.size),
+                  std::string(current.result.data, current.result.size));
+        EXPECT_LT(bytes.size(), call_record_size(current));
+        previous = current;
+    };
+    ASSERT_EQ(calls.prepare(index, stamp(2)), AYNI_OK);
+    check();
+    ASSERT_EQ(calls.begin_dispatch(index, {boot, 5}, stamp(3)), AYNI_OK);
+    check();
+    ASSERT_TRUE(calls.claim_dispatch(index, boot, 3));
+    ASSERT_EQ(
+        calls.finish(
+            ::ayni::test::codec_workspace(), index,
+            {AYNI_CALL_COMPLETED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::complete, {"answer", 6}},
+            stamp(4)),
+        AYNI_OK);
+    check();
 }
 
 // C-CALL-008: classified failure does not resolve explicitly unknown effects.
@@ -693,7 +728,7 @@ TEST_F(CallTableTest, tool_call_list_result_is_retained_and_round_trips_as_v4) {
               AYNI_OK);
     EXPECT_EQ(table.record(index).contract.result_format, AYNI_CALL_RESULT_TOOL_CALLS);
     ASSERT_EQ(table.prepare(index, stamp(2)), AYNI_OK);
-    ASSERT_EQ(table.begin_dispatch(index, {boot, 5}, stamp(3), 2), AYNI_OK);
+    ASSERT_EQ(table.begin_dispatch(index, {boot, 5}, stamp(3)), AYNI_OK);
     ASSERT_TRUE(table.claim_dispatch(index, boot, 3));
 
     const ayni::test::TextValue input({"now", 3});
@@ -745,7 +780,7 @@ TEST_F(CallTableTest, tool_call_list_result_is_retained_and_round_trips_as_v4) {
     write_call_record(record, bytes.data());
     CallRecord decoded{};
     EXPECT_EQ(ayni::kernel::WorkReplay::classify_header(
-                  {call_record_type, static_cast<uint16_t>(call_record_version + 1),
+                  {call_record_type, static_cast<uint16_t>(call_delta_version + 1),
                    ayni::durability::record_required, 0}),
               ayni::durability::RecordUse::unknown);
     ASSERT_TRUE(read_call_record(::ayni::test::codec_workspace(), bytes.data(),
@@ -1317,7 +1352,7 @@ TEST_F(CallTableTest, replay_cannot_reopen_an_unknown_subscription_with_a_legal_
     const auto accepted = calls.record(index);
     ASSERT_TRUE(CallTable::valid_record(::ayni::test::codec_workspace(), accepted));
     ASSERT_EQ(calls.prepare(index, stamp(2)), AYNI_OK);
-    ASSERT_EQ(calls.begin_dispatch(index, {boot, 5}, stamp(3), 2), AYNI_OK);
+    ASSERT_EQ(calls.begin_dispatch(index, {boot, 5}, stamp(3)), AYNI_OK);
     ASSERT_TRUE(calls.claim_dispatch(index, boot, 3));
     ASSERT_EQ(
         calls.finish(
@@ -1335,7 +1370,7 @@ TEST_F(CallTableTest, replay_cannot_reopen_an_unknown_subscription_with_a_legal_
     CallTable alternate(alternate_storage.data(), limits);
     ASSERT_EQ(alternate.restore_validated(accepted), AYNI_OK);
     ASSERT_EQ(alternate.prepare(index, stamp(2)), AYNI_OK);
-    ASSERT_EQ(alternate.begin_dispatch(index, {boot, 5}, stamp(3), 2), AYNI_OK);
+    ASSERT_EQ(alternate.begin_dispatch(index, {boot, 5}, stamp(3)), AYNI_OK);
     ASSERT_TRUE(alternate.claim_dispatch(index, boot, 3));
     ASSERT_EQ(alternate.stop_subscription(index, CallCancelCause::shutdown,
                                           SubscriptionDesired::open, stamp(4)),

@@ -150,21 +150,23 @@ ayni_status_t encode_admitted_business(ayni::foundation::Workspace &workspace,
     return AYNI_OK;
 }
 
-ayni_status_t decode_business(ayni::foundation::Workspace &workspace, ayni_bytes_v1 domain,
-                              ayni_bytes_v1 body, DecodedBusiness &out) {
+namespace {
+ayni_status_t check_business_header(ayni_bytes_v1 body) {
     if (body.data == nullptr || body.size < sizeof(uint32_t) ||
         body.size > business_encoding_bytes_max) {
         return AYNI_INVALID_ARGUMENT;
     }
     foundation::BodyReader reader(body);
-    if (reader.u32() != business_encoding_version) {
-        return AYNI_UNSUPPORTED_VERSION;
-    }
-    auto value_lease = workspace.make<DecodedBusiness>();
-    if (!value_lease) {
-        return AYNI_CAPACITY_EXCEEDED;
-    }
-    auto &value = *value_lease;
+    return reader.u32() == business_encoding_version ? AYNI_OK : AYNI_UNSUPPORTED_VERSION;
+}
+using SchemaReader = ayni_status_t (*)(ayni::foundation::Workspace &, ayni_bytes_v1,
+                                       DecodedSchema &);
+// The layout is read once here. External/replay callers validate each schema; a live immutable
+// owner uses its already admitted bytes. No caller can supply a replacement catalog or domain.
+ayni_status_t read_business_body(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body,
+                                 DecodedBusiness &value, SchemaReader schema_reader) {
+    foundation::BodyReader reader(body);
+    static_cast<void>(reader.u32()); // Both callers admitted the header before taking scratch.
     if (!read_execution_contract(reader, value.execution) ||
         !read_subscription(reader, value.execution)) {
         return AYNI_INVALID_ARGUMENT;
@@ -179,17 +181,37 @@ ayni_status_t decode_business(ayni::foundation::Workspace &workspace, ayni_bytes
         if (!reader.valid()) {
             return AYNI_INVALID_ARGUMENT;
         }
-        const auto decoded = decode_schema(workspace, bytes, *schema);
+        const auto decoded = schema_reader(workspace, bytes, *schema);
         if (decoded != AYNI_OK) {
             return decoded;
         }
     }
+    if (!read_projections(reader, value) || !reader.ok()) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    value.execution.business_contract = body;
+    return AYNI_OK;
+}
+} // namespace
+
+ayni_status_t decode_business(ayni::foundation::Workspace &workspace, ayni_bytes_v1 domain,
+                              ayni_bytes_v1 body, DecodedBusiness &out) {
+    const auto header = check_business_header(body);
+    if (header != AYNI_OK) {
+        return header;
+    }
+    auto value_lease = workspace.make<DecodedBusiness>();
+    if (!value_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &value = *value_lease;
+    const auto read = read_business_body(workspace, body, value, decode_schema);
+    if (read != AYNI_OK) {
+        return read;
+    }
     if ((value.execution.result_format == call_text_result_format ||
          value.execution.result_format == call_tool_calls_result_format) &&
         value.result.nodes[0].kind != AYNI_VALUE_TEXT) {
-        return AYNI_INVALID_ARGUMENT;
-    }
-    if (!read_projections(reader, value) || !reader.ok()) {
         return AYNI_INVALID_ARGUMENT;
     }
     ProjectionShape shape;
@@ -197,9 +219,25 @@ ayni_status_t decode_business(ayni::foundation::Workspace &workspace, ayni_bytes
     if (admitted != AYNI_OK) {
         return admitted;
     }
-    value.execution.business_contract = body;
     out = value;
     return AYNI_OK;
+}
+
+ayni_status_t read_admitted_business(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body,
+                                     DecodedBusiness &out) {
+    const auto header = check_business_header(body);
+    if (header != AYNI_OK) {
+        return header;
+    }
+    auto candidate = workspace.make<DecodedBusiness>();
+    if (!candidate) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    const auto status = read_business_body(workspace, body, *candidate, read_admitted_schema);
+    if (status == AYNI_OK) {
+        out = *candidate;
+    }
+    return status;
 }
 
 ayni_status_t store_business_contract(ayni::foundation::Workspace &workspace,

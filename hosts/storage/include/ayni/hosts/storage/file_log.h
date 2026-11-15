@@ -34,6 +34,7 @@
 #define AYNI_HOSTS_STORAGE_FILE_LOG_H
 
 #include <array>
+#include <ayni/ayni.h>
 #include <ayni/hosts/storage/files.h>
 #include <cstddef>
 #include <cstdint>
@@ -85,6 +86,9 @@ class FileLog {
     // UNKNOWN when the sync failed; a retry rescans and rewrites the entire
     // uncertain frame before proving it durable. size > 0.
     Result append(uint64_t commit_seq, const uint8_t *data, uint32_t size);
+    // Consecutive complete frames share one final sync. Failure/UNKNOWN confirms no prefix;
+    // exact same-identity replay reconfirms any frames already present before appending the rest.
+    Result append_many(uint64_t first_seq, const ayni_bytes_v1 *batches, uint32_t count);
     // I/O thread only. Lifetime header probes in append's duplicate search, including failures;
     // observational only, never used to authorize or skip a scan.
     uint64_t append_scan_frames() const { return append_scan_frames_; }
@@ -108,6 +112,8 @@ class FileLog {
     void observe_writer(uint32_t epoch) { writer_epoch_ = epoch; }
 
   private:
+    enum class Sync { immediate, deferred };
+    Result append_frame(uint64_t, const uint8_t *, uint32_t, Sync);
     struct Frame {
         uint64_t commit_seq;
         uint32_t payload_size;
@@ -150,6 +156,9 @@ class FileLog {
     int log_handle() const { return opened_ ? opened_->log : Files::invalid_handle; }
     Files &files_; // Exclusive namespace adapter; no OS/SDK representation lives here.
     uint64_t append_scan_frames_ = 0;
+    // Maximum sequence among confirmed whole frames. Conservative across trim; open/rescan
+    // rebuild it before any append fast path. Never authorizes a retry or an uncertain tail.
+    uint64_t maximum_frame_seq_ = 0;
     std::array<char, 64> file_name_{};
     uint32_t writer_epoch_ = 1;
     uint64_t file_size_ = 0;   // at open, for the scan

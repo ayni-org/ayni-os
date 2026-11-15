@@ -59,7 +59,18 @@ ayni_status_t encode_business_input(ayni::foundation::Workspace &workspace, ayni
     if (status != AYNI_OK) {
         return status;
     }
-    status = catalog::validate_value(input);
+    return encode_business_input_with_proof(workspace, business, contract, input, out, capacity,
+                                            size, normalized_out);
+}
+
+// Reuse only the immutable proof; business values are validated afresh for this admission.
+ayni_status_t encode_business_input_with_proof(ayni::foundation::Workspace &workspace,
+                                               const catalog::DecodedBusiness &business,
+                                               const catalog::CallContract &contract,
+                                               const ayni_value_v1 &input, uint8_t *out,
+                                               uint32_t capacity, uint32_t &size,
+                                               catalog::DecodedValue *normalized_out) {
+    auto status = catalog::validate_value(input);
     if (status != AYNI_OK) {
         return status;
     }
@@ -83,32 +94,27 @@ ayni_status_t encode_business_input(ayni::foundation::Workspace &workspace, ayni
     return status;
 }
 
-// Saved business input must already include defaults and canonical ordering;
-// restart may validate it, but may never reinterpret or fill a new default.
-ayni_status_t read_call_input(ayni::foundation::Workspace &workspace, ayni_bytes_v1 domain,
-                              ayni_bytes_v1 body, const catalog::CallContract &contract,
-                              CallInputView &out) {
+namespace {
+// Shared boundary preflight preserves the public failure order before proof decoding.
+ayni_status_t check_saved_input(const catalog::CallContract &contract, ayni_bytes_v1 body) {
     if (contract.input_format != catalog::call_value_input_format) {
         return AYNI_UNSUPPORTED_VERSION;
     }
     if (body.size > contract.input_text_limit) {
         return AYNI_CAPACITY_EXCEEDED;
     }
-    auto business_lease = workspace.make<catalog::DecodedBusiness>();
-    if (!business_lease) {
-        return AYNI_CAPACITY_EXCEEDED;
-    }
-    auto &business = *business_lease;
-    auto status = catalog::decode_business(workspace, domain, contract.business_contract, business);
-    if (status != AYNI_OK) {
-        return status;
-    }
+    return AYNI_OK;
+}
+// Canonical input and first-row projection are derived once from the original admitted proof.
+ayni_status_t read_input_body(ayni::foundation::Workspace &workspace,
+                              const catalog::DecodedBusiness &business, ayni_bytes_v1 domain,
+                              ayni_bytes_v1 body, CallInputView &out) {
     auto candidate_lease = workspace.make<CallInputView>();
     if (!candidate_lease) {
         return AYNI_CAPACITY_EXCEEDED;
     }
     auto &candidate = *candidate_lease;
-    status =
+    auto status =
         catalog::read_normalized_value(workspace, business.input.view(), body, candidate.value);
     if (status != AYNI_OK) {
         return status;
@@ -129,4 +135,38 @@ ayni_status_t read_call_input(ayni::foundation::Workspace &workspace, ayni_bytes
     out.arguments = {out.projection.data(), projected};
     return AYNI_OK;
 }
+} // namespace
+
+// Saved business input must already include defaults and canonical ordering;
+// restart may validate it, but may never reinterpret or fill a new default.
+ayni_status_t read_call_input(ayni::foundation::Workspace &workspace, ayni_bytes_v1 domain,
+                              ayni_bytes_v1 body, const catalog::CallContract &contract,
+                              CallInputView &out) {
+    const auto admitted = check_saved_input(contract, body);
+    if (admitted != AYNI_OK) {
+        return admitted;
+    }
+    auto business_lease = workspace.make<catalog::DecodedBusiness>();
+    if (!business_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    auto &business = *business_lease;
+    auto status = catalog::decode_business(workspace, domain, contract.business_contract, business);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    return read_input_body(workspace, business, domain, body, out);
+}
+
+// Saved input still requires normalization/projection checks when its contract was already
+// validated.
+ayni_status_t read_call_input_with_proof(ayni::foundation::Workspace &workspace,
+                                         const catalog::DecodedBusiness &business,
+                                         ayni_bytes_v1 domain, ayni_bytes_v1 body,
+                                         const catalog::CallContract &contract,
+                                         CallInputView &out) {
+    const auto admitted = check_saved_input(contract, body);
+    return admitted == AYNI_OK ? read_input_body(workspace, business, domain, body, out) : admitted;
+}
+
 } // namespace ayni::work

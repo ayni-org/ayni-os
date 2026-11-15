@@ -92,6 +92,7 @@ ayni_status_t operation_result(Workspace &workspace, const ayni_operation_info_v
     ayni_task_call_result_v1 original{};
     const ayni_task_call_result_v1 *body = nullptr;
     ArchivedResult archived;
+    std::string owned;
     if (info.call.outcome && info.call.outcome != AYNI_CALL_ABANDONED &&
         info.call.effect != AYNI_CALL_EFFECT_UNKNOWN) {
         const auto read = result(snapshot, {info.step_key.data, info.step_key.size}, original);
@@ -99,6 +100,13 @@ ayni_status_t operation_result(Workspace &workspace, const ayni_operation_info_v
             return read;
         }
         if (read == AYNI_OK) {
+            const auto resolved = resolve_result_body(*config.bodies, original, owned);
+            if (resolved == AYNI_NOT_READY) {
+                output.disposition = AYNI_POLICY_OUTPUT_DEFER;
+            }
+            if (resolved != AYNI_OK) {
+                return resolved;
+            }
             body = &original;
             if (config.history.archive) {
                 const auto status =

@@ -50,7 +50,7 @@ static ayni_status_t texts(Profile &p, Clock c, const strategies::ConversationRe
     const auto loaded = until(p, c, [&] {
         status = strategies::Conversation::text(bodies, record.summary, out.summary);
         if (status == AYNI_OK) {
-            status = strategies::Conversation::text(bodies, record.history, out.history);
+            status = strategies::Conversation::history(bodies, record, out.history);
         }
         if (status == AYNI_OK) {
             status = strategies::Conversation::rounds(bodies, record, out.rounds);

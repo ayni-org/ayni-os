@@ -116,6 +116,8 @@ struct Profile::Impl {
                   host.ctx, host.monotonic_now_us, bodies.store()),
           summary(providers::fixture_model::Variant::a, providers::fixture_model::Service::summary,
                   host.ctx, host.monotonic_now_us, bodies.store()) {}
+    strategies::Persistence persistence =
+        strategies::Persistence::durable; // Deployment-selected save policy.
     ayni_host_v1 host;
     hosts::storage::ValueAdmission<value_request_capacity> value_admission;
     hosts::storage::FileValuePort values; // All outer values use the same bounded admission.
@@ -358,6 +360,10 @@ struct Profile::Impl {
             c.limits = {harness.context_window_tokens, harness.max_output_tokens,
                         harness.compact_target_tokens, harness.tool_result_max_tokens};
             c.bodies = bodies.store();
+            c.persistence = persistence;
+            if (persistence == strategies::Persistence::background) {
+                c.reply_encoding = c.summary_reply_encoding = model::ReplyEncoding::framed;
+            }
             c.history = {&bodies, runtime::FileBodies::ready, nullptr, nullptr};
             c.model.kind = c.summary.kind = AYNI_POLICY_REQUEST_MODEL;
             c.model.binding_id = text(model_bindings[at]);
@@ -456,7 +462,8 @@ ayni_status_t Profile::memory_requirements(Memory &out) {
     return status;
 }
 ayni_status_t Profile::create_in(void *data, size_t bytes, const ayni_host_v1 &host,
-                                 hosts::storage::FileValuePort files) {
+                                 hosts::storage::FileValuePort files,
+                                 strategies::Persistence persistence) {
     if (impl_) {
         return AYNI_INVALID_STATE;
     }
@@ -478,6 +485,18 @@ ayni_status_t Profile::create_in(void *data, size_t bytes, const ayni_host_v1 &h
     status = impl_->bodies.configure(impl_->values);
     if (status != AYNI_OK) {
         return status;
+    }
+    impl_->persistence = persistence;
+    if (persistence == strategies::Persistence::background) {
+        constexpr size_t background_cache_bytes = 2U * 1024U * 1024U;
+        status = impl_->bodies.set_cache_limit(background_cache_bytes);
+        if (status != AYNI_OK) {
+            return status;
+        }
+        impl_->bodies.set_shared_call_results();
+        impl_->model_a.use_staged_framed_replies();
+        impl_->model_b.use_staged_framed_replies();
+        impl_->summary.use_staged_framed_replies();
     }
     auto config = configuration();
     size_t kernel_bytes = 0, alignment = 0;
@@ -535,13 +554,24 @@ ayni_status_t Profile::tick() {
         return AYNI_INVALID_STATE;
     }
     auto &self = *impl_;
+    auto info = initialized<ayni_kernel_info_v1>();
+    auto status = ayni_get_kernel_info(self.kernel, &info);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    if (info.lifecycle == AYNI_LIFECYCLE_STOPPED) {
+        // Core stop ends device/model dispatch. Body chunks still owned by the
+        // composition must drain before stopped() permits Host close (ADR-0104).
+        runtime::FileBodies::ready(&self.bodies, 0);
+        return runtime::FileBodies::status(&self.bodies);
+    }
     for (auto *model : {&self.model_a, &self.model_b, &self.summary}) {
-        const auto status = model->advance();
-        if (status != AYNI_OK) {
-            return status;
+        const auto advanced = model->advance();
+        if (advanced != AYNI_OK) {
+            return advanced;
         }
     }
-    auto status = self.executor.advance();
+    status = self.executor.advance();
     if (status == AYNI_OK) {
         status = self.software.advance();
     }
@@ -549,10 +579,14 @@ ayni_status_t Profile::tick() {
         return status;
     }
     status = ayni_step(self.kernel, step_units, step_us, nullptr);
-    auto info = initialized<ayni_kernel_info_v1>();
     if (status == AYNI_OK) {
         status = ayni_get_kernel_info(self.kernel, &info);
     }
+    if (status != AYNI_OK) {
+        return status;
+    }
+    runtime::FileBodies::ready(&self.bodies, 0);
+    status = runtime::FileBodies::status(&self.bodies);
     if (status != AYNI_OK) {
         return status;
     }
@@ -592,6 +626,17 @@ ayni_status_t Profile::tick() {
     }
     // A held Task reports its status, while other Agent file/ACK bridges still
     // progress. Core scheduling is independent of this outer publication loop.
+    auto privacy = initialized<ayni_privacy_info_v1>();
+    status = ayni_get_privacy_status(self.kernel, self.session, &privacy);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    for (auto &loop : self.loops) {
+        status = loop.maintain(self.kernel, privacy);
+        if (status != AYNI_OK) {
+            return status;
+        }
+    }
     ayni_status_t first = AYNI_OK;
     for (uint32_t at = 0; at < agent_count; ++at) {
         if (self.conversation_bound[at]) {
@@ -635,9 +680,7 @@ ayni_status_t Profile::open_conversations(conversation::UnfinishedTurn unfinishe
         if (context.commit_seq > kernel_info.durable_seq) {
             return AYNI_BUSY;
         }
-        if (!context.usable || context.pending_action != AYNI_CONTEXT_IDLE) {
-            return AYNI_NOT_READY;
-        }
+        // Session owns the allowed context phases, including a completed background publication.
         status = self.conversations[at].configure({self.kernel,
                                                    self.session,
                                                    self.instances[at],
@@ -646,7 +689,8 @@ ayni_status_t Profile::open_conversations(conversation::UnfinishedTurn unfinishe
                                                    self.values,
                                                    self.bodies.collection(),
                                                    {&self, Impl::command},
-                                                   unfinished});
+                                                   unfinished,
+                                                   self.persistence});
         if (status != AYNI_OK) {
             return status;
         }
@@ -661,16 +705,18 @@ ayni_status_t Profile::begin_shutdown() {
 bool Profile::stopped() const {
     auto info = initialized<ayni_kernel_info_v1>();
     return impl_ && ayni_get_kernel_info(impl_->kernel, &info) == AYNI_OK &&
-           info.lifecycle == AYNI_LIFECYCLE_STOPPED;
+           info.lifecycle == AYNI_LIFECYCLE_STOPPED && impl_->bodies.idle() &&
+           runtime::FileBodies::status(&impl_->bodies) == AYNI_OK;
 }
 ayni_status_t Profile::destroy() {
     if (!impl_) {
         return AYNI_OK;
     }
     if (impl_->model_a.pending() || impl_->model_b.pending() || impl_->summary.pending() ||
-        impl_->software.pending() || impl_->executor.pending()) {
+        impl_->software.pending() || impl_->executor.pending() || !impl_->bodies.idle()) {
         return AYNI_BUSY;
     }
+    const auto body_status = runtime::FileBodies::status(&impl_->bodies);
     const auto status = impl_->kernel ? ayni_destroy(impl_->kernel) : AYNI_OK;
     if (status != AYNI_OK) {
         return status;
@@ -687,7 +733,7 @@ ayni_status_t Profile::destroy() {
     }
     impl_->~Impl();
     impl_ = nullptr;
-    return AYNI_OK;
+    return body_status; // Safe disposal ends the handle, while preserving the failed save status.
 }
 uint64_t Profile::model_executions(uint32_t index) const {
     return impl_ && index < agent_count

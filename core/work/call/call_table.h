@@ -165,9 +165,9 @@ class CallTable {
     void set_runtime_retention(const void *context, bool (*retains)(const void *, uint64_t));
     // Resource admission precedes action preparation; no Provider callback is possible here.
     ayni_status_t prepare(uint32_t index, ActionStamp stamp);
-    // Persist the selected attempt and DISPATCHING barrier together, after preparation is durable.
-    ayni_status_t begin_dispatch(uint32_t index, ayni_attempt_ref_v1 attempt, ActionStamp stamp,
-                                 uint64_t durable_seq);
+    // Persist the selected attempt and DISPATCHING barrier together, after preparation is queued in
+    // order.
+    ayni_status_t begin_dispatch(uint32_t index, ayni_attempt_ref_v1 attempt, ActionStamp stamp);
     // One volatile claim immediately before callback, following final owner checks.
     bool claim_dispatch(uint32_t index, uint64_t boot_epoch, uint64_t durable_seq);
     // Complete a call proven never handed to a Provider, including a queued call.
@@ -186,6 +186,9 @@ class CallTable {
     ayni_status_t finish(ayni::foundation::Workspace &workspace, uint32_t index,
                          const CallResult &result, ActionStamp stamp,
                          ResultDependencies dependencies = ResultDependencies::current);
+    // Share an already validated normalized terminal payload. The caller copied bytes into
+    // the store first; failure preserves the inline body. No outcome/authorization changes.
+    ayni_status_t externalize_result(uint32_t index, const ayni_body_ref_v1 &ref);
     // Owner management CAS, independent of the revoked execution Grant.
     ayni_status_t check_query(uint32_t index, uint32_t expected_revision) const;
     uint32_t
@@ -303,6 +306,8 @@ class CallTable {
     static CallResult
     usable_result(const CallResult &validated,
                   ResultDependencies dependencies); // Never normalizes invalid Provider evidence.
+    // Intrinsic saved-body shape; external bytes are verified by their public reader.
+    static bool valid_result_body(foundation::Workspace &, const CallRecord &);
     static bool valid_result(const CallResult &result); // Shared execution/query result shape.
     // Body of either kind within this contract's result bound, before any mutation.
     static ayni_status_t check_body(ayni::foundation::Workspace &workspace,

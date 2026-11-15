@@ -48,6 +48,25 @@ const uint8_t *JournalRing::front(uint32_t &out_size) const {
     return buffer_ + first_start_ + entry_overhead;
 }
 
+const uint8_t *JournalRing::peek(uint32_t ordinal, uint32_t &out_size) const {
+    auto at = first_start_;
+    auto end = first_end_;
+    bool second = false;
+    while (at < end) {
+        const auto size = foundation::load_le32(buffer_ + at);
+        if (ordinal-- == 0U) {
+            out_size = size;
+            return buffer_ + at + entry_overhead;
+        }
+        at += entry_overhead + size;
+        if (at == end && wrapped_ && !second) {
+            at = 0;
+            end = second_end_;
+            second = true;
+        }
+    }
+    return nullptr;
+}
 void JournalRing::pop_front() {
     // The acknowledged Host borrow has ended. Remove the consumed plaintext before reusing
     // its slot; moving a cursor alone would leave old private bytes in the shared arena.

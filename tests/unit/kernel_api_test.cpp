@@ -170,6 +170,29 @@ TEST_F(KernelApi, memory_requirements_reject_invalid_config) {
     EXPECT_EQ(ayni_kernel_memory_requirements(&config, &size, &align), AYNI_UNSUPPORTED_VERSION);
 }
 
+// ADR-0104 / ABI 0.55: optional body/group ports are validated before Core reads new fields.
+TEST_F(KernelApi, body_descriptors_and_group_ports_have_explicit_layout_and_option_checks) {
+    const auto config = valid_config();
+    auto host = valid_host();
+    ayni_body_store_v1 bodies{};
+    bodies.struct_size = sizeof(bodies);
+    host.bodies = &bodies;
+    ayni_kernel_t *kernel = nullptr;
+    --bodies.struct_size;
+    EXPECT_NE(create(&config, &host, &kernel), AYNI_OK);
+    bodies.struct_size = sizeof(bodies);
+    bodies.reserved = AYNI_BODY_STORE_SHARED_RESULTS;
+    EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
+    bodies.reserved = AYNI_BODY_STORE_SHARED_RESULTS << 1U;
+    EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
+    bodies.reserved = 0;
+    host.storage_append_many = [](void *, const ayni_storage_batch_v1 *, uint32_t,
+                                  ayni_attempt_ref_v1, ayni_completion_t *) {
+        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    };
+    EXPECT_EQ(create(&config, &host, &kernel), AYNI_INVALID_ARGUMENT);
+}
+
 TEST_F(KernelApi, create_in_caller_memory_starts_configuring) {
     const ayni_config_v1 config = valid_config();
     const ayni_host_v1 host = valid_host();

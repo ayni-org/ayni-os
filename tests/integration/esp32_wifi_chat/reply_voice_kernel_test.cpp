@@ -59,8 +59,8 @@ class ReplyVoiceKernel : public testing::Test {
             }
         }
     } bodies;
-    ayni_body_store_v1 body_port{sizeof(body_port), 0, &bodies, Bodies::write, Bodies::read,
-                                 Bodies::release};
+    ayni_body_store_v1 body_port{sizeof(body_port), 0,       &bodies, Bodies::write, Bodies::read,
+                                 Bodies::release,   nullptr, nullptr, nullptr,       nullptr};
     ayni::hosts::sim::Host host;
     ayni::Kernel kernel;
     wifichat::ReplyVoice speech;

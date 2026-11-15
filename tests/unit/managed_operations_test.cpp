@@ -1,6 +1,7 @@
 // C-OP-001/002/003/004, ADR-0086: public fixed-tool round trips with real bounded software
 // execution.
 #include "strategies_fixture.h"
+#include <ayni/ayni.hpp>
 #include <ayni/operation_json.hpp>
 namespace {
 using namespace ayni::test;
@@ -323,5 +324,49 @@ TEST(OperationTokens, copied_sample_preserves_full_width_identity_time_and_integ
                   std::string::npos);
     }
     EXPECT_NE(body.find("\"value\":\"-9223372036854775808\""), std::string::npos);
+}
+// ADR-0104: ended Tasks no longer decide, so owner maintenance releases their private copies.
+TEST_F(ManagedOperations, cache_maintenance_retires_cancelled_turn_without_another_decision) {
+    const auto task = start();
+    ASSERT_EQ(loop.cached_turns(), 1U);
+    auto privacy = ayni::initialized<ayni_privacy_info_v1>();
+    ASSERT_EQ(ayni_get_privacy_status(work.kernel(), work.session(), &privacy), AYNI_OK);
+    ASSERT_EQ(loop.maintain(work.kernel(), privacy), AYNI_OK);
+    EXPECT_EQ(loop.cached_turns(), 1U);
+    ASSERT_EQ(task_change(AYNI_INTENT_TASK_CANCEL, task), AYNI_OK);
+    ASSERT_EQ(work.task(task).lifecycle, AYNI_TASK_CANCELLED);
+    ASSERT_EQ(loop.maintain(work.kernel(), privacy), AYNI_OK);
+    EXPECT_EQ(loop.cached_turns(), 0U);
+}
+// C-MEM-008/011 / ADR-0104: the cache owner's public privacy-progress input clears
+// dormant WAITING copies; this adapter unit does not assert an abnormal recovery path.
+TEST_F(ManagedOperations, privacy_progress_clears_waiting_cache_and_preserves_later_valid_turns) {
+    const auto task = start();
+    command(0, {{"operation", "start"},
+                {"binding_id", "software.sum"},
+                {"binding_version", "1"},
+                {"arguments", "512"}});
+    const auto reference = token(pending.back().text, "o1:");
+    command(1, {{"operation", "read"}, {"operation_ref", reference}});
+    const auto after = token(pending.back().text, "f1:");
+    command(2, {{"operation", "wait"},
+                {"operation_ref", reference},
+                {"after", after},
+                {"timeout_ms", "30000"}});
+    ASSERT_EQ(work.task(task).lifecycle, AYNI_TASK_WAITING);
+    ASSERT_EQ(loop.cached_turns(), 1U);
+    auto privacy = ayni::initialized<ayni_privacy_info_v1>();
+    privacy.phase = AYNI_PRIVACY_ERASING;
+    privacy.request_seq = 1;
+    ASSERT_EQ(loop.maintain(work.kernel(), privacy), AYNI_OK);
+    EXPECT_EQ(loop.cached_turns(), 0U);
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_WAITING); // Only representations are retired.
+    privacy.phase = AYNI_PRIVACY_COMPLETE;
+    ASSERT_EQ(loop.maintain(work.kernel(), privacy), AYNI_OK);
+    start();
+    ASSERT_EQ(loop.cached_turns(), 1U);
+    ASSERT_EQ(loop.maintain(work.kernel(), privacy), AYNI_OK);
+    EXPECT_EQ(loop.cached_turns(),
+              1U); // A settled old privacy generation is not a permanent flush.
 }
 } // namespace

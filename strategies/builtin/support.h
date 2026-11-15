@@ -28,11 +28,14 @@ struct Turn {
     uint64_t base_revision = 0;
     uint64_t memory_id = 0; // Optional explicit source selected for this turn; zero selects none.
     std::string input;
-    std::string definitions;       // Transient request-only tools; regenerated from each snapshot.
-    bool canonical_summary = true; // Turn format 6 offsets address canonical summary data.
-    std::string history;           // record.history's messages, standard framing.
-    std::string summary;           // record.summary.
-    std::vector<Round> rounds;     // record.rounds, oldest first.
+    std::string definitions;    // Transient request-only tools; regenerated from each snapshot.
+    uint32_t history_saved = 0; // Appended prefix already represented by history_index.
+    std::map<std::string, BodyRef>
+        result_views;          // New tool protocol IDs -> derived views of shared Call results.
+    std::string history_index; // Owned small ordered framing/reference index, never full text.
+    std::string history;       // record.history's messages, standard framing.
+    std::string summary;       // record.summary.
+    std::vector<Round> rounds; // record.rounds, oldest first.
     TurnPhase phase = TurnPhase::initial; // Sole owner of current model/group/compaction progress.
     uint32_t model_round = 0;    // Monotone main Call ordinal, never reset on context invalidation.
     uint32_t tool_index = 0;     // Next proposal in the current durable model result.
@@ -62,9 +65,11 @@ ayni_status_t put_body(const ayni_body_store_v1 &bodies, uint64_t scope, ayni_st
                        BodyRef &out);
 ayni_status_t get_body(const ayni_body_store_v1 &bodies, const BodyRef &ref, std::string &out);
 // Retained rounds body codec.
-ayni_status_t encode_rounds(const std::vector<Round> &rounds, std::string &out);
-ayni_status_t decode_rounds(ayni_string_v1 bytes, uint32_t count, uint64_t last_round,
-                            std::vector<Round> &out);
+ayni_status_t encode_rounds(const ayni_body_store_v1 &, uint64_t scope,
+                            const std::vector<Round> &rounds, std::string &out);
+ayni_status_t decode_rounds(const ayni_body_store_v1 &, ayni_string_v1 bytes, uint32_t count,
+                            uint64_t last_round, std::vector<Round> &out,
+                            std::vector<BodyRef> *references = nullptr);
 ayni_string_v1 model_key(uint32_t round, char *buffer);
 ayni_string_v1 function_key(uint64_t source, uint32_t index, char *buffer);
 bool valid_text(ayni_string_v1 value);
@@ -101,6 +106,10 @@ ayni_status_t model_result(Workspace &workspace, const ayni_body_store_v1 &bodie
                            const ayni_task_snapshot_v1 &snapshot, ayni_string_v1 key,
                            ModelResult &out,
                            model::ReplyEncoding encoding = model::ReplyEncoding::text);
+// Resolve the original normalized TEXT/VALUE body for tools, managed reads and archives.
+// owned keeps every returned view alive; model proposal/continuation uses model_result instead.
+ayni_status_t resolve_result_body(const ayni_body_store_v1 &, ayni_task_call_result_v1 &,
+                                  std::string &owned);
 // Proposal index of a resolved list; its strings borrow the list (ayni_tool_call_read).
 ayni_status_t read_proposal(Workspace &workspace, ayni_string_v1 list, uint32_t index,
                             ayni_task_tool_call_v1 &out);

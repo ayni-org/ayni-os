@@ -10,7 +10,7 @@
 
 ## 数据、控制与边界
 
-每个文件包含 `fixture_schema`、`profile`、`case_id`、`experiment_step`、`clauses`、`script`。case_id 与文件名一致：`E2.F0.prepare_torn` 等原步骤名；`HARNESS.S1.*` 专用于运行设施自验证。完整实验步骤必须在计划存在，条款必须已定义。每文件 ≤64 KiB、至多 128 动作、单动作等待 ≤1000 step、正常推进与关闭分别 ≤2000 step、轨迹 ≤20000 条；失败不会提高上限继续跑。
+每个文件包含 `fixture_schema`、`profile`、`case_id`、`experiment_step`、`clauses`、`script`。case_id 与文件名一致：`E2.F0.prepare_torn` 等原步骤名；`HARNESS.S1.*` 专用于运行设施自验证。完整实验步骤必须在计划存在，条款必须已定义。每文件 ≤64 KiB、至多 128 动作、`until` 等待 ≤1000 step、正常推进与关闭分别 ≤2000 step、轨迹 ≤20000 条；失败不会提高上限继续跑。
 
 | 动作 | 控制内容 |
 |---|---|
@@ -20,6 +20,7 @@
 | create | 创建 action、物理 turn 或无触发 folder，显式非零 command_id |
 | steps | 推进明确次数，storage 为 complete 或 held；held 不完成待决存储 |
 | until / expect | 按闭集 metric 等待或即时断言，枚举值必须合法，计数用十进制字符串 |
+| prepare_call | 仅模拟Host：每步前推进FakeClock至少一个写间隔，单item步选中PREPARED已持久且零派发的原场景边界；沿用总step上限，不增加生产等待 |
 | fault | 给模拟 Host 的下一次指定端口请求注入已有 StorageFault；faults_applied 只计实际匹配的请求 |
 | request_query / answer_query | 管理端对原 operation 发起查询；外部计数决定 FOUND，仍在途或已执行时拒绝伪造 NOT_ACCEPTED |
 | execute / receipt | 外部计数副作用与 Provider 回执独立控制；接受请求不执行副作用，重启不重置计数 |
@@ -28,6 +29,8 @@
 附加可选字段 `query_authority=NONE/BEST_EFFORT/AUTHORITATIVE`（默认 AUTHORITATIVE）、`deployment=counter/physical/shared/shared_physical`（默认 counter）选择有限部署并写入 run.json。E2 新动作：`budget`（1～64）、`save_call/same_call`、`retry`、`revoke/cancel_goal`、`read_result`、`conflict_command/expire_command`、`start_recovery/finish_recovery`、`fault_pending/complete_storage/complete_old_writer`、`repeat_receipt/post_old_attempt`、`application_policy`、`exhaust_storage/restore_storage`（实际 Host 容量及明确空间不足原因）。它们均通过原公开契约或模拟属主执行。
 
 `hold_record/cut_record` 只接受固定记录边界，`damage` 只接受 torn_tail/committed；精确 codec 探针仅在测试构建提供，关闭测试明确拒绝，不近似替代。`core_now` 推进 Core 而不走时；`physical` 的闭集动作控制执行端本地周期、链路、联锁、实际许可重放及测量。`at` 按首个实际许可的 nonce 时刻定位（0～1000000 µs），不会回拨时间；恢复链路须由脚本显式指定。重放测试丢弃旧 completion 指针，只向当前有效目标投递旧身份值。
+
+schema10的Call更新探针按full v2/delta v3选择属主codec，delta只从现存Call借用不可变事实。ADR-0104取消PREPARED单独等待后，F1及组合版本场景用`prepare_call`选择原定持久前缀，而非等待已经推进到DISPATCHING的当前行；场景ID、重启、身份、权限及副作用断言保持。这是既有夹具适配，不构成新增格式异常恢复专项验收。
 
 `shared` 动作仅接受已实现的有限场景名；共享配置固定模型槽 1、Task 上限 2、100 ms 正常模型、1,500/1,000 ms 超时与用户选定的 30 秒资源等待，实际值进入轨迹。Host 依据公开 step report/wake 和 Provider 截止推进 FakeClock；所有实际 Core step 均计数，本地规则必须 ≤10 step。普通满队列的 Kernel 完成与完成槽耗尽分别验证，后者复用测试专属 CompletionPool 属主探针，测试关闭时拒绝。
 

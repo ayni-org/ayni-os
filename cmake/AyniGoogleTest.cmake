@@ -7,8 +7,11 @@ include(FetchContent)
 
 # Discover test lists after all builds finish. POST_BUILD otherwise runs ASan
 # startup concurrently with several large links under the shared memory budget.
-# Keep the existing discovery and runtime timeouts; CTest enumerates every suite.
+# CTest enumerates every suite; individual runtime deadlines remain unchanged.
 set(CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE PRE_TEST)
+# The monolithic unit binary enumerates over 1600 cases under ASan/LSan. Its
+# default five-second process deadline cut off discovery in CI (#137).
+set(AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS 30)
 
 set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
 set(BUILD_GMOCK OFF CACHE BOOL "" FORCE)

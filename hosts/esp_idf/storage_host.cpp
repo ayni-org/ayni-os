@@ -149,8 +149,18 @@ void Host::Storage::serve_queue() {
         has_request = count_ != 0;
         finished = !has_request && state_ == State::draining;
         if (has_request) {
-            queued = requests_[head_];
-            head_ = (head_ + 1) % capacity_;
+            uint32_t selected = 0;
+            for (uint32_t at = 1; at < count_; ++at) {
+                if (storage::work_priority(requests_[(head_ + at) % capacity_].work) >
+                    storage::work_priority(requests_[(head_ + selected) % capacity_].work)) {
+                    selected = at;
+                }
+            }
+            queued = requests_[(head_ + selected) % capacity_];
+            // Stable priority preserves the complete ordered Core prefix.
+            for (uint32_t at = selected; at + 1U < count_; ++at) {
+                requests_[(head_ + at) % capacity_] = requests_[(head_ + at + 1U) % capacity_];
+            }
             --count_;
         }
         portEXIT_CRITICAL(&mutex_);
@@ -273,6 +283,16 @@ uint32_t Host::worker_stack_free_bytes() const {
 }
 // Without a whole batch there is no work to keep; an empty one could not be
 // told from the end of the log when read back.
+ayni_submit_result_t Host::storage_append_many(void *ctx, const ayni_storage_batch_v1 *batches,
+                                               uint32_t count, ayni_attempt_ref_v1 attempt,
+                                               ayni_completion_t *completion) {
+    auto &self = *static_cast<Host *>(ctx);
+    storage::Request request{};
+    if (!storage::append_group_request(batches, count, attempt, completion, request)) {
+        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    }
+    return self.storage_ ? self.storage_->submit(request) : AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+}
 ayni_submit_result_t Host::storage_append(void *ctx, const ayni_storage_batch_v1 *batch,
                                           ayni_attempt_ref_v1 attempt,
                                           ayni_completion_t *completion) {

@@ -107,6 +107,7 @@ void FileLog::close() {
     uncertain_start_ = UINT64_MAX;
     read_from_ = 0;
     read_max_seq_ = 0;
+    maximum_frame_seq_ = 0;
 }
 
 int FileLog::read_up_to(int handle, uint64_t at, uint8_t *out, std::size_t size,
@@ -198,11 +199,13 @@ FileLog::Opened FileLog::check_file_header(bool &initialized) {
 
 FileLog::Opened FileLog::scan() {
     uint64_t at = file_header_size;
+    maximum_frame_seq_ = 0;
     while (at < file_size_) {
         Frame frame{};
         int error = 0;
         const FrameCheck check = check_frame(at, frame, error);
         if (check == FrameCheck::whole) {
+            maximum_frame_seq_ = std::max(maximum_frame_seq_, frame.commit_seq);
             if (frame.payload_size >= AYNI_STORAGE_BATCH_IDENTITY_PREFIX_BYTES) {
                 std::array<uint8_t, AYNI_STORAGE_BATCH_IDENTITY_PREFIX_BYTES> header{};
                 error = read_exact(log_handle(), frame.payload_at, header.data(), header.size());
@@ -334,6 +337,40 @@ bool FileLog::check_payload(const Frame &frame, uint8_t *out, int &error) const 
 }
 
 FileLog::Result FileLog::append(uint64_t commit_seq, const uint8_t *data, uint32_t size) {
+    return append_frame(commit_seq, data, size, Sync::immediate);
+}
+// Preserve every frame identity. Only synchronization is combined; a partial write cannot
+// acknowledge a suffix or authorize dispatch, and retries retain the original group bytes.
+FileLog::Result FileLog::append_many(uint64_t first_seq, const ayni_bytes_v1 *batches,
+                                     uint32_t count) {
+    if (!batches || !count || count > AYNI_STORAGE_APPEND_COUNT_MAX ||
+        first_seq > UINT64_MAX - count) {
+        return {AYNI_WRITE_FAILED, 0};
+    }
+    if (sync_failed_ && !rescan_after_unknown()) {
+        return {AYNI_WRITE_UNKNOWN, 0};
+    }
+    const auto start = end_;
+    for (uint32_t at = 0; at < count; ++at) {
+        const auto result =
+            append_frame(first_seq + at, batches[at].data, batches[at].size, Sync::deferred);
+        if (result.outcome != AYNI_WRITE_OK) {
+            if (end_ != start) {
+                sync_failed_ = true;
+                uncertain_start_ = std::min(uncertain_start_, start);
+                return {AYNI_WRITE_UNKNOWN, 0};
+            }
+            return result;
+        }
+    }
+    if (!sync()) {
+        uncertain_start_ = std::min(uncertain_start_, start);
+        return {AYNI_WRITE_UNKNOWN, 0};
+    }
+    return {AYNI_WRITE_OK, 0};
+}
+FileLog::Result FileLog::append_frame(uint64_t commit_seq, const uint8_t *data, uint32_t size,
+                                      Sync mode) {
     if (!is_open()) {
         return {AYNI_WRITE_FAILED, 0};
     }
@@ -343,9 +380,9 @@ FileLog::Result FileLog::append(uint64_t commit_seq, const uint8_t *data, uint32
     if (damaged_ || (tail_dirty_ && !truncate_tail())) {
         return {AYNI_WRITE_FAILED, 0};
     }
-    // A retry can follow an UNKNOWN whose full frame reached the medium.
-    // Compare every byte, rather than a checksum, before acknowledging it.
-    for (uint64_t at = file_header_size; at < end_;) {
+    // A sequence above every whole retained frame cannot be a duplicate. UNKNOWN/torn
+    // prefixes were reconfirmed above. Older/equal sequences keep C-HOST-010's exact check.
+    for (uint64_t at = file_header_size; commit_seq <= maximum_frame_seq_ && at < end_;) {
         ++append_scan_frames_;
         Frame frame{};
         int error = 0;
@@ -368,6 +405,7 @@ FileLog::Result FileLog::append(uint64_t commit_seq, const uint8_t *data, uint32
                     stored.transition_id == requested.transition_id;
             }
             if (same_identity) {
+                // A retry can follow UNKNOWN; compare every byte, never only a checksum.
                 if (!same_payload(frame, data, size, error)) {
                     return {AYNI_WRITE_FAILED, 0};
                 }
@@ -393,13 +431,14 @@ FileLog::Result FileLog::append(uint64_t commit_seq, const uint8_t *data, uint32
         tail_dirty_ = true;
         return {AYNI_WRITE_FAILED, 0};
     }
-    if (!sync()) {
+    if (mode == Sync::immediate && !sync()) {
         // The frame may be on the device or not. Reads keep ending at end_;
         // reopening the log finds out.
         tail_dirty_ = true;
         return {AYNI_WRITE_UNKNOWN, 0};
     }
     end_ = payload_at + size + frame_trailer_size;
+    maximum_frame_seq_ = std::max(maximum_frame_seq_, commit_seq);
     return {AYNI_WRITE_OK, 0};
 }
 

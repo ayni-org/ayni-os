@@ -314,13 +314,7 @@ bool Composite::prepare(Preparation preparation) {
     }
     goal_ = create(source_);
     if (preparation == Preparation::prepared_action) {
-        world_.items_per_step = 1;
-        return world_.until("composite action prepared durably without submission", [&] {
-            const auto current = call("increment.v1");
-            return current.phase == AYNI_CALL_PREPARED && current.requires_seq &&
-                   current.requires_seq <= world_.info().durable_seq &&
-                   world_.service.submissions() == 0;
-        });
+        return world_.await_prepared([&] { return call("increment.v1"); });
     }
     return world_.until("composite first action pending",
                         [&] { return world_.service.pending() == 1; });

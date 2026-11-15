@@ -1,3 +1,4 @@
+#include <ayni/bodies.h>
 // C ABI entry points of the kernel itself: version query, memory
 // requirements, create, lifecycle and kernel info queries, start, step,
 // shutdown, destroy, completion and event posting. They check arguments and
@@ -324,6 +325,24 @@ ayni_status_t validate_host(const ayni_host_v1 *host) {
     // or the reverse, is a broken table (ADR-0016).
     if ((table.storage_append == nullptr) != (table.storage_read_prefix == nullptr)) {
         return AYNI_INVALID_ARGUMENT;
+    }
+    if (table.storage_append_many != nullptr && table.storage_append == nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (table.bodies != nullptr) {
+        const auto &bodies = *table.bodies;
+        const auto body_shape =
+            check_struct_size(bodies.struct_size, sizeof(bodies), sizeof(bodies));
+        if (body_shape != AYNI_OK) {
+            return body_shape;
+        }
+        if ((bodies.reserved & ~AYNI_BODY_STORE_SHARED_RESULTS) != 0U ||
+            ((bodies.reserved & AYNI_BODY_STORE_SHARED_RESULTS) != 0U &&
+             (!bodies.stage || !bodies.confirm || !bodies.share || !bodies.read ||
+              !bodies.release)) ||
+            (bodies.release_temporary && !bodies.stage)) {
+            return AYNI_INVALID_ARGUMENT;
+        }
     }
     const bool some_maintenance =
         table.storage_read_log != nullptr || table.storage_fence_writers != nullptr ||

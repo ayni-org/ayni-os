@@ -67,11 +67,17 @@ void retain(ConversationRecord &record, uint32_t count, uint32_t bytes) {
             encoded.push_back(static_cast<char>((number >> (8U * b)) & 0xffU));
         }
         for (const auto *text : {&user, &answer}) {
-            const auto size = static_cast<uint32_t>(text->size());
-            for (uint32_t b = 0; b < 4; ++b) {
-                encoded.push_back(static_cast<char>((size >> (8U * b)) & 0xffU));
+            const auto ref = body(*text);
+            for (const auto value : {ref.id, ref.digest}) {
+                for (uint32_t b = 0; b < 8; ++b) {
+                    encoded.push_back(static_cast<char>(value >> (8U * b)));
+                }
             }
-            encoded += *text;
+            for (const auto value : {ref.size, ref.reserved}) {
+                for (uint32_t b = 0; b < 4; ++b) {
+                    encoded.push_back(static_cast<char>(value >> (8U * b)));
+                }
+            }
         }
     }
     record.rounds = body(encoded);

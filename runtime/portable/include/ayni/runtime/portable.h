@@ -37,7 +37,8 @@ class Profile {
     // Host queue capacity must be at least host_request_capacity_min.
     // Existing Providers make bounded nothrow startup allocations outside this region.
     // On partial registration/allocation failure, retain the region; destroy after Host join.
-    ayni_status_t create_in(void *, size_t, const ayni_host_v1 &, hosts::storage::FileValuePort);
+    ayni_status_t create_in(void *, size_t, const ayni_host_v1 &, hosts::storage::FileValuePort,
+                            strategies::Persistence persistence = strategies::Persistence::durable);
     ayni_status_t start();
     // Progresses concrete fixture Providers outside the bounded Core step, then Core and app.
     // No waiting; caller's OS loop owns wake/yield and its overall deadline.
@@ -59,8 +60,11 @@ class Profile {
     Submission submit(ayni_intent_kind_t, const void *, uint32_t revision = 0);
     bool command_pending() const; // One accepted command receipt still awaiting durability.
     ayni_status_t begin_shutdown();
+    // Core is stopped and accepted body persistence/deletion has drained without error.
+    // Continue tick() while false, including after Core STOPPED, before Host close/join.
     bool stopped() const;
-    // After STOPPED (or CONFIGURING), then Host close/join. Refuses live Provider borrows.
+    // After Core STOPPED (or CONFIGURING) and Host close/join; refuses live borrows.
+    // A drained failed store is disposed too, returning its error with kernel()==nullptr.
     ayni_status_t destroy();
     uint64_t model_executions(uint32_t index) const;
     ExecutionEvidence execution_evidence() const;

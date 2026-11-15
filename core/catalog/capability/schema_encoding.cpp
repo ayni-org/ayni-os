@@ -228,6 +228,43 @@ bool read_default(ayni::foundation::Workspace &workspace, Input &input, uint32_t
     schema.default_count += value.count;
     return true;
 }
+ayni_status_t check_schema_header(ayni_bytes_v1 body) {
+    if (body.data == nullptr || body.size < schema_header_bytes ||
+        body.size > schema_encoding_bytes_max) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    Input input(body);
+    return input.u32() == schema_encoding_version ? AYNI_OK : AYNI_UNSUPPORTED_VERSION;
+}
+// One bounded layout reader for both external validation and immutable owner views.
+// Only a lexical candidate is changed on failure; neither entry point publishes it.
+ayni_status_t read_schema_body(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body,
+                               DecodedSchema &schema) {
+    Input input(body);
+    static_cast<void>(input.u32()); // Both callers admitted the header before taking scratch.
+    schema.count = input.u32();
+    if (schema.count == 0U || schema.count > schema.nodes.size()) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    for (uint32_t at = 0; at < schema.count; ++at) {
+        auto &node = schema.nodes[at];
+        node = {}; // Inactive kind payloads/pointers must not borrow a previous workspace lease.
+        schema.defaults[at] = {};
+        node.kind = input.u32();
+        node.field_id = input.u32();
+        node.subtree_end = input.u32();
+        node.flags = input.u32();
+        node.name = input.text(AYNI_SCHEMA_NAME_BYTES_MAX);
+        node.unit = input.text(AYNI_CATALOG_ID_MAX_BYTES);
+        if (!read_bounds(input, node, schema) || !read_default(workspace, input, at, schema)) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+    }
+    if (!input.ok()) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    return AYNI_OK;
+}
 } // namespace
 
 DecodedSchema::DecodedSchema(const DecodedSchema &source) {
@@ -237,13 +274,14 @@ DecodedSchema &DecodedSchema::operator=(const DecodedSchema &source) {
     if (this == &source) {
         return *this;
     }
-    nodes = source.nodes;
-    choices = source.choices;
-    defaults = source.defaults;
-    default_nodes = source.default_nodes;
     count = source.count;
     choice_count = source.choice_count;
     default_count = source.default_count;
+    std::memcpy(nodes.data(), source.nodes.data(), count * sizeof(nodes[0]));
+    std::memcpy(choices.data(), source.choices.data(), choice_count * sizeof(choices[0]));
+    std::memcpy(defaults.data(), source.defaults.data(), count * sizeof(defaults[0]));
+    std::memcpy(default_nodes.data(), source.default_nodes.data(),
+                default_count * sizeof(default_nodes[0]));
     for (uint32_t at = 0; at < count; ++at) {
         if (nodes[at].choices != nullptr) {
             nodes[at].choices = choices.data() + (source.nodes[at].choices - source.choices.data());
@@ -315,37 +353,18 @@ ayni_status_t encode_validated_schema(ayni::foundation::Workspace &workspace,
 
 ayni_status_t decode_schema(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body,
                             DecodedSchema &out) {
-    if (body.data == nullptr || body.size < schema_header_bytes ||
-        body.size > schema_encoding_bytes_max) {
-        return AYNI_INVALID_ARGUMENT;
-    }
-    Input input(body);
-    if (input.u32() != schema_encoding_version) {
-        return AYNI_UNSUPPORTED_VERSION;
+    const auto header = check_schema_header(body);
+    if (header != AYNI_OK) {
+        return header;
     }
     auto schema_lease = workspace.make<DecodedSchema>();
     if (!schema_lease) {
         return AYNI_CAPACITY_EXCEEDED;
     }
     auto &schema = *schema_lease;
-    schema.count = input.u32();
-    if (schema.count == 0U || schema.count > schema.nodes.size()) {
-        return AYNI_INVALID_ARGUMENT;
-    }
-    for (uint32_t at = 0; at < schema.count; ++at) {
-        auto &node = schema.nodes[at];
-        node.kind = input.u32();
-        node.field_id = input.u32();
-        node.subtree_end = input.u32();
-        node.flags = input.u32();
-        node.name = input.text(AYNI_SCHEMA_NAME_BYTES_MAX);
-        node.unit = input.text(AYNI_CATALOG_ID_MAX_BYTES);
-        if (!read_bounds(input, node, schema) || !read_default(workspace, input, at, schema)) {
-            return AYNI_INVALID_ARGUMENT;
-        }
-    }
-    if (!input.ok()) {
-        return AYNI_INVALID_ARGUMENT;
+    const auto read = read_schema_body(workspace, body, schema);
+    if (read != AYNI_OK) {
+        return read;
     }
     const auto checked = validate_schema(workspace, schema.view());
     if (checked != AYNI_OK) {
@@ -365,5 +384,21 @@ ayni_status_t decode_schema(ayni::foundation::Workspace &workspace, ayni_bytes_v
     }
     out = schema;
     return AYNI_OK;
+}
+ayni_status_t read_admitted_schema(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body,
+                                   DecodedSchema &out) {
+    const auto header = check_schema_header(body);
+    if (header != AYNI_OK) {
+        return header;
+    }
+    auto candidate = workspace.make<DecodedSchema>();
+    if (!candidate) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    const auto status = read_schema_body(workspace, body, *candidate);
+    if (status == AYNI_OK) {
+        out = *candidate;
+    }
+    return status;
 }
 } // namespace ayni::catalog

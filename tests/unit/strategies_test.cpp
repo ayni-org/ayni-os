@@ -132,13 +132,55 @@ TEST_F(StrategiesFixture, eight_tools_are_executed_sequentially) {
     propose(0, AYNI_CALL_TOOL_COUNT_MAX);
     for (uint32_t at = 1; at <= AYNI_CALL_TOOL_COUNT_MAX; ++at) {
         ASSERT_EQ(pending.size(), at + 1U);
+        // ADR-0103: a whole model batch runs serially, without an intervening model request.
+        EXPECT_EQ(pending[at].capability, "echo");
         post(at, text("ok"));
         pump();
     }
     ASSERT_EQ(pending.size(), 10U);
+    EXPECT_EQ(pending.back().capability, "model");
     post(9, text("done"));
     pump();
     EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+    EXPECT_EQ(work.task(task).model_calls_used, 2U);
+}
+class BackgroundStrategies : public StrategiesFixture {
+  protected:
+    BackgroundStrategies() {
+        configure_loop = [](policies::ToolLoopConfig &config) {
+            config.persistence = policies::Persistence::background;
+        };
+    }
+};
+// ADR-0104: shared staged bodies preserve ordering for the maximum serial proposal batch.
+TEST_F(BackgroundStrategies, eight_tools_preserve_message_order_and_completed_round) {
+    const auto task = start();
+    propose(0, AYNI_CALL_TOOL_COUNT_MAX);
+    for (uint32_t at = 1; at <= AYNI_CALL_TOOL_COUNT_MAX; ++at) {
+        ASSERT_EQ(pending.size(), at + 1U);
+        EXPECT_EQ(pending[at].capability, "echo");
+        post(at, text("result"));
+        pump();
+    }
+    ASSERT_EQ(pending.size(), 10U);
+    EXPECT_EQ(pending.back().capability, "model");
+    post(9, text("done"));
+    pump();
+    ASSERT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+    finish(task);
+    const auto rounds = rounds_of(conversation);
+    ASSERT_EQ(rounds.size(), 1U);
+    EXPECT_EQ(rounds[0].user, "hello");
+    EXPECT_EQ(rounds[0].answer, "done");
+    const auto messages = text_of(conversation.history);
+    ayni::model::Reader reader({messages.data(), static_cast<uint32_t>(messages.size())});
+    ayni::model::Message message;
+    uint32_t results = 0;
+    while (reader.next(message)) {
+        results += message.role == ayni::model::Role::tool ? 1U : 0U;
+    }
+    EXPECT_TRUE(reader.finished());
+    EXPECT_EQ(results, AYNI_CALL_TOOL_COUNT_MAX);
 }
 // ADR-0085: serving-model token observations trigger compression of older groups.
 TEST_F(StrategiesFixture, summary_replaces_history_only_after_all_budget_chunks_succeed) {

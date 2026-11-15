@@ -1,6 +1,7 @@
 // Shared interactive lifecycle: public APIs, real asynchronous Native files and built-in ToolLoop.
 // ADR-0094 and the shared interactive runtime decision; no fault/recovery injection.
 #include "temp_directory.h"
+#include <ayni/calls.h>
 #include <ayni/commands.hpp>
 #include <ayni/hosts/native.h>
 #include <ayni/runtime/portable.h>
@@ -26,8 +27,9 @@ class ConversationSession : public testing::Test {
         ASSERT_EQ(ayni::runtime::portable::Profile::memory_requirements(memory), AYNI_OK);
         arena = ::operator new(memory.bytes, std::align_val_t(memory.alignment), std::nothrow);
         ASSERT_NE(arena, nullptr);
-        ASSERT_EQ(profile.create_in(arena, memory.bytes, host.table(), host.value_store()),
-                  AYNI_OK);
+        ASSERT_EQ(
+            profile.create_in(arena, memory.bytes, host.table(), host.value_store(), persistence),
+            AYNI_OK);
         ASSERT_EQ(profile.start(), AYNI_OK);
         ASSERT_TRUE(until([&] { return profile.running(); }));
         for (const auto *id : {"fixture.tools", "fixture.summary", "software.sum",
@@ -99,8 +101,9 @@ class ConversationSession : public testing::Test {
                                     ayni::runtime::portable::host_request_capacity_min)
                       .status,
                   ayni::hosts::native::StorageStatus::ok);
-        ASSERT_EQ(profile.create_in(arena, memory.bytes, host.table(), host.value_store()),
-                  AYNI_OK);
+        ASSERT_EQ(
+            profile.create_in(arena, memory.bytes, host.table(), host.value_store(), persistence),
+            AYNI_OK);
         ASSERT_EQ(profile.start(), AYNI_OK);
         ASSERT_TRUE(until([&] { return profile.running(); }));
     }
@@ -110,6 +113,7 @@ class ConversationSession : public testing::Test {
         EXPECT_TRUE(until([&] { return session().take_result(out); }));
         return out;
     }
+    ayni::strategies::Persistence persistence = ayni::strategies::Persistence::durable;
     ayni::test::TempDirectory directory;
     ayni::runtime::portable::Memory memory;
     void *arena = nullptr;
@@ -237,5 +241,103 @@ TEST_F(ConversationSession, normal_close_after_owner_cancellation_discards_only_
     EXPECT_EQ(profile.model_submissions(), 0U);
     ASSERT_EQ(session().begin(text("sum")), AYNI_OK);
     EXPECT_TRUE(result().published);
+}
+class BackgroundSession : public ConversationSession {
+  protected:
+    BackgroundSession() { persistence = ayni::strategies::Persistence::background; }
+};
+// ADR-0104: actual file bodies, Core shared VALUE results, and consecutive normal turns.
+TEST_F(BackgroundSession, consecutive_turns_trim_then_reopen_and_delete_shared_history) {
+    open();
+    for (uint32_t turn = 0; turn < 2; ++turn) {
+        ASSERT_EQ(session().begin(text("sum")), AYNI_OK);
+        ASSERT_TRUE(result().published);
+        // White-box component check: ESP uses the same FileBodies trim before its next input.
+        auto &bodies = *static_cast<ayni::runtime::FileBodies *>(profile.bodies()->context);
+        ASSERT_TRUE(until([&] { return bodies.trim_cache() == AYNI_OK; }));
+    }
+    const auto old_history = session().record()->history;
+    reopen();
+    open();
+    std::vector<ayni::strategies::Round> rounds;
+    ASSERT_TRUE(until([&] {
+        return ayni::strategies::Conversation::rounds(*profile.bodies(), *session().record(),
+                                                      rounds) == AYNI_OK;
+    }));
+    ASSERT_EQ(rounds.size(), 2U);
+    EXPECT_EQ(rounds.back().number, 2U);
+    ASSERT_EQ(session().forget(AYNI_CONTEXT_ERASE_ALL), AYNI_OK);
+    ASSERT_TRUE(until([&] { return session().ready(); }));
+    std::string bytes(old_history.size, '\0');
+    ayni_status_t status = AYNI_NOT_READY;
+    ASSERT_TRUE(until([&] {
+        return (status = profile.bodies()->read(profile.bodies()->context, &old_history,
+                                                reinterpret_cast<uint8_t *>(bytes.data()),
+                                                old_history.size)) != AYNI_NOT_READY;
+    }));
+    EXPECT_EQ(status, AYNI_NOT_FOUND);
+}
+// ADR-0104: normal shutdown may finish the saved publication without another model call.
+TEST_F(BackgroundSession, normal_close_at_publication_reopens_completed_checkpoint) {
+    open();
+    ASSERT_EQ(session().begin(text("sum")), AYNI_OK);
+    ASSERT_TRUE(until([&] {
+        auto context = initialized<ayni_context_info_v1>();
+        return ayni_get_context(profile.kernel(), profile.session(), profile.instance(0),
+                                &context) == AYNI_OK &&
+               context.pending_action == AYNI_CONTEXT_PUBLISH && context.usable;
+    }));
+    reopen();
+    open();
+    EXPECT_EQ(profile.model_submissions(), 0U);
+    EXPECT_EQ(session().record()->last_round, 1U);
+    std::vector<ayni::strategies::Round> rounds;
+    ASSERT_TRUE(until([&] {
+        return ayni::strategies::Conversation::rounds(*profile.bodies(), *session().record(),
+                                                      rounds) == AYNI_OK;
+    }));
+    ASSERT_EQ(rounds.size(), 1U);
+}
+// ADR-0104: normal shutdown drains the accepted ledger result beyond Core STOPPED.
+TEST_F(BackgroundSession, normal_close_after_shared_tool_terminal_preserves_ledger_body) {
+    open();
+    ASSERT_EQ(session().begin(text("sum")), AYNI_OK);
+    std::vector<uint64_t> ids(ayni::runtime::portable::configuration().call_capacity);
+    auto saved = initialized<ayni_call_info_v1>();
+    ASSERT_TRUE(until([&] {
+        uint32_t count = 0;
+        if (ayni_list_objects(profile.kernel(), AYNI_OBJECT_CALL, ids.data(),
+                              static_cast<uint32_t>(ids.size()), &count) != AYNI_OK) {
+            return false;
+        }
+        for (uint32_t at = 0; at < count; ++at) {
+            auto info = initialized<ayni_call_info_v1>();
+            if (ayni_get_call(profile.kernel(), ids[at], &info) == AYNI_OK &&
+                info.outcome == AYNI_CALL_COMPLETED && info.result_kind == AYNI_CALL_RESULT_VALUE &&
+                info.body.id) {
+                saved = info;
+                return true;
+            }
+        }
+        return false;
+    }));
+    reopen();
+    auto restored = initialized<ayni_call_info_v1>();
+    ASSERT_EQ(ayni_get_call(profile.kernel(), saved.logical_call_id, &restored), AYNI_OK);
+    ASSERT_EQ(restored.outcome, AYNI_CALL_COMPLETED);
+    ASSERT_EQ(restored.effect, AYNI_CALL_EFFECT_COMPLETE);
+    ASSERT_EQ(restored.body.id, saved.body.id);
+    std::string body(restored.body.size, '\0');
+    auto read = AYNI_NOT_READY;
+    ASSERT_TRUE(until([&] {
+        read = profile.bodies()->read(profile.bodies()->context, &restored.body,
+                                      reinterpret_cast<uint8_t *>(body.data()), restored.body.size);
+        return read != AYNI_NOT_READY;
+    }));
+    ASSERT_EQ(read, AYNI_OK);
+    EXPECT_EQ(ayni_body_verify(&restored.body, {reinterpret_cast<const uint8_t *>(body.data()),
+                                                restored.body.size}),
+              AYNI_OK);
+    EXPECT_EQ(profile.model_submissions(), 0U); // Reopen reads facts; it does not re-execute work.
 }
 } // namespace

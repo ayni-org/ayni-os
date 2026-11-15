@@ -45,7 +45,16 @@ struct Bodies {
     }
     static void release(void *, const ayni_body_ref_v1 *) {}
     ayni_body_store_v1 port() {
-        return {sizeof(ayni_body_store_v1), 0, this, write, read, release};
+        return {sizeof(ayni_body_store_v1),
+                0,
+                this,
+                write,
+                read,
+                release,
+                nullptr,
+                nullptr,
+                nullptr,
+                nullptr};
     }
 };
 struct Serving {
@@ -135,6 +144,16 @@ struct ValueFiles {
         return AYNI_SUBMIT_ACCEPTED;
     }
 };
+// ADR-0104: one owner poll submits one chunk; drain normal accepted work before cold reads.
+void drain(ayni::runtime::FileBodies &bodies) {
+    constexpr unsigned file_polls = 4096;
+    for (unsigned poll = 0; poll < file_polls; ++poll) {
+        if (ayni::runtime::FileBodies::ready(&bodies, 0)) {
+            return;
+        }
+    }
+    FAIL() << "normal body queue did not drain";
+}
 void large_context(std::string_view glyph, unsigned rounds) {
     // Use the actual public ToolLoop AND FileBodies through the shared cache.
     // Repeated complete normal turns grow its real history beyond the old 32KiB path.
@@ -172,6 +191,7 @@ void large_context(std::string_view glyph, unsigned rounds) {
     }
     size_t maximum_prompt = 0;
     for (unsigned round = 0; round < rounds; ++round) {
+        drain(bodies);
         ASSERT_EQ(bodies.trim_cache(), AYNI_OK);
         ayni::strategies::Encoded parameters;
         auto status = AYNI_NOT_READY;
@@ -234,8 +254,18 @@ void large_context(std::string_view glyph, unsigned rounds) {
             ayni::strategies::Conversation::finish(&workspace, record, committed.view(), next),
             AYNI_OK);
         std::vector<ayni_body_ref_v1> before, keep;
-        ayni::strategies::Conversation::references(record, before);
-        ayni::strategies::Conversation::references(next, keep);
+        auto references = [&](const auto &record, auto &out) {
+            auto status = AYNI_NOT_READY;
+            constexpr unsigned index_polls = 256;
+            for (unsigned poll = 0; poll < index_polls && status == AYNI_NOT_READY; ++poll) {
+                out.clear(); // A deferred index walk may have already appended its root refs.
+                status = ayni::strategies::Conversation::references(*store, record, out);
+                ayni::runtime::FileBodies::ready(&bodies, 0);
+            }
+            EXPECT_EQ(status, AYNI_OK);
+        };
+        references(record, before);
+        references(next, keep);
         for (const auto &ref : before) {
             if (std::none_of(keep.begin(), keep.end(),
                              [&](const auto &k) { return k.id == ref.id; })) {
@@ -246,6 +276,7 @@ void large_context(std::string_view glyph, unsigned rounds) {
         ayni::runtime::FileBodies::ready(&bodies, 0);
         record = next;
     }
+    drain(bodies);
     EXPECT_GT(maximum_prompt, 400U * 1024U);
     EXPECT_LT(maximum_prompt, wifichat::harness::model_body_bytes);
     ASSERT_EQ(bodies.trim_cache(), AYNI_OK);

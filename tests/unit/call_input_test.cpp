@@ -4,13 +4,16 @@
 #include "authority/scope/scope.h"
 #include "catalog/capability/business_encoding.h"
 #include "catalog/capability/field_domain.h"
+#include "catalog/capability/workspace.h"
 #include "foundation/little_endian.h"
 #include "work/call/call_input.h"
 
 #include <array>
 #include <cstring>
 #include <gtest/gtest.h>
+#include <memory>
 #include <string>
+#include <vector>
 
 namespace {
 using namespace ayni::work;
@@ -224,4 +227,72 @@ TEST_F(CallInputTest, reader_requires_exact_framing_and_preserves_previous_views
     EXPECT_EQ(read(output), AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(output.arguments.data, original_arguments);
 }
+// White-box ADR-0102: one validated proof serves encoding and saved-input admission; the
+// remaining scratch lane is deliberately too small to decode the full machine proof again.
+TEST_F(CallInputTest, validated_proof_is_shared_by_input_encoding_and_reading) {
+    auto decoded = std::make_unique<ayni::catalog::DecodedBusiness>();
+    ASSERT_EQ(ayni::catalog::decode_business(ayni::test::codec_workspace(), domain(),
+                                             contract.business_contract, *decoded),
+              AYNI_OK);
+    const auto bytes = ayni::catalog::value_workspace_size() + sizeof(CallInputView);
+    ASSERT_LT(bytes, ayni::catalog::business_workspace_size());
+    std::vector<uint64_t> scratch((bytes + sizeof(uint64_t) - 1) / sizeof(uint64_t));
+    ayni::foundation::Workspace workspace(scratch.data(), scratch.size() * sizeof(uint64_t));
+    EXPECT_EQ(
+        ayni::catalog::decode_business(workspace, domain(), contract.business_contract, *decoded),
+        AYNI_CAPACITY_EXCEEDED);
+    nodes[2].value.text = {"shared", 6};
+    ASSERT_EQ(encode_business_input_with_proof(workspace, *decoded, contract, input, body.data(),
+                                               capacity, size),
+              AYNI_OK);
+    auto view = std::make_unique<CallInputView>();
+    ASSERT_EQ(read_call_input_with_proof(workspace, *decoded, domain(), {body.data(), size},
+                                         contract, *view),
+              AYNI_OK);
+    EXPECT_EQ(std::string(body_text(*view).data, body_text(*view).size), "shared");
+}
+
+// ADR-0103: live owner proofs need no schema-validation/re-encoding scratch; their views still
+// normalize the actual input exactly as the fully validated proof does.
+TEST_F(CallInputTest, admitted_owner_proof_materializes_without_the_full_decoder_scratch) {
+    auto decoded = std::make_unique<ayni::catalog::DecodedBusiness>();
+    const auto bytes = sizeof(ayni::catalog::DecodedBusiness) +
+                       sizeof(ayni::catalog::DecodedSchema) +
+                       ayni::foundation::Workspace::alignment;
+    std::vector<uint64_t> scratch((bytes + sizeof(uint64_t) - 1) / sizeof(uint64_t));
+    ayni::foundation::Workspace workspace(scratch.data(), scratch.size() * sizeof(uint64_t));
+    EXPECT_EQ(
+        ayni::catalog::decode_business(workspace, domain(), contract.business_contract, *decoded),
+        AYNI_CAPACITY_EXCEEDED);
+    ASSERT_EQ(
+        ayni::catalog::read_admitted_business(workspace, contract.business_contract, *decoded),
+        AYNI_OK);
+    nodes[2].value.text = {"owner", 5};
+    ASSERT_EQ(encode_business_input_with_proof(ayni::test::codec_workspace(), *decoded, contract,
+                                               input, body.data(), capacity, size),
+              AYNI_OK);
+    auto output = std::make_unique<CallInputView>();
+    ASSERT_EQ(read(*output), AYNI_OK);
+    EXPECT_EQ(std::string(body_text(*output).data, body_text(*output).size), "owner");
+}
+
+// White-box ADR-0102: reuse preserves normal canonical input and projection behavior.
+TEST_F(CallInputTest, a_shared_contract_still_validates_each_new_business_input) {
+    nodes[2].value.text = {"hello", 5};
+    ASSERT_EQ(encode(), AYNI_OK);
+    auto decoded = std::make_unique<ayni::catalog::DecodedBusiness>();
+    ASSERT_EQ(ayni::catalog::decode_business(ayni::test::codec_workspace(), domain(),
+                                             contract.business_contract, *decoded),
+              AYNI_OK);
+    auto view = std::make_unique<CallInputView>();
+    ASSERT_EQ(read_call_input_with_proof(ayni::test::codec_workspace(), *decoded, domain(),
+                                         {body.data(), size}, contract, *view),
+              AYNI_OK);
+    EXPECT_EQ(std::string(body_text(*view).data, body_text(*view).size), "hello");
+    nodes[1].value.integer = 11;
+    EXPECT_NE(encode_business_input_with_proof(ayni::test::codec_workspace(), *decoded, contract,
+                                               input, body.data(), capacity, size),
+              AYNI_OK);
+}
+
 } // namespace

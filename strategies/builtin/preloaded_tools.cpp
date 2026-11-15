@@ -76,7 +76,7 @@ ayni_status_t branch(Workspace &workspace, const ayni_capability_detail_v1 &deta
 }
 } // namespace
 ayni_status_t preload_tools(Workspace &workspace, const ayni_task_snapshot_v1 &snapshot,
-                            std::string &definitions) {
+                            std::string &definitions, std::map<std::string, std::string> &cache) {
     if (!snapshot.list_capabilities || !snapshot.inspect_capability) {
         return AYNI_UNSUPPORTED;
     }
@@ -97,6 +97,17 @@ ayni_status_t preload_tools(Workspace &workspace, const ayni_task_snapshot_v1 &s
         }
         total += count;
         for (uint32_t at = 0; at < count; ++at) {
+            const auto &info = items[at];
+            const std::string cache_key = std::string(info.binding_id.data, info.binding_id.size) +
+                                          ":" + std::to_string(info.binding_version);
+            auto cached = cache.find(cache_key);
+            if (cached != cache.end()) {
+                if (!branches.empty()) {
+                    branches += ',';
+                }
+                branches += cached->second;
+                continue; // Only rendering is cached. Listing and dispatch authorization stay live.
+            }
             ayni_capability_detail_v1 detail{};
             detail.struct_size = sizeof(detail);
             status = snapshot.inspect_capability(snapshot.call_context, items[at].binding_id,
@@ -111,6 +122,9 @@ ayni_status_t preload_tools(Workspace &workspace, const ayni_task_snapshot_v1 &s
             }
             if (!branches.empty()) {
                 branches += ',';
+            }
+            if (cache.size() < AYNI_GOAL_TYPE_TOOL_COUNT_MAX) {
+                cache.emplace(cache_key, item);
             }
             branches += item;
         }

@@ -57,6 +57,8 @@ class DemoProfile {
     // Deliver deterministic Mock completions, settle schedule tool requests through the goal
     // port and poll transport health. Owner thread, outside step.
     ayni_status_t advance();
+    // After the Core step, before file/privacy ACKs: retire private policy caches.
+    ayni_status_t maintain(const ayni_privacy_info_v1 &privacy);
     ayni_status_t quiesce(); // STOPPED Kernel: join producers, preserve registered contexts.
     ayni_status_t close();   // Only after Kernel destruction; joins remote workers.
     // Grantable aliases: model, summary, schedule, notify, health, observe; unknown (including

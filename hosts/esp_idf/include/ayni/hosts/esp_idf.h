@@ -84,6 +84,9 @@ class Host {
     class Storage;
     UtcSource utc_{}; // Immutable borrowed override; null sample uses the platform default.
     static ayni_submit_result_t submit_value(void *, const storage::FileValueRequest *);
+    static ayni_submit_result_t storage_append_many(void *ctx, const ayni_storage_batch_v1 *,
+                                                    uint32_t, ayni_attempt_ref_v1,
+                                                    ayni_completion_t *);
     static ayni_submit_result_t storage_append(void *ctx, const ayni_storage_batch_v1 *batch,
                                                ayni_attempt_ref_v1 attempt,
                                                ayni_completion_t *completion);

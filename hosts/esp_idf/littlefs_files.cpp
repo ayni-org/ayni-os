@@ -77,6 +77,7 @@ int cause(int status) {
 constexpr uint64_t file_limit = static_cast<uint64_t>(std::numeric_limits<lfs_soff_t>::max());
 } // namespace
 int LittleFiles::begin(const char *label) {
+    space_.invalidate();
     if (partition_) {
         return EBUSY;
     }
@@ -140,6 +141,7 @@ int LittleFiles::begin(const char *label) {
     return 0;
 }
 void LittleFiles::end() {
+    space_.invalidate();
     if (volume_state_ != VolumeState::closed) {
         for (std::size_t index = 0; index < slots_.size(); ++index) {
             close(static_cast<int>(index));
@@ -402,14 +404,19 @@ int LittleFiles::free_bytes(uint64_t &bytes) const {
     if (volume_state_ != VolumeState::mounted) {
         return unavailable();
     }
+    if (!space_.needs_measurement() && space_.available(bytes)) {
+        return 0;
+    }
     const auto used = lfs_fs_size(&filesystem_);
     if (used < 0) {
+        space_.invalidate();
         return cause(used);
     }
     constexpr uint32_t metadata_reserve_blocks = 2;
     const uint64_t unavailable = static_cast<uint64_t>(used) + metadata_reserve_blocks;
     bytes =
         unavailable < config_.block_count ? (config_.block_count - unavailable) * block_bytes : 0;
+    space_.measured(bytes);
     return 0;
 }
 int LittleFiles::read_block(const lfs_config *config, lfs_block_t block, lfs_off_t offset,
@@ -439,6 +446,7 @@ int LittleFiles::program_block(const lfs_config *config, lfs_block_t block, lfs_
     if (block >= config->block_count || offset > block_bytes || bytes > block_bytes - offset) {
         return LFS_ERR_IO;
     }
+    self.space_.changing(block);
     std::array<uint8_t, cache_bytes> bounce{};
     const auto *in = static_cast<const uint8_t *>(data);
     uint32_t at = block * block_bytes + offset;
@@ -459,6 +467,7 @@ int LittleFiles::erase_block(const lfs_config *config, lfs_block_t block) {
     if (block >= config->block_count) {
         return LFS_ERR_IO;
     }
+    self.space_.changing(block);
     return esp_partition_erase_range(self.partition_, block * block_bytes, block_bytes) == ESP_OK
                ? 0
                : LFS_ERR_IO;

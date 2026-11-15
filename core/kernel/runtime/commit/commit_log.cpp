@@ -12,6 +12,7 @@ void CommitLog::start(uint64_t boot_epoch, const durability::BatchIdentity &next
     retry_.reset();
     failure_ = AYNI_RESTRICTION_NONE;
     in_flight_ = false;
+    append_count_ = 0;
     boot_epoch_ = boot_epoch;
     writer_epoch_ = next_batch.writer_epoch;
     transition_offset_ = next_batch.transition_id - next_batch.commit_seq;
@@ -41,6 +42,23 @@ bool CommitLog::advance(uint64_t now_us) {
     // A batch waiting for a completion slot has not made an attempt.
     if (!completions_.has_free_slot()) {
         return false;
+    }
+    if (!append_count_) {
+        const auto limit = host_.storage_append_many ? AYNI_STORAGE_APPEND_COUNT_MAX : 1U;
+        for (uint32_t at = 0; at < limit; ++at) {
+            uint32_t size = 0;
+            const auto *bytes = ring_.peek(at, size);
+            if (!bytes) {
+                break;
+            }
+            const auto id = identity_of(durable_seq_ + at + 1U);
+            append_group_[at] = {sizeof(ayni_storage_batch_v1),
+                                 id.writer_epoch,
+                                 id.transition_id,
+                                 id.commit_seq,
+                                 {bytes, size}};
+            ++append_count_;
+        }
     }
     retry_.started();
     writes_.started(now_us);
@@ -78,17 +96,11 @@ uint64_t CommitLog::next_deadline() const {
 ayni_submit_result_t CommitLog::call_append(void *context, ayni_attempt_ref_v1 attempt,
                                             ayni_completion_t *completion) {
     const CommitLog &self = *static_cast<CommitLog *>(context);
-    const durability::BatchIdentity identity = self.identity_of(self.durable_seq_ + 1U);
-    uint32_t size = 0;
-    const uint8_t *bytes = self.ring_.front(size);
-    ayni_storage_batch_v1 batch{};
-    batch.struct_size = sizeof(batch);
-    batch.writer_epoch = identity.writer_epoch;
-    batch.transition_id = identity.transition_id;
-    batch.commit_seq = identity.commit_seq;
-    batch.encoded.data = bytes;
-    batch.encoded.size = size;
-    return self.host_.storage_append(self.host_.ctx, &batch, attempt, completion);
+    return self.host_.storage_append_many
+               ? self.host_.storage_append_many(self.host_.ctx, self.append_group_.data(),
+                                                self.append_count_, attempt, completion)
+               : self.host_.storage_append(self.host_.ctx, &self.append_group_[0], attempt,
+                                           completion);
 }
 
 void CommitLog::on_append(void *context, const ayni_completion_result_v1 &result) {
@@ -99,8 +111,11 @@ void CommitLog::finish_append(const ayni_completion_result_v1 &result) {
     in_flight_ = false;
     switch (result.outcome) {
     case AYNI_WRITE_OK:
-        ++durable_seq_;
-        ring_.pop_front();
+        durable_seq_ += append_count_;
+        for (uint32_t at = 0; at < append_count_; ++at) {
+            ring_.pop_front();
+        }
+        append_count_ = 0;
         retry_.reset();
         break;
     case AYNI_WRITE_FAILED:

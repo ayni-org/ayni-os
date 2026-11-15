@@ -56,7 +56,11 @@ int main() {
         nullptr,
         [](void *, uint64_t, ayni_bytes_v1, ayni_body_ref_v1 *) { return AYNI_UNSUPPORTED; },
         [](void *, const ayni_body_ref_v1 *, uint8_t *, uint32_t) { return AYNI_NOT_FOUND; },
-        [](void *, const ayni_body_ref_v1 *) {}};
+        [](void *, const ayni_body_ref_v1 *) {},
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr};
     config.bodies = &bodies;
     if (loop.configure(config, workspace.get()) != AYNI_OK || loop.describe().ctx == nullptr) {
         std::puts("consumer: ToolLoop configure");

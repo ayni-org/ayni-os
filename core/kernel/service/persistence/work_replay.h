@@ -156,7 +156,8 @@ class WorkReplay {
     durability::RecordUse restore_task_authority(const uint8_t *body, uint32_t size,
                                                  foundation::TransitionStamp stamp);
     // Full row must match this batch and its owning Task; never reissues I/O.
-    durability::RecordUse restore_call(const uint8_t *body, uint32_t size, work::ActionStamp stamp);
+    durability::RecordUse restore_call(const uint8_t *body, uint32_t size, work::ActionStamp stamp,
+                                       uint16_t version);
     // Memory identities share the Kernel ID universe with work and authority facts.
     bool memory_identities_consistent(uint64_t boot_epoch_limit) const;
     // Every retained selected call and terminal outcome agrees with its Task.

@@ -14,14 +14,16 @@ constexpr uint32_t schema_default_node_count_max = AYNI_VALUE_NODE_COUNT_MAX;
 // Decoded proof scratch, not persistent state. Copies rebase internal pointers;
 // all UTF-8 views still borrow the caller's immutable proof bytes.
 struct DecodedSchema {
-    DecodedSchema() = default;
+    // Only active prefixes are initialized/copied; workspace release still erases all bytes.
+    DecodedSchema() {}
     DecodedSchema(const DecodedSchema &source);
     DecodedSchema &operator=(const DecodedSchema &source);
     ayni_schema_v1 view() const { return {nodes.data(), count}; }
-    std::array<ayni_schema_node_v1, AYNI_SCHEMA_NODE_COUNT_MAX> nodes{};
-    std::array<ayni_string_v1, schema_choice_count_max> choices{};
-    std::array<ayni_value_node_v1, schema_default_node_count_max> default_nodes{};
-    std::array<ayni_value_v1, AYNI_SCHEMA_NODE_COUNT_MAX> defaults{};
+    std::array<ayni_schema_node_v1, AYNI_SCHEMA_NODE_COUNT_MAX> nodes; // Initialized [0,count).
+    std::array<ayni_string_v1, schema_choice_count_max> choices; // Initialized [0,choice_count).
+    std::array<ayni_value_node_v1, schema_default_node_count_max>
+        default_nodes;                                              // [0,default_count).
+    std::array<ayni_value_v1, AYNI_SCHEMA_NODE_COUNT_MAX> defaults; // Optional views in [0,count).
     uint32_t count = 0;         // Valid schema node prefix; zero before decode.
     uint32_t choice_count = 0;  // Valid members, independently bounded.
     uint32_t default_count = 0; // Valid default nodes, not number of default fields.
@@ -40,5 +42,9 @@ ayni_status_t encode_validated_schema(ayni::foundation::Workspace &workspace,
 // bound. Failure preserves the caller's scratch and all its internal pointers.
 ayni_status_t decode_schema(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body,
                             DecodedSchema &out);
+// Internal immutable owner bytes only: registration/replay already admitted this exact proof.
+// Reads the same bounded layout without repeating schema validation or canonical re-encoding.
+ayni_status_t read_admitted_schema(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body,
+                                   DecodedSchema &out);
 } // namespace ayni::catalog
 #endif

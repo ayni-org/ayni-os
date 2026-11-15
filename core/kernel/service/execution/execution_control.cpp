@@ -1,5 +1,4 @@
 #include "kernel/service/execution/execution_control.h"
-#include "foundation/workspace.h"
 
 #include "authority/scope/scope.h"
 #include "catalog/capability/business_encoding.h"
@@ -20,25 +19,13 @@ bool valid_nonce(const ayni_executor_nonce_v1 &nonce, uint64_t control_domain_id
 // Projection rows share this one Scene generation. Control envelope fields are
 // proven fixed at catalog close, but other Scene-limited fields can vary per
 // item, and must not borrow authorization from only the first item (ADR-0084).
-ayni_status_t ExecutionControl::authorize_input(const catalog::ExecutionBinding &binding,
-                                                ayni_string_v1 capability, uint32_t version,
-                                                ayni_bytes_v1 domain,
-                                                const catalog::CallContract &contract,
-                                                const work::CallInputView &input,
-                                                uint64_t durable_seq, uint32_t &scene) const {
+ayni_status_t ExecutionControl::authorize_input(
+    const catalog::ExecutionBinding &binding, ayni_string_v1 capability, uint32_t version,
+    ayni_bytes_v1 domain, const catalog::CallContract &contract, const work::CallInputView &input,
+    const catalog::DecodedBusiness &proof, uint64_t durable_seq, uint32_t &scene) const {
     if (contract.input_format != catalog::call_value_input_format) {
         return work_.scenes.authorize(view(binding.scene), binding.scene_version, capability,
                                       version, input.arguments, durable_seq, scene);
-    }
-    auto proof_lease = work_.workspace.make<catalog::DecodedBusiness>();
-    if (!proof_lease) {
-        return AYNI_CAPACITY_EXCEEDED;
-    }
-    auto &proof = *proof_lease;
-    auto status =
-        catalog::decode_business(work_.workspace, domain, contract.business_contract, proof);
-    if (status != AYNI_OK) {
-        return status;
     }
     const uint32_t count = catalog::projection_rows(proof.view(), input.value.view());
     if (count == 0U) {
@@ -47,7 +34,7 @@ ayni_status_t ExecutionControl::authorize_input(const catalog::ExecutionBinding 
     uint32_t selected = 0;
     for (uint32_t at = 0; at < count; ++at) {
         catalog::ProjectionRow row;
-        status = catalog::project_row(proof.view(), input.value.view(), at, row);
+        auto status = catalog::project_row(proof.view(), input.value.view(), at, row);
         if (status != AYNI_OK) {
             return status;
         }
@@ -70,11 +57,10 @@ ayni_status_t ExecutionControl::authorize_input(const catalog::ExecutionBinding 
 
 // Save the exact enabled Scene generation and measured prerequisites alongside
 // the canonical call input. No permit or local nonce is issued during admission.
-authority::GrantCheck
-ExecutionControl::prepare(const catalog::CallContract &contract, const catalog::Binding &binding,
-                          ayni_bytes_v1 domain, const work::CallInputView &input, uint64_t now_us,
-                          uint64_t durable_seq, uint64_t task_id,
-                          std::optional<work::ExecutionFact> &out_fact) const {
+authority::GrantCheck ExecutionControl::prepare(
+    const catalog::CallContract &contract, const catalog::Binding &binding, ayni_bytes_v1 domain,
+    const work::CallInputView &input, const catalog::DecodedBusiness &proof, uint64_t now_us,
+    uint64_t durable_seq, uint64_t task_id, std::optional<work::ExecutionFact> &out_fact) const {
     if ((contract.effects & catalog::call_effect_physical) == 0U) {
         return {AYNI_OK, AYNI_REASON_NONE};
     }
@@ -87,7 +73,7 @@ ExecutionControl::prepare(const catalog::CallContract &contract, const catalog::
     uint32_t scene = 0;
     const auto authorized =
         authorize_input(spec, view(binding.capability), binding.capability_version, domain,
-                        contract, input, durable_seq, scene);
+                        contract, input, proof, durable_seq, scene);
     if (authorized != AYNI_OK) {
         return {authorized, AYNI_REASON_EXECUTION_SCENE};
     }
@@ -125,37 +111,32 @@ ExecutionControl::prepare(const catalog::CallContract &contract, const catalog::
 
 // Used immediately before dispatch and every local renewal. Scene close/reopen,
 // a new observation version or a new boot cannot revive an accepted old action.
+bool ExecutionControl::execution_current(uint32_t index) const {
+    const auto &state = work_.calls.state(index);
+    const auto &fact = *state.execution;
+    const auto *owner = work_.principals.binding();
+    return !state.content_erased && !work::execution_stopped(fact) &&
+           fact.epochs.kernel_boot_epoch == work_.ids.boot_epoch() && owner != nullptr &&
+           fact.epochs.authority_epoch == owner->binding_revision;
+}
+
 bool ExecutionControl::allowed(uint32_t index, uint64_t now_us, uint64_t durable_seq) const {
-    const auto &saved = work_.calls.state(index).execution;
-    if (!saved) {
+    if (!work_.calls.state(index).execution) {
         return true;
     }
-    const auto &fact = *saved;
-    const auto &identity = work_.calls.identity(index);
-    const auto *owner = work_.principals.binding();
-    if (work::execution_stopped(fact) || fact.epochs.kernel_boot_epoch != work_.ids.boot_epoch() ||
-        owner == nullptr || fact.epochs.authority_epoch != owner->binding_revision) {
+    if (!execution_current(index)) {
         return false;
     }
-    auto input_lease = work_.workspace.make<work::CallInputView>();
-    if (!input_lease) {
-        return false;
-    }
-    auto &input = *input_lease;
-    if (work::read_call_input(work_.workspace, work_.calls.domain(index), work_.calls.input(index),
-                              work_.calls.contract(index), input) != AYNI_OK) {
-        return false;
-    }
-    uint32_t scene = 0;
-    uint32_t state = 0;
-    if (authorize_input(fact.binding, view(identity.capability_id), identity.capability_version,
-                        work_.calls.domain(index), work_.calls.contract(index), input, durable_seq,
-                        scene) != AYNI_OK ||
-        !work_.scenes.find_state(view(fact.binding.scene), state) ||
-        work_.scenes.state(state).stamp.commit_seq != fact.scene_seq) {
-        return false;
-    }
-    return dependencies_current(index, now_us);
+    // prepare admitted every projection row against this immutable Scene/input in this boot.
+    // Only its live generation and prerequisites can change (ADR-0103); a new boot was refused
+    // above, and disable/re-enable cannot revive the old accepted generation.
+    const auto &fact = *work_.calls.state(index).execution;
+    uint32_t scene = 0, state = 0;
+    return work_.scenes.current(view(fact.binding.scene), fact.binding.scene_version, durable_seq,
+                                scene) == AYNI_OK &&
+           work_.scenes.find_state(view(fact.binding.scene), state) &&
+           work_.scenes.state(state).stamp.commit_seq == fact.scene_seq &&
+           dependencies_current(index, now_us);
 }
 
 // An output can record that execution ended, but stale evidence cannot complete

@@ -5,8 +5,13 @@ ayni_status_t archive_result(const ToolLoopConfig &config, const ayni_task_snaps
                              const ConversationRecord &record,
                              const ayni_task_call_result_v1 &result, ArchivedResult &archived,
                              ayni_policy_output_v1 &output) {
-    const auto status =
-        config.history.archive(config.history.context, snapshot.task_id, record, result, archived);
+    auto resolved = result;
+    std::string owned;
+    auto status = resolve_result_body(*config.bodies, resolved, owned);
+    if (status == AYNI_OK) {
+        status = config.history.archive(config.history.context, snapshot.task_id, record, resolved,
+                                        archived);
+    }
     if (status == AYNI_NOT_READY) {
         output.disposition = AYNI_POLICY_OUTPUT_DEFER;
     }
