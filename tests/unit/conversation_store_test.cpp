@@ -1,7 +1,10 @@
 #include "strategy_workspace_fixture.h"
 // ADR-0096: the Native SQLite body store, its collection and privacy replacement.
 #include "../../runtime/native_node/conversation_store.h"
+#include "catalog/capability/business_encoding.h"
+#include "catalog/capability/field_domain.h"
 #include "temp_directory.h"
+#include <ayni/call_result_json.hpp>
 #include <ayni/model_messages.hpp>
 #include <chrono>
 #include <sqlite3.h>
@@ -177,5 +180,66 @@ TEST_F(ConversationDatabase, staged_aliases_share_one_payload_and_release_indepe
     store.bodies()->release(store.bodies()->context, &chat);
     store.close();
     EXPECT_EQ(count("body_data"), 0);
+}
+// C-SDK-007 / ADR-0105: the one-pass worker stores exactly the original result projection.
+TEST_F(ConversationDatabase, archived_text_result_matches_fixed_projection_and_keeps_one_row) {
+    constexpr uint32_t proof_capacity = 4096, text_limit = 64, timeout_ms = 1000;
+    std::array<uint8_t, proof_capacity> domain{}, proof{};
+    uint32_t domain_size = 0, proof_size = 0;
+    ASSERT_EQ(ayni::catalog::encode_domain(nullptr, 0, domain.data(), domain.size(), domain_size),
+              AYNI_OK);
+    ayni_schema_node_v1 schema{};
+    schema.kind = AYNI_VALUE_TEXT;
+    schema.subtree_end = 1;
+    schema.max_count = text_limit;
+    const ayni_business_contract_v1 business{{&schema, 1}, {&schema, 1}, 0, 0, nullptr};
+    ayni::catalog::CallContract contract{};
+    contract.form = ayni::catalog::CallForm::unary;
+    contract.category = ayni::catalog::CallClass::tool;
+    contract.idempotency = ayni::catalog::CallIdempotency::idempotent;
+    contract.query = ayni::catalog::QueryAuthority::none;
+    contract.cancel = ayni::catalog::CancelMode::none;
+    contract.timeout_ms = timeout_ms;
+    contract.input_format = AYNI_CALL_INPUT_VALUE;
+    contract.result_format = AYNI_CALL_RESULT_TEXT;
+    contract.input_text_limit = contract.result_text_limit = text_limit;
+    const ayni_bytes_v1 original_domain{domain.data(), domain_size};
+    ASSERT_EQ(ayni::catalog::encode_business(::ayni::test::codec_workspace(), original_domain,
+                                             contract, business, proof.data(), proof.size(),
+                                             proof_size),
+              AYNI_OK);
+    constexpr uint64_t task = 3, call = 5, operation = 6, sequence = 7;
+    ayni_task_call_result_v1 result{};
+    result.struct_size = sizeof(result);
+    result.logical_call_id = call;
+    result.operation_id = operation;
+    result.requires_seq = sequence;
+    result.outcome = AYNI_CALL_COMPLETED;
+    result.result_kind = AYNI_CALL_RESULT_TEXT;
+    constexpr char answer[] = u8"完成\n\"exact\"";
+    result.text = {answer, sizeof(answer) - 1U};
+    result.original_domain = original_domain;
+    result.business_contract = {proof.data(), proof_size};
+    const auto history = store.history_port();
+    ayni::strategies::ArchivedResult archived{};
+    ASSERT_EQ(await([&] {
+                  return history.archive(history.context, task, state.record, result, archived);
+              }),
+              AYNI_OK);
+    constexpr size_t output_bytes = 2048;
+    std::array<char, output_bytes> bytes{};
+    ayni::json::Writer writer(bytes.data(), bytes.size());
+    ASSERT_EQ(ayni::json::write_call_result(::ayni::test::result_workspace(), writer, result,
+                                            archived.reference),
+              AYNI_OK);
+    size_t size = 0;
+    ASSERT_TRUE(writer.finish(size));
+    std::string observed;
+    ASSERT_EQ(history.result_chunk(history.context, task, archived.reference, 0, observed,
+                                   archived.json_bytes),
+              AYNI_OK);
+    EXPECT_EQ(observed, std::string(bytes.data(), size));
+    EXPECT_EQ(archived.json_bytes, size);
+    EXPECT_EQ(count("results"), 1);
 }
 } // namespace

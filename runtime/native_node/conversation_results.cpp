@@ -1,4 +1,5 @@
 #include "conversation_store.h"
+#include <algorithm>
 #include <ayni/call_result_json.hpp>
 #include <sqlite3.h>
 namespace ayni::runtime {
@@ -114,24 +115,29 @@ ayni_status_t ConversationStore::result_chunk(void *context, uint64_t task, uint
     out.assign(job.json.data() + offset, take);
     return AYNI_OK;
 }
-// Renders the job's result into json, sized by a measuring pass first.
+// Decode the original proof once; this worker grows its owned archive buffer on demand.
 ayni_status_t ConversationStore::render(uint64_t reference, size_t &size) {
     auto &job = archiving_;
-    auto measured = json::Writer::measuring();
-    auto status = json::write_call_result(result_workspace_.get(), measured, job.result, reference);
+    std::string rendered;
+    auto writer = json::Writer::growing(&rendered, [](void *context, size_t minimum) {
+        if (minimum > UINT32_MAX) {
+            return json::Writer::Buffer{};
+        }
+        auto &text = *static_cast<std::string *>(context);
+        text.resize(std::max(minimum, std::min(text.capacity(), size_t{UINT32_MAX})));
+        return json::Writer::Buffer{text.data(), text.size()};
+    });
+    const auto status =
+        json::write_call_result(result_workspace_.get(), writer, job.result, reference);
     if (status != AYNI_OK) {
         return status;
     }
-    if (!measured.finish(size) || size > UINT32_MAX) {
+    if (!writer.finish(size) || size > UINT32_MAX) {
         return AYNI_CAPACITY_EXCEEDED;
     }
-    job.json.assign(size, '\0');
-    json::Writer writer(job.json.data(), size);
-    status = json::write_call_result(result_workspace_.get(), writer, job.result, reference);
-    size_t written = 0;
-    return status != AYNI_OK                           ? status
-           : writer.finish(written) && written == size ? AYNI_OK
-                                                       : AYNI_CAPACITY_EXCEEDED;
+    rendered.resize(size);
+    job.json = std::move(rendered);
+    return AYNI_OK;
 }
 // SQL owns complete original bytes/proofs and the exact rendered view. The
 // transaction commits before a Core checkpoint may contain the result reference.

@@ -152,15 +152,15 @@ ayni_status_t load_result_view(const ayni_body_store_v1 &bodies, const BodyRef &
     if (status != AYNI_OK) {
         return status;
     }
-    auto measured = json::Writer::measuring();
-    status = json::write_call_result(workspace.get(), measured, call);
+    std::string rendered;
+    auto writer = growing_json(rendered);
+    status = json::write_call_result(workspace.get(), writer, call);
     size_t bytes = 0;
-    if (status != AYNI_OK || !measured.finish(bytes)) {
+    if (status != AYNI_OK || !writer.finish(bytes)) {
         return status == AYNI_OK ? AYNI_CAPACITY_EXCEEDED : status;
     }
-    out.resize(bytes);
-    json::Writer writer(out.data(), bytes);
-    status = json::write_call_result(workspace.get(), writer, call);
-    return status != AYNI_OK ? status : writer.finish(bytes) ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
+    rendered.resize(bytes);
+    out = std::move(rendered);
+    return AYNI_OK;
 }
 } // namespace ayni::strategies::detail

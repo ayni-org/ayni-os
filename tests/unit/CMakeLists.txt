@@ -160,7 +160,7 @@ target_link_libraries(ayni_assistant_application_tests PRIVATE ayni_core ayni_ru
     ayni_runtime_sim_node ayni_warnings GTest::gtest_main)
 gtest_discover_tests(ayni_assistant_application_tests)
 
-add_executable(ayni_cpp_sdk_tests cpp_sdk_test.cpp runtime_examples_test.cpp)
+add_executable(ayni_cpp_sdk_tests cpp_sdk_test.cpp runtime_examples_test.cpp json_writer_test.cpp)
 # Keep GoogleTest factories compatible with its RTTI-enabled sanitized library.
 # The standalone SDK smoke and examples enforce no-exceptions/no-RTTI clients.
 target_link_libraries(ayni_cpp_sdk_tests PRIVATE ayni_core ayni_host_sim ayni_runtime_common ayni_runtime_examples

@@ -1,12 +1,12 @@
 # Ayni：通用原生 AgentOS 基础能力与实验实施计划
 
 > **文档性质**：工程实施计划与待实现契约，不代表已有软件能力。\
-> **文档版本**：v1.120 · 2026-11-15；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
+> **文档版本**：v1.121 · 2026-11-16；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
 > **产品定位**：跨平台、跨设备的通用原生 AgentOS；宿主与扩展决定提供哪些设备或软件能力，统一助理只是应用示例。\
 > **架构路线**：按 Ayni 的共享 Agent 状态、授权、资源及恢复需求设计原生 Core，复用宿主 OS，模型优先通过外部 API 获得；架构图仅参考 AIOS 的分层分组表达样式。\
 > **实施顺序**：先完成基础通用能力，再开展 ESP32-S3、Linux 系统等实验；设备与能力组合按实验目标选取，不要求宿主具备语音、视觉、运动或特定外设。\
 > **基准投入**：单人全职；阶段周期是相对工作量估算，不是开工日期或交付日期承诺。\
-> **当前状态**：通用基础与独立源码SDK已交付，见[基础报告](../reports/core/foundation-acceptance.md)和[独立接入报告](../reports/core/independent-consumption.md)。共享正文与连续提交已随[#137](https://github.com/RobotSe7en/ayni/pull/137)合并；后续存储误报、内部堆分配及共用对话重复工作已修正，正常OTA保持当前数据和配置，ABI0.55/schema10不变，见[ADR-0105](adr/0105-shared-conversation-flow-and-local-cost.md)及[实验记录](../experiments/esp32_wifi_chat/WIFI.md#2026-11-15-共用对话主路径与本地耗时简化)。用户要求先提交推送、明天继续性能定位；真实工具交接P95≤100 ms、冷/暖加载长单步、新格式异常恢复、完整128K峰值及独立硬件停止链仍待对应验证或后续优化。
+> **当前状态**：通用基础与独立源码SDK已交付，见[基础报告](../reports/core/foundation-acceptance.md)和[独立接入报告](../reports/core/independent-consumption.md)。共享正文与连续提交已随[#137](https://github.com/RobotSe7en/ayni/pull/137)合并；后续存储误报、内部堆分配及共用对话重复工作已修正，正常OTA保持当前数据和配置，ABI0.55/schema10不变，见[ADR-0105](adr/0105-shared-conversation-flow-and-local-cost.md)及[实验记录](../experiments/esp32_wifi_chat/WIFI.md#2026-11-15-共用对话主路径与本地耗时简化)。2026-11-16继续去掉冷读结果的双遍投影及临时区重复擦除，正常软件验证、独立审查和ESP编译通过；开发板暂不可用，新候选未OTA。真实工具交接P95≤100 ms、板端长单步、新格式异常恢复、完整128K峰值及独立硬件停止链仍待对应证据。
 
 > **本轮范围**：用户2026-10-31要求实施[独立工程接入与验收计划](architecture/independent-consumption-plan.md)：通用源码SDK、低栈工作区、Native/ESP存储及Host、共同应用和验收。平台适配保持独立目录，必要接口直接升级，正常存储和最小重开获授权；实机操作、付费模型及其他新专项不启动。
 
@@ -1097,6 +1097,8 @@ idf.py -p <SERIAL_PORT> flash monitor
 ## 14. 默认值与仍需用户决策的问题
 
 ### 14.1 已接受的实施默认值
+
+本次修订（v1.121，2026-11-16）：继续同一共用对话性能定位，JSON输出改为调用方增长区域的一次投影，原证明/值codec仅清理自身临时字节，一般借区仍完整擦除。正常回归、独立审查及ESP编译通过；不改ABI/schema和持久格式，开发板不在身边，本轮未OTA或取得新板端耗时。见[ADR-0105](adr/0105-shared-conversation-flow-and-local-cost.md)。
 
 本次修订（v1.120，2026-11-15）：用户要求简化共用输入→模型→顺序工具→最终发布流程并同步契约。共享读者合并独立依赖，既有缓存同额度复用同源完成图，Session整组请求保存依赖，Native/ESP只读取最新答案；保留当前所有权/隐私和全部持久屏障，不改ABI/schema及存储格式。正常软件检查和ESP编译通过，最终候选91c0c65-localreuse正常OTA、自确认并保留数据/配置；局部板端结果与未达成的冷单步/100 ms边界见[ADR-0105](adr/0105-shared-conversation-flow-and-local-cost.md)。
 

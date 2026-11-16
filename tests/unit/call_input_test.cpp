@@ -8,7 +8,9 @@
 #include "foundation/little_endian.h"
 #include "work/call/call_input.h"
 
+#include <algorithm>
 #include <array>
+#include <ayni/workspace.hpp>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <memory>
@@ -295,4 +297,47 @@ TEST_F(CallInputTest, a_shared_contract_still_validates_each_new_business_input)
               AYNI_OK);
 }
 
+// C-SDK-007: original-proof decoding erases its private bytes even when its
+// normal synchronous consumer refuses; delegation must preserve that exact cleanup.
+TEST_F(CallInputTest, delegated_original_proof_preserves_codec_cleanup_on_callback_return) {
+    constexpr uint8_t unused = 73;
+    for (const auto response : {AYNI_OK, AYNI_DENIED}) {
+        ayni::Workspace direct, delegated;
+        ASSERT_EQ(direct.create(ayni::Workspace::Purpose::business), AYNI_OK);
+        ASSERT_EQ(delegated.create(ayni::Workspace::Purpose::business), AYNI_OK);
+        const auto bytes = direct.get()->byte_capacity;
+        auto *direct_data = static_cast<uint8_t *>(direct.get()->data);
+        auto *delegated_data = static_cast<uint8_t *>(delegated.get()->data);
+        std::fill_n(direct_data, bytes, unused);
+        std::fill_n(delegated_data, bytes, unused);
+        struct Consumer {
+            ayni_status_t response;
+            uint32_t calls = 0;
+        } first{response}, second{response};
+        const auto receive = [](void *context, const ayni_business_contract_v1 *view) {
+            auto &consumer = *static_cast<Consumer *>(context);
+            ++consumer.calls;
+            EXPECT_EQ(view->result.nodes[0].kind, AYNI_VALUE_TEXT);
+            return consumer.response;
+        };
+        ASSERT_EQ(ayni_business_contract_read(direct.get(), domain(), contract.business_contract,
+                                              &first, receive),
+                  response);
+        ayni::detail::Workspace owner(delegated_data, bytes);
+        {
+            auto region = owner.delegate(bytes);
+            ASSERT_TRUE(region);
+            ASSERT_EQ(ayni_business_contract_read(region.get(), domain(),
+                                                  contract.business_contract, &second, receive),
+                      response);
+        }
+        EXPECT_EQ(first.calls, 1U);
+        EXPECT_EQ(second.calls, 1U);
+        EXPECT_TRUE(std::equal(direct_data, direct_data + bytes, delegated_data));
+        EXPECT_NE(std::find(direct_data, direct_data + bytes, uint8_t{0}), direct_data + bytes);
+        EXPECT_NE(std::find(direct_data, direct_data + bytes, unused), direct_data + bytes);
+        auto reused = owner.take(bytes);
+        EXPECT_TRUE(reused);
+    }
+}
 } // namespace

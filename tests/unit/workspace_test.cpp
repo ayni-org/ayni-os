@@ -125,4 +125,36 @@ TEST(Workspace, callback_refusal_erases_its_lane_and_allows_immediate_reuse) {
     auto lane = workspace.take(bytes.size());
     EXPECT_TRUE(lane);
 }
+// C-SDK-007: a synchronous codec clears its own private scratch; the outer lease
+// only reserves capacity and restores the cursor, without wiping unused bytes again.
+TEST(Workspace, delegated_codec_preserves_its_own_erasure_and_allows_immediate_reuse) {
+    size_t bytes = 0, alignment = 0;
+    ASSERT_EQ(ayni_value_workspace_requirements(&bytes, &alignment), AYNI_OK);
+    constexpr uint8_t unused = 73;
+    ayni::Workspace expected, delegated;
+    ASSERT_EQ(expected.create(ayni::Workspace::Purpose::value), AYNI_OK);
+    ASSERT_EQ(delegated.create(ayni::Workspace::Purpose::value), AYNI_OK);
+    auto *direct_data = static_cast<uint8_t *>(expected.get()->data);
+    auto *delegated_data = static_cast<uint8_t *>(delegated.get()->data);
+    std::fill_n(direct_data, bytes, unused);
+    std::fill_n(delegated_data, bytes, unused);
+    Scalar direct(42), nested(42);
+    ASSERT_EQ(
+        ayni_value_normalize(expected.get(), &direct.declaration, &direct.input, &direct.result),
+        AYNI_OK);
+    ayni::detail::Workspace owner(delegated_data, bytes);
+    {
+        auto region = owner.delegate(bytes);
+        ASSERT_TRUE(region);
+        ASSERT_EQ(
+            ayni_value_normalize(region.get(), &nested.declaration, &nested.input, &nested.result),
+            AYNI_OK);
+    }
+    EXPECT_EQ(nested.output.value.integer, direct.output.value.integer);
+    EXPECT_TRUE(std::equal(direct_data, direct_data + bytes, delegated_data));
+    EXPECT_NE(std::find(direct_data, direct_data + bytes, uint8_t{0}), direct_data + bytes);
+    EXPECT_NE(std::find(direct_data, direct_data + bytes, unused), direct_data + bytes);
+    auto reused = owner.take(bytes);
+    EXPECT_TRUE(reused);
+}
 } // namespace

@@ -57,20 +57,16 @@ class Workspace {
     class Region {
       public:
         // Internal construction admits the complete byte lane before advancing.
-        Region(Workspace &owner, std::size_t bytes) : owner_(owner), mark_(owner.used_) {
-            const auto padding = (alignment - owner.used_ % alignment) % alignment;
-            if (owner.data_ != nullptr && owner.used_ <= owner.capacity_ &&
-                padding <= owner.capacity_ - owner.used_ && bytes != 0 &&
-                bytes <= owner.capacity_ - owner.used_ - padding) {
-                view_ = {sizeof(view_), 0, owner.data_ + owner.used_ + padding, bytes};
-                owner.used_ += padding + bytes;
-            }
-        }
+        Region(Workspace &owner, std::size_t bytes) : Region(owner, bytes, Cleanup::caller) {}
         Region(const Region &) = delete;
         Region &operator=(const Region &) = delete;
         ~Region() {
             if (view_.data != nullptr) {
-                owner_.release(mark_);
+                if (cleanup_ == Cleanup::caller) {
+                    owner_.release(mark_);
+                } else {
+                    owner_.used_ = mark_; // The synchronous codec already erased its own scratch.
+                }
             }
         }
         // False means no lane was reserved.
@@ -79,14 +75,32 @@ class Workspace {
         const ayni_workspace_v1 *get() const { return view_.data ? &view_ : nullptr; }
 
       private:
+        friend class Workspace;
+        enum class Cleanup { caller, callee };
+        Region(Workspace &owner, std::size_t bytes, Cleanup cleanup)
+            : owner_(owner), mark_(owner.used_), cleanup_(cleanup) {
+            const auto padding = (alignment - owner.used_ % alignment) % alignment;
+            if (owner.data_ != nullptr && owner.used_ <= owner.capacity_ &&
+                padding <= owner.capacity_ - owner.used_ && bytes != 0 &&
+                bytes <= owner.capacity_ - owner.used_ - padding) {
+                view_ = {sizeof(view_), 0, owner.data_ + owner.used_ + padding, bytes};
+                owner.used_ += padding + bytes;
+            }
+        }
         Workspace &owner_; // Borrowed lexical arena; outlives this region.
         std::size_t mark_; // Byte cursor restored after the last synchronous borrower returns.
+        Cleanup cleanup_;  // Callee only for an operation that clears all scratch it writes.
         ayni_workspace_v1
             view_{}; // Null data means no capacity; otherwise complete exclusive lane.
     };
 
     // Dynamic-size lanes bridge public memory queries without copying private layouts.
     Region take(std::size_t bytes) { return Region(*this, bytes); }
+
+    // Delegate erasure only to a synchronous codec that clears every written scratch byte
+    // on all returns (C-SDK-007). The caller must not write directly through this lane;
+    // arbitrary callbacks still use take()/with_workspace and caller-owned erasure.
+    Region delegate(std::size_t bytes) { return Region(*this, bytes, Region::Cleanup::callee); }
 
     // Constructs only after full capacity admission; rejection changes no cursor.
     template <typename T, typename... Args> Object<T> make(Args &&...args) {

@@ -1,9 +1,24 @@
 #include "support.h"
+#include <algorithm>
 #include <ayni/values.hpp>
 #include <charconv>
 #include <cstring>
 
 namespace ayni::strategies::detail {
+json::Writer growing_json(std::string &output) {
+    output.clear();
+    return json::Writer::growing(&output, [](void *context, size_t minimum) {
+        auto &text = *static_cast<std::string *>(context);
+        const auto maximum = text.max_size();
+        if (minimum > maximum) {
+            return json::Writer::Buffer{};
+        }
+        // Reuse the string owner's existing capacity policy. resize makes the
+        // complete returned byte lane writable, including its currently unused tail.
+        text.resize(std::max(minimum, text.capacity()));
+        return json::Writer::Buffer{text.data(), text.size()};
+    });
+}
 ayni_string_v1 model_key(uint32_t round, char *buffer) {
     Writer out(buffer, AYNI_CATALOG_ID_MAX_BYTES);
     out.add("model.");

@@ -3,6 +3,7 @@
 #define AYNI_STRATEGIES_SUPPORT_H
 #include <ayni/detail/workspace.hpp>
 #include <ayni/strategies/builtin.h>
+#include <ayni/values_json.hpp>
 #include <initializer_list>
 #include <string>
 #include <string_view>
@@ -10,6 +11,8 @@
 
 namespace ayni::strategies::detail {
 using Workspace = ::ayni::detail::Workspace;
+// Begins one owned JSON document; Writer borrows this string only through synchronous writes.
+json::Writer growing_json(std::string &output);
 inline constexpr uint32_t max_model_rounds = AYNI_MAX_TURNS_MAX;
 
 // The checkpoint carries the immutable base revision and a candidate context.
