@@ -10,7 +10,7 @@ RC003-MS按住语音键录音，松开后整段上传ASR，识别文字显示并
 
 上下文预算128 × 1024个估算token，包含预留1800输出token；摘要目标4096，满时仍使用原ToolLoop压缩。HTTP请求正文和投影JSON各最多768 KiB，经24字节BodyRef加4字节模式传递；普通队列32 KiB。worker按实长分配，投影后清零释放原正文；共享FileBodies按预算清退已持久缓存而不删仍引用的磁盘正文，PCM只在能力调用期间分配。
 
-128K是配置预算，不是完整长上下文硬件验收。估算token、字节长度、PSRAM峰值和Flash余量分别限制部署。旧usb.chat等私有身份仅为现有数据/取消收尾保留；未知结果不授权透明重试。
+128K是配置预算，不是完整长上下文硬件验收。估算token、字节长度、PSRAM峰值和Flash余量分别限制部署。旧usb.model/usb.chat能力、Binding和GoalType已撤除；旧属主Goal类型不受当前部署支持时明确拒绝并保留数据，不自动擦除。未知结果不授权透明重试。
 
 ## 设置与操作
 
@@ -711,3 +711,30 @@ Native代码本来选择Linux Host；本机无可用Linux容器运行时。本�
 ToolLoop查询工作区仍706720 B、8 B对齐；当前ModelProposals固定数据600 B，检查分配的共享owner另带计数；8组节点上限98304 B（Native布局），并不包含完整字符串capacity或整个平台heap。相对e041b25，本批统一提交两轮C/C++清理，生产代码净删约747行，正常测试/替身净增约245行；统计包含新SqliteValues而不含用户品牌资产、文档或CMake。保留的候选/旧图/确认状态服务真实异步借用、DEFER及持久屏障，不是旧兼容副本。
 
 ESP-IDF6.0.3/GCC15.2.0候选e041b25-unified本地编译、分区检查通过；3 MiB应用槽仍余12%，镜像2779968 B。原sdkconfig/分区保持。构建前及过程中检查16 GiB/10CPU主机的内存、swap和活动任务，构建显式2任务、CTest并行上限1，保留桌面余量。实际命令、过滤器、临时CMake、线程栈和输出在本机忽略目录build/local-cleanup-20261116/与build/performance-checks-src/，属于仓库外证据；仓库中保留对应正常测试源。用户随后要求将本批代码、契约和验证记录提交并推送；本批随当前提交保存并推送原分支，继续暂不OTA。未擦数据或执行真实动作；远端CI、Linux完整套件、板端100 ms交接/内存峰值及新故障/恢复/变异/耐久专项未执行。
+
+## 2026-11-16 流程精简复查续作
+
+用户要求落实对18881d1/a43a027流程复查的全部精简建议，两个待计数路径也先用正常夹具计数。范围及取舍见[ADR-0108续作](../../docs/adr/0108-unified-conversation-and-result-storage.md#2026-11-16-复查续作)。不变C ABI0.56、Core schema10、turn8/ANRV2/SQLite5；不OTA、不擦数据、不调用云端或真实动作。
+
+- ESP撤除usb.model.*、usb.model/usb.summary Binding及usb.chat GoalType/选择分支，改当前Wi-Fi策略/端点身份。两项现行模型能力共用相同大正文及结果Schema，不再保留旧小正文或重复Schema。当前部署不支持的属主Goal明确UNSUPPORTED_VERSION，保留原记录，不继续等Core已hold的Task；旧调用事实和UNKNOWN约束不改。
+- ToolLoop直接追加到decide已有工作副本，8项模型提议在一个Writer中封装；失败整个候选不发布。普通/受管结果汇到公共最终预算及超限摘要，list必要缩页候选仍计量，选中页/inspect传递已测成本。正常回调计数分别证实普通回复一次、受管start与read各一次、list选中页和inspect各一次。
+- 历史压缩在同一代持有共享不可变规范投影，完成/来源失效/隐私清理/缓存退休释放；不会为DEFER工作副本深拷贝它。代价是压缩期间保留一份完整投影，未扩大缓存槽，板端峰值未测。
+- Native和background均按当前步骤读写的NOT_READY推迟，不再等整个FileBodies队列空闲；worker仍推进，默认durable的草稿准入、会话完整图/文件/清理与最终ACK保持。begin直接交付已生成输入引用，外部Core准入校验保留。
+- 记忆由初始决定两次read减为每次决定一次；后续仍采样当前来源/权限，只有初始化构建新上下文文本。大正文保留16 KiB操作缓存取舍：20份64 KiB正文预读20次，选中一份正式读取后合计21次，缓存不常驻这20份正文；不以额外常驻1.25 MiB换这一次复制。计数不是板端耗时或峰值证据。
+
+实际本地验证使用Linux容器GCC13.3.0、CMake3.31.6、clang-format18.1.3。Debug策略77项、共享Session10项、Native助理/查询/SQLite29项、ESP公开Core/Sim集成16项、FileValues/FileBodies11项通过；Wi-Fi桌面60项通过。ASan/UBSan开启detect_leaks=1及halt_on_error=1，策略77项和Session10项通过。均为相关套件，不是Core完整套件或全配置矩阵；真实网络仅既有本机HTTP夹具。
+
+Native首轮200 KiB SQLite正常写入夹具超出原5秒观察窗，单独隔离复现仍在5.898秒返回NOT_READY后失败；该夹具现在统一到其他Native异步夹具的具名30秒有限观察窗，生产确认/超时规则未改；最终该测试6884 ms完成，Native目标29项全过。ESP-IDF6.0.3/GCC15.2.0编译和分区检查通过，镜像2779248 B，3 MiB应用槽余12%。ESP首次构建拒绝过期生成sdkconfig的PSRAM内部优先配置；保留该生成副本后按已跟踪defaults/wifi重新生成，未改设备或已跟踪配置。
+
+设计自查和独立只读增量复查已处理发现：拒旧启动等待、list/inspect成功回复重复计量及记忆测试来源替身字段均修正。四项分别结论：
+
+- 删除注释：`strategies/builtin/tool_loop.cpp:161`把完整frame保证移到决定事务工作副本；`chat.cpp`旧小正文兼容说明随旧注册失效，当前诊断无真实上下文的说明保留。
+- Kernel字段：搜索`git diff -- core/ include/ayni/`为空；`support.h`的history_projection归当前Turn压缩，`harness.h`的ToolReply只拥有同步回复/结果字节及已选成本。
+- 重复规则：`strategies/builtin/tool_loop.cpp:879`公共最终预算/摘要入口和`strategies/builtin/harness.h:85`的ToolBudget::measure共享计量规则；begin把同一已生成引用交给Session，Core边界校验仍在，Session直接接收输入引用见`runtime/conversation/conversation.cpp:401`。
+- 裸数字：`tests/unit/sqlite_values_test.cpp:18`的async_test_timeout命名观察窗；ESP两项当前能力的固定槽含义写在chat.h，持久布局/版本不变。
+
+clang-format18、契约追踪、依赖及机械可读性检查和`git diff --check`通过；机械检查保留原19项public-code-comment基线及1项已审例外，无新增违规。
+
+本轮命令和输出保存在本机忽略目录`build/simplify-followup-*.log`，属于外部原始证据；仓库保留正常测试源及契约映射。构建前和执行中检查可用内存、swap、活动容器；Native构建4任务/测试上限4，ESP构建2任务，Wi-Fi3任务，容器CPU/内存按并行阶段限制并保留桌面余量。新故障/恢复/断电/变异/耐久专项、远端CI、板端拒旧启动、100 ms交接及完整128K峰值未验证。
+
+用户随后要求将本轮代码、契约和验证记录提交并推送到原分支，继续暂不OTA。

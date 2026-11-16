@@ -3,7 +3,7 @@
 - **关联**：ADR-0108；C-SDK-009/011、C-HVAL-002/005/007/009、C-POLICY-012/013。
 - **属主**：共享 Session 独占会话状态与发布/隐私 ACK；FileBodies 独占正文、所有权、有限缓存和回收；Native 的 SqliteValues 只实现异步 FileValuePort。Core 独占授权、Goal/Task/Call 与原持久事实。
 
-Native 与 ESP/portable 使用同一个 Session 和 FileBodies。Native 选择 durable 草稿准入、retain_and_append 未完成输入策略及16 MiB正文缓存；ESP 可显式选择 background，二者共用存储/确认机制。默认 retain 仍要求显式 abandon，Native 的新输入显式追加保留草稿；不把待批准 Goal 当作已完成会话。正常重开只按完整来源基线挂接原已接受 Goal，不创建新 Goal 或重放旧动作。原已完成 Goal 的参数已被隐私退休时跳过；待定工作的缺失/冲突证据仍拒绝。
+Native 与 ESP/portable 使用同一个 Session 和 FileBodies。Native 选择 durable 草稿准入、retain_and_append 未完成输入策略及16 MiB正文缓存；ESP 可显式选择 background，二者共用存储/确认机制。ToolLoop准入不等待整个FileBodies队列空闲，只按当前步骤依赖的读写状态DEFER；会话发布、清理和关闭仍等待各自真实确认及ACK。默认 retain 仍要求显式 abandon，Native 的新输入显式追加保留草稿；不把待批准 Goal 当作已完成会话。正常重开只按完整来源基线挂接原已接受 Goal，不创建新 Goal 或重放旧动作。原已完成 Goal 的参数已被隐私退休时跳过；待定工作的缺失/冲突证据仍拒绝。
 
 启动持有 Native 目录锁，只接受私有、同用户、单链接普通数据库文件。旧 conversation.bin 或未知 SQLite 版本在 Core 启动写入前拒绝并保留。当前 application_id=0x41594E49、user_version=5，仅有 state(owner,object,generation,body) 表，以(owner,object)为主键。共享会话记录6、turn8、结果视图2、正文manifest1与Core schema10独立版本化；删除旧reader、archive及迁移路径，不自动擦除。回退需保留匹配的旧二进制与原目录，不能让旧程序接管新目录。
 

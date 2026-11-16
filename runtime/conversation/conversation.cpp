@@ -398,18 +398,15 @@ ayni_status_t Session::input() {
     if (config_.persistence == strategies::Persistence::background) {
         bodies.write = bodies.stage;
     }
+    strategies::BodyRef input{};
     const auto status = Conversation::begin(config_.workspace, bodies, current_,
                                             {input_.data(), static_cast<uint32_t>(input_.size())},
-                                            parameters_, memory_id_);
+                                            parameters_, memory_id_, &input);
     if (status != AYNI_OK) {
         return status;
     }
     candidate_ = current_;
-    const auto copied =
-        Conversation::input(config_.workspace, parameters_.view(), candidate_.draft);
-    if (copied != AYNI_OK) {
-        return copied;
-    }
+    candidate_.draft = input;
     input_.clear();
     save_ = Save::draft;
     return AYNI_OK;

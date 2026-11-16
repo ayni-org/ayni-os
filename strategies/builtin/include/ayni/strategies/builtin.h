@@ -76,9 +76,11 @@ class Conversation {
     // Since 0.53: every synchronous codec call borrows a queried exclusive region.
     static ayni_status_t workspace_requirements(size_t *bytes, size_t *alignment);
     // Writes draft+user as one input body; NOT_READY while the store is not yet durable.
+    // On success optional input receives that same reference without decoding parameters.
     static ayni_status_t begin(const ayni_workspace_v1 *workspace, const ayni_body_store_v1 &bodies,
                                const ConversationRecord &record, ayni_string_v1 user,
-                               Encoded &parameters, uint64_t memory_id = 0);
+                               Encoded &parameters, uint64_t memory_id = 0,
+                               BodyRef *input = nullptr);
     // Reference to independent user input of a validated turn, without exposing the wire layout.
     static ayni_status_t input(const ayni_workspace_v1 *workspace, ayni_bytes_v1 parameters,
                                BodyRef &out);
@@ -192,10 +194,11 @@ struct LocalClock {
 // Both calls are MODEL class; summary binding must have a text result contract.
 // model.text and summary.text are trusted instructions, framed apart from the conversation data
 // (AYNI_MODEL_INSTRUCTIONS_PREFIX, ADR-0074). User text is in parameters.
-// Body-store progress only. All tool results use the same shared reference representation.
+// Body-store progress only. Queue-wide readiness never gates a ToolLoop Task:
+// dependent reads/writes decide whether the current step must defer.
 struct BodyProgress {
     void *context = nullptr;                            // Borrowed through strategy destruction.
-    uint32_t (*ready)(void *, uint64_t task) = nullptr; // Null: no asynchronous body work.
+    uint32_t (*ready)(void *, uint64_t task) = nullptr; // Return ignored; null: no async work.
 };
 // The model binding's token settings (ADR-0095), all positive. A request holds at most
 // context_window_tokens; max_output_tokens of it are left for the answer. Compaction starts when

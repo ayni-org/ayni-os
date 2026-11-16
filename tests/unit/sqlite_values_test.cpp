@@ -13,6 +13,9 @@ using ayni::runtime::FileBodies;
 using ayni::runtime::SqliteValues;
 using ayni::strategies::BodyRef;
 using namespace ayni::hosts::storage;
+// C-HVAL-002/009 requires durable completion, not a five-second disk SLA.
+// Match the other Native async fixtures while retaining a finite stall boundary.
+constexpr auto async_test_timeout = std::chrono::seconds(30);
 class SqliteValuesTest : public ::testing::Test {
   protected:
     void SetUp() override {
@@ -38,7 +41,7 @@ class SqliteValuesTest : public ::testing::Test {
         configure_bodies();
     }
     template <class Action> ayni_status_t await(Action action) {
-        const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        const auto end = std::chrono::steady_clock::now() + async_test_timeout;
         auto status = action();
         while ((status == AYNI_NOT_READY || status == AYNI_BUSY) &&
                std::chrono::steady_clock::now() < end) {

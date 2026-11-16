@@ -87,7 +87,11 @@ ABI 0.40 的 `snapshot.memory` 是决定期间的借用视图，实际来源、�
 
 策略可提供 owner-thread、非阻塞 `ready(ctx, task)`；不得访问 Kernel、等待 I/O 或保存快照。ready=0 时跳过决定。decide 只有在返回 OK、零意图、存在 ready 端口且 checkpoint 在界限内时才可设置 `disposition=DEFER`：Core 丢弃候选，不提交步骤/检查点，下次重新决定；不重采样 ready，允许 Host 在两次回调之间完成。默认 PROGRESS 的零意图和普通 NOT_READY 错误仍暂停，不能用 DEFER 隐藏服务失败。
 
-ToolLoop只借BodyProgress.ready推进宿主正文，不再暴露HistoryPort、archive或result_chunk。普通和受管工具共用结果视图，保留原规范值、域、证明及当前Call序号/终态，另可附展示文本；冷读和摘要均复用同一reader/投影。过长结果仅在当前有界Turn槽保留一个临时完整投影，分块摘要不重复解码原文；每次决定仍检查当前Core Call与完整来源身份，组结束/来源失效/隐私清理即释放。冷缓存或重开可重新构建，但不重新执行动作。摘要失败保留原文与实际结果，完整图确认后才发布会话。
+ToolLoop只借BodyProgress.ready推进宿主正文，忽略其队列空闲返回值；durable/background均按当前读写的NOT_READY推迟依赖步骤，不等待其他正文排空。Core原ready准入契约不变。不再暴露HistoryPort、archive或result_chunk。普通和受管工具共用结果视图，保留原规范值、域、证明及当前Call序号/终态，另可附展示文本；冷读和摘要均复用同一reader/投影。过长结果仅在当前有界Turn槽保留一个临时完整投影，分块摘要不重复解码原文；每次决定仍检查当前Core Call与完整来源身份，组结束/来源失效/隐私清理即释放。冷缓存或重开可重新构建，但不重新执行动作。摘要失败保留原文与实际结果，完整图确认后才发布会话。
+
+同一决定的Turn工作副本是唯一历史追加事务；模型整组提议一次封装，失败不发布部分消息。工具最终回复只计量一次；list缩页候选仍逐项计量，选中页及inspect成功回复把已有成本交给公共判断。普通/受管结果共享超限摘要入口；本地错误或元数据回复超限明确拒绝，不伪造可摘要的原结果。历史压缩在同一次压缩内复用不可变规范投影，完成、来源失效或隐私清理时释放；不跨历史版本缓存。记忆每次决定仍读取并采样当前权限/来源，只有初始化需生成新上下文文本。Conversation::begin可同时返回已生成输入引用，Core外部validate_turn准入校验保留。
+
+正常证据补充：`UnrelatedBodyWork.durable_task_completes_while_unrelated_body_work_remains`、`CountedReplyBudget.ordinary_result_has_one_final_reply_measurement`、`CountedReplyBudget.managed_start_and_completed_read_are_each_measured_once`、`BuiltinLoop.memory_is_sampled_once_per_decision_including_initial_and_completion`、`Conversation.begin_returns_the_same_input_reference_as_external_admission`。
 
 输入 token 预算为配置窗口减输出预留，75% 触发、50% 为目标；保留最新完整工具组。优先 Chat usage，预检与缺省统计按序列化消息/工具/结构的 Unicode 字符数×0.75 向上取整；历史前缀不变时采用实测前缀+新增估值。压缩清除统计锚点。估值不写成服务 usage，字节缓冲另有限制，超限明确拒绝。正常证据：`ContextHarness.body_write_not_yet_durable_does_not_pause_or_repeat_a_model_call`、`ContextHarness.oversized_executed_result_uses_chunk_summaries_and_keeps_known_facts`、`ContextHarness.declared_summary_failure_pauses_without_changing_the_executed_result`、`ContextEstimate.counts_unicode_characters_and_rounds_the_selected_ratio_up`。
 

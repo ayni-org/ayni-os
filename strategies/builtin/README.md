@@ -8,7 +8,7 @@ ToolLoop 通过 `Conversation::begin` 生成 Task 参数，默认使用固定四
 
 上下文帧、历史和摘要按实际长度分配，受token设置、注册契约和正文预算限制，模型请求与回答经正文存储以引用往返（ADR-0096），Task 参数与检查点只含引用和控制字段。单条输入放不进窗口时明确拒绝，无静默截断。公开历史按引用轮次查询，不由SQLite另存逐消息副本。每回调扫描有界模型轮次与提议。
 
-Native/ESP/portable使用共享Session/FileBodies；BodyProgress.ready只推进异步正文。SQLite只实现通用值端口，不保留旧history/archive回调。DEFER 不提交候选，普通服务 NOT_READY 仍为失败。可选 LocalClock 只向历史追加时间数据，最前部固定指令不随时间改写。
+Native/ESP/portable使用共享Session/FileBodies；BodyProgress.ready只推进异步正文，队列空闲返回值不作为Task准入条件；当前读写依赖单独DEFER。SQLite只实现通用值端口，不保留旧history/archive回调。DEFER 不提交候选，普通服务 NOT_READY 仍为失败。可选 LocalClock 只向历史追加时间数据，最前部固定指令不随时间改写。
 
 外层存储流程：begin 保留原记录；成功 Task 经公开 checkpoint 持久屏障导出；finish 核对 owner/id/generation/revision；候选存储成功才替换 current。删除提升代际并拒绝迟到结果，原业务执行结论不可被摘要或正文擦除改写。
 

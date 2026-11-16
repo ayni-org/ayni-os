@@ -236,9 +236,8 @@ ayni_status_t append_summary(Turn &turn, const ToolLoopConfig &config,
     }
     turn.result_views[std::string(proposal.protocol_id.data, proposal.protocol_id.size)] =
         presentation;
-    std::string history = turn.history;
-    auto append = growing(history);
-    if (history.empty()) {
+    auto append = growing(turn.history);
+    if (turn.history.empty()) {
         append.prefix();
     }
     append.tool(proposal.protocol_id, view(reply));
@@ -246,7 +245,6 @@ ayni_status_t append_summary(Turn &turn, const ToolLoopConfig &config,
     if (!append.finish(added)) {
         return AYNI_CAPACITY_EXCEEDED;
     }
-    turn.history = std::move(history);
     ++turn.tool_index;
     turn.phase = TurnPhase::tools;
     turn.result_summary = {};

@@ -153,6 +153,33 @@ class BackgroundStrategies : public StrategiesFixture {
         };
     }
 };
+class UnrelatedBodyWork : public StrategiesFixture {
+  protected:
+    uint32_t progress_calls = 0;
+    UnrelatedBodyWork() {
+        configure_loop = [this](policies::ToolLoopConfig &config) {
+            config.body_progress = {&progress_calls, [](void *context, uint64_t) {
+                                        ++*static_cast<uint32_t *>(context);
+                                        return 0U; // Other body work keeps the worker busy.
+                                    }};
+        };
+    }
+};
+// C-POLICY-013: durable mode waits for its own store operations, not queue-wide idle.
+TEST_F(UnrelatedBodyWork, durable_task_completes_while_unrelated_body_work_remains) {
+    const auto task = start();
+    ASSERT_EQ(pending.size(), 1U);
+    propose(0, 1);
+    ASSERT_EQ(pending.size(), 2U);
+    post(1, text("result"));
+    pump();
+    ASSERT_EQ(pending.size(), 3U);
+    post(2, text("answer"));
+    pump();
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+    EXPECT_GT(progress_calls, 0U);
+    finish(task);
+}
 class ReusedHistory : public BackgroundStrategies {
   protected:
     static inline thread_local uint64_t watched_history = 0;

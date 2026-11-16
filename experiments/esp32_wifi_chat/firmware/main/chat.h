@@ -156,12 +156,13 @@ class Chat {
     char route_[32]{};
     // The model service: tool-calling turns and text-only summaries, one slot, one destination.
     ayni_call_resource_v1 resource_{};
-    std::array<ayni_schema_node_v1, 3> input_schema_{}, large_input_schema_{};
-    // Index 0: tool-calling turns (answer_bytes of text); 1: summaries (summary_bytes).
-    std::array<ayni_schema_node_v1, 4> result_schema_{};
+    std::array<ayni_schema_node_v1, 3> input_schema_{};
+    // Both current capabilities share the same external input and text-result Schema.
+    ayni_schema_node_v1 result_schema_{};
     ayni_authority_projection_v1 projection_{};
-    std::array<ayni_business_contract_v1, 4> business_{};
-    std::array<ayni_call_capability_v1, 4> capabilities_{};
+    ayni_business_contract_v1 business_{};
+    // Index 0: text-only replies/summaries; 1: tool-calling turns.
+    std::array<ayni_call_capability_v1, 2> capabilities_{};
     ayni_provider_v1 provider_{};
     ayni_string_v1 destination_{};
     ayni_scope_field_v1 destination_field_{};

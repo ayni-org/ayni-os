@@ -1,6 +1,7 @@
 #include "strategy_workspace_fixture.h"
 // ADR-0056: caller-owned, portable values. No external persistence is implied.
 #include <array>
+#include <ayni/memory.h>
 #include <ayni/model_messages.hpp>
 #include <ayni/runtime/common/memory_bodies.h>
 #include <ayni/strategies/builtin.h>
@@ -135,6 +136,109 @@ TEST(Conversation, new_turn_is_deterministic_and_retains_the_original) {
         Conversation::finish(::ayni::test::conversation_workspace(), record, a.view(), candidate),
         AYNI_BUSY);
     EXPECT_EQ(record.revision, 0U);
+}
+// C-POLICY-013: begin returns its admitted input directly; Core still validates
+// the encoded parameters, and failed input changes neither successful output.
+TEST(Conversation, begin_returns_the_same_input_reference_as_external_admission) {
+    auto record = empty();
+    record.draft = body("earlier draft");
+    Encoded parameters;
+    BodyRef input{};
+    ASSERT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), bodies(), record,
+                                  text("new input"), parameters, 0, &input),
+              AYNI_OK);
+    EXPECT_EQ(read(input), "earlier draft\nnew input");
+    BodyRef admitted{};
+    ASSERT_EQ(
+        Conversation::input(::ayni::test::conversation_workspace(), parameters.view(), admitted),
+        AYNI_OK);
+    EXPECT_EQ(input.id, admitted.id);
+    EXPECT_EQ(input.digest, admitted.digest);
+    EXPECT_EQ(input.size, admitted.size);
+    const auto saved = parameters;
+    EXPECT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), bodies(), record,
+                                  {nullptr, 1}, parameters, 0, &input),
+              AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(parameters.bytes, saved.bytes);
+    EXPECT_EQ(input.id, admitted.id);
+}
+// C-MEM-004/005 and C-POLICY-013: each decision samples the current source once;
+// later decisions reuse history text but must still observe a denied memory read.
+TEST(BuiltinLoop, memory_is_sampled_once_per_decision_including_initial_and_completion) {
+    struct Source {
+        uint32_t reads = 0;
+        ayni_status_t status = AYNI_OK;
+    } source;
+    ayni_memory_view_v1 memory{};
+    memory.context = &source;
+    memory.read = [](void *ctx, uint64_t, ayni_memory_purpose_t purpose, ayni_memory_info_v1 *info,
+                     char *out, uint32_t, uint32_t *size) {
+        auto &value = *static_cast<Source *>(ctx);
+        ++value.reads;
+        EXPECT_EQ(purpose, AYNI_MEMORY_CONTEXT);
+        info->source = AYNI_MEMORY_USER;
+        constexpr char content[] = "private source";
+        std::memcpy(out, content, sizeof(content) - 1U);
+        *size = sizeof(content) - 1U;
+        return value.status;
+    };
+    ToolLoop loop;
+    ASSERT_EQ(loop.configure(loop_config(), ::ayni::test::loop_workspace()), AYNI_OK);
+    Encoded parameters, checkpoint;
+    ASSERT_EQ(Conversation::begin(::ayni::test::conversation_workspace(), bodies(), empty(),
+                                  text("hello"), parameters, 1),
+              AYNI_OK);
+    ayni_task_snapshot_v1 snapshot{};
+    snapshot.struct_size = sizeof(snapshot);
+    snapshot.owner_instance_id = empty().owner_instance_id;
+    snapshot.task_id = 1;
+    snapshot.memory = &memory;
+    snapshot.goal_parameters = parameters.view();
+    snapshot.capability_context = [](const void *, const ayni_capability_context_v1 *,
+                                     ayni_capability_context_v1 *current) {
+        *current = {};
+        current->boot_epoch = 1;
+        current->owner_instance_id = 22;
+        current->goal_type_version = current->goal_type_size = 1;
+        current->goal_type_id[0] = 'x';
+        return AYNI_OK;
+    };
+    snapshot.call_result = [](const void *, ayni_string_v1, ayni_task_call_result_v1 *) {
+        return AYNI_NOT_FOUND;
+    };
+    std::string prompt;
+    ayni_policy_output_v1 output{};
+    output.struct_size = sizeof(output);
+    output.checkpoint = checkpoint.bytes.data();
+    output.checkpoint_capacity = checkpoint.bytes.size();
+    output.call_context = &prompt;
+    output.request_call = [](void *ctx, const ayni_call_request_v1 *r) {
+        return model_body(*r, *static_cast<std::string *>(ctx)) ? AYNI_OK : AYNI_INVALID_ARGUMENT;
+    };
+    const auto policy = loop.describe();
+    ASSERT_EQ(policy.decide(policy.ctx, &snapshot, &output), AYNI_OK);
+    EXPECT_EQ(source.reads, 1U);
+    EXPECT_NE(prompt.find("private source"), std::string::npos);
+    checkpoint.size = output.checkpoint_size;
+    snapshot.checkpoint.state = checkpoint.view();
+    source.status = AYNI_DENIED;
+    EXPECT_EQ(policy.decide(policy.ctx, &snapshot, &output), AYNI_DENIED);
+    EXPECT_EQ(source.reads, 2U);
+    source.status = AYNI_OK;
+    snapshot.call_result = [](const void *, ayni_string_v1, ayni_task_call_result_v1 *call) {
+        *call = {};
+        call->logical_call_id = 1;
+        call->outcome = AYNI_CALL_COMPLETED;
+        call->result_kind = AYNI_CALL_RESULT_TEXT;
+        call->text = text("answer");
+        return AYNI_OK;
+    };
+    ayni_policy_intent_v1 intent{};
+    output.intents = &intent;
+    output.intent_capacity = 1;
+    EXPECT_EQ(policy.decide(policy.ctx, &snapshot, &output), AYNI_OK);
+    EXPECT_EQ(source.reads, 3U);
+    EXPECT_EQ(intent.kind, AYNI_POLICY_REPORT_COMPLETION);
 }
 // ADR-0096: input length is a token question for the ToolLoop; the parameters hold a reference.
 TEST(Conversation, long_input_is_a_body_and_invalid_input_leaves_output_unchanged) {

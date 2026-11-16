@@ -40,7 +40,7 @@ struct ModelProposals {
     uint32_t count = 0;         // Admitted prefix; 1..CALL_TOOL_COUNT_MAX after factory success.
     ayni_string_v1 assistant{}; // Borrows encoded after complete list admission.
 };
-// A checked, synchronous shared owner for the two immutable derived representations below.
+// A checked, synchronous shared owner for immutable derived representations.
 // Copies share data across a Turn's transactional working copy; no control-block allocation.
 template <class T> class Prepared {
     struct State {
@@ -125,6 +125,7 @@ struct Turn {
     uint32_t group_start = 0;    // History byte boundary before pending assistant/tool group.
     uint32_t compact_prefix = 0; // Completed prefix selected for compaction; zero when inactive.
     SummaryProgress history_summary;
+    Prepared<std::string> history_projection; // One canonical prefix per compaction, never saved.
     uint32_t compact_generation = 0; // Monotone summary operation generation within this Task.
     TurnPhase compact_resume = TurnPhase::ready; // Controller to resume after atomic replacement.
     SummaryProgress result_summary;

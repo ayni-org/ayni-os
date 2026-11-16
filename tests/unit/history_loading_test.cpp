@@ -165,8 +165,8 @@ TEST(HistoryLoading, one_operation_reads_each_identity_once_and_the_next_observe
 // C-POLICY-013: independent large results stream through preparation; only the fixed
 // small-body cache remains, and digest-correct invalid text still fails its own boundary.
 TEST(HistoryLoading, large_bodies_do_not_accumulate_in_the_operation_cache) {
-    ayni::runtime::MemoryBodies memory;
-    const auto &store = *memory.store();
+    ColdBodies observed;
+    const auto &store = *observed.memory.store();
     constexpr uint32_t large_count = 20, large_bytes = 64U * 1024U;
     std::string bytes(large_bytes, 'x');
     std::vector<BodyRef> refs;
@@ -177,17 +177,26 @@ TEST(HistoryLoading, large_bodies_do_not_accumulate_in_the_operation_cache) {
                               {reinterpret_cast<const uint8_t *>(bytes.data()), large_bytes}, &ref),
                   AYNI_OK);
         refs.push_back(ref);
+        observed.available.insert(ref.id);
     }
-    BodyReader reader(store);
+    auto counted = store;
+    counted.context = &observed;
+    counted.read = ColdBodies::read;
+    BodyReader reader(counted);
     ASSERT_EQ(reader.prepare(refs), AYNI_OK);
+    EXPECT_EQ(observed.reads, large_count);
     EXPECT_EQ(reader.retained_bytes(), 0U);
     std::string result;
     ASSERT_EQ(reader.copy_text(refs.back(), result), AYNI_OK);
+    // C-POLICY-013: exceeding 16 KiB trades a second read of the selected body
+    // for releasing all twenty 64 KiB payloads during dependency preparation.
+    EXPECT_EQ(observed.reads, large_count + 1U);
     EXPECT_EQ(result, bytes);
     EXPECT_EQ(reader.retained_bytes(), 0U);
     constexpr uint8_t invalid_utf8 = 0xff;
     BodyRef invalid{};
     ASSERT_EQ(store.write(store.context, 1, {&invalid_utf8, 1}, &invalid), AYNI_OK);
+    observed.available.insert(invalid.id);
     EXPECT_EQ(reader.copy_text(invalid, result), AYNI_INVALID_ARGUMENT);
     EXPECT_LE(reader.retained_bytes(), BodyReader::cache_bytes);
 }

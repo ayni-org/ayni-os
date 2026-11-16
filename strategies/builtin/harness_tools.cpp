@@ -54,7 +54,8 @@ struct Cursor {
 };
 ayni_status_t list(const NativeArguments &args, const ayni_task_snapshot_v1 &snapshot,
                    const Turn &turn, char *buffer, uint32_t capacity, ToolBudget budget,
-                   ayni_string_v1 &response) {
+                   ToolReply &reply) {
+    auto &response = reply.text;
     if (!snapshot.list_capabilities || !snapshot.capability_context) {
         return AYNI_UNSUPPORTED;
     }
@@ -156,8 +157,12 @@ ayni_status_t list(const NativeArguments &args, const ayni_task_snapshot_v1 &sna
     for (;;) {
         json::Writer candidate(buffer, capacity);
         emit(candidate, chosen);
-        if (done(candidate, buffer, response) && budget.fits(response)) {
-            return AYNI_OK;
+        if (done(candidate, buffer, response)) {
+            const auto tokens = budget.measure(response);
+            if (tokens <= budget.tokens) {
+                reply.measured = tokens;
+                return AYNI_OK;
+            }
         }
         if (!chosen) {
             return AYNI_CAPACITY_EXCEEDED;
@@ -288,13 +293,14 @@ ayni_status_t native_error(ayni_status_t status, std::string_view message, char 
 ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &proposal,
                               const ToolLoopConfig &config, const ayni_task_snapshot_v1 &snapshot,
                               Turn &turn, ayni_string_v1 step, ayni_policy_output_v1 &output,
-                              char *buffer, uint32_t capacity, ToolBudget budget,
-                              ayni_string_v1 &response, bool &requested) {
+                              char *buffer, uint32_t capacity, ToolBudget budget, ToolReply &reply,
+                              bool &requested) {
+    auto &response = reply.text;
     requested = false;
     bool handled = false;
     const auto operation_status =
-        native_operation(workspace, proposal, config, snapshot, turn, step, output, buffer,
-                         capacity, budget, response, requested, handled);
+        native_operation(workspace, proposal, config, snapshot, step, output, buffer, capacity,
+                         reply, requested, handled);
     if (handled) {
         return operation_status;
     }
@@ -303,7 +309,7 @@ ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &pro
     ayni_status_t status = AYNI_NOT_FOUND;
     if (named(proposal.function_name, model::list_function)) {
         status = args.read(proposal, {"cursor", "limit"})
-                     ? list(args, snapshot, turn, buffer, capacity, budget, response)
+                     ? list(args, snapshot, turn, buffer, capacity, budget, reply)
                      : AYNI_INVALID_ARGUMENT;
         if (status == AYNI_OK) {
             return AYNI_OK;
@@ -363,8 +369,12 @@ ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &pro
             }
         }
     }
-    if (status == AYNI_OK && done(out, buffer, response) && budget.fits(response)) {
-        return AYNI_OK;
+    if (status == AYNI_OK && done(out, buffer, response)) {
+        const auto tokens = budget.measure(response);
+        if (tokens <= budget.tokens) {
+            reply.measured = tokens;
+            return AYNI_OK;
+        }
     }
     if (status == AYNI_OK) {
         status = AYNI_CAPACITY_EXCEEDED;

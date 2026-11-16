@@ -82,9 +82,18 @@ struct ToolBudget {
     uint64_t tokens = UINT64_MAX; // Estimated remaining input tokens; MAX disables token limiting.
     ayni_string_v1 protocol_id{}; // Current opaque ID, counted with the matching reply envelope.
     model::Projection projection{}; // Same wire envelope as this request.
-    bool fits(ayni_string_v1 reply) const {
-        return model::estimate_tool_reply(projection, protocol_id, reply) <= tokens;
+    uint64_t measure(ayni_string_v1 reply) const {
+        return model::estimate_tool_reply(projection, protocol_id, reply);
     }
+    bool fits(ayni_string_v1 reply) const { return measure(reply) <= tokens; }
+};
+// Reply and optional original result. Owns resolved bytes through final
+// budget/retention handling; a zero Call ID means metadata/local response only.
+struct ToolReply {
+    ayni_string_v1 text{}; // Borrows the synchronous reply buffer.
+    ayni_task_call_result_v1 call{};
+    std::string owned;                // Resolved original bytes; call views borrow this string.
+    std::optional<uint64_t> measured; // Selected local candidate cost; absent until measured.
 };
 // Current pending tool reply budget, including the real API projection, definitions and
 // protected continuation. Shared by raw results and completed result summaries.
@@ -125,18 +134,17 @@ ayni_status_t preload_tools(Workspace &, const ayni_task_snapshot_v1 &, std::str
 ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &proposal,
                               const ToolLoopConfig &config, const ayni_task_snapshot_v1 &snapshot,
                               Turn &turn, ayni_string_v1 step, ayni_policy_output_v1 &output,
-                              char *buffer, uint32_t capacity, ToolBudget budget,
-                              ayni_string_v1 &response, bool &requested);
+                              char *buffer, uint32_t capacity, ToolBudget budget, ToolReply &,
+                              bool &requested);
 // Handles read/wait/cancel/close; start/invoke remain ordinary normalized business admission.
 ayni_status_t native_operation(Workspace &workspace, const ayni_tool_call_v1 &,
-                               const ToolLoopConfig &, const ayni_task_snapshot_v1 &, Turn &,
+                               const ToolLoopConfig &, const ayni_task_snapshot_v1 &,
                                ayni_string_v1, ayni_policy_output_v1 &, char *, uint32_t,
-                               ToolBudget, ayni_string_v1 &, bool &, bool &);
+                               ToolReply &, bool &, bool &);
 // Render an original operation and optionally its known terminal result.
 ayni_status_t operation_result(Workspace &workspace, const ayni_operation_info_v1 &,
-                               const ToolLoopConfig &, const ayni_task_snapshot_v1 &, Turn &,
-                               ayni_policy_output_v1 &, char *, uint32_t, ToolBudget,
-                               ayni_string_v1 &, ayni_string_v1 protocol_id,
+                               const ToolLoopConfig &, const ayni_task_snapshot_v1 &,
+                               ayni_policy_output_v1 &, char *, uint32_t, ToolReply &,
                                ayni_status_t = AYNI_OK);
 // Stable tool processing steps are distinct from the target's business completion.
 bool step_committed(const ayni_task_snapshot_v1 &, ayni_string_v1);

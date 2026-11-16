@@ -21,8 +21,7 @@ inline ayni_config_v1 chat_config(uint32_t call_input_bytes, uint32_t call_resul
     c.completion_slot_count = AYNI_COMPLETION_SLOT_COUNT_DEFAULT;
     c.storage_buffer_bytes = 128 * 1024;
     c.agent_capacity = 1;
-    c.goal_type_capacity =
-        6; // Shared/legacy chat, diagnostic, two checks and automatic reply speech.
+    c.goal_type_capacity = 5; // Chat, diagnostic, two checks and automatic reply speech.
     c.goal_capacity = goal_slots;
     // ToolLoop parameters and checkpoints hold only body references (ADR-0096).
     c.goal_parameter_max_bytes = ayni::strategies::ToolLoop::checkpoint_bytes;

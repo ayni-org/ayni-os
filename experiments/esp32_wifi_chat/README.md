@@ -14,7 +14,7 @@ RC003-MS 松键后整段 ASR，识别文字显示并自动提交。只有一个 
 
 配置页采用统一卡片与分组：[网络](screenshots/network-settings-preview.png)、[模型与语音](screenshots/endpoint-settings-preview.png)、[模型选项](screenshots/model-options-preview.png)。示例值不来自真实凭据。完成固件字体生成后，在本目录使用`cmake -S tests/wifi/preview -B build/screen-preview`配置Native预览，按资源预算编译；`build/screen-preview/ayni_screen_preview output.ppm home|voice|motor|network|model|options`输出同一绘图代码的PPM，Native预览单独依赖系统zlib。
 
-先检查资源并设置正整数CMAKE_BUILD_PARALLEL_LEVEL、CTEST_PARALLEL_LEVEL，再运行 ./build.sh。固定ESP-IDF6.0.3；device.py deploy只写应用/分区表，保留配置、配对和数据，不自动擦卷。详见[Wi-Fi说明](WIFI.md)。历史usb.chat等私有身份只保留数据读取/旧任务取消用途，不代表仍有USB运行版本。
+先检查资源并设置正整数CMAKE_BUILD_PARALLEL_LEVEL、CTEST_PARALLEL_LEVEL，再运行 ./build.sh。固定ESP-IDF6.0.3；device.py deploy只写应用/分区表，保留配置、配对和数据，不自动擦卷。详见[Wi-Fi说明](WIFI.md)。旧usb.model/usb.chat能力、Binding和GoalType不再注册；不支持的旧属主Goal明确拒绝并保留数据，不自动擦除或重放。
 
 ## 2026-11-11 共用模型协议
 

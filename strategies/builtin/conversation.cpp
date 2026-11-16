@@ -513,7 +513,7 @@ ayni_status_t store_rounds(const ayni_body_store_v1 &bodies, ConversationRecord 
 
 static ayni_status_t conversation_begin(const ayni_body_store_v1 &bodies,
                                         const ConversationRecord &record, ayni_string_v1 user,
-                                        Encoded &parameters, uint64_t memory_id) {
+                                        Encoded &parameters, uint64_t memory_id, BodyRef *input) {
     if (!valid(record) || !user.data || user.size == 0) {
         return AYNI_INVALID_ARGUMENT;
     }
@@ -544,6 +544,9 @@ static ayni_status_t conversation_begin(const ayni_body_store_v1 &bodies,
     status = encode_turn(turn, next.bytes.data(), encoded_bytes_max, next.size);
     if (status == AYNI_OK) {
         parameters = next;
+        if (input) {
+            *input = turn.refs.input;
+        }
     }
     return status;
 }
@@ -701,10 +704,11 @@ ayni_status_t checked(const ayni_workspace_v1 *region) {
 
 ayni_status_t Conversation::begin(const ayni_workspace_v1 *region, const ayni_body_store_v1 &bodies,
                                   const ConversationRecord &record, ayni_string_v1 user,
-                                  Encoded &parameters, uint64_t memory_id) {
+                                  Encoded &parameters, uint64_t memory_id, BodyRef *input) {
     const auto status = checked(region);
-    return status != AYNI_OK ? status
-                             : conversation_begin(bodies, record, user, parameters, memory_id);
+    return status != AYNI_OK
+               ? status
+               : conversation_begin(bodies, record, user, parameters, memory_id, input);
 }
 ayni_status_t Conversation::input(const ayni_workspace_v1 *region, ayni_bytes_v1 parameters,
                                   BodyRef &out) {

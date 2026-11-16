@@ -141,7 +141,8 @@ class ManagedResultHarness : public ContextHarness {
         ContextHarness::SetUp();
     }
     void function(uint32_t model,
-                  std::initializer_list<std::pair<const char *, std::string>> fields) {
+                  std::initializer_list<std::pair<const char *, std::string>> fields,
+                  const char *function_name = "ayni_call_capability") {
         std::array<ayni_argument_node_v1, 8> nodes{};
         nodes[0].kind = AYNI_ARGUMENT_OBJECT;
         nodes[0].subtree_end = static_cast<uint32_t>(fields.size()) + 1;
@@ -157,13 +158,86 @@ class ManagedResultHarness : public ContextHarness {
         ayni_tool_call_v1 call{};
         call.struct_size = sizeof(call);
         call.protocol_id = text("managed_result");
-        call.function_name = text("ayni_call_capability");
+        call.function_name = text(function_name);
         call.input_kind = AYNI_TOOL_INPUT_ARGUMENTS;
         call.input.arguments = {nodes.data(), at};
         post(model, {}, AYNI_CALL_COMPLETED, AYNI_OK, &call, 1);
         pump();
     }
 };
+class CountedReplyBudget : public ManagedResultHarness {
+  protected:
+    uint32_t measurements = 0;
+    CountedReplyBudget() {
+        configure_loop = [this](policies::ToolLoopConfig &config) {
+            config.body_progress = {nullptr, [](void *, uint64_t) { return 1U; }};
+            config.limits = {32768, 1024, 4096, 2048};
+            config.projection.context = &measurements;
+            config.projection.context_writer = [](void *, ayni::json::Writer &out,
+                                                  ayni_string_v1 input, ayni::model::Mode mode,
+                                                  ayni::model::Completeness completeness) {
+                return ayni::model::write_context(out, input, mode, completeness);
+            };
+            config.projection.reply_writer = [](void *context, ayni::json::Writer &out,
+                                                ayni_string_v1 id, ayni_string_v1 content) {
+                ++*static_cast<uint32_t *>(context);
+                out.raw(",{\"role\":\"tool\",\"tool_call_id\":");
+                out.string(id);
+                out.raw(",\"content\":");
+                out.string(content);
+                out.raw("}");
+            };
+        };
+    }
+};
+// C-POLICY-013: the selected ordinary reply is counted only at final admission.
+TEST_F(CountedReplyBudget, ordinary_result_has_one_final_reply_measurement) {
+    const auto task = start();
+    propose(0, 1);
+    ASSERT_EQ(pending.size(), 2U);
+    post(1, text("count this result"));
+    pump();
+    ASSERT_EQ(pending.size(), 3U);
+    EXPECT_EQ(measurements, 1U);
+    post(2, text("done"));
+    pump();
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+}
+// C-POLICY-013: selected local candidates carry their measured cost into admission.
+TEST_F(CountedReplyBudget, selected_directory_page_and_inspection_are_not_remeasured) {
+    const auto task = start();
+    function(0, {}, "ayni_list_capabilities");
+    ASSERT_EQ(pending.size(), 2U);
+    EXPECT_EQ(measurements, 1U);
+    function(1, {{"binding_id", "echo"}, {"binding_version", "1"}}, "ayni_inspect_capability");
+    ASSERT_EQ(pending.size(), 3U);
+    EXPECT_EQ(measurements, 2U);
+    post(2, text("done"));
+    pump();
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+}
+// C-POLICY-013/C-OP-004: managed metadata and terminal read share final admission.
+TEST_F(CountedReplyBudget, managed_start_and_completed_read_are_each_measured_once) {
+    const auto task = start();
+    function(0, {{"operation", "start"},
+                 {"binding_id", "echo"},
+                 {"binding_version", "1"},
+                 {"arguments", "body"}});
+    ASSERT_EQ(pending.size(), 3U);
+    EXPECT_EQ(measurements, 1U);
+    const auto begin = pending[2].text.find("o1:");
+    ASSERT_NE(begin, std::string::npos);
+    const auto end = pending[2].text.find_first_not_of("o:0123456789", begin);
+    const auto reference = pending[2].text.substr(begin, end - begin);
+    post(1, text("count managed result"));
+    pump();
+    function(2, {{"operation", "read"}, {"operation_ref", reference}});
+    ASSERT_EQ(pending.size(), 4U);
+    EXPECT_EQ(measurements, 2U);
+    post(3, text("done"));
+    pump();
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+}
 TEST_F(ManagedResultHarness,
        managed_read_preserves_reference_and_original_large_result_through_summary) {
     const auto task = start("chat", "one managed operation", 32);

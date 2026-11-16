@@ -1,12 +1,12 @@
 # Ayni：通用原生 AgentOS 基础能力与实验实施计划
 
 > **文档性质**：工程实施计划与待实现契约，不代表已有软件能力。\
-> **文档版本**：v1.124 · 2026-11-16；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
+> **文档版本**：v1.125 · 2026-11-16；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
 > **产品定位**：跨平台、跨设备的通用原生 AgentOS；宿主与扩展决定提供哪些设备或软件能力，统一助理只是应用示例。\
 > **架构路线**：按 Ayni 的共享 Agent 状态、授权、资源及恢复需求设计原生 Core，复用宿主 OS，模型优先通过外部 API 获得；架构图仅参考 AIOS 的分层分组表达样式。\
 > **实施顺序**：先完成基础通用能力，再开展 ESP32-S3、Linux 系统等实验；设备与能力组合按实验目标选取，不要求宿主具备语音、视觉、运动或特定外设。\
 > **基准投入**：单人全职；阶段周期是相对工作量估算，不是开工日期或交付日期承诺。\
-> **当前状态**：通用基础与独立源码SDK已交付，见[基础报告](../reports/core/foundation-acceptance.md)和[独立接入报告](../reports/core/independent-consumption.md)。共享正文、单遍提议/引用轮次及Native/ESP会话和结果存储已统一，旧兼容与无限缓存已删除，当前源码ABI0.56/schema10、turn8/结果视图2/SQLite5，本地正常验证、ESP编译及独立复查通过，见[ADR-0108](adr/0108-unified-conversation-and-result-storage.md)及其关联记录。设备最后正常OTA为91c0c65-localreuse，当前候选暂不OTA；板端长单步、真实工具交接P95≤100 ms、新格式异常恢复、完整128K峰值及独立硬件停止链仍待对应证据。
+> **当前状态**：通用基础与独立源码SDK已交付，见[基础报告](../reports/core/foundation-acceptance.md)和[独立接入报告](../reports/core/independent-consumption.md)。共享正文及Native/ESP会话和结果已统一，ESP旧USB注册与无限缓存已删除；历史整组追加、单次工具预算、摘要投影及按依赖存储等待已精简，当前源码ABI0.56/schema10、turn8/结果视图2/SQLite5，本地正常验证、ESP编译及独立复查通过，见[ADR-0108](adr/0108-unified-conversation-and-result-storage.md)及其关联记录。设备最后正常OTA为91c0c65-localreuse，当前候选暂不OTA；板端长单步、真实工具交接P95≤100 ms、新格式异常恢复、完整128K峰值及独立硬件停止链仍待对应证据。
 
 > **本轮范围**：用户2026-10-31要求实施[独立工程接入与验收计划](architecture/independent-consumption-plan.md)：通用源码SDK、低栈工作区、Native/ESP存储及Host、共同应用和验收。平台适配保持独立目录，必要接口直接升级，正常存储和最小重开获授权；实机操作、付费模型及其他新专项不启动。
 
