@@ -7,12 +7,11 @@ constexpr uint64_t conversation_id = 1;
 constexpr uint32_t step_units = 64;
 constexpr uint64_t step_us = 10000;
 Notice published_notice(const ayni_body_store_v1 &bodies, const SavedConversation &file) {
-    std::vector<strategies::Round> rounds;
-    if (strategies::Conversation::rounds(bodies, file.record, rounds) != AYNI_OK ||
-        rounds.empty()) {
+    std::string answer;
+    if (strategies::Conversation::latest_answer(bodies, file.record, answer) != AYNI_OK) {
         return {};
     }
-    return {NoticeKind::answer, std::move(rounds.back().answer)};
+    return {NoticeKind::answer, std::move(answer)};
 }
 } // namespace
 ayni_status_t Assistant::Impl::context_info(ayni_context_info_v1 &context) const {

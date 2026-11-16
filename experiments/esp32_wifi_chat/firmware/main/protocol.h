@@ -36,6 +36,8 @@ inline constexpr size_t count = 0, usage_kind = 4, input_tokens = 8, output_toke
 inline constexpr size_t bytes = 48;
 } // namespace model_result_fields
 inline constexpr size_t model_result_header_bytes = model_result_fields::bytes;
+// Explicit local-only history fixture; disjoint from supported synthetic character counts.
+inline constexpr uint32_t current_history_probe = UINT32_MAX - 1U;
 enum class Kind : uint8_t {
     hello = 1,
     user = 2,

@@ -29,13 +29,13 @@
 | [host/file_values.md](host/file_values.md) | 9 | 4 |
 | [host/host_ports.md](host/host_ports.md) | 21 | 14 |
 | [host/native_runtime.md](host/native_runtime.md) | 13 | 9 |
-| [host/policy_interface.md](host/policy_interface.md) | 12 | 8 |
+| [host/policy_interface.md](host/policy_interface.md) | 13 | 8 |
 | [host/provider.md](host/provider.md) | 15 | 0 |
 | [host/tool_usage.md](host/tool_usage.md) | 6 | 2 |
 | [storage/records.md](storage/records.md) | 22 | 16 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 4 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 447 | 145 |
+| 合计 | 448 | 145 |
 
 ## 计划章节 → 契约文档
 

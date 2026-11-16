@@ -813,13 +813,23 @@ void Chat::incoming(const Packet &p) {
         probe_.reset();
         if (probe) {
             if ((p.size != 0 && p.size != sizeof(uint32_t)) ||
-                (p.size &&
+                (p.size && get32(p.body.data()) != current_history_probe &&
                  get32(p.body.data()) > harness::model_body_bytes / SyntheticHistory::han.size())) {
                 status(p.id, "input refused: invalid diagnostic size");
                 return;
             }
             probe_.emplace();
-            probe_->characters = p.size ? get32(p.body.data()) : 0;
+            const auto mode = p.size ? get32(p.body.data()) : 0;
+            if (mode == current_history_probe) {
+                probe_->source = ProbeTurn::Source::current_history;
+                const auto *current = history_.record();
+                transport_.diagnostics().record(
+                    "wifi probe current_history rounds=%lu history_bytes=%lu no_model_http=1\n",
+                    static_cast<unsigned long>(current ? current->round_count : 0),
+                    static_cast<unsigned long>(current ? current->history_bytes : 0));
+            } else {
+                probe_->characters = mode;
+            }
             transport_.diagnostics().record("wifi probe template_begin history_rounds=%llu\n",
                                             static_cast<unsigned long long>(rounds()));
             input_ = "synthetic context diagnostic";
@@ -834,7 +844,7 @@ void Chat::incoming(const Packet &p) {
         reply_intent_ = ReplyIntent::present;
         hold_reported_ = false;
         preparation_wait_ = {};
-        turn_state_ = Turn::preparing_input;
+        turn_state_ = Turn::input;
         progress_ = true;
         status(turn_, "accepted");
         trace("accepted");
@@ -842,8 +852,7 @@ void Chat::incoming(const Packet &p) {
         reply_end_ = "turn failed/cancelled; answer retained; no automatic retry";
         turn_state_ = Turn::reply_done;
         progress_ = true;
-    } else if (p.kind == Kind::cancel &&
-               (turn_state_ == Turn::input || turn_state_ == Turn::preparing_input)) {
+    } else if (p.kind == Kind::cancel && turn_state_ == Turn::input) {
         end_turn("turn failed/cancelled before task creation; no automatic retry");
     } else if (p.kind == Kind::cancel && (goal_ || history_.active())) {
         cancel_requested_ = true;
@@ -1408,6 +1417,15 @@ ayni_status_t Chat::probe_input(ayni_string_v1 user, ayni::strategies::Encoded &
     ayni::strategies::ConversationRecord record{};
     record.id = probe_record_id;
     record.owner_instance_id = instance_;
+    if (probe.source == ProbeTurn::Source::current_history) {
+        const auto *current = history_.record();
+        if (!current) {
+            return AYNI_NOT_READY;
+        }
+        record = *current;
+        record.id = probe_record_id; // Private writes/cleanup cannot alter real history owners.
+        record.draft = {};
+    }
     if (probe.characters && !probe.history_ref.id) {
         if (!probe.history) {
             const auto bytes =
@@ -1523,23 +1541,6 @@ ayni_status_t Chat::observe_probe(const ayni_kernel_info_v1 &info) {
 }
 // One user turn: durable input body, Goal, completed Task, durable record, then the answer.
 ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
-    if (turn_state_ == Turn::preparing_input) {
-        // Clear caches after every prior terminal, including cancellation. Disk
-        // values remain available to retained Calls and conversation references.
-        static_cast<void>(ayni::runtime::FileBodies::ready(&bodies_, 0));
-        const auto status = bodies_.trim_cache();
-        if (status == AYNI_BUSY) {
-            wait_for("body_cleanup", "preparing input: waiting for body cleanup", status);
-            return AYNI_OK;
-        }
-        if (status != AYNI_OK) {
-            end_turn("turn failed: body cache unavailable; no automatic retry");
-            return AYNI_OK;
-        }
-        trace("body_cache_ready");
-        turn_state_ = Turn::input;
-        progress_ = true;
-    }
     if (forget_ == Forget::requested && turn_state_ == Turn::idle && history_.ready()) {
         const auto rc = history_.forget(AYNI_CONTEXT_ERASE_ALL);
         if (rc == AYNI_OK) {
@@ -1663,18 +1664,16 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
     }
     if (turn_state_ == Turn::saving) {
         const auto *record = history_.record();
-        std::vector<ayni::strategies::Round> rounds;
-        const auto rc =
-            record ? ayni::strategies::Conversation::rounds(*bodies_.store(), *record, rounds)
-                   : AYNI_NOT_READY;
+        const auto rc = record ? ayni::strategies::Conversation::latest_answer(*bodies_.store(),
+                                                                               *record, answer_)
+                               : AYNI_NOT_READY;
         if (rc == AYNI_NOT_READY) {
             return AYNI_OK;
         }
-        if (rc != AYNI_OK || rounds.empty()) {
+        if (rc != AYNI_OK) {
             end_turn("turn failed: saved answer unavailable");
             return AYNI_OK;
         }
-        answer_ = std::move(rounds.back().answer);
         turn_state_ = Turn::answer;
         trace("answer_saved");
         reply_deadline_ = uint64_t(esp_timer_get_time()) + presentation_wait_us;

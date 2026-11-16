@@ -113,3 +113,10 @@ FRAMED回复由部署显式选择；History/UI只展示规范回答。规范摘�
 ToolLoop默认durable；background仅由组合根显式选择。策略缓存有界的已解码回合和不可变契约Schema表示，每次真正发出模型请求刷新当前可见工具，不能缓存实际授权结论。出站上下文每次只拼装、计量一次，实时Core权限、来源和停止门保持。回合检查点保存阶段、工具序号及正文引用；模型原始提议与实际采用的规范参数分别保留。后台保存失败和容量不足明确停止推进，独立停止/取消入口继续可用。历史正文与索引全部确认后才发布持久历史；正常关闭后从最后完整版本读取，不自动重跑旧物理命令。
 
 组合根在Core step后、历史/隐私ACK前调用ToolLoop::maintain，并传入公开privacy进度。策略自己释放取消/终结/held Task的私有回合缓存；活跃隐私清理保守清除全部私有回合，首次看到新的COMPLETE request_seq也清除一次，覆盖不会再decide的WAITING Task。同一已完成代际不再清掉后续有效回合；不可变Schema cache保留，仍须刷新可见工具。Native、portable和ESP均由运行时驱动，不在Core回调里查询Kernel。正常维护端口单元：`ManagedOperations.cache_maintenance_retires_cancelled_turn_without_another_decision`、`ManagedOperations.privacy_progress_clears_waiting_cache_and_preserves_later_valid_turns`；后者输入公共privacy元数据，不替代完整隐私介质/恢复验收。
+
+
+## 共享对话主路径（ADR-0105）
+
+| ID | 规则 | 违反例 | 验证 |
+|---|---|---|---|
+| C-POLICY-013 | 输入/历史使用不可变正文引用；冷读先使完整依赖可读，再按原保存Schema投影工具结果，不在每个异步等待后重复投影已加载前缀。相同活动回合复用已解码状态；同一缓存总额度内，每会话最多保留一份最近完成图，下一Task只在owner/代际/上下文版本及完整正文引用相同且当前所有权/摘要检查成功后复用派生表示，取消/失败副本退休、隐私进度清空全部副本；结束展示只读取最新答案，完整轮次读取留给明确的历史查询。原所有权、摘要、格式、权限、隐私及未知结果规则保持 | 加载下一个正文时反复重建前面的工具结果；只展示新答案却读全部旧问题/答案 | `HistoryLoading.cold_dependencies_are_prepared_before_saved_results_are_projected`、`Conversation.latest_answer_reads_only_the_index_and_selected_answer`、`ReusedHistory.next_turn_reuses_completed_history_and_privacy_clears_it`、既有`BackgroundStrategies.*`；正常异步路径，异常恢复未新增验证 |

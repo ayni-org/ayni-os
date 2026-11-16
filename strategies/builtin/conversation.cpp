@@ -1,5 +1,6 @@
 #include "history.h"
 #include "support.h"
+#include <algorithm>
 #include <ayni/detail/model_usage.hpp>
 #include <ayni/model_messages.hpp>
 #include <cstring>
@@ -307,17 +308,7 @@ ayni_status_t load(const ayni_body_store_v1 &bodies, const BodyRef &ref, std::st
     const auto status = get_body(bodies, ref, out);
     return status != AYNI_OK ? status : valid_text(view(out)) ? AYNI_OK : AYNI_INVALID_ARGUMENT;
 }
-bool valid_rounds(const std::vector<Round> &rounds, uint64_t last_round) {
-    uint64_t previous = 0;
-    for (const auto &round : rounds) {
-        if (round.number <= previous || round.number > last_round || round.user.empty() ||
-            !valid_text(view(round.user)) || !valid_text(view(round.answer))) {
-            return false;
-        }
-        previous = round.number;
-    }
-    return true;
-}
+
 } // namespace
 
 namespace detail {
@@ -380,57 +371,104 @@ ayni_status_t encode_rounds(const ayni_body_store_v1 &bodies, uint64_t scope,
     }
     return AYNI_OK;
 }
-ayni_status_t decode_rounds(const ayni_body_store_v1 &bodies, ayni_string_v1 bytes, uint32_t count,
-                            uint64_t last_round, std::vector<Round> &out,
-                            std::vector<BodyRef> *references) {
+// One metadata reader serves full history, collection and latest-answer presentation.
+struct RoundReferences {
+    uint64_t number = 0;
+    BodyRef user{}, answer{};
+};
+ayni_status_t read_round_references(ayni_string_v1 bytes, uint32_t count, uint64_t last_round,
+                                    std::vector<RoundReferences> &out) {
     if (count > bytes.size / round_bytes || bytes.size != count * round_bytes) {
         return AYNI_INVALID_ARGUMENT;
     }
-    std::vector<Round> parsed;
+    std::vector<RoundReferences> parsed;
     for (uint32_t index = 0; index < count; ++index) {
         Decoder reader(
             {reinterpret_cast<const uint8_t *>(bytes.data) + index * round_bytes, round_bytes});
-        Round round;
-        BodyRef user{}, answer{};
+        RoundReferences round;
         reader.u64(round.number);
-        reader.ref(user);
-        reader.ref(answer);
-        if (!reader.complete()) {
+        reader.ref(round.user);
+        reader.ref(round.answer);
+        if (!reader.complete() || !round.user.id || !round.user.size || !round.number ||
+            round.number > last_round ||
+            (!parsed.empty() && parsed.back().number >= round.number)) {
             return AYNI_INVALID_ARGUMENT;
         }
-        if (!references) {
-            auto status = load(bodies, user, round.user);
+        parsed.push_back(round);
+    }
+    out = std::move(parsed);
+    return AYNI_OK;
+}
+ayni_status_t decode_rounds(const ayni_body_store_v1 &bodies, ayni_string_v1 bytes, uint32_t count,
+                            uint64_t last_round, std::vector<Round> &out,
+                            std::vector<BodyRef> *references) {
+    std::vector<RoundReferences> metadata;
+    auto status = read_round_references(bytes, count, last_round, metadata);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    std::vector<Round> parsed;
+    for (const auto &source : metadata) {
+        Round round;
+        round.number = source.number;
+        if (references) {
+            references->push_back(source.user);
+            if (source.answer.id) {
+                references->push_back(source.answer);
+            }
+        } else {
+            status = load(bodies, source.user, round.user);
             if (status == AYNI_OK) {
-                status = load(bodies, answer, round.answer);
+                status = load(bodies, source.answer, round.answer);
             }
             if (status != AYNI_OK) {
                 return status;
             }
         }
-        if (!user.id || !user.size || !round.number || round.number > last_round ||
-            (!parsed.empty() && parsed.back().number >= round.number)) {
-            return AYNI_INVALID_ARGUMENT;
-        }
-        if (references) {
-            if (user.id) {
-                references->push_back(user);
-            }
-            if (answer.id) {
-                references->push_back(answer);
-            }
-        }
         parsed.push_back(std::move(round));
-    }
-    if (!references && !valid_rounds(parsed, last_round)) {
-        return AYNI_INVALID_ARGUMENT;
     }
     out = std::move(parsed);
     return AYNI_OK;
 }
-ayni_status_t read_turn(Workspace &, const ayni_body_store_v1 &bodies, ayni_bytes_v1 bytes,
-                        Turn &out) {
-    Turn parsed;
-    auto status = decode_turn(bytes, parsed);
+// A derived representation can cross Tasks only with the same private source graph.
+bool same_history(const Turn &saved, const Turn &next) {
+    const auto &a = saved.record;
+    const auto &b = next.record;
+    const auto same = [](const BodyRef &left, const BodyRef &right) {
+        return left.id == right.id && left.digest == right.digest && left.size == right.size &&
+               left.reserved == right.reserved;
+    };
+    return saved.done && a.id == b.id && a.owner_instance_id == b.owner_instance_id &&
+           a.generation == b.generation && a.revision == b.revision &&
+           a.context_version == b.context_version && a.last_round == b.last_round &&
+           a.history_bytes == b.history_bytes && a.round_count == b.round_count &&
+           same(a.history, b.history) && same(a.summary, b.summary) && same(a.rounds, b.rounds);
+}
+ayni_status_t load_turn_bodies(const ayni_body_store_v1 &bodies, Turn &parsed,
+                               const Turn *previous) {
+    auto status = AYNI_OK;
+    // C-POLICY-013: a later rounds/summary read must not throw away a history
+    // projection already completed in this attempt. Prepare the whole turn first.
+    std::vector<BodyRef> references;
+    status = record_references(bodies, parsed.record, references);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    const bool reused = previous != nullptr;
+    if (reused) {
+        parsed.history = previous->history;
+        parsed.history_index = previous->history_index;
+        parsed.history_saved = previous->history_saved;
+        parsed.summary = previous->summary;
+        parsed.rounds = previous->rounds;
+    }
+    for (const auto &ref :
+         {parsed.refs.input, parsed.refs.history_summary, parsed.refs.result_summary}) {
+        if (present(ref)) {
+            references.push_back(ref);
+        }
+    }
+    status = prepare_references(bodies, references);
     if (status != AYNI_OK) {
         return status;
     }
@@ -442,6 +480,10 @@ ayni_status_t read_turn(Workspace &, const ayni_body_store_v1 &bodies, ayni_byte
           {&parsed.record.rounds, &rounds},
           {&parsed.refs.history_summary, &parsed.history_summary.text},
           {&parsed.refs.result_summary, &parsed.result_summary.text}}) {
+        if (reused && (ref == &parsed.record.history || ref == &parsed.record.summary ||
+                       ref == &parsed.record.rounds)) {
+            continue; // C-POLICY-013: exact immutable source identity was already decoded.
+        }
         status = ref == &parsed.record.history ? Conversation::history(bodies, parsed.record, *text)
                  : ref == &parsed.record.rounds
                      ? (present(*ref) ? get_body(bodies, *ref, *text) : AYNI_OK)
@@ -450,23 +492,39 @@ ayni_status_t read_turn(Workspace &, const ayni_body_store_v1 &bodies, ayni_byte
             return status;
         }
     }
-    status = decode_rounds(bodies, view(rounds), parsed.record.round_count,
-                           parsed.record.last_round, parsed.rounds);
+    status = reused ? AYNI_OK
+                    : decode_rounds(bodies, view(rounds), parsed.record.round_count,
+                                    parsed.record.last_round, parsed.rounds);
     if (status != AYNI_OK) {
         return status;
     }
-    if (!valid_history(parsed.history)) {
+    if (!reused && !valid_history(parsed.history)) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (parsed.record.history_bytes) {
+    if (!reused && parsed.record.history_bytes) {
         status = get_body(bodies, parsed.record.history, parsed.history_index);
         if (status != AYNI_OK) {
             return status;
         }
         parsed.history_saved = parsed.record.history_bytes;
     }
-    out = std::move(parsed);
     return AYNI_OK;
+}
+ayni_status_t read_turn(Workspace &, const ayni_body_store_v1 &bodies, ayni_bytes_v1 bytes,
+                        Turn &out, const std::vector<const Turn *> &completed) {
+    Turn parsed;
+    auto status = decode_turn(bytes, parsed);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    const auto previous = std::find_if(completed.begin(), completed.end(), [&](const Turn *saved) {
+        return same_history(*saved, parsed);
+    });
+    status = load_turn_bodies(bodies, parsed, previous == completed.end() ? nullptr : *previous);
+    if (status == AYNI_OK) {
+        out = std::move(parsed);
+    }
+    return status;
 }
 ayni_status_t write_turn(Turn &turn, const ayni_body_store_v1 &bodies, uint8_t *data,
                          uint32_t capacity, uint32_t &size) {
@@ -810,6 +868,23 @@ ayni_status_t Conversation::rounds(const ayni_body_store_v1 &bodies,
         }
     }
     return decode_rounds(bodies, view(encoded), record.round_count, record.last_round, out);
+}
+ayni_status_t Conversation::latest_answer(const ayni_body_store_v1 &bodies,
+                                          const ConversationRecord &record, std::string &out) {
+    if (!valid(record)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (!record.round_count) {
+        return AYNI_NOT_FOUND;
+    }
+    std::string encoded;
+    auto status = get_body(bodies, record.rounds, encoded);
+    std::vector<RoundReferences> metadata;
+    if (status == AYNI_OK) {
+        status =
+            read_round_references(view(encoded), record.round_count, record.last_round, metadata);
+    }
+    return status != AYNI_OK ? status : load(bodies, metadata.back().answer, out);
 }
 ayni_status_t Conversation::references(const ayni_body_store_v1 &bodies,
                                        const ConversationRecord &record,

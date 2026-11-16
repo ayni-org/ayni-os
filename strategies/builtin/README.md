@@ -21,3 +21,5 @@ Provider/ToolLoop显式匹配主/摘要ReplyEncoding；FRAMED在工具列表assi
 ADR-0104引入显式Persistence：默认durable，ESP选择background。stage只接受有界RAM正文；保存历史时异步confirm共享payload/index，模型请求完整上下文作为临时输入在原Call终态持久后回收。工具结果只保存规范原值一次，消息索引保存原Schema/domain和小JSON投影视图，冷读复用同一writer；用户原始文本不按magic解释，完整历史由Conversation::history显式读取。回合缓存有界并检查当前来源；工具JSON缓存仅复用不可变表示，每个主请求重新列出可见工具，实际权限仍由Core复核。新格式异常恢复和板端交接目标未验证。
 
 启用ToolLoop的组合根须在每次Core step后、任何历史/隐私ACK前调用`maintain(kernel, privacy)`（owner线程、Core回调外）。它只用公开Task元数据和privacy request_seq清理策略自有表示，取消/失败和隐私失效的WAITING回合不会等到下一次decide才释放。活跃清理保守全清私有回合；同一COMPLETE代际不影响随后有效回合的复用。`cached_turns()`仅报告私有回合数量，不暴露正文。运行时负责取得经管理会话查询的公共privacy进度，Schema渲染缓存仍独立于授权结论。
+
+共享对话主路径沿用输入/模型/顺序工具/最终保存：冷读合并独立依赖后才投影历史，活动回合及下一Task的完全相同来源复用既有有界工作集；新Task仍验证正文所有权/摘要，当前权限和隐私继续逐次检查。每会话最多一份最近完成图与活动图共享cached_turns额度，取消/失败清理工作副本，隐私进度清空全部。Session一次请求完整候选图的confirm并保留全部持久屏障；展示新答案使用latest_answer，完整rounds用于历史查询。见[ADR-0105](../../docs/adr/0105-shared-conversation-flow-and-local-cost.md)。

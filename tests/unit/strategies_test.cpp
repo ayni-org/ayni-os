@@ -1,6 +1,7 @@
 #include "strategy_workspace_fixture.h"
 // ADR-0056 / C-POLICY-005..012: real registered policies, local protocol only.
 #include "strategies_fixture.h"
+#include <ayni/ayni.hpp>
 
 namespace {
 using namespace ayni::test;
@@ -152,6 +153,58 @@ class BackgroundStrategies : public StrategiesFixture {
         };
     }
 };
+class ReusedHistory : public BackgroundStrategies {
+  protected:
+    static inline thread_local uint64_t watched_history = 0;
+    static inline thread_local uint32_t history_reads = 0;
+    ayni_body_store_v1 observed{};
+    void SetUp() override {
+        observed = *bodies.store();
+        observed.read = [](void *context, const ayni_body_ref_v1 *ref, uint8_t *out,
+                           uint32_t capacity) {
+            history_reads += ref->id == watched_history ? 1U : 0U;
+            auto &memory = *static_cast<ayni::runtime::MemoryBodies *>(context);
+            return memory.store()->read(context, ref, out, capacity);
+        };
+        body_store = &observed;
+        watched_history = history_reads = 0;
+        BackgroundStrategies::SetUp();
+    }
+};
+// C-POLICY-013: the next Task reuses the exact completed graph within the existing bound;
+// the same owner privacy-progress input still clears all decoded private representations.
+TEST_F(ReusedHistory, next_turn_reuses_completed_history_and_privacy_clears_it) {
+    auto task = start();
+    propose(0, 1);
+    post(1, text("first tool result"));
+    pump();
+    post(2, text("first answer"));
+    pump();
+    ASSERT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+    finish(task);
+    auto privacy = ayni::initialized<ayni_privacy_info_v1>();
+    ASSERT_EQ(ayni_get_privacy_status(work.kernel(), work.session(), &privacy), AYNI_OK);
+    ASSERT_EQ(loop.maintain(work.kernel(), privacy), AYNI_OK);
+    ASSERT_EQ(loop.cached_turns(), 1U);
+    watched_history = conversation.history.id;
+    history_reads = 0;
+    task = start();
+    ASSERT_EQ(pending.size(), 4U);
+    EXPECT_NE(pending.back().text.find("first tool result"), std::string::npos);
+    EXPECT_NE(pending.back().text.find("first answer"), std::string::npos);
+    // Current ownership/digest remain checked; the cached graph needs no second
+    // history projection. This permits the discovery and preparation reads only.
+    EXPECT_GT(history_reads, 0U);
+    EXPECT_LE(history_reads, 2U);
+    EXPECT_EQ(loop.cached_turns(), 1U);
+    post(3, text("second answer"));
+    pump();
+    finish(task);
+    privacy.phase = AYNI_PRIVACY_ERASING;
+    privacy.request_seq = 1;
+    ASSERT_EQ(loop.maintain(work.kernel(), privacy), AYNI_OK);
+    EXPECT_EQ(loop.cached_turns(), 0U);
+}
 // ADR-0104: shared staged bodies preserve ordering for the maximum serial proposal batch.
 TEST_F(BackgroundStrategies, eight_tools_preserve_message_order_and_completed_round) {
     const auto task = start();

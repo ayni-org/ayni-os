@@ -114,6 +114,10 @@ class Conversation {
                                  std::string &);
     static ayni_status_t rounds(const ayni_body_store_v1 &bodies, const ConversationRecord &record,
                                 std::vector<Round> &out);
+    // Reads only the latest answer payload after checking the round index. NOT_FOUND
+    // means no retained round; NOT_READY preserves out while its body is loading.
+    static ayni_status_t latest_answer(const ayni_body_store_v1 &, const ConversationRecord &,
+                                       std::string &out);
     // Direct record roots only. Collection must use the transitive body-store overload below.
     static void references(const ConversationRecord &record, std::vector<BodyRef> &out);
     // Includes the transitive shared payloads in the message index; NOT_READY defers collection.
@@ -228,7 +232,8 @@ struct ToolLoopConfig {
     const ayni_body_store_v1 *bodies = nullptr;
     HistoryPort history{};
     Persistence persistence = Persistence::durable; // Background is explicit and requires staging.
-    uint32_t cached_turns = 4; // Bounded owner working sets; eviction never drops store ownership.
+    // Active turns and at most one completed graph per conversation share this bound.
+    uint32_t cached_turns = 4;                            // Eviction never drops store ownership.
     ToolExposure tool_exposure = ToolExposure::discovery; // Captured anew on every decision.
     model::ReplyEncoding reply_encoding = model::ReplyEncoding::text; // Main Provider encoding.
     model::ReplyEncoding summary_reply_encoding = model::ReplyEncoding::text; // Summary encoding.
@@ -251,6 +256,7 @@ class ToolLoop {
     ayni_strategy_v1 describe();
     // Owner thread, outside Core callbacks, after stepping and before history/privacy ACKs.
     // Uses public Task metadata; privacy progress clears even dormant WAITING copies.
+    // Cancelled/failed copies retire; completed graphs may serve the next exact-source turn.
     // A completed privacy generation is consumed once, so later valid turns keep their cache.
     ayni_status_t maintain(const ayni_kernel_t *kernel, const ayni_privacy_info_v1 &privacy);
     size_t

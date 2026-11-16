@@ -15,6 +15,24 @@ struct ToolLoop::Cache {
     std::map<uint64_t, Saved> turns;
     std::map<std::string, std::string> definitions;
     uint64_t privacy_request = 0; // Last observed invalidation sequence; zero before any request.
+    // Same bounded slots serve active Tasks and the latest completed graph per conversation.
+    void remember(uint64_t task, ayni_bytes_v1 checkpoint, detail::Turn &&turn, uint32_t limit) {
+        // Keep only the latest decoded representation of this private conversation.
+        // It shares the existing slot bound and privacy invalidation with active turns.
+        for (auto at = turns.begin(); at != turns.end();) {
+            const auto &saved = at->second.turn;
+            const bool superseded = at->first != task && saved.done &&
+                                    saved.record.id == turn.record.id &&
+                                    saved.record.owner_instance_id == turn.record.owner_instance_id;
+            at = superseded ? turns.erase(at) : std::next(at);
+        }
+        if (turns.size() == limit && turns.count(task) == 0U) {
+            turns.erase(turns.begin());
+        }
+        turns[task] = {
+            std::string(reinterpret_cast<const char *>(checkpoint.data), checkpoint.size),
+            std::move(turn)};
+    }
 };
 ToolLoop::ToolLoop() : cache_(std::make_unique<Cache>()) {}
 ToolLoop::~ToolLoop() = default;
@@ -41,11 +59,13 @@ ayni_status_t ToolLoop::maintain(const ayni_kernel_t *kernel, const ayni_privacy
         if (status != AYNI_OK && status != AYNI_NOT_FOUND) {
             return status;
         }
+        const bool completed = at->second.turn.done &&
+                               (status == AYNI_NOT_FOUND || task.lifecycle == AYNI_TASK_COMPLETED);
         const bool active =
             status == AYNI_OK && !task.cancel_revision &&
             (task.lifecycle == AYNI_TASK_READY || task.lifecycle == AYNI_TASK_RUNNING ||
              task.lifecycle == AYNI_TASK_WAITING);
-        at = active ? std::next(at) : cache_->turns.erase(at);
+        at = active || completed ? std::next(at) : cache_->turns.erase(at);
     }
     return AYNI_OK;
 }
@@ -1248,7 +1268,13 @@ ayni_status_t ToolLoop::decide(void *context, const ayni_task_snapshot_v1 *snaps
     if (cached != self.cache_->turns.end() && cached->second.source == identity) {
         turn = cached->second.turn; // Validated immutable bodies; privacy is rechecked in run.
     } else {
-        status = read_turn(workspace, *self.config_.bodies, source, turn);
+        std::vector<const Turn *> completed;
+        for (const auto &[task, saved] : self.cache_->turns) {
+            if (saved.turn.done) {
+                completed.push_back(&saved.turn);
+            }
+        }
+        status = read_turn(workspace, *self.config_.bodies, source, turn, completed);
     }
     if (status == AYNI_NOT_READY) {
         output->disposition = AYNI_POLICY_OUTPUT_DEFER; // A body is still loading.
@@ -1266,18 +1292,10 @@ ayni_status_t ToolLoop::decide(void *context, const ayni_task_snapshot_v1 *snaps
         }
         config.bodies = &bodies;
         status = run(workspace, turn, config, *snapshot, *output, self.cache_->definitions);
-        if (turn.done) {
-            self.cache_->turns.erase(snapshot->task_id);
-        } else if (status == AYNI_OK && output->disposition != AYNI_POLICY_OUTPUT_DEFER &&
-                   output->checkpoint_size) {
-            if (self.cache_->turns.size() == self.config_.cached_turns &&
-                cached == self.cache_->turns.end()) {
-                self.cache_->turns.erase(self.cache_->turns.begin());
-            }
-            self.cache_->turns[snapshot->task_id] = {
-                std::string(reinterpret_cast<const char *>(output->checkpoint),
-                            output->checkpoint_size),
-                std::move(turn)};
+        if (status == AYNI_OK && output->disposition != AYNI_POLICY_OUTPUT_DEFER &&
+            output->checkpoint_size) {
+            self.cache_->remember(snapshot->task_id, {output->checkpoint, output->checkpoint_size},
+                                  std::move(turn), self.config_.cached_turns);
         }
     }
     // A body still being written or loaded holds this decision; nothing it staged is kept.

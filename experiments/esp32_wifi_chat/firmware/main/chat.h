@@ -115,9 +115,10 @@ class Chat {
     enum class ReplyIntent { present, cancelled };
     ReplyIntent reply_intent_ = ReplyIntent::present; // Independent of Core Goal cancellation.
     // One turn at a time: its text until the Goal exists, then the Goal until its answer.
-    enum class Turn { idle, preparing_input, input, running, saving, answer, speaking, reply_done };
+    enum class Turn { idle, input, running, saving, answer, speaking, reply_done };
     Turn turn_state_ = Turn::idle;
     struct ProbeTurn {
+        enum class Source { synthetic, current_history } source = Source::synthetic;
         uint32_t characters = 0; // Zero only primes the transport template; otherwise Han text.
         std::unique_ptr<wifi::ModelBuffer> history;
         ayni_body_ref_v1 history_ref{};

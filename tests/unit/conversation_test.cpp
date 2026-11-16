@@ -308,6 +308,31 @@ TEST(Conversation, record_size_is_constant_as_history_grows_and_reopens_the_same
     EXPECT_EQ(sizes[0], sizes[1]);
     EXPECT_EQ(sizes[1], sizes[2]);
 }
+// C-HVAL-009: publishing one answer reads its payload, not every prior user and answer.
+TEST(Conversation, latest_answer_reads_only_the_index_and_selected_answer) {
+    auto record = empty();
+    constexpr uint32_t retained_rounds = 3, answer_bytes = 16;
+    record.last_round = retained_rounds;
+    retain(record, retained_rounds, answer_bytes);
+    struct Reads {
+        const ayni_body_store_v1 &store;
+        uint32_t count = 0;
+    } reads{bodies()};
+    auto port = bodies();
+    port.context = &reads;
+    port.read = [](void *context, const BodyRef *ref, uint8_t *out, uint32_t capacity) {
+        auto &state = *static_cast<Reads *>(context);
+        ++state.count;
+        return state.store.read(state.store.context, ref, out, capacity);
+    };
+    std::string answer;
+    ASSERT_EQ(Conversation::latest_answer(port, record, answer), AYNI_OK);
+    EXPECT_EQ(answer, std::string(answer_bytes, 'a'));
+    EXPECT_EQ(reads.count, 2U);
+    answer = "retained";
+    EXPECT_EQ(Conversation::latest_answer(port, empty(), answer), AYNI_NOT_FOUND);
+    EXPECT_EQ(answer, "retained");
+}
 // ADR-0073/0074: the instructions of the model request state the local date, weekday and zone,
 // so the model resolves relative dates itself, apart from the conversation data. An untrusted
 // clock is marked, an unusable one states "unknown", and the same sample gives the same bytes.

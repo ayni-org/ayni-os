@@ -31,3 +31,5 @@ RC003-MS 松键后整段 ASR，识别文字显示并自动提交。只有一个 
 按用户决定不迁移旧独立历史文件；新锚点对应的新会话正常持久和重开，Core任务/调用证据与配置保留，无启动自动擦卷。ADR-0100实施轮未烧录或OTA；后续部署与修复见[实验记录](WIFI.md)。完整跨存储中断恢复及硬件内存峰值仍未验证。见[ADR-0100](../../docs/adr/0100-shared-interactive-runtime.md)。
 
 默认malloc/new在本部署中优先PSRAM，包括小正文与所有权元数据；显式INTERNAL/DMA的Host、任务栈、控制状态和硬件缓冲仍在内部RAM。仅配置TLS外部内存不足以保护内部堆，构建拒绝残留的2048字节内部优先配置。每次API处理后的数值堆快照用于区分跨回合保留和连接临时占用，不记录正文或密钥；实际结果及限制见[实验记录](WIFI.md)。
+
+输入接入直接使用共享Session和ToolLoop，不再在每回合前全清正文缓存；共享读取合并独立依赖并复用同源派生表示，Session保留全部持久屏障，展示只取最新答案。诊断`POST /api/diagnostics/context-test?history=current`只读当前历史、隔离scope并返回本地模板，不调用云端/工具、不保存到真实会话；其GoalType/可见性复核与真实聊天不同，不能代替真实板端性能验收。见[ADR-0105](../../docs/adr/0105-shared-conversation-flow-and-local-cost.md)和[实际记录](WIFI.md#2026-11-15-共用对话主路径与本地耗时简化)。

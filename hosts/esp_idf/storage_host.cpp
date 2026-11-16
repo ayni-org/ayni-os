@@ -205,7 +205,7 @@ void Host::Storage::serve(const Queued &queued) {
     metrics_.max_io_us = std::max(metrics_.max_io_us, served - started);
     metrics_.max_space_us = std::max(metrics_.max_space_us, refreshed - served);
     if (const auto *core = std::get_if<Request>(&queued.work.value)) {
-        if (core->port == Request::Port::append) {
+        if (core->port == Request::Port::append || core->port == Request::Port::append_group) {
             metrics_.append_us += served - started;
         }
     } else {

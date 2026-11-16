@@ -168,11 +168,21 @@ ayni_status_t Session::confirm(const strategies::ConversationRecord &record) {
     if (status != AYNI_OK) {
         return status;
     }
+    bool pending = false;
     for (const auto &ref : refs) {
         status = store->confirm(store->context, &ref);
+        if (status == AYNI_NOT_READY) {
+            // C-HVAL-009: request every dependency in this owner pass. The store
+            // still admits one background quantum; publishing waits for all of them.
+            pending = true;
+            continue;
+        }
         if (status != AYNI_OK) {
             return status;
         }
+    }
+    if (pending) {
+        return AYNI_NOT_READY;
     }
     confirmed_ = key;
     return AYNI_OK;

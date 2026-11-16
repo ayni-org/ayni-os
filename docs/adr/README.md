@@ -161,3 +161,5 @@
 | [0103](0103-reuse-immutable-admission-in-live-calls.md) | 运行期复用不可变准入并接收多工具批次 | 已接受用户选择；软件验证与实机边界见实验记录 | Core契约读取、执行门、ESP多工具串行 |
 
 | [0104](0104-shared-conversation-bodies-and-dispatch-prefix.md) | 共享对话正文、异步保存与连续派发前缀 | 已接受用户选择；本轮仅软件实现与编译，板端暂缓 | ABI0.55、schema10、ToolLoop、正文与Host队列 |
+
+| [0105](0105-shared-conversation-flow-and-local-cost.md) | 共享对话主路径与本地重复工作 | 已实施并正常OTA；局部验证与未完成边界见实验记录 | 共享历史、Session、Native/ESP接入；ABI/schema不变 |

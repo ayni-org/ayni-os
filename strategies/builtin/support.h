@@ -53,7 +53,7 @@ struct Turn {
 };
 // Reads every body the encoded turn names. NOT_READY when the store is still loading.
 ayni_status_t read_turn(Workspace &workspace, const ayni_body_store_v1 &bodies, ayni_bytes_v1 bytes,
-                        Turn &out);
+                        Turn &out, const std::vector<const Turn *> &completed = {});
 // Writes each changed text as a body, then encodes references and control state. NOT_READY
 // while a body is not yet durable; nothing is encoded then.
 ayni_status_t write_turn(Turn &turn, const ayni_body_store_v1 &bodies, uint8_t *data,

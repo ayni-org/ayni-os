@@ -49,12 +49,46 @@ void item(std::string &index, std::string_view literal, const BodyRef &ref,
     add(index, kind, word_bytes);
     reference(index, ref);
 }
+// ADR-0104: cold body reads defer independently. Discover dependencies with the
+// same index reader before rendering any saved result, so each subsequent wait
+// cannot repeat the full original-Schema projection of the already loaded prefix.
+ayni_status_t prepare_history(const ayni_body_store_v1 &bodies, const BodyRef &ref) {
+    std::vector<BodyRef> references;
+    std::string ignored;
+    auto status = load_history(bodies, ref, ignored, &references);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    return prepare_references(bodies, references);
+}
 } // namespace
+ayni_status_t prepare_references(const ayni_body_store_v1 &bodies,
+                                 const std::vector<BodyRef> &references) {
+    std::string ignored;
+    bool pending = false;
+    for (const auto &body : references) {
+        const auto status = get_body(bodies, body, ignored);
+        if (status == AYNI_NOT_READY) {
+            pending = true;
+            continue;
+        }
+        if (status != AYNI_OK) {
+            return status;
+        }
+    }
+    return pending ? AYNI_NOT_READY : AYNI_OK;
+}
 ayni_status_t load_history(const ayni_body_store_v1 &bodies, const BodyRef &ref, std::string &out,
                            std::vector<BodyRef> *references) {
     if (!ref.id) {
         out.clear();
         return AYNI_OK;
+    }
+    if (!references) {
+        const auto prepared = prepare_history(bodies, ref);
+        if (prepared != AYNI_OK) {
+            return prepared;
+        }
     }
     std::string index;
     auto status = get_body(bodies, ref, index);
@@ -67,6 +101,7 @@ ayni_status_t load_history(const ayni_body_store_v1 &bodies, const BodyRef &ref,
         return AYNI_INVALID_ARGUMENT; // The record explicitly declares an index (ADR-0104).
     }
     std::string composed;
+    bool pending = false;
     while (!input.empty()) {
         uint64_t size = 0;
         if (!take(input, word_bytes, size) || size > input.size() ||
@@ -90,6 +125,10 @@ ayni_status_t load_history(const ayni_body_store_v1 &bodies, const BodyRef &ref,
             status = kind == call_result_view ? load_result_view(bodies, body, bytes, references)
                      : references             ? AYNI_OK
                                               : get_body(bodies, body, bytes);
+            if (status == AYNI_NOT_READY && references) {
+                pending = true; // Discover the other independent dependencies in this pass too.
+                continue;
+            }
             if (status != AYNI_OK) {
                 return status;
             }
@@ -101,6 +140,9 @@ ayni_status_t load_history(const ayni_body_store_v1 &bodies, const BodyRef &ref,
             }
             composed += bytes;
         }
+    }
+    if (pending) {
+        return AYNI_NOT_READY;
     }
     out = std::move(composed);
     return AYNI_OK;
