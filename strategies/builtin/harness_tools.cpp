@@ -17,61 +17,6 @@ bool done(json::Writer &out, char *buffer, ayni_string_v1 &response) {
     response = {buffer, static_cast<uint32_t>(size)};
     return true;
 }
-// Conservative maximum result encoding, saturated at the available lane. This
-// bounds output before an effect; an oversized known result is never called failure.
-uint64_t result_bound(ayni_schema_v1 schema, uint32_t at, uint32_t limit) {
-    constexpr uint64_t json_escape = 6;
-    constexpr uint64_t scalar_number_max = 64;
-    const auto &node = schema.nodes[at];
-    uint64_t size = 0;
-    switch (node.kind) {
-    case AYNI_VALUE_OBJECT:
-        size = 2;
-        for (uint32_t child = at + 1U; child < node.subtree_end;
-             child = schema.nodes[child].subtree_end) {
-            auto name = json::Writer::measuring();
-            name.string(schema.nodes[child].name);
-            size_t bytes = 0;
-            if (!name.finish(bytes)) {
-                return uint64_t{limit} + 1U;
-            }
-            size += bytes + 2U + result_bound(schema, child, limit);
-            if (size > limit) {
-                return uint64_t{limit} + 1U;
-            }
-        }
-        break;
-    case AYNI_VALUE_LIST:
-        size = 2U + uint64_t{node.max_count} * (result_bound(schema, at + 1U, limit) + 1U);
-        break;
-    case AYNI_VALUE_TEXT:
-        size = 2U + json_escape * node.max_count;
-        break;
-    case AYNI_VALUE_IDENTIFIER:
-    case AYNI_VALUE_ENUM:
-        if (!node.choice_count) {
-            size = 2U + json_escape * AYNI_CATALOG_ID_MAX_BYTES;
-        }
-        for (uint32_t i = 0; i < node.choice_count; ++i) {
-            auto text = json::Writer::measuring();
-            text.string(node.choices[i]);
-            size_t bytes = 0;
-            if (!text.finish(bytes)) {
-                return uint64_t{limit} + 1U;
-            }
-            size = std::max(size, static_cast<uint64_t>(bytes));
-        }
-        break;
-    case AYNI_VALUE_BOOL:
-        size = sizeof("false") - 1U;
-        break;
-    default:
-        size = scalar_number_max;
-        break;
-    }
-    constexpr uint64_t null_bytes = sizeof("null") - 1U;
-    return std::min(std::max(size, null_bytes), uint64_t{limit} + 1U);
-}
 // Model cursors survive ordinary work commits. Exact current visibility and
 // context version are rechecked; the offset itself confers no authority.
 struct Cursor {
@@ -260,11 +205,9 @@ ayni_status_t inspect(Workspace &workspace, const ayni_capability_detail_v1 &det
 }
 // Copy/rebase the selected source subtree. The same original Schema normalizer
 // admits defaults, numbers and object closure before the ordinary Call boundary.
-enum class ResultRetention { inline_context, external_archive };
 ayni_status_t invoke(Workspace &workspace, const NativeArguments &args, uint32_t argument,
                      const ayni_capability_detail_v1 &detail, ayni_string_v1 step,
-                     ayni_policy_output_v1 &output, uint32_t result_capacity,
-                     ResultRetention retention, uint32_t mode) {
+                     ayni_policy_output_v1 &output, uint32_t mode) {
     auto source_lease =
         workspace.make<std::array<ayni_argument_node_v1, AYNI_VALUE_NODE_COUNT_MAX>>();
     if (!source_lease) {
@@ -283,12 +226,9 @@ ayni_status_t invoke(Workspace &workspace, const NativeArguments &args, uint32_t
         const ayni_capability_detail_v1 &detail;
         ayni_string_v1 step;
         ayni_policy_output_v1 &output;
-        uint32_t capacity;
-        ResultRetention retention;
         uint32_t mode;
         Workspace &workspace;
-    } inspection{{source.data(), count}, detail,    step, output,
-                 result_capacity,        retention, mode, workspace};
+    } inspection{{source.data(), count}, detail, step, output, mode, workspace};
     return ::ayni::detail::with_workspace(
         workspace, ayni_business_workspace_requirements, [&](const ayni_workspace_v1 *region) {
             return ayni_business_contract_read(
@@ -299,13 +239,6 @@ ayni_status_t invoke(Workspace &workspace, const NativeArguments &args, uint32_t
                         state.detail.info.form == AYNI_CALL_SUBSCRIPTION) {
                         return AYNI_INVALID_ARGUMENT; // Subscription requires an explicit
                                                       // model-managed start.
-                    }
-                    constexpr uint32_t result_envelope_max = 512;
-                    if (state.retention == ResultRetention::inline_context &&
-                        (state.capacity < result_envelope_max ||
-                         result_bound(business->result, 0, state.capacity) >
-                             state.capacity - result_envelope_max)) {
-                        return AYNI_CAPACITY_EXCEEDED;
                     }
                     auto nodes_lease =
                         state.workspace
@@ -423,10 +356,7 @@ ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &pro
             if (shell) {
                 args.positions[0] = 0;
             }
-            status = invoke(workspace, args, shell ? 0U : 2U, detail, step, output, capacity,
-                            config.history.archive ? ResultRetention::external_archive
-                                                   : ResultRetention::inline_context,
-                            mode);
+            status = invoke(workspace, args, shell ? 0U : 2U, detail, step, output, mode);
             if (status == AYNI_OK) {
                 requested = true;
                 return AYNI_OK;

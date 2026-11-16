@@ -287,26 +287,18 @@ class OpenaiFixture : public ::testing::Test {
         }
         reply.assign(reinterpret_cast<const char *>(answer.data), answer.size);
         if (result.tool_call_count) {
-            uint32_t listed = 0;
-            ayni_string_v1 assistant{};
-            if (ayni_tool_calls_read(tool_calls_workspace(), answer, &listed, &assistant) !=
-                    AYNI_OK ||
-                listed != result.tool_call_count) {
-                return AYNI_INTERNAL;
+            ToolCalls proposed;
+            const auto status = proposed.read(answer);
+            if (status != AYNI_OK || proposed.count != result.tool_call_count) {
+                return status != AYNI_OK ? status : AYNI_INTERNAL;
             }
-            reply = string_of(assistant);
-            ayni_task_tool_call_v1 proposed{};
-            proposed.struct_size = sizeof(proposed);
-            const auto status = ayni_tool_call_read(tool_calls_workspace(), answer, 0, &proposed);
-            if (status != AYNI_OK) {
-                return status;
-            }
+            reply = string_of(proposed.assistant);
             std::array<ayni_argument_node_v1, AYNI_VALUE_NODE_COUNT_MAX> source{};
             std::array<ayni_value_node_v1, AYNI_VALUE_NODE_COUNT_MAX> nodes{};
             std::array<char, 4096> bytes{};
             ayni_value_buffer_v1 value{nodes.data(), static_cast<uint32_t>(nodes.size()), 0,
                                        bytes.data(), static_cast<uint32_t>(bytes.size()), 0};
-            auto &native = proposed.call;
+            const auto native = proposed.at(0);
             proposal_error = AYNI_INVALID_ARGUMENT;
             if (native.input_kind == AYNI_TOOL_INPUT_ARGUMENTS &&
                 std::string_view(native.function_name.data, native.function_name.size) ==

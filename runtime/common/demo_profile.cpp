@@ -320,7 +320,7 @@ struct DemoProfile::Impl {
             model_scope = {sizeof(model_scope), 1, &destination};
         }
         strategies::ToolLoopConfig config;
-        config.history = ports.history;
+        config.body_progress = ports.body_progress;
         config.limits = {harness.context_window_tokens, harness.max_output_tokens,
                          harness.compact_target_tokens, harness.tool_result_max_tokens};
         config.bodies = ports.bodies;

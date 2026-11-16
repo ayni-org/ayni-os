@@ -236,13 +236,13 @@ class MockTools : public ::testing::Test {
                                                                 : AYNI_POLICY_REPORT_FAILURE,
                           snapshot, output);
         }
-        ayni_task_tool_call_v1 proposed{};
-        proposed.struct_size = sizeof(proposed);
-        const auto status = ayni::test::read_tool_call(result, 0, &proposed);
+        ayni::test::ToolCalls proposed;
+        const auto status =
+            proposed.read({reinterpret_cast<const uint8_t *>(result.text.data), result.text.size});
         if (status != AYNI_OK) {
             return status;
         }
-        const auto &call = proposed.call;
+        const auto call = proposed.at(0);
         std::array<ayni_argument_node_v1, AYNI_VALUE_NODE_COUNT_MAX> source{};
         std::array<ayni_value_node_v1, AYNI_VALUE_NODE_COUNT_MAX> nodes{};
         std::array<char, 4096> bytes{};
@@ -361,7 +361,7 @@ TEST_F(MockTools, generic_function_arguments_run_through_original_schema_and_aut
     ASSERT_EQ(ayni_tool_calls_read(ayni::test::tool_calls_workspace(),
                                    {reinterpret_cast<const uint8_t *>(planned_text.data()),
                                     static_cast<uint32_t>(planned_text.size())},
-                                   &listed, &assistant),
+                                   nullptr, nullptr, &listed, &assistant),
               AYNI_OK);
     EXPECT_EQ(listed, 1U);
     EXPECT_EQ(assistant.size, 0U);

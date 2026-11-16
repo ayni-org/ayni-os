@@ -223,7 +223,7 @@ ayni_status_t store_history(const ayni_body_store_v1 &bodies, Turn &turn) {
     return status;
 }
 ayni_status_t record_references(BodyReader &bodies, const ConversationRecord &record,
-                                std::vector<BodyRef> &out) {
+                                std::vector<BodyRef> &out, std::vector<RoundReferences> *rounds) {
     Conversation::references(record, out);
     std::string ignored;
     auto status =
@@ -231,13 +231,21 @@ ayni_status_t record_references(BodyReader &bodies, const ConversationRecord &re
     if (status != AYNI_OK || !record.rounds.id) {
         return status;
     }
-    status = bodies.copy(record.rounds, ignored);
+    std::vector<RoundReferences> metadata;
+    status = round_references(bodies, record, metadata);
     if (status != AYNI_OK) {
         return status;
     }
-    std::vector<Round> rounds;
-    return decode_rounds(bodies, view(ignored), record.round_count, record.last_round, rounds,
-                         &out);
+    for (const auto &round : metadata) {
+        out.push_back(round.user);
+        if (round.answer.id) {
+            out.push_back(round.answer);
+        }
+    }
+    if (rounds) {
+        *rounds = std::move(metadata);
+    }
+    return AYNI_OK;
 }
 ayni_status_t load_history(const ayni_body_store_v1 &bodies, const BodyRef &ref, std::string &out,
                            std::vector<BodyRef> *references) {

@@ -17,7 +17,11 @@ struct Commands {
     Submission (*submit)(void *, ayni_intent_kind_t, const void *, uint32_t) = nullptr;
 };
 // Retain is the existing durable-draft behavior. Discard leaves completed history intact.
-enum class UnfinishedTurn { retain, discard };
+enum class UnfinishedTurn {
+    retain,            // Preserve the draft; new input requires explicit abandon.
+    retain_and_append, // Native conversation policy: new input explicitly appends to the draft.
+    discard            // Preserve completed history, discard the terminal draft.
+};
 // One terminal observation; Core still owns the original Goal/Task and Call evidence.
 struct TurnResult {
     uint64_t goal = 0, task = 0;    // Original Core identities; zero if none was admitted.
@@ -41,8 +45,9 @@ struct Config {
 // Caller places this bounded object in suitable RAM (it contains large records).
 // Owner-thread, no reentry. poll performs bounded public-API/queue work, never waits.
 // After any accepted file request, this object/buffers live until Host close joins.
-// A clean existing anchor loads its exact file; unfinished cross-store recovery
-// is explicitly NOT_READY and preserved, never silently initialized or replayed.
+// Loads the exact owner/version; normal reopen may reattach an original Goal by its
+// source baseline or finish an existing publication/erasure. Missing/conflicting evidence
+// is refused, never silently initialized, retried or rebound.
 class Session {
   public:
     Session() = default;
@@ -63,23 +68,31 @@ class Session {
     ayni_status_t cancel();
     // Explicitly discard a retained terminal draft; never resumes/retries the old action.
     ayni_status_t abandon();
-    // Call before Kernel shutdown while Core still steps. Cancels this turn, completes
-    // an in-flight publication/ACK and drains body work. BUSY until safe; retained terminal
-    // drafts remain retained. Does not close the Kernel or any other Session.
+    // Before Kernel shutdown: discard mode cancels; retaining modes keep the original
+    // live Goal for Core shutdown/reopen. Completed publication/ACK and body work drain
+    // before OK. BUSY retains all borrows; never closes the Kernel or another Session.
     ayni_status_t quiesce();
     // Delivers once after durable publication/discard, or a retained terminal draft.
     bool take_result(TurnResult &out);
+    // Borrow only until the next owner operation. Consume after any required body read succeeds.
+    const TurnResult *pending_result() const;
     // Last poll observed a Core Task hold; resolves on that same Task.
     bool held() const { return held_; }
     // A turn owns work/publication or a retained terminal draft; initialization/forget are
     // separate.
     bool active() const;
+    // Only the original Core turn can currently make progress. Hosts may consider
+    // its proposal/hold idle; file, cleanup and publication phases still need polling.
+    bool awaiting_turn() const { return phase_ == Phase::turn; }
 
     // Rechecks the current Core barrier, including owner changes since the last poll.
     bool ready() const;
     // Borrow only until the next owner operation/Kernel mutation. Each lookup
     // rechecks privacy; retaining a pointer is not native-process isolation.
-    const strategies::ConversationRecord *record() const { return ready() ? &current_ : nullptr; }
+    const strategies::ConversationRecord *record() const {
+        auto anchor = initialized<ayni_context_info_v1>();
+        return intake(anchor) == AYNI_OK ? &current_ : nullptr;
+    }
     uint64_t latest_goal() const { return goal_; } // Zero until a turn Goal was accepted.
     bool file_pending() const {
         return phase_ == Phase::input || phase_ == Phase::loading || phase_ == Phase::saving;
@@ -107,14 +120,16 @@ class Session {
         erase,
         failed
     };
-    enum class Save { initialize, draft, publication, erasure, discard };
+    enum class Save { initialize, draft, publication, erasure, retained, discard };
     static void complete(void *, const hosts::storage::FileValueResult &) noexcept;
     ayni_status_t context(ayni_context_info_v1 &) const;
     ayni_status_t intake(ayni_context_info_v1 &) const;
+    ayni_status_t current_context(ayni_context_info_v1 &) const;
     Submission command(ayni_intent_kind_t, const ayni_context_info_v1 &, uint64_t task = 0,
                        ayni_context_action_t action = AYNI_CONTEXT_IDLE, uint64_t turn = 0);
     bool matches(const strategies::ConversationRecord &, const ayni_context_info_v1 &) const;
     ayni_status_t load(const ayni_context_info_v1 &);
+    ayni_status_t restore_turn();
     ayni_status_t save();
     ayni_status_t confirm(const strategies::ConversationRecord &);
     bool confirmation_matches(const strategies::ConversationRecord &) const;

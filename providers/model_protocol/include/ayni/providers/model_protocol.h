@@ -79,8 +79,8 @@ struct Answer {
 // including the second parse for function.arguments. No JSON or raw error crosses the ABI.
 class Protocol {
   public:
-    // Measures the request first and allocates it once. INVALID_ARGUMENT for a malformed
-    // instructions frame.
+    // Encode once into caller-owned output; growth uses the string capacity policy.
+    // INVALID_ARGUMENT for malformed input; failed candidates are never published.
     ayni_status_t encode(const RequestOptions &config, ayni_string_v1 input,
                          std::string &out) const;
     // Same writer for bounded platform buffers and Native allocation/measurement.

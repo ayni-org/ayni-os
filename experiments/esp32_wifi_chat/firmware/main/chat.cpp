@@ -152,15 +152,10 @@ ayni_status_t Chat::initialize(const ModelSelection &selection) {
     if (!values_.configure(host_->value_store())) {
         return AYNI_INVALID_STATE;
     }
-    auto rc = bodies_.configure(values_.port());
+    constexpr size_t cache_bytes = 2U * 1024U * 1024U;
+    auto rc = bodies_.configure(values_.port(), cache_bytes);
     if (rc != AYNI_OK) {
         status(0, "stage: bodies");
-        return rc;
-    }
-    // This deployment caps cached payloads independently from the model token window.
-    constexpr size_t cache_bytes = 2 * 1024 * 1024;
-    rc = bodies_.set_cache_limit(cache_bytes);
-    if (rc != AYNI_OK) {
         return rc;
     }
     bodies_.set_shared_call_results();
@@ -466,7 +461,7 @@ ayni_status_t Chat::configure_strategy() {
                      harness::compact_target_tokens, harness::tool_result_max_tokens};
     config.bodies = bodies_.store();
     config.persistence = ayni::strategies::Persistence::background;
-    config.history = {&bodies_, ayni::runtime::FileBodies::ready, nullptr, nullptr};
+    config.body_progress = {&bodies_, ayni::runtime::FileBodies::ready};
     config.tool_exposure = ayni::strategies::ToolExposure::preloaded;
     config.reply_encoding = config.summary_reply_encoding = ayni::model::ReplyEncoding::framed;
     protocol_options_.model = selection_.model.data();

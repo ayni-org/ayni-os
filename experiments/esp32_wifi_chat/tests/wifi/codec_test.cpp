@@ -424,36 +424,29 @@ TEST(WifiSettings, ApiAndStreamingOptionsPersistWithoutChangingSavedSecrets) {
     EXPECT_FALSE(parse_settings_patch(R"({"stream":"yes"})", patch));
     EXPECT_TRUE(parse_settings_patch(R"({"api_type":"responses","stream":"true"})", patch));
 }
-TEST(WifiSettings, LegacySettingsRetainChatNonStreamingDefaults) {
-    // ADR-0098: v1 snapshots remain readable; no factory reset or credential migration.
+TEST(WifiSettings, UnsupportedSettingsAreRefusedWithoutRewritingCredentials) {
+    // ADR-0108: only settings/v2 is supported; refusal preserves the stored blob.
     reset_nvs();
     Settings first;
-    std::strcpy(first.ssid.data(), "legacy-network");
-    std::strcpy(first.model_key.data(), "legacy-key");
-    constexpr size_t header = 8;
-    std::vector<uint8_t> record(header, 0);
-    put32(record.data(), 0x41594331);
-    put32(record.data() + 4, 1);
-    for (size_t at = 0; at < Settings::legacy_field_count; ++at) {
-        const size_t begin = record.size();
-        record.resize(begin + first.capacity(at), 0);
-        std::memcpy(record.data() + begin, first.field(at), std::strlen(first.field(at)));
-    }
-    const auto payload = record.size();
-    record.resize(payload + sizeof(uint32_t));
-    put32(record.data() + payload, checksum(record.data(), payload));
+    std::strcpy(first.ssid.data(), "fixture-network");
+    std::strcpy(first.model_key.data(), "fixture-key");
+    ASSERT_TRUE(first.save());
     nvs_handle_t store = 0;
     ASSERT_EQ(nvs_open("ayni_wifi", NVS_READWRITE, &store), ESP_OK);
-    ASSERT_EQ(nvs_set_blob(store, "settings", record.data(), record.size()), ESP_OK);
+    size_t size = 0;
+    ASSERT_EQ(nvs_get_blob(store, "settings", nullptr, &size), ESP_OK);
+    std::vector<uint8_t> bytes(size);
+    ASSERT_EQ(nvs_get_blob(store, "settings", bytes.data(), &size), ESP_OK);
+    put32(bytes.data() + sizeof(uint32_t), 1);
+    put32(bytes.data() + size - sizeof(uint32_t), checksum(bytes.data(), size - sizeof(uint32_t)));
+    ASSERT_EQ(nvs_set_blob(store, "settings", bytes.data(), size), ESP_OK);
     ASSERT_EQ(nvs_commit(store), ESP_OK);
-    nvs_close(store);
     Settings loaded;
-    ASSERT_TRUE(loaded.load());
-    EXPECT_STREQ(loaded.ssid.data(), "legacy-network");
-    EXPECT_STREQ(loaded.model_key.data(), "legacy-key");
-    EXPECT_STREQ(loaded.api_type.data(), "chat_completions");
-    EXPECT_STREQ(loaded.stream.data(), "false");
-    EXPECT_STREQ(loaded.output_limit.data(), "max_tokens");
+    EXPECT_FALSE(loaded.load());
+    std::vector<uint8_t> after(size);
+    ASSERT_EQ(nvs_get_blob(store, "settings", after.data(), &size), ESP_OK);
+    EXPECT_EQ(after, bytes);
+    nvs_close(store);
 }
 TEST(WifiModel, ResponsesStoredReplyKeepsContinuationAndUsageOutOfVisibleText) {
     // ADR-0098: the ESP queue carries the same selected reply encoding as Native.

@@ -121,7 +121,7 @@ TEST_F(NativeAssistant, check_text_is_an_ordinary_turn_of_the_single_assistant) 
 }
 // ADR-0085: Native composition exposes Shell only with explicit owner authority;
 // a normal pipeline uses the ordinary Call path and retains its original result.
-TEST_F(NativeAssistant, shell_pipeline_requires_a_grant_and_archives_its_typed_result) {
+TEST_F(NativeAssistant, shell_pipeline_requires_a_grant_and_retains_its_original_typed_body) {
     ASSERT_EQ(app.close(), AYNI_OK);
     ModelConfig config;
     config.shell_working_directory = directory.path();
@@ -140,24 +140,26 @@ TEST_F(NativeAssistant, shell_pipeline_requires_a_grant_and_archives_its_typed_r
     settle();
     calls = run(Operation::calls).calls;
     EXPECT_EQ(calls.size(), first + 3U);
+    const auto business = std::find_if(calls.begin(), calls.end(), [](const auto &call) {
+        return call.result_kind == AYNI_CALL_RESULT_VALUE && call.outcome == AYNI_CALL_COMPLETED;
+    });
+    ASSERT_NE(business, calls.end());
+    EXPECT_EQ(business->effect, AYNI_CALL_EFFECT_COMPLETE);
+    EXPECT_NE(business->body.id, 0U);
     sqlite3 *db = nullptr;
     ASSERT_EQ(sqlite3_open_v2(directory.file("conversation.sqlite3").c_str(), &db,
                               SQLITE_OPEN_READONLY, nullptr),
               SQLITE_OK);
     sqlite3_stmt *query = nullptr;
-    ASSERT_EQ(sqlite3_prepare_v2(db,
-                                 "SELECT outcome,effect,json FROM results WHERE length(value)>0",
-                                 -1, &query, nullptr),
-              SQLITE_OK);
-    ASSERT_EQ(sqlite3_step(query), SQLITE_ROW);
-    EXPECT_EQ(sqlite3_column_int(query, 0), AYNI_CALL_COMPLETED);
-    EXPECT_EQ(sqlite3_column_int(query, 1), AYNI_CALL_EFFECT_COMPLETE);
-    const std::string result(static_cast<const char *>(sqlite3_column_blob(query, 2)),
-                             static_cast<size_t>(sqlite3_column_bytes(query, 2)));
-    EXPECT_NE(result.find("SEVMTE8="),
-              std::string::npos); // HELLO, exactly as the Shell schema declares.
-    EXPECT_NE(result.find("result_ref"), std::string::npos);
-    EXPECT_EQ(sqlite3_step(query), SQLITE_DONE);
+    ASSERT_EQ(sqlite3_prepare_v2(db, "SELECT body FROM state", -1, &query, nullptr), SQLITE_OK);
+    bool original_saved = false;
+    while (sqlite3_step(query) == SQLITE_ROW) {
+        const std::string bytes(static_cast<const char *>(sqlite3_column_blob(query, 0)),
+                                size_t(sqlite3_column_bytes(query, 0)));
+        original_saved |= bytes.find("SEVMTE8=") != std::string::npos;
+    }
+    EXPECT_TRUE(
+        original_saved); // The typed stdout field retains base64(HELLO), without a JSON archive.
     sqlite3_finalize(query);
     sqlite3_close(db);
 }
@@ -258,11 +260,11 @@ TEST_F(NativeAssistant, stop_phrase_cancels_the_turn_pauses_autonomy_and_keeps_r
 }
 // ADR-0072: stop is admitted while the turn's conversation save is still pending, when every
 // other mutation waits.
-TEST_F(NativeAssistant, stop_is_not_held_behind_a_pending_conversation_save) {
+TEST_F(NativeAssistant, stop_cancels_the_active_shared_session_before_answer_publication) {
     allow_chat();
     const auto turn = run(Operation::say, 0, "马上停止的一轮");
     ASSERT_EQ(turn.status, AYNI_OK);
-    ASSERT_TRUE(run(Operation::status).saving);
+    ASSERT_EQ(run(Operation::status).pending_goal, turn.id);
     EXPECT_EQ(run(Operation::say, 0, "另一轮").status, AYNI_BUSY);
     const auto stopped = run(Operation::stop);
     ASSERT_EQ(stopped.status, AYNI_OK);

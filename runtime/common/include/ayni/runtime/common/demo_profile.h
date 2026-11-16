@@ -39,7 +39,7 @@ struct AssistantPorts {
     providers::presentation::Output output;
     applications::assistant::QuietHours quiet;
     applications::assistant::GoalPort goals;
-    strategies::HistoryPort history{};
+    strategies::BodyProgress body_progress{};
     // Required store for conversation texts and model bodies, borrowed until close (ADR-0096).
     const ayni_body_store_v1 *bodies = nullptr;
 };

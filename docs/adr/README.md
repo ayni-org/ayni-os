@@ -164,3 +164,7 @@
 
 | [0105](0105-shared-conversation-flow-and-local-cost.md) | 共享对话主路径与本地重复工作 | 已实施并正常OTA；局部验证与未完成边界见实验记录 | 共享历史、Session、Native/ESP接入；ABI/schema不变 |
 | [0106](0106-bounded-body-reads-and-publication.md) | 操作内正文复用与会话发布确认 | 已实施，本地正常验证及独立复查通过；不OTA | 共享策略/Session；C ABI及持久格式不变 |
+
+| [0107](0107-single-pass-proposals-and-reference-rounds.md) | 单遍提议、引用轮次及旧机制清理 | 已接受，实施及本地验证见实验记录；不OTA | ABI0.56、ToolLoop、ModelProtocol、引用轮次 |
+
+| [0108](0108-unified-conversation-and-result-storage.md) | 统一会话和结果存储，删除兼容与无限缓存 | 已接受；实施及本地验证见实验记录，不OTA | Session/FileBodies、BodyProgress、turn8/ANRV2/SQLite5 |

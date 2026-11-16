@@ -123,8 +123,16 @@ bool write_call(const CallValues &values, foundation::BodyWriter &writer) {
     return status == AYNI_OK && written == values.payload_size;
 }
 
-bool read_encoded(ayni::foundation::Workspace &workspace, foundation::BodyReader &reader,
-                  ToolCallView &out) {
+// The visitor consumes only private candidate data. Whole-list admission below
+// still owns duplicate IDs and the exact end; no callback output is authoritative yet.
+struct Visitor {
+    void *context = nullptr; // Borrowed synchronously; null is allowed by receive.
+    // Null selects metadata admission only; otherwise borrowed for the current call.
+    ayni_status_t (*receive)(void *, uint32_t, const ayni_tool_call_v1 *) = nullptr;
+};
+// Lend admitted nodes while their lease lives; the outer decoder owns whole-list admission.
+ayni_status_t read_encoded(foundation::Workspace &workspace, foundation::BodyReader &reader,
+                           ToolCallView &out, uint32_t index, Visitor visitor) {
     ToolCallView call{};
     call.function_name = reader.text(AYNI_CATALOG_ID_MAX_BYTES);
     call.input_kind = reader.u32();
@@ -133,65 +141,84 @@ bool read_encoded(ayni::foundation::Workspace &workspace, foundation::BodyReader
     if (!reader.valid() || call.function_name.size == 0U || call.protocol_id.size == 0U ||
         check_call_text(call.function_name, AYNI_CATALOG_ID_MAX_BYTES) != AYNI_OK ||
         check_call_text(call.protocol_id, AYNI_MODEL_TOOL_ID_BYTES_MAX) != AYNI_OK) {
-        return false;
+        return AYNI_INVALID_ARGUMENT;
     }
+    ayni_tool_call_v1 proposal{};
+    proposal.struct_size = sizeof(proposal);
+    proposal.function_name = call.function_name;
+    proposal.protocol_id = call.protocol_id;
+    proposal.input_kind = call.input_kind;
+    auto receive = [&]() {
+        const auto status =
+            visitor.receive ? visitor.receive(visitor.context, index, &proposal) : AYNI_OK;
+        return status <= AYNI_OK ? status : AYNI_INVALID_ARGUMENT;
+    };
+    ayni_status_t status = AYNI_OK;
     if (call.input_kind == AYNI_TOOL_INPUT_ARGUMENTS) {
         auto value_lease = workspace.make<catalog::DecodedArguments>();
         if (!value_lease) {
-            return false;
+            return AYNI_CAPACITY_EXCEEDED;
         }
         auto &value = *value_lease;
         if (catalog::decode_arguments(workspace, call.input, value) != AYNI_OK) {
-            return false;
+            return AYNI_INVALID_ARGUMENT;
         }
+        proposal.input.arguments = value.view();
+        status = receive();
     } else if (call.input_kind == AYNI_TOOL_INPUT_INVALID_ARGUMENTS) {
-        if (check_call_text({reinterpret_cast<const char *>(call.input.data), call.input.size},
-                            UINT32_MAX) != AYNI_OK) {
-            return false;
+        proposal.input.invalid_arguments = {reinterpret_cast<const char *>(call.input.data),
+                                            call.input.size};
+        if (check_call_text(proposal.input.invalid_arguments, UINT32_MAX) != AYNI_OK) {
+            return AYNI_INVALID_ARGUMENT;
         }
+        status = receive();
     } else {
-        return false;
+        return AYNI_INVALID_ARGUMENT;
     }
-    out = call;
-    return true;
+    if (status == AYNI_OK) {
+        out = call;
+    }
+    return status;
 }
 
 // Decode once for consumers that need the complete list. No output publishes
 // until every source tree, protocol identity and exact end position was admitted.
-bool decode(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body, ToolCallList &out) {
+ayni_status_t decode(foundation::Workspace &workspace, ayni_bytes_v1 body, ToolCallList &out,
+                     Visitor visitor = {}) {
     if (body.data == nullptr || body.size < list_header_size) {
-        return false;
+        return AYNI_INVALID_ARGUMENT;
     }
     foundation::BodyReader reader(body);
     if (reader.u32() != list_magic || reader.u32() != list_version) {
-        return false;
+        return AYNI_INVALID_ARGUMENT;
     }
     const uint32_t count = reader.u32();
     if (count == 0U || count > AYNI_CALL_TOOL_COUNT_MAX) {
-        return false;
+        return AYNI_INVALID_ARGUMENT;
     }
     ToolCallList candidate{};
     candidate.count = count;
     candidate.assistant_text = reader.text(UINT32_MAX);
     if (check_call_text(candidate.assistant_text, UINT32_MAX) != AYNI_OK) {
-        return false;
+        return AYNI_INVALID_ARGUMENT;
     }
     for (uint32_t at = 0; at < count; ++at) {
-        if (!read_encoded(workspace, reader, candidate.calls[at])) {
-            return false;
+        const auto status = read_encoded(workspace, reader, candidate.calls[at], at, visitor);
+        if (status != AYNI_OK) {
+            return status;
         }
         for (uint32_t before = 0; before < at; ++before) {
             if (catalog::compare_tokens(candidate.calls[before].protocol_id,
                                         candidate.calls[at].protocol_id) == 0) {
-                return false;
+                return AYNI_INVALID_ARGUMENT;
             }
         }
     }
     if (!reader.ok()) {
-        return false;
+        return AYNI_INVALID_ARGUMENT;
     }
     out = candidate;
-    return true;
+    return AYNI_OK;
 }
 } // namespace
 
@@ -232,20 +259,11 @@ void write_tool_calls(const ayni_tool_call_v1 *calls, uint32_t count, uint8_t *o
 
 bool read_tool_calls(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body,
                      ToolCallList &out) {
-    return decode(workspace, body, out);
+    return decode(workspace, body, out) == AYNI_OK;
 }
 uint32_t tool_call_count(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body) {
     ToolCallList decoded;
-    return decode(workspace, body, decoded) ? decoded.count : 0U;
-}
-bool read_tool_call(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body, uint32_t index,
-                    ToolCallView &out) {
-    ToolCallList decoded;
-    if (!decode(workspace, body, decoded) || index >= decoded.count) {
-        return false;
-    }
-    out = decoded.calls[index];
-    return true;
+    return decode(workspace, body, decoded) == AYNI_OK ? decoded.count : 0U;
 }
 } // namespace ayni::work
 
@@ -301,9 +319,11 @@ extern "C" ayni_status_t ayni_tool_calls_workspace_requirements(size_t *bytes, s
     return AYNI_OK;
 }
 
-extern "C" ayni_status_t ayni_tool_calls_read(const ayni_workspace_v1 *region, ayni_bytes_v1 body,
-                                              uint32_t *out_count,
-                                              ayni_string_v1 *out_assistant_text) {
+// C-CALL-014: publish metadata only after the complete visitor traversal succeeds.
+extern "C" ayni_status_t
+ayni_tool_calls_read(const ayni_workspace_v1 *region, ayni_bytes_v1 body, void *context,
+                     ayni_status_t (*receive)(void *, uint32_t, const ayni_tool_call_v1 *),
+                     uint32_t *out_count, ayni_string_v1 *out_assistant_text) {
     const auto checked = ayni::foundation::Workspace::check(region, tool_calls_workspace_size());
     if (checked != AYNI_OK) {
         return checked;
@@ -313,62 +333,10 @@ extern "C" ayni_status_t ayni_tool_calls_read(const ayni_workspace_v1 *region, a
     }
     ayni::foundation::Workspace workspace(region->data, region->byte_capacity);
     ayni::work::ToolCallList list;
-    if (!ayni::work::read_tool_calls(workspace, body, list)) {
-        return AYNI_INVALID_ARGUMENT;
+    const auto status = ayni::work::decode(workspace, body, list, {context, receive});
+    if (status == AYNI_OK) {
+        *out_count = list.count;
+        *out_assistant_text = list.assistant_text;
     }
-    *out_count = list.count;
-    *out_assistant_text = list.assistant_text;
-    return AYNI_OK;
-}
-
-extern "C" ayni_status_t ayni_tool_call_read(const ayni_workspace_v1 *region, ayni_bytes_v1 body,
-                                             uint32_t index, ayni_task_tool_call_v1 *out) {
-    const auto checked = ayni::foundation::Workspace::check(region, tool_calls_workspace_size());
-    if (checked != AYNI_OK) {
-        return checked;
-    }
-    if (out == nullptr) {
-        return AYNI_INVALID_ARGUMENT;
-    }
-    const auto shape =
-        ayni::catalog::check_struct_size(out->struct_size, sizeof(*out), sizeof(*out));
-    if (shape != AYNI_OK) {
-        return shape;
-    }
-    ayni::foundation::Workspace workspace(region->data, region->byte_capacity);
-    ayni::work::ToolCallList list;
-    if (!ayni::work::read_tool_calls(workspace, body, list)) {
-        return AYNI_INVALID_ARGUMENT;
-    }
-    if (index >= list.count) {
-        return AYNI_NOT_FOUND;
-    }
-    const auto &call = list.calls[index];
-    ayni_task_tool_call_v1 result{};
-    result.struct_size = sizeof(result);
-    result.call.struct_size = sizeof(result.call);
-    result.call.function_name = call.function_name;
-    result.call.protocol_id = call.protocol_id;
-    result.call.input_kind = call.input_kind;
-    if (call.input_kind == AYNI_TOOL_INPUT_ARGUMENTS) {
-        auto arguments_lease = workspace.make<ayni::catalog::DecodedArguments>();
-        if (!arguments_lease) {
-            return AYNI_CAPACITY_EXCEEDED;
-        }
-        auto &arguments = *arguments_lease;
-        const auto status = ayni::catalog::decode_arguments(workspace, call.input, arguments);
-        if (status != AYNI_OK) {
-            return status;
-        }
-        for (uint32_t at = 0; at < arguments.count; ++at) {
-            out->nodes[at] = arguments.nodes[at];
-        }
-        result.call.input.arguments = {out->nodes, arguments.count};
-    } else {
-        result.call.input.invalid_arguments = {reinterpret_cast<const char *>(call.input.data),
-                                               call.input.size};
-    }
-    out->reserved = 0;
-    out->call = result.call;
-    return AYNI_OK;
+    return status;
 }

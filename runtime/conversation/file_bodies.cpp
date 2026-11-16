@@ -21,8 +21,9 @@ uint64_t take(const std::string &in, size_t &at, uint32_t count) {
     return value;
 }
 } // namespace
-ayni_status_t FileBodies::configure(hosts::storage::FileValuePort files, uint64_t base) {
-    if (!files.submit || !base || base > UINT64_MAX - chunks(UINT32_MAX) - 1U) {
+ayni_status_t FileBodies::configure(hosts::storage::FileValuePort files, size_t cache_bytes,
+                                    uint64_t base) {
+    if (!files.submit || !cache_bytes || !base || base > UINT64_MAX - chunks(UINT32_MAX) - 1U) {
         return AYNI_INVALID_ARGUMENT;
     }
     std::lock_guard<std::mutex> lock(mutex_);
@@ -30,6 +31,7 @@ ayni_status_t FileBodies::configure(hosts::storage::FileValuePort files, uint64_
         return AYNI_INVALID_STATE;
     }
     files_ = files;
+    cache_limit_ = cache_bytes;
     base_ = base;
     owner_ = std::this_thread::get_id();
     return AYNI_OK;
@@ -235,7 +237,7 @@ ayni_status_t FileBodies::stage(void *context, uint64_t scope, ayni_bytes_v1 bod
     auto &self = *static_cast<FileBodies *>(context);
     {
         std::lock_guard<std::mutex> lock(self.mutex_);
-        if (!self.cache_limit_) {
+        if (!self.files_.submit) {
             return AYNI_INVALID_STATE;
         }
     }
@@ -716,16 +718,16 @@ ayni_status_t FileBodies::trim_cache(size_t target) {
 }
 ayni_status_t FileBodies::set_cache_limit(size_t bytes) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (bytes && trim_locked(bytes, false) != AYNI_OK) {
+    if (!bytes) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (trim_locked(bytes, false) != AYNI_OK) {
         return AYNI_BUSY;
     }
     cache_limit_ = bytes;
     return AYNI_OK;
 }
 ayni_status_t FileBodies::reserve_cache(size_t bytes) {
-    if (!cache_limit_) {
-        return AYNI_OK;
-    }
     if (bytes > cache_limit_) {
         return AYNI_CAPACITY_EXCEEDED;
     }

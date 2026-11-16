@@ -27,7 +27,7 @@
 
 可移植 C++17 Core 管理系统状态，规则与 ToolLoop 决定如何推进工作，Host 和 Provider 提供异步服务。桌面助理与 ESP32-S3 触屏实验复用这套基础；具体应用、模型和外设由部署选择。
 
-> **当前状态：** 通用基础与独立源码 SDK 已交付，Native/Sim 软件验证见[基础报告](reports/core/foundation-acceptance.md)和[独立接入报告](reports/core/independent-consumption.md)。当前实验性 C ABI 为 **0.55**，Core storage schema 为 **10**（[ADR-0104](docs/adr/0104-shared-conversation-bodies-and-dispatch-prefix.md)）。ESP32 触屏 Wi-Fi/语音实验独立推进；完整硬件停止链与耐久验收仍未完成。
+> **当前状态：** 通用基础与独立源码 SDK 已交付，Native/Sim 软件验证见[基础报告](reports/core/foundation-acceptance.md)和[独立接入报告](reports/core/independent-consumption.md)。当前实验性 C ABI 为 **0.56**，Core storage schema 为 **10**（接口清理见[ADR-0107](docs/adr/0107-single-pass-proposals-and-reference-rounds.md)，共享会话/结果见[ADR-0108](docs/adr/0108-unified-conversation-and-result-storage.md)）。ESP32 触屏 Wi-Fi/语音实验独立推进；完整硬件停止链与耐久验收仍未完成。
 
 ## 核心理念
 

@@ -136,7 +136,8 @@ ayni_status_t native_operation(Workspace &workspace, const ayni_tool_call_v1 &,
 ayni_status_t operation_result(Workspace &workspace, const ayni_operation_info_v1 &,
                                const ToolLoopConfig &, const ayni_task_snapshot_v1 &, Turn &,
                                ayni_policy_output_v1 &, char *, uint32_t, ToolBudget,
-                               ayni_string_v1 &, ayni_status_t = AYNI_OK);
+                               ayni_string_v1 &, ayni_string_v1 protocol_id,
+                               ayni_status_t = AYNI_OK);
 // Stable tool processing steps are distinct from the target's business completion.
 bool step_committed(const ayni_task_snapshot_v1 &, ayni_string_v1);
 // A control proposal's original target supplies its terminal body for the common summary path.
@@ -154,9 +155,12 @@ ayni_status_t summarize_result(Workspace &workspace, Turn &, const ToolLoopConfi
                                bool &requested);
 // Rendering room for a reply of the given tokens (tool_loop.cpp).
 uint32_t reply_bytes(uint64_t tokens);
-// Only an asynchronous archive wait marks DEFER; service failure statuses remain failures.
-ayni_status_t archive_result(const ToolLoopConfig &, const ayni_task_snapshot_v1 &,
-                             const ConversationRecord &, const ayni_task_call_result_v1 &,
-                             ArchivedResult &, ayni_policy_output_v1 &);
+// Both unary and managed replies retain the same original value/proof representation.
+ayni_status_t retain_tool_result(const ToolLoopConfig &, Turn &, ayni_string_v1 protocol_id,
+                                 const ayni_task_call_result_v1 &, ayni_string_v1 presentation,
+                                 ayni_policy_output_v1 &);
+// Preserve original result/proofs in the common body graph before requesting summaries.
+ayni_status_t begin_result_summary(const ToolLoopConfig &, Turn &, const ayni_task_call_result_v1 &,
+                                   ayni_policy_output_v1 &);
 } // namespace ayni::strategies::detail
 #endif

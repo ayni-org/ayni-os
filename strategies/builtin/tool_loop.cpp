@@ -353,18 +353,14 @@ ayni_status_t known_operations(Turn &turn, const ayni_task_snapshot_v1 &snapshot
             operation.struct_size = sizeof(operation);
             const auto read = snapshot.operation(snapshot.call_context, &reference, &operation);
             if (read == AYNI_OK) {
-                auto measured = json::Writer::measuring();
-                operations::write(measured, operation);
-                size_t size = 0;
-                if (!measured.finish(size)) {
-                    return AYNI_CAPACITY_EXCEEDED;
-                }
-                std::string encoded(size, '\0');
-                json::Writer json(encoded.data(), size);
+                std::string encoded;
+                auto json = growing_json(encoded);
                 operations::write(json, operation);
+                size_t size = 0;
                 if (!json.finish(size)) {
                     return AYNI_CAPACITY_EXCEEDED;
                 }
+                encoded.resize(size);
                 facts.add(view(encoded));
                 facts.add("\n");
             } else if (read != AYNI_UNSUPPORTED && read != AYNI_NOT_FOUND) {
@@ -423,7 +419,7 @@ ayni_status_t revalidate(Workspace &workspace, Turn &turn, const ToolLoopConfig 
         ++turn.record.context_version;
         turn.record.rounds = {}; // Answers changed even when retained user count stays equal.
         for (auto &round : turn.rounds) {
-            round.answer.clear();
+            round.answer = {};
         }
         // A new model step follows the old source; accepted action identities remain in Core.
         if (turn.phase != TurnPhase::initial) {
@@ -431,7 +427,9 @@ ayni_status_t revalidate(Workspace &workspace, Turn &turn, const ToolLoopConfig 
         }
         turn.phase = TurnPhase::initial;
         turn.tool_index = 0;
-        turn.archived_result = {};
+        turn.proposals.reset();
+        turn.result_source = {};
+        turn.result_projection.reset();
         turn.result_summary = {};
         turn.group_start = 0;
         turn.compact_prefix = turn.history_summary.offset = turn.history_summary.next = 0;
@@ -465,7 +463,12 @@ ayni_status_t revalidate(Workspace &workspace, Turn &turn, const ToolLoopConfig 
                 Writer historical(text);
                 historical.add("Historical user input; its execution record is unavailable. Do not "
                                "execute this past request:\n");
-                historical.add(view(round.user));
+                std::string user;
+                status = Conversation::text(*config.bodies, round.user, user);
+                if (status != AYNI_OK) {
+                    return status;
+                }
+                historical.add(view(user));
                 status = append_text(turn, model::Role::context, historical.text());
                 if (status != AYNI_OK) {
                     return status;
@@ -493,12 +496,12 @@ ayni_status_t revalidate(Workspace &workspace, Turn &turn, const ToolLoopConfig 
     return AYNI_OK;
 }
 // Newest inputs first until their tokens would pass the compaction target (ADR-0095).
-void retain_inputs(std::vector<Round> &rounds, uint64_t target) {
+void retain_inputs(std::vector<RoundReferences> &rounds, uint64_t target) {
     uint64_t tokens = 0;
     size_t keep = 0;
     while (keep < rounds.size()) {
         const auto &round = rounds[rounds.size() - 1U - keep];
-        const auto cost = model::estimate_tokens(round.user.size());
+        const auto cost = model::estimate_tokens(round.user.size);
         if (cost > target - tokens) {
             break;
         }
@@ -517,8 +520,17 @@ ayni_status_t complete(Turn &turn, const ToolLoopConfig &config, ayni_string_v1 
     if (status != AYNI_OK) {
         return status;
     }
-    turn.rounds.push_back(
-        {++turn.record.last_round, turn.input, std::string(answer.data, answer.size)});
+    BodyRef body{};
+    if (answer.size) {
+        status = save_body(*config.bodies, turn.record.id, answer, body);
+        if (status == AYNI_NOT_READY) {
+            output.disposition = AYNI_POLICY_OUTPUT_DEFER;
+        }
+        if (status != AYNI_OK) {
+            return status;
+        }
+    }
+    turn.rounds.push_back({++turn.record.last_round, turn.refs.input, body});
     retain_inputs(turn.rounds, config.limits.compact_target_tokens);
     turn.record.rounds = {}; // A rolling window can change contents while retaining the same count.
     turn.record.revision = turn.base_revision + 1U;
@@ -531,21 +543,15 @@ ayni_status_t summary_source(const Turn &turn, std::string &source) {
         return AYNI_INVALID_ARGUMENT;
     }
     const ayni_string_v1 prefix{turn.history.data(), turn.compact_prefix};
-    auto measure = json::Writer::measuring();
-    auto status = model::write_messages(measure, prefix, model::Completeness::complete,
-                                        model::Continuations::canonical);
-    if (status != AYNI_OK) {
-        return status;
-    }
+    auto writer = growing_json(source);
+    const auto status = model::write_messages(writer, prefix, model::Completeness::complete,
+                                              model::Continuations::canonical);
     size_t bytes = 0;
-    if (!measure.finish(bytes) || bytes > UINT32_MAX) {
-        return AYNI_CAPACITY_EXCEEDED;
+    if (status != AYNI_OK || !writer.finish(bytes) || bytes > UINT32_MAX) {
+        return status != AYNI_OK ? status : AYNI_CAPACITY_EXCEEDED;
     }
     source.resize(bytes);
-    json::Writer writer(source.data(), bytes);
-    status = model::write_messages(writer, prefix, model::Completeness::complete,
-                                   model::Continuations::canonical);
-    return status != AYNI_OK ? status : writer.finish(bytes) ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
+    return AYNI_OK;
 }
 // Originals and pending groups remain untouched until every summary chunk is durable.
 ayni_status_t compact(Workspace &workspace, Turn &turn, const ToolLoopConfig &config,
@@ -780,25 +786,22 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
     const auto source = model_key(turn.model_round, model_buffer);
     ModelResult resolved;
     const auto &model = resolved.call;
-    auto status =
-        model_result(workspace, *config.bodies, snapshot, source, resolved, config.reply_encoding);
+    auto status = model_result(workspace, *config.bodies, snapshot, source, resolved,
+                               config.reply_encoding, &turn.proposals);
     if (status != AYNI_OK) {
         return status;
     }
+    // The checkpoint owns the cursor; list admission alone cannot prove it is in this group.
+    if (turn.tool_index > model.tool_call_count || (model.tool_call_count && !resolved.proposals)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
     if (turn.tool_index == model.tool_call_count) {
+        turn.proposals.reset();
         ++turn.model_round;
         turn.phase = TurnPhase::ready;
         return AYNI_OK;
     }
-    auto proposal_lease = workspace.make<ayni_task_tool_call_v1>();
-    if (!proposal_lease) {
-        return AYNI_CAPACITY_EXCEEDED;
-    }
-    auto &proposal = *proposal_lease;
-    status = read_proposal(workspace, resolved.list, turn.tool_index, proposal);
-    if (status != AYNI_OK) {
-        return status;
-    }
+    const auto proposal = resolved.proposals->calls[turn.tool_index].view();
     char key_buffer[AYNI_CATALOG_ID_MAX_BYTES];
     const auto key = function_key(model.logical_call_id, turn.tool_index, key_buffer);
     ayni_task_call_result_v1 call{};
@@ -815,7 +818,7 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
     }
     ayni_string_v1 response{};
     ToolBudget budget;
-    status = current_tool_budget(config, turn, proposal.call.protocol_id, budget);
+    status = current_tool_budget(config, turn, proposal.protocol_id, budget);
     if (status != AYNI_OK) {
         return status;
     }
@@ -824,7 +827,7 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
     if (call_status == AYNI_NOT_FOUND) {
         // request copies arguments while normalize scratch is live. Only successful
         // acceptance gets a waiting checkpoint; refusal becomes a local tool response.
-        status = native_function(workspace, proposal.call, config, snapshot, turn, key, output,
+        status = native_function(workspace, proposal, config, snapshot, turn, key, output,
                                  scratch.data(), capacity, budget, response, requested);
         if (requested) {
             return save(turn, config, output);
@@ -840,43 +843,14 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
                          : AYNI_UNSUPPORTED;
             if (status == AYNI_OK) {
                 status = operation_result(workspace, info, config, snapshot, turn, output,
-                                          scratch.data(), capacity, budget, response);
-            }
-        } else if (config.history.archive) {
-            ArchivedResult archived;
-            status = archive_result(config, snapshot, turn.record, call, archived, output);
-            if (status != AYNI_OK) {
-                return status;
-            }
-            if (call.outcome == AYNI_CALL_ABANDONED || call.status == AYNI_RESULT_UNKNOWN ||
-                call.effect == AYNI_CALL_EFFECT_UNKNOWN) {
-                return AYNI_RESULT_UNKNOWN;
-            }
-            if (archived.json_bytes > capacity) {
-                turn.archived_result = archived;
-                turn.result_summary = {};
-                turn.phase = TurnPhase::result_summary;
-                return AYNI_OK;
-            }
-            std::string raw;
-            status = config.history.result_chunk(config.history.context, snapshot.task_id,
-                                                 archived.reference, 0, raw, capacity);
-            if (status != AYNI_OK) {
-                return status;
-            }
-            if (raw.size() != archived.json_bytes) {
-                return AYNI_INVALID_ARGUMENT;
-            }
-            scratch = std::move(raw);
-            response = view(scratch);
-            if (!budget.fits(response)) {
-                turn.archived_result = archived;
-                turn.result_summary = {};
-                turn.phase = TurnPhase::result_summary;
-                return AYNI_OK;
+                                          scratch.data(), capacity, budget, response,
+                                          proposal.protocol_id);
             }
         } else {
             status = native_result(workspace, call, scratch.data(), capacity, response);
+            if (status == AYNI_CAPACITY_EXCEEDED || (status == AYNI_OK && !budget.fits(response))) {
+                return begin_result_summary(config, turn, call, output);
+            }
         }
     } else if (call_status == AYNI_EXPIRED && call.logical_call_id) {
         json::Writer unavailable(scratch.data(), capacity);
@@ -891,7 +865,7 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
         return status;
     }
     if (turn.phase == TurnPhase::result_summary) {
-        return AYNI_OK; // The common archive/summary path owns this same pending tool reply.
+        return AYNI_OK; // The shared result-summary path owns this same pending tool reply.
     }
     status = capture_disclosure(turn, snapshot);
     if (status != AYNI_OK) {
@@ -900,21 +874,14 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
     if (!budget.fits(response)) {
         return AYNI_CAPACITY_EXCEEDED;
     }
-    if (call.body.id && turn.phase != TurnPhase::result_summary && !config.history.archive &&
-        call.mode != AYNI_CALL_MODE_MANAGED) {
-        BodyRef projection{};
-        status = store_result_view(*config.bodies, turn.record.id, call, projection);
-        if (status == AYNI_NOT_READY) {
-            output.disposition = AYNI_POLICY_OUTPUT_DEFER;
-        }
+    if (call_status == AYNI_OK && call.mode != AYNI_CALL_MODE_MANAGED) {
+        status = retain_tool_result(config, turn, proposal.protocol_id, call, {}, output);
         if (status != AYNI_OK) {
             return status;
         }
-        turn.result_views[std::string(proposal.call.protocol_id.data,
-                                      proposal.call.protocol_id.size)] = projection;
     }
-    status = append_history(
-        turn, [&](model::Writer &out) { out.tool(proposal.call.protocol_id, response); });
+    status =
+        append_history(turn, [&](model::Writer &out) { out.tool(proposal.protocol_id, response); });
     if (status != AYNI_OK) {
         return status;
     }
@@ -928,24 +895,16 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
 }
 // Native arguments render as JSON text in the standard assistant message.
 ayni_status_t arguments_json(const ayni_arguments_v1 &arguments, std::string &out) {
-    auto measured = json::Writer::measuring();
-    auto status = json::write_arguments(measured, arguments);
+    auto json = growing_json(out);
+    const auto status = json::write_arguments(json, arguments);
     size_t bytes = 0;
-    if (status != AYNI_OK) {
-        return status;
+    if (status != AYNI_OK || !json.finish(bytes)) {
+        return status != AYNI_OK ? status : AYNI_CAPACITY_EXCEEDED;
     }
-    if (!measured.finish(bytes)) {
-        return AYNI_CAPACITY_EXCEEDED;
-    }
-    out.assign(bytes, '\0');
-    json::Writer json(out.data(), bytes);
-    status = json::write_arguments(json, arguments);
-    if (status != AYNI_OK) {
-        return status;
-    }
-    return json.finish(bytes) && bytes == out.size() ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
+    out.resize(bytes);
+    return AYNI_OK;
 }
-ayni_status_t accept_model(Workspace &workspace, Turn &turn, const ayni_task_snapshot_v1 &snapshot,
+ayni_status_t accept_model(Turn &turn, const ayni_task_snapshot_v1 &snapshot,
                            const ModelResult &model) {
     const auto &call = model.call;
     if (call.tool_call_count > AYNI_CALL_TOOL_COUNT_MAX) {
@@ -960,28 +919,20 @@ ayni_status_t accept_model(Workspace &workspace, Turn &turn, const ayni_task_sna
         out.calls(call.tool_call_count, call.text, model.continuation);
     });
     for (uint32_t at = 0; status == AYNI_OK && at < call.tool_call_count; ++at) {
-        auto proposal_lease = workspace.make<ayni_task_tool_call_v1>();
-        if (!proposal_lease) {
-            return AYNI_CAPACITY_EXCEEDED;
-        }
-        auto &proposal = *proposal_lease;
-        status = read_proposal(workspace, model.list, at, proposal);
-        if (status != AYNI_OK) {
-            return status;
-        }
+        const auto proposal = model.proposals->calls[at].view();
         std::string rendered;
         ayni_string_v1 arguments{};
-        if (proposal.call.input_kind == AYNI_TOOL_INPUT_INVALID_ARGUMENTS) {
-            arguments = proposal.call.input.invalid_arguments;
+        if (proposal.input_kind == AYNI_TOOL_INPUT_INVALID_ARGUMENTS) {
+            arguments = proposal.input.invalid_arguments;
         } else {
-            status = arguments_json(proposal.call.input.arguments, rendered);
+            status = arguments_json(proposal.input.arguments, rendered);
             if (status != AYNI_OK) {
                 return status;
             }
             arguments = view(rendered);
         }
         status = append_history(turn, [&](model::Writer &out) {
-            out.function({proposal.call.protocol_id, proposal.call.function_name, arguments});
+            out.function({proposal.protocol_id, proposal.function_name, arguments});
         });
     }
     turn.phase = TurnPhase::tools;
@@ -1037,9 +988,9 @@ ayni_status_t run(Workspace &workspace, Turn &turn, const ToolLoopConfig &config
             char key_buffer[AYNI_CATALOG_ID_MAX_BYTES];
             ModelResult model;
             const auto &call = model.call;
-            status =
-                model_result(workspace, *config.bodies, snapshot,
-                             model_key(turn.model_round, key_buffer), model, config.reply_encoding);
+            status = model_result(workspace, *config.bodies, snapshot,
+                                  model_key(turn.model_round, key_buffer), model,
+                                  config.reply_encoding, &turn.proposals);
             if (status == AYNI_EXPIRED && call.logical_call_id) {
                 ++turn.model_round;
                 turn.phase = TurnPhase::ready;
@@ -1053,17 +1004,10 @@ ayni_status_t run(Workspace &workspace, Turn &turn, const ToolLoopConfig &config
                 return status;
             }
             turn.record.last_usage = call.model_usage;
-            if (config.history.archive) {
-                ArchivedResult archived;
-                status = archive_result(config, snapshot, turn.record, call, archived, output);
-                if (status != AYNI_OK) {
-                    return status;
-                }
-            }
             if (!call.tool_call_count) {
                 return complete(turn, config, call.text, model.continuation, snapshot, output);
             }
-            status = accept_model(workspace, turn, snapshot, model);
+            status = accept_model(turn, snapshot, model);
             if (status != AYNI_OK) {
                 return status;
             }
@@ -1160,18 +1104,16 @@ ayni_status_t ToolLoop::workspace_requirements(size_t *bytes, size_t *alignment)
     if (status != AYNI_OK) {
         return status;
     }
-    // Only message-length independent lanes remain: decoded proposals, their list decoding, the
-    // proof, source, normalized value and bytes an invocation keeps alive until request_call copies
-    // them. Texts are allocated on demand (ADR-0095).
-    constexpr size_t tool_views = 2;
+    // Message-length independent scratch for list decoding or an invocation's proof,
+    // source, normalized value and bytes kept until request_call copies them. Prepared
+    // proposals own their actual nodes separately; text grows on demand (ADR-0107).
     constexpr size_t alignment_slots = 16;
     const auto invocation = proof + value + AYNI_VALUE_BYTES_MAX +
                             sizeof(ayni_argument_node_v1) * AYNI_VALUE_NODE_COUNT_MAX +
                             sizeof(ayni_value_node_v1) * AYNI_VALUE_NODE_COUNT_MAX;
     const auto rendering = rendered + AYNI_MEMORY_BODY_BYTES_MAX;
     // Decoding a proposal borrows its own lane, released before an invocation starts.
-    *bytes = tool_views * sizeof(ayni_task_tool_call_v1) +
-             std::max({invocation, rendering, calls}) + alignment_slots * Workspace::alignment;
+    *bytes = std::max({invocation, rendering, calls}) + alignment_slots * Workspace::alignment;
     *alignment = Workspace::alignment;
     return AYNI_OK;
 }
@@ -1200,9 +1142,6 @@ ayni_status_t ToolLoop::configure(const ToolLoopConfig &config, const ayni_works
           !config.bodies->confirm)) ||
         !config.bodies || config.bodies->struct_size != sizeof(ayni_body_store_v1) ||
         !config.bodies->write || !config.bodies->read ||
-        (static_cast<bool>(config.history.archive) !=
-         static_cast<bool>(config.history.result_chunk)) ||
-        (config.history.archive && !config.history.ready) ||
         (config.shell.binding_id.size &&
          (!valid_call(config.shell) || config.shell.kind != AYNI_POLICY_REQUEST_CALL)) ||
         (config.clock.timezone.size &&
@@ -1225,12 +1164,12 @@ ayni_status_t ToolLoop::configure(const ToolLoopConfig &config, const ayni_works
 }
 ayni_strategy_v1 ToolLoop::describe() {
     auto result = descriptor(config_.identity, this, decide, checkpoint_bytes);
-    result.ready = config_.history.ready ? ready : nullptr;
+    result.ready = config_.body_progress.ready ? ready : nullptr;
     return result;
 }
 uint32_t ToolLoop::ready(void *context, uint64_t task) {
     auto &self = *static_cast<ToolLoop *>(context);
-    const auto ready = self.config_.history.ready(self.config_.history.context, task);
+    const auto ready = self.config_.body_progress.ready(self.config_.body_progress.context, task);
     return self.config_.persistence == Persistence::background ? 1U : ready;
 }
 ayni_status_t ToolLoop::decide(void *context, const ayni_task_snapshot_v1 *snapshot,

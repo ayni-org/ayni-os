@@ -102,3 +102,7 @@ ABI 0.54（ADR-0096）让 Core 只存正文引用：新增 `ayni/bodies.h`（`ay
 ABI 0.53（ADR-0090）为Schema验证、值/参数规范化、值读取和业务证明检查增加调用方工作区，新增独立容量/对齐查询；Kernel arena计入owner暂存。C++ ToolLoop、Conversation及结果JSON接口借用查询工作区，所有消费者直接重编译升级。Core schema8、原业务证明、策略codec4、SQLite user_version2保持原格式；只改变临时内存与源码接口，不加旧大栈入口或迁移器。
 
 ABI 0.55（ADR-0104）为正文存储追加stage/share/confirm/release_temporary，显式SHARED_RESULTS选项保持默认内联结果策略；Host追加可选storage_append_many（至多8个连续批次，整组确认后推进持久前缀）。task call result的原reserved字段改为result_kind，区分共享的规范TEXT/VALUE/TOOL_CALLS。Host、Provider、策略、SDK及运行时消费者统一重编译，不接受0.54布局。Core schema10使用首次完整type21/v2和后续可变type21/v3；ConversationRecord6、turn7、SQLite4分别升级。旧格式保留并拒绝，无迁移或自动清空；正常关闭重开证据不代表新增格式异常恢复验证。
+
+ABI0.56（ADR-0107）将 `ayni_tool_calls_read` 直接改为一次顺序visitor签名，删除 `ayni_tool_call_read` 与 `ayni_task_tool_call_v1`；所有仓库消费者统一重编译，不保留旧接口/适配层。visitor只借同步工作区，完整列表成功前候选不可发布，失败保持元数据输出。Core schema10、ATC3、ConversationRecord6/turn7、SQLite4均不变，无数据迁移或清空。
+
+ADR-0108直接删除C++ HistoryPort/ArchivedResult及Native独立会话/归档控制器，所有调用方改用共享Session/FileBodies与BodyProgress；FileBodies配置须显式正数预算。当前ABI0.56、Core schema10、ATC3、ConversationRecord6保持，私有turn升级8、结果视图ANRV升级2、SQLite值端口升级5（无旧reader或迁移）。旧格式保留并拒绝；版本布局及回退边界见storage/records.md与host/native_conversation.md。

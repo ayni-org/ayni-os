@@ -3,6 +3,7 @@
 #include <ayni/values.hpp>
 #include <charconv>
 #include <cstring>
+#include <new>
 
 namespace ayni::strategies::detail {
 json::Writer growing_json(std::string &output) {
@@ -270,48 +271,103 @@ ayni_status_t result(const ayni_task_snapshot_v1 &snapshot, ayni_string_v1 key,
     out.struct_size = sizeof(out);
     return snapshot.call_result(snapshot.call_context, key, &out);
 }
+namespace {
+// One complete immutable source is admitted before any parsed proposal is cached.
+ayni_status_t parse_model(Workspace &workspace, const ayni_body_store_v1 &bodies,
+                          const ayni_task_call_result_v1 &call, PreparedProposals &out) {
+    auto owner = PreparedProposals::create();
+    auto *parsed = owner.building();
+    if (!parsed) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    parsed->call = call.logical_call_id;
+    parsed->sequence = call.requires_seq;
+    parsed->body = call.body;
+    auto status = call.body.id ? get_body(bodies, call.body, parsed->encoded) : AYNI_OK;
+    if (!call.body.id) {
+        if (!call.text.data || !call.text.size) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        parsed->encoded.assign(call.text.data, call.text.size);
+    }
+    if (status != AYNI_OK) {
+        return status;
+    }
+    uint32_t count = 0;
+    status = ::ayni::detail::with_workspace(
+        workspace, ayni_tool_calls_workspace_requirements, [&](const ayni_workspace_v1 *region) {
+            return ayni_tool_calls_read(
+                region,
+                {reinterpret_cast<const uint8_t *>(parsed->encoded.data()),
+                 static_cast<uint32_t>(parsed->encoded.size())},
+                parsed,
+                [](void *context, uint32_t, const ayni_tool_call_v1 *source) {
+                    auto &group = *static_cast<ModelProposals *>(context);
+                    auto &saved = group.calls[group.count++];
+                    saved.call = *source;
+                    if (source->input_kind == AYNI_TOOL_INPUT_ARGUMENTS) {
+                        const auto &args = source->input.arguments;
+                        saved.nodes.reset(new (std::nothrow)
+                                              ayni_argument_node_v1[args.node_count]);
+                        if (!saved.nodes) {
+                            return AYNI_CAPACITY_EXCEEDED;
+                        }
+                        std::copy_n(args.nodes, args.node_count, saved.nodes.get());
+                        saved.call.input.arguments.nodes = nullptr; // No scratch pointer retained.
+                    }
+                    return AYNI_OK;
+                },
+                &count, &parsed->assistant);
+        });
+    if (status != AYNI_OK || count != call.tool_call_count) {
+        return status != AYNI_OK ? status : AYNI_INVALID_ARGUMENT;
+    }
+    out = owner;
+    return AYNI_OK;
+}
+} // namespace
 ayni_status_t model_result(Workspace &workspace, const ayni_body_store_v1 &bodies,
                            const ayni_task_snapshot_v1 &snapshot, ayni_string_v1 key,
-                           ModelResult &out, model::ReplyEncoding encoding) {
+                           ModelResult &out, model::ReplyEncoding encoding,
+                           PreparedProposals *prepared) {
     auto status = result(snapshot, key, out.call);
     auto &call = out.call;
     if (status != AYNI_OK || call.outcome != AYNI_CALL_COMPLETED) {
         return status;
     }
-    ayni_string_v1 bytes = call.text;
-    if (call.body.id) {
-        status = get_body(bodies, call.body, out.owned);
+    if (!call.tool_call_count) {
+        if (prepared) {
+            prepared->reset();
+        }
+        if (call.body.id) {
+            status = get_body(bodies, call.body, out.owned);
+            if (status != AYNI_OK) {
+                return status;
+            }
+            call.text = view(out.owned);
+            call.body = {};
+        }
+        return model::read_reply_frame(call.text, encoding, call.text, out.continuation);
+    }
+    const auto same = [&](const ModelProposals &p) {
+        return p.call == call.logical_call_id && p.sequence == call.requires_seq &&
+               p.body.id == call.body.id && p.body.digest == call.body.digest &&
+               p.body.size == call.body.size && p.body.reserved == call.body.reserved &&
+               p.count == call.tool_call_count;
+    };
+    if (prepared && *prepared && same(**prepared)) {
+        out.proposals = *prepared;
+    } else {
+        status = parse_model(workspace, bodies, call, out.proposals);
         if (status != AYNI_OK) {
             return status;
         }
-        bytes = view(out.owned);
-        call.body = {};
+        if (prepared) {
+            *prepared = out.proposals;
+        }
     }
-    if (!call.tool_call_count) {
-        return model::read_reply_frame(bytes, encoding, call.text, out.continuation);
-    }
-    uint32_t count = 0;
-    ayni_string_v1 assistant{};
-    status = ::ayni::detail::with_workspace(
-        workspace, ayni_tool_calls_workspace_requirements, [&](const ayni_workspace_v1 *region) {
-            return ayni_tool_calls_read(region,
-                                        {reinterpret_cast<const uint8_t *>(bytes.data), bytes.size},
-                                        &count, &assistant);
-        });
-    if (status != AYNI_OK || count != call.tool_call_count) {
-        return status != AYNI_OK ? status : AYNI_INVALID_ARGUMENT;
-    }
-    out.list = bytes;
-    return model::read_reply_frame(assistant, encoding, call.text, out.continuation);
-}
-ayni_status_t read_proposal(Workspace &workspace, ayni_string_v1 list, uint32_t index,
-                            ayni_task_tool_call_v1 &out) {
-    out.struct_size = sizeof(out);
-    return ::ayni::detail::with_workspace(
-        workspace, ayni_tool_calls_workspace_requirements, [&](const ayni_workspace_v1 *region) {
-            return ayni_tool_call_read(
-                region, {reinterpret_cast<const uint8_t *>(list.data), list.size}, index, &out);
-        });
+    call.body = {};
+    return model::read_reply_frame(out.proposals->assistant, encoding, call.text, out.continuation);
 }
 ayni_status_t outcome(const ayni_task_call_result_v1 &result) {
     if (result.outcome == AYNI_CALL_ABANDONED || result.status == AYNI_RESULT_UNKNOWN) {

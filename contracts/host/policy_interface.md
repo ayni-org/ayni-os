@@ -83,13 +83,13 @@ M1 已实现的形态（ABI 0.10，ADR-0022）是 `decide(ctx, snapshot, output)
 
 ABI 0.40 的 `snapshot.memory` 是决定期间的借用视图，实际来源、失败粘性、原子提议与外发权限见 C-MEM-003～007。GoalType 的 `context_mode=AGENT` 仅用于 ONCE，要求已 ACK 的同 Agent 文件基础；默认 NONE 保留旧普通工作语义。
 
-## 异步 Host 历史与预算（ABI 0.50，ADR-0085）
+## 异步正文推进与预算（ADR-0108）
 
 策略可提供 owner-thread、非阻塞 `ready(ctx, task)`；不得访问 Kernel、等待 I/O 或保存快照。ready=0 时跳过决定。decide 只有在返回 OK、零意图、存在 ready 端口且 checkpoint 在界限内时才可设置 `disposition=DEFER`：Core 丢弃候选，不提交步骤/检查点，下次重新决定；不重采样 ready，允许 Host 在两次回调之间完成。默认 PROGRESS 的零意图和普通 NOT_READY 错误仍暂停，不能用 DEFER 隐藏服务失败。
 
-ToolLoop 通过完整 ready/load/save 生命周期引用 Native 历史；archive/result_chunk 必须成对且依赖该生命周期，缺项在 configure 拒绝。Host 回调只复制有界工作并返回 NOT_READY；SQL 在 worker 执行。候选消息视图完成后，才请求 Core 持久保存小引用。已完成结果在被摘要前完整归档；摘要失败保留原文与真实执行结论。
+ToolLoop只借BodyProgress.ready推进宿主正文，不再暴露HistoryPort、archive或result_chunk。普通和受管工具共用结果视图，保留原规范值、域、证明及当前Call序号/终态，另可附展示文本；冷读和摘要均复用同一reader/投影。过长结果仅在当前有界Turn槽保留一个临时完整投影，分块摘要不重复解码原文；每次决定仍检查当前Core Call与完整来源身份，组结束/来源失效/隐私清理即释放。冷缓存或重开可重新构建，但不重新执行动作。摘要失败保留原文与实际结果，完整图确认后才发布会话。
 
-输入 token 预算为配置窗口减输出预留，75% 触发、50% 为目标；保留最新完整工具组。优先 Chat usage，预检与缺省统计按序列化消息/工具/结构的 Unicode 字符数×0.75 向上取整；历史前缀不变时采用实测前缀+新增估值。压缩清除统计锚点。估值不写成服务 usage，字节缓冲另有限制，超限明确拒绝。正常证据：`ContextHarness.body_write_not_yet_durable_does_not_pause_or_repeat_a_model_call`、`ContextHarness.oversized_executed_result_uses_chunk_summaries_and_keeps_known_facts`、`ContextHarness.declared_summary_failure_pauses_without_changing_the_executed_result`、`ContextEstimate.counts_unicode_characters_and_rounds_the_selected_ratio_up`、`ContextConfiguration.rejects_incomplete_archive_callbacks_and_history_lifecycle`。
+输入 token 预算为配置窗口减输出预留，75% 触发、50% 为目标；保留最新完整工具组。优先 Chat usage，预检与缺省统计按序列化消息/工具/结构的 Unicode 字符数×0.75 向上取整；历史前缀不变时采用实测前缀+新增估值。压缩清除统计锚点。估值不写成服务 usage，字节缓冲另有限制，超限明确拒绝。正常证据：`ContextHarness.body_write_not_yet_durable_does_not_pause_or_repeat_a_model_call`、`ContextHarness.oversized_executed_result_uses_chunk_summaries_and_keeps_known_facts`、`ContextHarness.declared_summary_failure_pauses_without_changing_the_executed_result`、`ContextEstimate.counts_unicode_characters_and_rounds_the_selected_ratio_up`。
 
 ## 请求工具与续传补充（ADR-0098，C-POLICY-004/005/006/012）
 
@@ -99,7 +99,7 @@ Scene和PermitGate。preloaded必须注入真实协议Projection，使主请求�
 余量及两类摘要共用出站投影计量；预置Schema不能截断或摘要替代。
 
 FRAMED回复由部署显式选择；History/UI只展示规范回答。规范摘要不包含opaque续传，压缩、
-权限失效和清空与其所属历史组一起移除续传，保护最新工具往返。当前turn格式7、会话记录6
+权限失效和清空与其所属历史组一起移除续传，保护最新工具往返。当前turn格式8、会话记录6
 保存顺序和共享正文引用，删除旧reader（ADR-0104）。旧二进制须拒绝新turn，不能从头重执。服务usage与估算分开，
 注入投影不复用旧Chat字符锚点。
 正常证据：`SharedModelLoop.PreloadedToolsUseTheRealLoopAndNeverAccumulateInHistory`、
@@ -119,4 +119,6 @@ ToolLoop默认durable；background仅由组合根显式选择。策略缓存有�
 
 | ID | 规则 | 违反例 | 验证 |
 |---|---|---|---|
-| C-POLICY-013 | 输入/历史使用不可变正文引用；冷读先使完整依赖可读，再按原保存Schema投影工具结果，不在每个异步等待后重复投影已加载前缀。一次同步加载中，已验证小正文在16 KiB字符串capacity/64条目的私有读区内复用，完整引用冲突拒绝；超预算正文流式读取，文本仍检查UTF-8，跨owner推进/隐私变化不得保留读区。新增会话正文在创建时请求后台保存，不在每个检查点重新遍历旧历史；模型请求临时正文仍不提前confirm。相同活动回合复用已解码状态；同一缓存总额度内，每会话最多保留一份最近完成图，下一Task只在owner/代际/上下文版本及完整正文引用相同且当前所有权/摘要检查成功后复用派生表示，取消/失败副本退休、隐私进度清空全部副本；结束展示只读取最新答案，完整轮次读取留给明确的历史查询。原所有权、摘要、格式、权限、隐私及未知结果规则保持 | 加载下一个正文时反复重建前面的工具结果；只展示新答案却读全部旧问题/答案 | `HistoryLoading.cold_dependencies_are_prepared_before_saved_results_are_projected`、`HistoryLoading.one_operation_reads_each_identity_once_and_the_next_observes_release`、`HistoryLoading.large_bodies_do_not_accumulate_in_the_operation_cache`、`HistoryLoading.small_body_reuse_stops_at_the_entry_limit_without_rejecting_the_graph`、`Conversation.latest_answer_reads_only_the_index_and_selected_answer`、`ReusedHistory.next_turn_reuses_completed_history_and_privacy_clears_it`、既有`BackgroundStrategies.*`；正常异步路径，异常恢复未新增验证 |
+| C-POLICY-013 | 输入/历史使用不可变正文引用；冷读先使完整依赖可读，再按原保存Schema投影工具结果，不在每个异步等待后重复投影已加载前缀。一次同步加载中，已验证小正文在16 KiB字符串capacity/64条目的私有读区内复用，完整引用冲突拒绝；超预算正文流式读取，文本仍检查UTF-8，跨owner推进/隐私变化不得保留读区。新增会话正文在创建时请求后台保存，不在每个检查点重新遍历旧历史；模型请求临时正文仍不提前confirm。运行期只持有轮次序号及原正文引用，保存新答案不重新提交旧问答；明确的历史查询或上下文失效重建才读取所需用户正文。单个模型工具组以原Call/事实序号及完整正文身份共享一次解码的提议，固定至多8槽/每项256节点，实际节点分配失败返回容量错误；每次仍查询当前Core结果和权限/来源，组结束及缓存退休释放。相同活动回合复用已解码状态；同一缓存总额度内，每会话最多保留一份最近完成图，下一Task只在owner/代际/上下文版本及完整正文引用相同且当前所有权/摘要检查成功后复用派生表示，取消/失败副本退休、隐私进度清空全部副本；结束展示只读取最新答案，完整轮次读取留给明确的历史查询。原所有权、摘要、格式、权限、隐私及未知结果规则保持 | 加载下一个正文时反复重建前面的工具结果；只展示新答案却读全部旧问题/答案 | `HistoryLoading.cold_dependencies_are_prepared_before_saved_results_are_projected`、`HistoryLoading.one_operation_reads_each_identity_once_and_the_next_observes_release`、`HistoryLoading.large_bodies_do_not_accumulate_in_the_operation_cache`、`HistoryLoading.small_body_reuse_stops_at_the_entry_limit_without_rejecting_the_graph`、`HistoryLoading.prepared_proposals_share_owned_nodes_but_requery_the_current_call`、`HistoryLoading.writing_retained_round_metadata_does_not_restage_its_text`、`Conversation.latest_answer_reads_only_the_index_and_selected_answer`、`ReusedHistory.next_turn_reuses_completed_history_and_privacy_clears_it`、既有`BackgroundStrategies.*`；正常异步路径，异常恢复未新增验证 |
+
+工具参数、已知操作、摘要消息及模型请求输出使用单遍JSON写入，动态容量不改变原UTF-8、预算或结构验证。预算预检/压缩选段属于独立接受决策，仍保留；公开JSON写入边界仍校验传入树，不声称全流程只校验一次。操作内BodyReader句柄借读区或独占当前流式正文，不再分配共享控制块；句柄不得越过同步读区寿命。

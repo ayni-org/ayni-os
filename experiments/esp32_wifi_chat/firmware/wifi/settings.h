@@ -11,7 +11,7 @@ std::string_view normalized_api_root(std::string_view url);
 // One boot's endpoint selection. Settings edits take effect after an explicit
 // restart; an in-flight request can never change destination or credentials.
 struct Settings {
-    static constexpr size_t legacy_field_count = 6, field_count = 9;
+    static constexpr size_t field_count = 9;
     std::array<char, 33> ssid{};
     std::array<char, 65> password{};
     std::array<char, 192> speech_url{};

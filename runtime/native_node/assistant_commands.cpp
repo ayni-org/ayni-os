@@ -1,8 +1,10 @@
 #include "assistant_state.h"
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 namespace ayni::runtime {
 namespace {
+constexpr auto local_io_timeout = std::chrono::seconds(10);
 Reply failure(ayni_status_t status) {
     Reply reply;
     reply.status = status;
@@ -62,56 +64,50 @@ ayni_status_t Assistant::Impl::collect_receipts() {
 }
 // One model turn of the single assistant (ADR-0072): no routing, one pending turn at a time.
 Reply Assistant::Impl::say(const Command &command) {
-    if (current.pending_goal) {
-        return failure(AYNI_BUSY);
-    }
-    strategies::Encoded parameters;
-    strategies::BodyRef input{};
-    auto status = strategies::Conversation::begin(
-        conversation_workspace.get(), *store.waiting_bodies(), current.record,
-        runtime_text(command.text), parameters, command.id);
-    if (status == AYNI_OK) {
-        status =
-            strategies::Conversation::input(conversation_workspace.get(), parameters.view(), input);
-    }
+    auto status = conversation.begin(runtime_text(command.text), command.id);
     if (status != AYNI_OK) {
         return failure(status);
     }
-    ayni_goal_create_v1 goal{};
-    goal.struct_size = sizeof(goal);
-    goal.goal_type_version = 1;
-    goal.goal_type_id = runtime_text("chat");
-    goal.owner_instance_id = assistant();
-    goal.parameters = parameters.view();
-    goal.trigger = AYNI_TRIGGER_ONCE;
-    auto reply = submit(AYNI_INTENT_GOAL_CREATE, &goal);
-    if (reply.status != AYNI_OK) {
-        return reply;
+    // The CLI returns the actual Core Goal identity, after bounded local admission only.
+    // Network/model execution remains asynchronous; no old action is re-created.
+    const auto end = std::chrono::steady_clock::now() + local_io_timeout;
+    while (!conversation.latest_goal()) {
+        status = advance_kernel();
+        if (status == AYNI_OK) {
+            status = conversation.poll();
+        }
+        if (status != AYNI_OK && status != AYNI_BUSY) {
+            return failure(status);
+        }
+        if (const auto *result = conversation.pending_result()) {
+            if (!result->goal && result->status != AYNI_OK) {
+                auto reply = failure(result->status);
+                reply.reason = result->reason;
+                return reply;
+            }
+        }
+        if (std::chrono::steady_clock::now() >= end) {
+            conversation.cancel();
+            return failure(AYNI_BUSY);
+        }
+        node.wait_for_wake(std::chrono::milliseconds(1));
     }
-    // Remember accepted work even if the outer save fails. Never submit a
-    // second turn against the same baseline while this Goal exists.
-    current.pending_goal = reply.id;
-    current.record.draft = input;
-    reply.status = persist(current);
+    auto goal = initialized<ayni_goal_info_v1>();
+    status = ayni_get_goal(node.kernel(), conversation.latest_goal(), &goal);
+    Reply reply;
+    reply.status = status;
+    reply.id = goal.goal_id;
+    reply.commit_seq = goal.commit_seq;
+    reply.phase = AYNI_INTENT_APPLIED;
+    reply.message = Message::accepted;
     return reply;
 }
 // Cancels the turn Goal still in flight. A turn already ending, or none, needs nothing.
 Reply Assistant::Impl::cancel_pending_turn() {
-    if (!current.pending_goal) {
+    if (!conversation.active() || conversation.record()) {
         return {};
     }
-    ayni_goal_info_v1 goal{};
-    goal.struct_size = sizeof(goal);
-    const auto status = ayni_get_goal(node.kernel(), current.pending_goal, &goal);
-    if (status != AYNI_OK) {
-        return failure(status);
-    }
-    if (goal.lifecycle != AYNI_GOAL_PROPOSED && goal.lifecycle != AYNI_GOAL_ACTIVE &&
-        goal.lifecycle != AYNI_GOAL_PAUSED) {
-        return {};
-    }
-    const ayni_goal_target_v1 target{sizeof(target), 0, goal.goal_id};
-    return submit(AYNI_INTENT_GOAL_CANCEL, &target, goal.revision);
+    return failure(conversation.cancel());
 }
 // Deterministic stop (ADR-0072): no model call and no actuator; the hardware emergency stop
 // is a separate chain. Cancels the pending turn, then pauses autonomous work while reminders
@@ -329,14 +325,8 @@ Reply Assistant::Impl::manage(const Command &command) {
         return submit(AYNI_INTENT_GOAL_CANCEL, &body, goal.revision);
     }
     case Operation::erase: {
-        ayni_context_info_v1 context{};
-        const auto status = context_info(context);
-        if (status != AYNI_OK) {
-            return failure(status);
-        }
-        return context_command(AYNI_INTENT_CONTEXT_FORGET, context, 0,
-                               command.id == 0 ? AYNI_CONTEXT_ERASE_ALL : AYNI_CONTEXT_ERASE_ROUND,
-                               command.id);
+        return failure(conversation.forget(
+            command.id == 0 ? AYNI_CONTEXT_ERASE_ALL : AYNI_CONTEXT_ERASE_ROUND, command.id));
     }
     default:
         return failure(AYNI_UNSUPPORTED);
@@ -356,10 +346,11 @@ Reply Assistant::Impl::describe(const Command &command) const {
         if (reply.status == AYNI_OK) {
             reply.status = context_info(reply.context);
         }
-        reply.last_round = current.record.last_round;
-        reply.pending_goal = current.pending_goal;
+        const auto *record = conversation.record();
+        reply.last_round = record ? record->last_round : reply.context.last_turn_id;
+        reply.pending_goal = conversation.active() && !record ? conversation.latest_goal() : 0;
         reply.storage_status = storage_status;
-        reply.saving = saving.has_value();
+        reply.saving = conversation.file_pending();
         reply.pending_commands = pending_count;
         if (reply.status == AYNI_OK) {
             reply.status = applications::assistant::project(node.kernel(), reply.activity);
@@ -392,28 +383,23 @@ Reply Assistant::Impl::describe(const Command &command) const {
             }
         }
     } else if (command.operation == Operation::conversation) {
-        ayni_context_info_v1 context{};
-        reply.status = context_info(context);
-        if (reply.status != AYNI_OK) {
+        const auto *available = conversation.record();
+        if (!available) {
+            reply.status = AYNI_NOT_READY;
             return reply;
         }
-        if (!context.usable || context.pending_action != AYNI_CONTEXT_IDLE ||
-            !matches(current, context)) {
-            reply.status = context.usable ? AYNI_BUSY : AYNI_EXPIRED;
-            return reply;
-        }
-        const auto &record = current.record;
+        const auto &record = *available;
         auto &view = reply.conversation;
         view.generation = record.generation;
         view.revision = record.revision;
-        const auto &bodies = *store.bodies();
+        const auto &body_store = *bodies.store();
         std::vector<strategies::Round> rounds;
-        reply.status = strategies::Conversation::text(bodies, record.summary, view.summary);
+        reply.status = strategies::Conversation::text(body_store, record.summary, view.summary);
         if (reply.status == AYNI_OK) {
-            reply.status = strategies::Conversation::text(bodies, record.draft, view.draft);
+            reply.status = strategies::Conversation::text(body_store, record.draft, view.draft);
         }
         if (reply.status == AYNI_OK) {
-            reply.status = strategies::Conversation::rounds(bodies, record, rounds);
+            reply.status = strategies::Conversation::rounds(body_store, record, rounds);
         }
         for (auto &round : rounds) {
             view.turns.push_back({round.number, std::move(round.user), std::move(round.answer)});
@@ -470,6 +456,28 @@ Reply Assistant::execute(const Command &command) {
              applications::assistant::stop_request(command.text))) {
             return impl_->stop_work();
         }
+        if (command.operation == Operation::conversation) {
+            // Preserve the synchronous CLI query using bounded local I/O only. No Core
+            // step, model dispatch or UI observation is consumed while cold bodies load.
+            const auto deadline = std::chrono::steady_clock::now() + local_io_timeout;
+            do {
+                auto reply = impl_->describe(command);
+                const bool readable = impl_->conversation.record() != nullptr;
+                if (reply.status != AYNI_NOT_READY || !readable) {
+                    if (reply.status == AYNI_OK && !readable) {
+                        return failure(AYNI_EXPIRED);
+                    }
+                    return reply;
+                }
+                FileBodies::ready(&impl_->bodies, 0);
+                const auto stored = FileBodies::status(&impl_->bodies);
+                if (stored != AYNI_OK) {
+                    return failure(stored);
+                }
+                impl_->node.wait_for_wake(std::chrono::milliseconds(1));
+            } while (std::chrono::steady_clock::now() < deadline);
+            return failure(AYNI_BUSY);
+        }
         switch (command.operation) {
         case Operation::status:
         case Operation::diagnostics:
@@ -488,7 +496,7 @@ Reply Assistant::execute(const Command &command) {
         }
         // File admission stays closed while saving; Core separately pins a published Task
         // until the matching file ACK so unrelated management work cannot retire its source.
-        if (impl_->saving) {
+        if (impl_->conversation.file_pending()) {
             return failure(AYNI_BUSY);
         }
         return impl_->manage(command);

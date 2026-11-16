@@ -20,11 +20,12 @@ class FileBodies {
     FileBodies() = default;
     FileBodies(const FileBodies &) = delete;
     FileBodies &operator=(const FileBodies &) = delete;
-    ayni_status_t configure(hosts::storage::FileValuePort files, uint64_t base = default_base);
+    ayni_status_t configure(hosts::storage::FileValuePort files, size_t cache_bytes,
+                            uint64_t base = default_base);
     const ayni_body_store_v1 *store() const { return &store_; }
     void set_shared_call_results() { store_.reserved |= AYNI_BODY_STORE_SHARED_RESULTS; }
     BodyCollection collection() { return {store(), this, collect_port, ready, status}; }
-    // Zero retains the legacy unlimited payload cache. Staging requires a positive limit.
+    // Every configured store has a positive payload budget; zero is rejected.
     // Accepted, unsaved bytes and worker borrows cannot be reclaimed.
     ayni_status_t set_cache_limit(size_t bytes);
     ayni_status_t trim_cache(size_t target_bytes = 0);
@@ -112,7 +113,8 @@ class FileBodies {
     bool prepare(uint64_t id, Entry &);
     hosts::storage::FileValuePort files_{};
     uint64_t base_ = default_base;
-    size_t cache_limit_ = 0;
+    size_t cache_limit_ =
+        0; // Zero only before configure; every configured store has a finite budget.
     std::thread::id owner_;
     mutable std::mutex mutex_;
     std::map<uint64_t, Entry> entries_; // Content identity -> payload and durable owner manifest.

@@ -1,9 +1,8 @@
 #include "model_tools.h"
+#include <algorithm>
 #include <ayni/model_messages.hpp>
 #include <ayni/values_json.hpp>
 #include <cstring>
-#include <memory>
-#include <new>
 namespace wifichat {
 ayni_status_t ModelTools::decode(ayni_bytes_v1 bytes, const ayni_workspace_v1 &workspace) {
     count_ = 0;
@@ -14,33 +13,28 @@ ayni_status_t ModelTools::decode(ayni_bytes_v1 bytes, const ayni_workspace_v1 &w
     std::memcpy(wire_.data(), bytes.data, bytes.size);
     const ayni_bytes_v1 owned{wire_.data(), bytes.size};
     uint32_t count = 0;
-    auto status = ayni_tool_calls_read(&workspace, owned, &count, &assistant_);
-    if (status != AYNI_OK || count > calls_.size()) {
-        return status == AYNI_OK ? AYNI_CAPACITY_EXCEEDED : status;
-    }
-    auto view =
-        std::unique_ptr<ayni_task_tool_call_v1>(new (std::nothrow) ayni_task_tool_call_v1{});
-    if (!view) {
-        return AYNI_CAPACITY_EXCEEDED;
-    }
-    for (uint32_t at = 0; at < count; ++at) {
-        view->struct_size = sizeof(*view);
-        status = ayni_tool_call_read(&workspace, owned, at, view.get());
-        if (status != AYNI_OK) {
-            return status;
-        }
-        calls_[at] = view->call;
-        if (view->call.input_kind == AYNI_TOOL_INPUT_ARGUMENTS) {
-            const auto input = view->call.input.arguments;
-            if (input.node_count > nodes_per_tool) {
+    const auto status = ayni_tool_calls_read(
+        &workspace, owned, this,
+        [](void *context, uint32_t index, const ayni_tool_call_v1 *call) {
+            auto &self = *static_cast<ModelTools *>(context);
+            if (index >= self.calls_.size() ||
+                (call->input_kind == AYNI_TOOL_INPUT_ARGUMENTS &&
+                 call->input.arguments.node_count > nodes_per_tool)) {
                 return AYNI_CAPACITY_EXCEEDED;
             }
-            std::memcpy(nodes_[at].data(), input.nodes, input.node_count * sizeof(*input.nodes));
-            calls_[at].input.arguments = {nodes_[at].data(), input.node_count};
-        }
+            self.calls_[index] = *call;
+            if (call->input_kind == AYNI_TOOL_INPUT_ARGUMENTS) {
+                const auto &args = call->input.arguments;
+                std::copy_n(args.nodes, args.node_count, self.nodes_[index].data());
+                self.calls_[index].input.arguments.nodes = self.nodes_[index].data();
+            }
+            return AYNI_OK;
+        },
+        &count, &assistant_);
+    if (status == AYNI_OK) {
+        count_ = count;
     }
-    count_ = count;
-    return AYNI_OK;
+    return status;
 }
 ayni_status_t ModelTools::outline(char *buffer, size_t capacity, size_t &written) const {
     written = 0;

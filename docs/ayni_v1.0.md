@@ -1,12 +1,12 @@
 # Ayni：通用原生 AgentOS 基础能力与实验实施计划
 
 > **文档性质**：工程实施计划与待实现契约，不代表已有软件能力。\
-> **文档版本**：v1.122 · 2026-11-16；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
+> **文档版本**：v1.124 · 2026-11-16；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
 > **产品定位**：跨平台、跨设备的通用原生 AgentOS；宿主与扩展决定提供哪些设备或软件能力，统一助理只是应用示例。\
 > **架构路线**：按 Ayni 的共享 Agent 状态、授权、资源及恢复需求设计原生 Core，复用宿主 OS，模型优先通过外部 API 获得；架构图仅参考 AIOS 的分层分组表达样式。\
 > **实施顺序**：先完成基础通用能力，再开展 ESP32-S3、Linux 系统等实验；设备与能力组合按实验目标选取，不要求宿主具备语音、视觉、运动或特定外设。\
 > **基准投入**：单人全职；阶段周期是相对工作量估算，不是开工日期或交付日期承诺。\
-> **当前状态**：通用基础与独立源码SDK已交付，见[基础报告](../reports/core/foundation-acceptance.md)和[独立接入报告](../reports/core/independent-consumption.md)。共享正文与连续提交已随[#137](https://github.com/RobotSe7en/ayni/pull/137)合并；后续存储误报、内部堆分配及共用对话重复工作已修正，正常OTA保持当前数据和配置，ABI0.55/schema10不变，见[ADR-0105](adr/0105-shared-conversation-flow-and-local-cost.md)及[实验记录](../experiments/esp32_wifi_chat/WIFI.md#2026-11-15-共用对话主路径与本地耗时简化)。2026-11-16续作已去掉双遍投影/重复擦除，并实现有界操作内正文复用、新正文创建时请求保存及一次发布候选，见[ADR-0106](adr/0106-bounded-body-reads-and-publication.md)；正常本地验证和独立复查通过，本轮不OTA。真实工具交接P95≤100 ms、板端长单步、新格式异常恢复、完整128K峰值及独立硬件停止链仍待对应证据。
+> **当前状态**：通用基础与独立源码SDK已交付，见[基础报告](../reports/core/foundation-acceptance.md)和[独立接入报告](../reports/core/independent-consumption.md)。共享正文、单遍提议/引用轮次及Native/ESP会话和结果存储已统一，旧兼容与无限缓存已删除，当前源码ABI0.56/schema10、turn8/结果视图2/SQLite5，本地正常验证、ESP编译及独立复查通过，见[ADR-0108](adr/0108-unified-conversation-and-result-storage.md)及其关联记录。设备最后正常OTA为91c0c65-localreuse，当前候选暂不OTA；板端长单步、真实工具交接P95≤100 ms、新格式异常恢复、完整128K峰值及独立硬件停止链仍待对应证据。
 
 > **本轮范围**：用户2026-10-31要求实施[独立工程接入与验收计划](architecture/independent-consumption-plan.md)：通用源码SDK、低栈工作区、Native/ESP存储及Host、共同应用和验收。平台适配保持独立目录，必要接口直接升级，正常存储和最小重开获授权；实机操作、付费模型及其他新专项不启动。
 
@@ -1321,6 +1321,8 @@ v1.66 记录 P5 的 F04 存储整改（#86，ADR-0064）与通用持久暂停组
 
 v1.75 记录用户 2026-10-28 的完整实验授权：按缺口盘点、运行器/注入能力、E2、E1、E3、E4 顺序推进，每阶段一个 PR，提交后独立审查修复，最终适用 CI 全绿后自动 merge commit。对应故障/恢复专项恢复，变异继续暂停；完整 E1 本地响应保留 ≤10 step 硬门槛。本轮不包含 E4 后的安全覆盖专项、Core Alpha 报告、MA-038 与硬件；授权不代表实验已通过。
 
+v1.123 记录用户明确不保留未发布接口兼容，ABI0.56以一次顺序visitor替换旧提议reader并删除最大输出类型；共享ToolLoop保存一个活工具组、轮次仅持原引用，模型请求/摘要JSON单遍输出，操作内正文不再共享控制块。schema10及对话格式保持，权限/来源、最终持久确认及UNKNOWN规则不变；只做相关正常本地验证和ESP编译，不OTA，见ADR-0107。
+
 ## 14.2 决策清单与最晚时点
 
 基础建设的近期决策为 typed Schema/默认语义、ABI/存储兼容、发现披露/分页预算、长操作控制和多实例绑定的必要变化，见架构计划 D03～D09。完成范围、消费者和证据准备后，逐包处理；不把开发期旧格式例外永久化。
@@ -1455,3 +1457,5 @@ v1.90 完成基础与调用消费者只读盘点、AP-02 设计和 ADR-0084；�
 v1.91 实施 AP-02：ABI 0.48/schema 4 统一业务 Schema/值、规范化后完整授权投影、原业务契约证明、typed 结果与工具提议；C99/C++ SDK、OpenAI/Mock、Schedule、Native/Sim/示例同步。旧 schema 0..3 在新写入前拒绝并保留，无旧 reader/迁移器；Native 外层对话版本本包不变。Shell Provider 已有正常链验证，部署开关和固定原生工具属仍在实施的 AP-03；不能据此进入平台实验或声称基础完成。
 
 v1.92 实施 AP-03 第一部分：可信配置采纳有界说明，Task 目录按当前授权分页/检查，Goal 冻结原允许列表；首次实际调用与 Call 同批绑定一份完整 Grant，已用依赖失效只暂停所属 Task。显式重新授权保留原整份 Scope、业务证明和精确 Binding，并作用于应用时完整 direct-live cohort。ABI 0.49/schema 5 直接升级、拒旧保留目录；外层对话格式本部分保持，固定四工具、标准消息、上下文预算和 Native Shell 装配留给第二部分（ADR-0085）。
+
+本次修订（v1.124，2026-11-16）：按用户要求统一共享Session/FileBodies和工具结果，删除Native独立发布/归档、旧接口/设置reader及无限缓存。默认持久草稿、Native显式追加和ESP后台策略共用机制；保留实时权限、取消、原Goal身份与实际保存/清理/精确ACK。私有turn8/ANRV2/SQLite5直接升级；本地正常检查和ESP编译通过，暂不OTA，见[ADR-0108](adr/0108-unified-conversation-and-result-storage.md)。

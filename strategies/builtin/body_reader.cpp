@@ -59,7 +59,7 @@ ayni_status_t BodyReader::read(const BodyRef &ref, Body &out) {
             previous.reserved != ref.reserved) {
             return AYNI_STORAGE_FAILED;
         }
-        out = found->second.bytes;
+        out.value = &found->second.bytes;
         return AYNI_OK;
     }
     std::string bytes;
@@ -67,12 +67,13 @@ ayni_status_t BodyReader::read(const BodyRef &ref, Body &out) {
     if (status != AYNI_OK) {
         return status;
     }
-    auto owned = std::make_shared<const std::string>(std::move(bytes));
-    if (loaded_.size() < cache_entries && owned->capacity() <= cache_bytes - retained_) {
-        retained_ += owned->capacity();
-        loaded_.emplace(ref.id, Cached{ref, owned});
+    if (loaded_.size() < cache_entries && bytes.capacity() <= cache_bytes - retained_) {
+        retained_ += bytes.capacity();
+        out.value = &loaded_.emplace(ref.id, Cached{ref, std::move(bytes)}).first->second.bytes;
+    } else {
+        out.owned = std::move(bytes);
+        out.value = &out.owned;
     }
-    out = std::move(owned);
     return AYNI_OK;
 }
 ayni_status_t BodyReader::copy(const BodyRef &ref, std::string &out) {

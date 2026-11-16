@@ -68,9 +68,9 @@ struct ConversationRecord {
 };
 
 // An outer store persists the candidate *before* accepting it. begin/finish are
-// pure: failure leaves the old record intact. erase increments generation so
-// a late completed Task cannot resurrect deleted context. File storage is P2;
-// Kernel context intents own the cross-store deletion barrier (ADR-0060).
+// non-mutating with respect to that record: failure leaves it intact. erase increments
+// generation so a late completed Task cannot resurrect deleted context. Shared Session
+// and Kernel context intents own the cross-store deletion barrier (ADR-0060/0108).
 class Conversation {
   public:
     // Since 0.53: every synchronous codec call borrows a queried exclusive region.
@@ -103,6 +103,10 @@ class Conversation {
                                 const ConversationRecord &record, Encoded &out);
     static ayni_status_t decode(const ayni_workspace_v1 *workspace, ayni_bytes_v1 bytes,
                                 ConversationRecord &out);
+    // Matches a retained Goal's original input to this exact conversation baseline.
+    // NOT_FOUND means another baseline; success only identifies work, never re-executes it.
+    static ayni_status_t pending_input(const ayni_workspace_v1 *, const ConversationRecord &,
+                                       ayni_bytes_v1 parameters, BodyRef &);
     // GoalType validator context is a borrowed ayni_workspace_v1 descriptor.
     // Use a wrapper when other GoalType callbacks require a different context.
     static ayni_status_t validate_turn(void *, ayni_bytes_v1 parameters);
@@ -188,23 +192,10 @@ struct LocalClock {
 // Both calls are MODEL class; summary binding must have a text result contract.
 // model.text and summary.text are trusted instructions, framed apart from the conversation data
 // (AYNI_MODEL_INSTRUCTIONS_PREFIX, ADR-0074). User text is in parameters.
-// Optional Host-owned result archive. Calls copy/return data and never perform I/O on the
-// strategy thread. NOT_READY retains no policy output; ready becomes nonzero after a worker
-// completes, for this port and for a body store that answered NOT_READY.
-struct ArchivedResult {
-    uint64_t reference = 0;  // Immutable backend result version, positive after archive commits.
-    uint32_t json_bytes = 0; // Complete rendered UTF-8 bytes; independent of token statistics.
-};
-struct HistoryPort {
-    void *context = nullptr;
-    uint32_t (*ready)(void *, uint64_t) = nullptr;
-    // Complete raw facts/proofs are copied before returning NOT_READY. A successful
-    // archive makes immutable rendered chunks available until the next archive.
-    ayni_status_t (*archive)(void *, uint64_t task, const ConversationRecord &,
-                             const ayni_task_call_result_v1 &, ArchivedResult &) = nullptr;
-    // Copies at most maximum bytes from offset; fewer only at the end of the result.
-    ayni_status_t (*result_chunk)(void *, uint64_t task, uint64_t call, uint32_t offset,
-                                  std::string &, uint32_t maximum) = nullptr;
+// Body-store progress only. All tool results use the same shared reference representation.
+struct BodyProgress {
+    void *context = nullptr;                            // Borrowed through strategy destruction.
+    uint32_t (*ready)(void *, uint64_t task) = nullptr; // Null: no asynchronous body work.
 };
 // The model binding's token settings (ADR-0095), all positive. A request holds at most
 // context_window_tokens; max_output_tokens of it are left for the answer. Compaction starts when
@@ -230,7 +221,7 @@ struct ToolLoopConfig {
     // Required store for every conversation text and model request body, borrowed like the
     // rest of the config. Bodies of conversation id use scope id.
     const ayni_body_store_v1 *bodies = nullptr;
-    HistoryPort history{};
+    BodyProgress body_progress{};
     Persistence persistence = Persistence::durable; // Background is explicit and requires staging.
     // Active turns and at most one completed graph per conversation share this bound.
     uint32_t cached_turns = 4;                            // Eviction never drops store ownership.

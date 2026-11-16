@@ -6,8 +6,10 @@
 #include <ayni/values_json.hpp>
 #include <initializer_list>
 #include <memory>
+#include <new>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace ayni::strategies::detail {
@@ -16,8 +18,77 @@ using Workspace = ::ayni::detail::Workspace;
 json::Writer growing_json(std::string &output);
 inline constexpr uint32_t max_model_rounds = AYNI_MAX_TURNS_MAX;
 
-// The checkpoint carries the immutable base revision and a candidate context.
-// done means the final answer was appended; never accepted as input parameters.
+// One immutable admitted model group. Text borrows encoded; actual node prefixes
+// have checked allocations and fixed proposal slots. No result or authority is duplicated here.
+struct ModelProposals {
+    struct Proposal {
+        ayni_tool_call_v1
+            call{}; // Text borrows encoded; node_count names owned nodes, pointer null.
+        std::unique_ptr<ayni_argument_node_v1[]> nodes; // Actual prefix only, <=VALUE_NODE_MAX.
+        ayni_tool_call_v1 view() const {
+            auto value = call;
+            if (value.input_kind == AYNI_TOOL_INPUT_ARGUMENTS) {
+                value.input.arguments.nodes = nodes.get();
+            }
+            return value;
+        }
+    };
+    uint64_t call = 0, sequence = 0; // Exact terminal source identity and immutable fact sequence.
+    BodyRef body{};      // Complete source reference; absent for inline Core-owned results.
+    std::string encoded; // Owns all call/assistant text until group retirement.
+    std::array<Proposal, AYNI_CALL_TOOL_COUNT_MAX> calls;
+    uint32_t count = 0;         // Admitted prefix; 1..CALL_TOOL_COUNT_MAX after factory success.
+    ayni_string_v1 assistant{}; // Borrows encoded after complete list admission.
+};
+// A checked, synchronous shared owner for the two immutable derived representations below.
+// Copies share data across a Turn's transactional working copy; no control-block allocation.
+template <class T> class Prepared {
+    struct State {
+        T value;
+        uint32_t owners = 1; // Bounded owner-thread handles; never shared across threads.
+    };
+
+  public:
+    Prepared() = default;
+    static Prepared create() { return Prepared(new (std::nothrow) State()); }
+    Prepared(const Prepared &other) : value_(other.value_) {
+        if (value_) {
+            ++value_->owners;
+        }
+    }
+    Prepared &operator=(const Prepared &other) {
+        if (this != &other) {
+            Prepared copy(other);
+            std::swap(value_, copy.value_);
+        }
+        return *this;
+    }
+    ~Prepared() { reset(); }
+    void reset() {
+        if (value_ && --value_->owners == 0U) {
+            delete value_;
+        }
+        value_ = nullptr;
+    }
+    // Factory-only mutable access, refused once published to another handle.
+    T *building() { return value_ && value_->owners == 1U ? &value_->value : nullptr; }
+    const T *get() const { return value_ ? &value_->value : nullptr; }
+    const T *operator->() const { return get(); }
+    const T &operator*() const { return *get(); }
+    explicit operator bool() const { return value_ != nullptr; }
+
+  private:
+    explicit Prepared(State *value) : value_(value) {}
+    State *value_ = nullptr; // Null owns nothing; one allocation includes T and its owner count.
+};
+using PreparedProposals = Prepared<ModelProposals>;
+// Only the active large-result summary owns a projection. Normal replies retain references,
+// not this text. Retirement/expiry drops it with the existing bounded Turn slot.
+struct ResultProjection {
+    BodyRef source{}; // Exact view source including digest/size; absent before factory success.
+    uint64_t call = 0, sequence = 0; // Core fact identity checked before every reuse.
+    std::string text;                // One complete rendering, shared across chunk decisions.
+};
 enum class TurnPhase : uint32_t { initial, ready, model, tools, summary, result_summary };
 struct SummaryProgress {
     uint32_t offset = 0; // Bytes already covered by the last successful chunk.
@@ -25,8 +96,16 @@ struct SummaryProgress {
     uint32_t chunk = 0;  // Monotone summary Call ordinal within its source.
     std::string text;    // Unconfirmed candidate; originals remain in the body store.
 };
-// A decoded turn. Its texts are working copies of bodies; the encoding holds only their
-// references (refs), refreshed by persist before every encode.
+// Immutable retained round metadata. The conversation store owns the referenced bodies;
+// the execution path loads text only when reconstructing missing history or displaying it.
+struct RoundReferences {
+    uint64_t number = 0;      // Monotone conversation ordinal; nonzero in an admitted index.
+    BodyRef user{}, answer{}; // User is present; answer is absent for retained input only.
+};
+// The checkpoint carries the immutable base revision and candidate context; done means
+// a final answer was appended, never accepted as input parameters.
+// A decoded turn. Mutable request/history text lives here; retained rounds stay references.
+// Encoding persists changed text and retains original immutable round identities.
 struct Turn {
     ConversationRecord record;
     uint64_t base_revision = 0;
@@ -39,7 +118,7 @@ struct Turn {
     std::string history_index; // Owned small ordered framing/reference index, never full text.
     std::string history;       // record.history's messages, standard framing.
     std::string summary;       // record.summary.
-    std::vector<Round> rounds; // record.rounds, oldest first.
+    std::vector<RoundReferences> rounds;  // record.rounds, oldest first.
     TurnPhase phase = TurnPhase::initial; // Sole owner of current model/group/compaction progress.
     uint32_t model_round = 0;    // Monotone main Call ordinal, never reset on context invalidation.
     uint32_t tool_index = 0;     // Next proposal in the current durable model result.
@@ -49,7 +128,13 @@ struct Turn {
     uint32_t compact_generation = 0; // Monotone summary operation generation within this Task.
     TurnPhase compact_resume = TurnPhase::ready; // Controller to resume after atomic replacement.
     SummaryProgress result_summary;
-    ArchivedResult archived_result; // Active only in result_summary; exact immutable original.
+    struct ResultSource {
+        BodyRef view{}; // Shared original result/proof graph, present only in result_summary.
+        uint32_t json_bytes = 0; // Complete projection size; offset/next never exceed it.
+    } result_source;
+    Prepared<ResultProjection>
+        result_projection;       // Transient, never serialized or independently saved.
+    PreparedProposals proposals; // Current source group; no authorization cache.
     bool done = false;
     struct Refs {
         BodyRef input{}, history_summary{}, result_summary{};
@@ -76,13 +161,25 @@ ayni_status_t get_body(const ayni_body_store_v1 &bodies, const BodyRef &ref, std
 // Nothing survives an owner call or a Core/privacy mutation.
 class BodyReader {
   public:
-    using Body = std::shared_ptr<const std::string>; // Immutable caller lease; null before read.
+    // Borrow a stable cached string, or own one streamed payload. This handle stays
+    // inside the reader's synchronous lifetime; no shared control block is needed.
+    struct Body {
+        Body() = default;
+        Body(const Body &) = delete;
+        Body &operator=(const Body &) = delete;
+        std::string owned;
+        const std::string *value = nullptr;
+        const std::string &operator*() const { return *value; }
+        const std::string *operator->() const { return value; }
+        const std::string *get() const { return value; }
+        explicit operator bool() const { return value != nullptr; }
+    };
     // Keep additional ESP scratch small. Exhaustion uses uncached reads, never rejects data.
     static constexpr size_t cache_bytes = 16U * 1024U, cache_entries = 64;
     explicit BodyReader(const ayni_body_store_v1 &store) : store_(store) {}
     BodyReader(const BodyReader &) = delete;
     BodyReader &operator=(const BodyReader &) = delete;
-    // A successful immutable handle outlives map inserts and expires with its last owner.
+    // A successful handle survives map inserts and expires before this reader is destroyed.
     ayni_status_t read(const BodyRef &, Body &);
     // Copies a final field once; large uncached fields move directly from the store read.
     ayni_status_t copy(const BodyRef &, std::string &);
@@ -96,18 +193,17 @@ class BodyReader {
   private:
     struct Cached {
         BodyRef reference; // Complete immutable identity, digest and byte length admitted at read.
-        Body bytes; // Verified immutable bytes; also borrowed by current synchronous consumers.
+        std::string bytes; // Verified immutable bytes, borrowed only within this reader.
         bool text_checked = false; // True only after these bytes passed UTF-8 validation.
     };
     const ayni_body_store_v1 &store_;   // Borrowed only through this synchronous operation.
     std::map<uint64_t, Cached> loaded_; // Successful small reads, bounded by both limits above.
     size_t retained_ = 0; // Sum of cached string capacities; never exceeds cache_bytes.
 };
-// Retained rounds body codec.
-ayni_status_t encode_rounds(const ayni_body_store_v1 &, uint64_t scope,
-                            const std::vector<Round> &rounds, std::string &out);
-ayni_status_t decode_rounds(BodyReader &, ayni_string_v1 bytes, uint32_t count, uint64_t last_round,
-                            std::vector<Round> &out, std::vector<BodyRef> *references = nullptr);
+// One writer/reader for the retained reference index; no body staging or text projection.
+void encode_rounds(const std::vector<RoundReferences> &, std::string &out);
+ayni_status_t round_references(BodyReader &, const ConversationRecord &,
+                               std::vector<RoundReferences> &out);
 ayni_string_v1 model_key(uint32_t round, char *buffer);
 ayni_string_v1 function_key(uint64_t source, uint32_t index, char *buffer);
 bool valid_text(ayni_string_v1 value);
@@ -127,30 +223,27 @@ ayni_status_t request(const Call &call, ayni_string_v1 key, ayni_string_v1 text,
                       uint64_t scope = 0);
 ayni_status_t result(const ayni_task_snapshot_v1 &snapshot, ayni_string_v1 key,
                      ayni_task_call_result_v1 &out);
-// A model result with its body resolved, inline or read and verified from the store. call.text
-// is then the answer, or the assistant text beside the tool calls whose list encoding is list;
-// call.body is cleared. Views borrow the snapshot or owned, so the object stays in place.
+// Resolved views live through this synchronous decision; proposal ownership can be reused
+// across decisions, but the current Core result and privacy are still queried each time.
 struct ModelResult {
     ModelResult() = default;
     ModelResult(const ModelResult &) = delete;
     ModelResult &operator=(const ModelResult &) = delete;
     ayni_task_call_result_v1 call{};
-    ayni_string_v1 list{};
     std::string owned;
-    model::Continuation continuation{}; // Borrowed from the selected Provider reply encoding.
+    PreparedProposals proposals;
+    model::Continuation continuation{};
 };
 // result's status; a completed body still loading answers NOT_READY.
 ayni_status_t model_result(Workspace &workspace, const ayni_body_store_v1 &bodies,
                            const ayni_task_snapshot_v1 &snapshot, ayni_string_v1 key,
                            ModelResult &out,
-                           model::ReplyEncoding encoding = model::ReplyEncoding::text);
+                           model::ReplyEncoding encoding = model::ReplyEncoding::text,
+                           PreparedProposals *prepared = nullptr);
 // Resolve the original normalized TEXT/VALUE body for tools, managed reads and archives.
 // owned keeps every returned view alive; model proposal/continuation uses model_result instead.
 ayni_status_t resolve_result_body(const ayni_body_store_v1 &, ayni_task_call_result_v1 &,
                                   std::string &owned);
-// Proposal index of a resolved list; its strings borrow the list (ayni_tool_call_read).
-ayni_status_t read_proposal(Workspace &workspace, ayni_string_v1 list, uint32_t index,
-                            ayni_task_tool_call_v1 &out);
 // Known failure stops the sequence; unknown is a hold, never completion/failure.
 ayni_status_t outcome(const ayni_task_call_result_v1 &result);
 

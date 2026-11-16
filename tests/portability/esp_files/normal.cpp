@@ -244,7 +244,7 @@ int main() {
         CHECK(files.begin("ayni_test") == 0);
         Values values(files);
         ayni::runtime::FileBodies bodies;
-        CHECK(bodies.configure(values.port()) == AYNI_OK);
+        CHECK(bodies.configure(values.port(), 2U * 1024U * 1024U) == AYNI_OK);
         constexpr uint32_t cache_bytes = 4096, progress_limit = 32;
         constexpr uint64_t scope = 7;
         CHECK(bodies.set_cache_limit(cache_bytes) == AYNI_OK);

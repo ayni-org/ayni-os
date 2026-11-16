@@ -148,10 +148,10 @@ target_link_libraries(ayni_strategies_tests PRIVATE ayni_core ayni_core_internal
     ayni_host_sim ayni_strategies ayni_model_protocol yyjson ayni_provider_software ayni_warnings GTest::gtest_main)
 gtest_discover_tests(ayni_strategies_tests)
 
-add_executable(ayni_native_assistant_tests native_assistant_test.cpp kernel_query_test.cpp conversation_store_test.cpp)
+add_executable(ayni_native_assistant_tests native_assistant_test.cpp kernel_query_test.cpp sqlite_values_test.cpp)
 target_link_libraries(ayni_native_assistant_tests PRIVATE ayni_core ayni_core_internal
     ayni_openai_protocol_fixture
-    ayni_host_sim ayni_runtime_assistant ayni_runtime_sim_node ayni_runtime_demo
+    ayni_host_sim ayni_runtime_assistant ayni_runtime_conversation ayni_runtime_sim_node ayni_runtime_demo
     ayni_warnings GTest::gtest_main SQLite::SQLite3)
 gtest_discover_tests(ayni_native_assistant_tests)
 

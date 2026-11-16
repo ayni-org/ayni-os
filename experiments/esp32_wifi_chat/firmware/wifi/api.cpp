@@ -635,38 +635,26 @@ void Api::model(Job &job, const char *url) {
     }
     auto options = model_options(tools_allowed);
     const ayni::providers::model_protocol::Protocol codec;
-    const auto encode = [&](ayni::json::Writer &out) {
-        return codec.write_request(out, options, context);
-    };
-    auto measured = ayni::json::Writer::measuring();
+    ModelBuffer json;
+    auto out = ayni::json::Writer::growing(&json, [](void *opaque, size_t minimum) {
+        auto &buffer = *static_cast<ModelBuffer *>(opaque);
+        return buffer.grow(minimum, harness::model_body_bytes)
+                   ? ayni::json::Writer::Buffer{reinterpret_cast<char *>(buffer.data), buffer.size}
+                   : ayni::json::Writer::Buffer{};
+    });
     size_t size = 0;
-    const auto encoded = encode(measured);
-    if (encoded != AYNI_OK || !measured.finish(size) || size > harness::model_body_bytes) {
+    const auto encoded = codec.write_request(out, options, context);
+    if (encoded != AYNI_OK || !out.finish(size)) {
         model_failure(job.output, encoded != AYNI_OK ? encoded : AYNI_CAPACITY_EXCEEDED,
                       AYNI_REASON_NONE, AYNI_CALL_EFFECT_NONE);
-        std::snprintf(job.error.data(), job.error.size(), "模型上下文编码超限");
-        return;
-    }
-    ModelBuffer json(size);
-    if (!json.data) {
-        model_failure(job.output, AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE, AYNI_CALL_EFFECT_NONE);
-        std::snprintf(job.error.data(), job.error.size(), "上下文发送内存不足；未请求模型");
-        return;
-    }
-    ayni::json::Writer out(reinterpret_cast<char *>(json.data), size);
-    const auto written_status = encode(out);
-    if (written_status != AYNI_OK || !out.finish(size)) {
-        model_failure(job.output,
-                      written_status != AYNI_OK ? written_status : AYNI_CAPACITY_EXCEEDED,
-                      AYNI_REASON_NONE, AYNI_CALL_EFFECT_NONE);
-        std::snprintf(job.error.data(), job.error.size(), "模型上下文编码失败");
+        std::snprintf(job.error.data(), job.error.size(), "模型上下文编码失败或超限；未请求模型");
         return;
     }
     transport_->diagnostics().record(
         "wifi context framed_bytes=%lu wire_bytes=%zu wire_est_tokens=%llu "
         "internal_free=%zu internal_largest=%zu psram_free=%zu psram_largest=%zu\n",
         static_cast<unsigned long>(reference.size), size,
-        static_cast<unsigned long long>(ayni::model::estimate_tokens(measured.characters())),
+        static_cast<unsigned long long>(ayni::model::estimate_tokens(out.characters())),
         heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
         heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
         heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),

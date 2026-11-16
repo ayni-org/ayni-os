@@ -159,7 +159,7 @@ void large_context(std::string_view glyph, unsigned rounds) {
     // Repeated complete normal turns grow its real history beyond the old 32KiB path.
     ValueFiles files;
     ayni::runtime::FileBodies bodies;
-    ASSERT_EQ(bodies.configure({&files, ValueFiles::submit}), AYNI_OK);
+    ASSERT_EQ(bodies.configure({&files, ValueFiles::submit}, 2U * 1024U * 1024U), AYNI_OK);
     const auto *store = bodies.store();
     size_t bytes = 0, alignment = 0;
     ASSERT_EQ(ayni::strategies::ToolLoop::workspace_requirements(&bytes, &alignment), AYNI_OK);
@@ -376,7 +376,7 @@ TEST(WifiReply, CacheTrimRetainsCleanupUntilNormalFileQueueHasCapacity) {
     // ADR-0097: a normal full file queue cannot cause cache trimming to discard deferred removals.
     ValueFiles files;
     ayni::runtime::FileBodies bodies;
-    ASSERT_EQ(bodies.configure({&files, ValueFiles::submit}), AYNI_OK);
+    ASSERT_EQ(bodies.configure({&files, ValueFiles::submit}, 2U * 1024U * 1024U), AYNI_OK);
     const auto *port = bodies.store();
     const uint8_t value[] = "retired body";
     ayni_body_ref_v1 reference{};

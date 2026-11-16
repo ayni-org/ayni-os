@@ -143,11 +143,20 @@ class FileBodies : public FileValues {
         return count;
     }
 };
+// C-HVAL-009 / ADR-0108: zero never selects an unlimited cache or consumes configuration.
+TEST_F(FileBodies, configuration_and_resizing_require_a_positive_cache_budget) {
+    ayni::runtime::FileBodies bodies;
+    EXPECT_EQ(bodies.configure(host.value_store(), 0), AYNI_INVALID_ARGUMENT);
+    constexpr size_t budget = 1024;
+    ASSERT_EQ(bodies.configure(host.value_store(), budget), AYNI_OK);
+    EXPECT_EQ(bodies.set_cache_limit(0), AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(bodies.set_cache_limit(budget), AYNI_OK);
+}
 TEST_F(FileBodies, released_bodies_leave_no_files) {
     const auto before = files();
     ayni::runtime::FileBodies bodies, reopened;
-    ASSERT_EQ(bodies.configure(host.value_store()), AYNI_OK);
-    ASSERT_EQ(reopened.configure(host.value_store()), AYNI_OK);
+    ASSERT_EQ(bodies.configure(host.value_store(), 2U * 1024U * 1024U), AYNI_OK);
+    ASSERT_EQ(reopened.configure(host.value_store(), 2U * 1024U * 1024U), AYNI_OK);
     std::string text(2 * file_value_bytes_max + 100, '\0');
     for (std::size_t at = 0; at < text.size(); ++at) {
         text[at] = static_cast<char>('a' + at % 26);
@@ -178,7 +187,7 @@ TEST_F(FileBodies, released_bodies_leave_no_files) {
 // Shared cache limits affect only resident bytes; durable references keep their files.
 TEST_F(FileBodies, trimming_and_a_payload_budget_preserve_referenced_disk_bodies) {
     ayni::runtime::FileBodies bodies;
-    ASSERT_EQ(bodies.configure(host.value_store()), AYNI_OK);
+    ASSERT_EQ(bodies.configure(host.value_store(), 2U * 1024U * 1024U), AYNI_OK);
     const std::string text = "persistent bytes";
     ASSERT_EQ(bodies.set_cache_limit(text.size()), AYNI_OK);
     const auto *store = bodies.store();
@@ -219,7 +228,7 @@ TEST_F(FileBodies, trimming_and_a_payload_budget_preserve_referenced_disk_bodies
 TEST_F(FileBodies, scope_collection_survives_automatic_eviction_trim_and_reload) {
     const auto before = files();
     ayni::runtime::FileBodies bodies;
-    ASSERT_EQ(bodies.configure(host.value_store()), AYNI_OK);
+    ASSERT_EQ(bodies.configure(host.value_store(), 2U * 1024U * 1024U), AYNI_OK);
     const std::string first(file_value_bytes_max + 1, 'a'), second(first.size(), 'b');
     ASSERT_EQ(bodies.set_cache_limit(first.size()), AYNI_OK);
     const auto *store = bodies.store();
@@ -262,7 +271,7 @@ TEST_F(FileBodies, scope_collection_survives_automatic_eviction_trim_and_reload)
 // C-HVAL-005: a completed load remains resident until the caller copies its result.
 TEST_F(FileBodies, unconsumed_load_resists_automatic_eviction_and_allows_explicit_trim) {
     ayni::runtime::FileBodies bodies;
-    ASSERT_EQ(bodies.configure(host.value_store()), AYNI_OK);
+    ASSERT_EQ(bodies.configure(host.value_store(), 2U * 1024U * 1024U), AYNI_OK);
     constexpr uint32_t body_bytes = 6;
     ASSERT_EQ(bodies.set_cache_limit(body_bytes), AYNI_OK);
     const auto *store = bodies.store();
@@ -300,7 +309,7 @@ TEST_F(FileBodies, unconsumed_load_resists_automatic_eviction_and_allows_explici
 // set rather than alternate evictions forever. Exercise the actual public policy consumer.
 TEST_F(FileBodies, tool_loop_rejects_a_read_working_set_larger_than_the_cache) {
     ayni::runtime::FileBodies bodies;
-    ASSERT_EQ(bodies.configure(host.value_store()), AYNI_OK);
+    ASSERT_EQ(bodies.configure(host.value_store(), 2U * 1024U * 1024U), AYNI_OK);
     constexpr size_t cache_bytes = 10;
     constexpr uint32_t body_bytes = 6;
     ASSERT_EQ(bodies.set_cache_limit(cache_bytes), AYNI_OK);
@@ -360,7 +369,7 @@ TEST_F(FileBodies, tool_loop_rejects_a_read_working_set_larger_than_the_cache) {
 TEST_F(FileBodies, staged_shared_payload_survives_owner_release_and_normal_reopen) {
     const auto before = files();
     ayni::runtime::FileBodies bodies;
-    ASSERT_EQ(bodies.configure(host.value_store()), AYNI_OK);
+    ASSERT_EQ(bodies.configure(host.value_store(), 2U * 1024U * 1024U), AYNI_OK);
     ASSERT_EQ(bodies.set_cache_limit(32), AYNI_OK);
     const auto *store = bodies.store();
     const std::string bytes = "shared body";
@@ -386,7 +395,7 @@ TEST_F(FileBodies, staged_shared_payload_survives_owner_release_and_normal_reope
     ASSERT_TRUE(until([&] { return ayni::runtime::FileBodies::ready(&bodies, 0); }));
     // A fresh cache can acquire another independent owner by metadata alone.
     ayni::runtime::FileBodies reopened;
-    ASSERT_EQ(reopened.configure(host.value_store()), AYNI_OK);
+    ASSERT_EQ(reopened.configure(host.value_store(), 2U * 1024U * 1024U), AYNI_OK);
     ASSERT_EQ(reopened.set_cache_limit(1), AYNI_OK);
     const auto *other = reopened.store();
     ayni_body_ref_v1 retained{};
@@ -408,7 +417,7 @@ TEST_F(FileBodies, staged_shared_payload_survives_owner_release_and_normal_reope
 // ADR-0104 / C-HVAL-005: pending loads reserve their full capacity; an absent lookup owns no bytes.
 TEST_F(FileBodies, pending_loads_and_absent_queries_respect_the_payload_budget) {
     ayni::runtime::FileBodies bodies;
-    ASSERT_EQ(bodies.configure(host.value_store()), AYNI_OK);
+    ASSERT_EQ(bodies.configure(host.value_store(), 2U * 1024U * 1024U), AYNI_OK);
     const auto *store = bodies.store();
     ayni_body_ref_v1 first{}, second{};
     ayni_status_t status = AYNI_NOT_READY;

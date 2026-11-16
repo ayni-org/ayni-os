@@ -662,3 +662,52 @@ Session只遍历、去重一次候选依赖，校验同ID冲突；一个引用�
 独立只读审查、增量修正及复查完成，无未处理发现。作者四项自查：正文验证说明随实现迁到body_reader.cpp，过时的全等待注释按background语义更新；无Kernel新字段，Confirmation归Session、仅一个引用数组和持久前缀计数；完整引用去重/冲突检查共用unique_references，复制/摘要边界共用BodyReader/get_body，没有新增第二执行流程；16 KiB/64条目均命名，无新增裸记录偏移/版本。模块依赖、契约、clang-format18、机械可读性与diff检查通过。相关详细审查、微基准、真实输出和临时本地CMake配置位于本机忽略目录build/local-flow-20261116/，属于仓库外证据。
 
 ESP-IDF6.0.3/GCC15.2.0最终候选65c8c20-localflow本地编译、分区大小及镜像描述检查通过，镜像2778080 B，3 MiB槽余12%；原分区和配置保留。构建前及过程中检查16 GiB/10CPU主机的swap、内存与活动作业，独立Native/Profile构建各2任务、后续ESP2任务，测试1任务。没有OTA、设备网络请求、云端模型或真实动作；用户随后要求提交并推送本批代码、契约与验证记录，本批随当前提交交付，继续保持不OTA。Linux Native Host完整套件、远端CI、板端耗时/PSRAM及新故障/恢复/变异/耐久专项未执行。
+
+
+## 2026-11-16 单遍提议与引用轮次清理
+
+用户要求执行下一批流程精简，并清理之前简化留下的代码；明确尚未公开发布，不保留兼容，优先清晰的层级、所有权和逻辑。实施基于e041b25，当前源码ABI0.56；ATC3、Core schema10、ConversationRecord6/turn7、SQLite4及现有分区均保持。未请求设备、OTA、云端模型或真实执行能力。决定与契约见[ADR-0107](../../docs/adr/0107-single-pass-proposals-and-reference-rounds.md)、C-CALL-014、C-POLICY-013。
+
+本批直接删除旧逐项ayni_tool_call_read、ayni_task_tool_call_v1及read_proposal，不留适配入口；ayni_tool_calls_read一次顺序访问完整列表。回调只有私有候选，整组准入成功后才能消费。共享ToolLoop按精确原Call/事实序号/完整正文身份保留一个活工具组，参数只解码一次，仍在每次决定查询当前Core事实、权限与来源。固定8槽及实际节点前缀使用可检查分配；组结束、来源失效、缓存退休及隐私清空均释放。
+
+Turn轮次改为序号及原user/answer引用，删除旧轮次正文副本、重复轮次投影和保存时重新提交旧正文的路径。公开完整历史查询仍投影Round文本，最新答案只读索引与所选答案；上下文失效时只为重建历史用户输入加载正文。参数、操作事实、摘要及ModelProtocol/ESP请求JSON改为单遍输出，原预算预检、公共参数树准入与摘要选段继续分别维护。BodyReader删除操作内shared_ptr控制块，句柄只借同步读区或独占当前流式正文；原16 KiB/64条目限制保持。Session一次候选和引用确认状态是最终持久保证的属主，保留真实确认/文件/清理/精确ACK顺序，未添加第二套结束流程。
+
+实际正常本地验证：Apple Clang21.0.0、CMake4.0.3，构建2任务、CTest上限1；ASan/UBSan Debug（ASAN_OPTIONS=detect_leaks=0，UBSAN_OPTIONS=halt_on_error=1）下，共用流程/工具codec/Mock工具/上下文/取消/隐私等106项、ModelProtocol 28项、SQLite 6项、Session进度4项通过，共144项。新增用例核对完整visitor成功前候选不可发布、容量拒绝保持输出、模型组只读一次正文但每次查Core事实、全局合法但超当前组的游标拒绝、保存索引不重提旧正文；既有正常8工具串行和共享Chat/Responses回归保持。LeakSanitizer在此Apple环境不支持，未声称验证泄漏。
+
+另运行生产Session/FileBodies/LittleFS RAM NOR的5个连续正常软件工具回合及排空关闭，全部通过；该夹具来源沿用前轮本机忽略目录，属于仓库外证据。Wi-Fi桌面相关60项通过，包含新PSRAM边界替身检查：UTF-8输出字节一致、增长后前缀保持、配置容量上限显式拒绝，以及替换/最终缓冲擦除（测试使用64 B/8 KiB，部署上限768 KiB），不代表实机PSRAM测量。C99 ABI布局/调用smoke、无异常/RTTI的C++17 smoke语法检查通过；Native OpenAI消费者语法检查通过，现有结构化绑定捕获触发2条C++20扩展警告，未修改无关测试。没有执行Native HTTP回环或Linux Host完整套件。
+
+Native实际查询ToolLoop工作区由731424降到706720 B（删除两块旧最大输出视图，共24704 B），8 B对齐。当前活工具组固定对象608 B，另有原编码字符串capacity与实际节点；最多8×256×48=98304 B节点（Native布局），不是整个策略heap上限。Core arena查询默认1489824 B、最小work596960 B、双Agent Call1932312 B、双Agent execution1993496 B；最大容量自动存储查询1738661968 B，未分配该最大arena。前四项与已有schema10记录相同。ESP增长时旧新PSRAM区短暂共存；上述工作区下降不能证明整体heap/PSRAM峰值下降。旧BodyReader共享控制块和旧轮次正文复制确已删除，但板端耗时、128K峰值及长期内存稳定性仍未验证。
+
+独立只读审查发现并修复：ESP诊断引用已删除测长Writer导致编译失败、工具游标跨当前组边界会越界，以及新节点容器分配缺少明确失败路径；修复后增量复查通过。作者四项自查：旧输出类型的借用说明随删除失效，checkpoint与轮次所有权说明迁到各自类型，visitor规则写入calls.h；无Kernel新状态，Visitor只持同步借用、PreparedProposals只管理同owner线程的不可变组；完整列表codec及轮次索引读写各一处，保留公开JSON树检查与预算决定，未宣称所有校验只跑一次；增长初始容量、倍数、槽数及节点上限均命名/引用现有限额，无新增裸记录偏移。模块依赖、clang-format18、契约/diff和机械可读性检查通过；ESP八个Core归档的无堆符号检查通过。
+
+ESP-IDF6.0.3/GCC15.2.0最终候选e041b25-cleanup本地编译及分区检查通过，镜像2776736 B，3 MiB槽余12%；仍使用原sdkconfig/分区及PSRAM分配配置。构建前及过程中检查16 GiB/10CPU主机可用内存、swap和活动作业，有界并行且为桌面留余量。完整命令、过滤器、临时本地CMake及原输出保存在本机忽略目录build/local-cleanup-20261116/与build/performance-checks-src/，属于仓库外证据；仓库内正常测试源可由现有单元/Wi-Fi目标执行。远端CI、硬件、OTA、新故障/恢复/变异及耐久专项均未执行。
+
+本批相对e041b25，生产代码增加491行、删除440行，净增51行；测试及构建/替身增加334行、删除60行，净增274行（不含用户未跟踪品牌文件）。生产净增主要是只保存实际前缀的提议所有权与显式容量失败，删除的逐项reader、最大输出类型、正文双状态和同步共享控制块均无兼容副本；保留Turn工作副本是为了未接受/DEFER决定的事务语义。
+
+
+## 2026-11-16 统一会话和结果存储
+
+用户继续要求把弃用、双机制和无限缓存清理干净，统一会话/工具结果，改全体调用方、契约和测试；保留必要权限及持久保证，先本地验证、暂不OTA。本批与前一未提交清理共同基于e041b25，架构/版本决定见[ADR-0108](../../docs/adr/0108-unified-conversation-and-result-storage.md)。当前ABI0.56、Core schema10、ATC3、ConversationRecord6保持，turn8/ANRV2/SQLite5直接升级，Wi-Fi设置仅支持当前v2；拒绝旧格式并保留原目录/配置，不提供旧reader、迁移器或自动擦除。
+
+Native删除ConversationStore及独立history/results文件、SavedConversation和重复发布/取消/归档状态，直接使用共享Session/FileBodies。SqliteValues只实现通用值端口，以state表保存共享根/manifest/chunk；两个排队元数据槽、一个在途借用、普通值优先后台正文，同优先级FIFO。SQLite DELETE+EXTRA、secure_delete保持提交/隐私边界；CAS统一STALE，COMMIT失败保留RESULT_UNKNOWN，尝试回滚不宣称已经撤销。Native默认durable、显式retain_and_append；ESP仍显式background。FileBodies所有部署必须正数预算：Native16 MiB，ESP/portable2 MiB；零配置/调整拒绝，无无限模式。
+
+工具结果统一规范值/域/证明/事实及可选展示引用，删除HistoryPort、ArchivedResult、archive/result_chunk和原结果大小预拒绝分叉。长结果摘要只投影一次再按UTF-8边界分块，原始执行事实和正文继续保留，每次决定仍查当前Core来源；当前正常回归证实多个摘要块只读取原值正文一次。只为一个活结果保留临时完整投影，借现有有界Turn缓存退休，无独立无限结果缓存；取舍是摘要期间持有该完整投影，板端峰值未测。
+
+正常重开按完整基线挂接原Goal，不重建动作。共享Session保留默认retain的显式abandon，Native才允许追加；peek终态元数据后待答案正文成功才消费通知。启动和正常推进使用同一正文/Provider/Core/隐私维护入口；原整会话删除重开曾出现一次BUSY，审查发现启动未推进FileBodies的缺口并修正，最终正常重开通过，但未把该缺口当作原超时根因已被独立证实。删除待批准/暂停回合走同一取消→持久终态→保留独立输入→保存/收集→精确ACK；Native空闲判断不能提前越过文件/清理。既有停止回归还发现仅记录取消请求会让下一次Provider先处理排队工具，已在共享cancel即时尝试原Goal取消，BUSY保留待处理意图，已发出的真实效果不被改写为撤销。
+
+实际本地正常检查：Apple Clang21.0.0/CMake4.0.3，Debug ASan/UBSan（detect_leaks=0、halt_on_error=1）相关190项通过：共享策略/结果/codec114、Native/Session/FileBodies39、SQLite5、会话进度4、ModelProtocol28。Native39包含实际本机HTTP模型/工具/摘要/外发授权及停止夹具，未访问云端；本地Shell管道保留规范VALUE及base64 stdout。Wi-Fi桌面60项通过，含只拒绝旧设置且不改存储凭据、有限缓存及PSRAM缓冲替身；Wi-Fi该目标未启用ASan，不混称250项全部sanitizer。另在ASan/UBSan下运行生产Session/FileBodies/LittleFS RAM NOR连续5个正常软件工具回合、最终答案及排空关闭，全部通过。Apple环境未运行LeakSanitizer。
+
+Native代码本来选择Linux Host；本机无可用Linux容器运行时。本轮在macOS用真实POSIX文件/线程、SQLite及相同Native组合代码执行正常路径，仅对Linux adjtimex/pipe2声明使用忽略目录内的测试适配，因此不声称Linux Host验收通过。既有LoopbackHttp在macOS的shutdown(listener)不能唤醒accept，线程栈确认测试本身已执行到析构；夹具改为具名10 ms poll后正常join，未改生产网络端口。最初Wi-Fi新增测试要求NVS查询blob长度，替身未实现out=null语义，补齐替身后60项全过。
+
+设计自查与独立只读增量审查完成，发现均已处理。公开接口删除和所有调用方迁移共同构成一个完整清理包，按会话属主、结果表示、值I/O、消费者四组审查；不按跨文件行数拆出无法独立工作的过渡层。四项分别结论：
+
+- 删除注释：旧Store/History/Results说明随旧机制失效，持久借用/所有权迁至`runtime/native_node/assistant_state.h:17`及`sqlite_values.h:1`；旧未来迁移注释也按无迁移决定更新。
+- Kernel字段：搜索本批`core/`及`include/ayni/` diff，无Kernel新增状态字段；会话阶段与候选/旧图仍归`runtime/conversation/include/ayni/runtime/conversation.h`的Session所有。
+- 重复规则：intake/forget共用`runtime/conversation/conversation.cpp:50`的current_context；结果读写共用`strategies/builtin/history_result.cpp:16`的ViewCodec，SQL只遵守值CAS，不复制会话规则。Native查询末端的实时隐私检查只读一次，跨异步读取所需的检查继续保留。
+- 裸数字：`history_result.cpp:8`/`:10`命名记录版本/字节数，`runtime/native_node/sqlite_values.cpp:15`/`:16`命名同步级别/版本，`sqlite_values.h:29`命名队列容量，`providers/openai_compat/test_support/include/ayni/providers/openai_compat/loopback.h:126`命名等待；布局见contracts/storage/records.md。
+
+机械可读性、依赖、契约追踪、clang-format18和diff检查通过；新故障/恢复/断电行为只做设计审查，未启动专项。
+
+ToolLoop查询工作区仍706720 B、8 B对齐；当前ModelProposals固定数据600 B，检查分配的共享owner另带计数；8组节点上限98304 B（Native布局），并不包含完整字符串capacity或整个平台heap。相对e041b25，本批统一提交两轮C/C++清理，生产代码净删约747行，正常测试/替身净增约245行；统计包含新SqliteValues而不含用户品牌资产、文档或CMake。保留的候选/旧图/确认状态服务真实异步借用、DEFER及持久屏障，不是旧兼容副本。
+
+ESP-IDF6.0.3/GCC15.2.0候选e041b25-unified本地编译、分区检查通过；3 MiB应用槽仍余12%，镜像2779968 B。原sdkconfig/分区保持。构建前及过程中检查16 GiB/10CPU主机的内存、swap和活动任务，构建显式2任务、CTest并行上限1，保留桌面余量。实际命令、过滤器、临时CMake、线程栈和输出在本机忽略目录build/local-cleanup-20261116/与build/performance-checks-src/，属于仓库外证据；仓库中保留对应正常测试源。用户随后要求将本批代码、契约和验证记录提交并推送；本批随当前提交保存并推送原分支，继续暂不OTA。未擦数据或执行真实动作；远端CI、Linux完整套件、板端100 ms交接/内存峰值及新故障/恢复/变异/耐久专项未执行。
