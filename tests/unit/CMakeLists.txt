@@ -172,3 +172,9 @@ add_executable(ayni_conversation_session_tests conversation_session_test.cpp)
 target_link_libraries(ayni_conversation_session_tests PRIVATE ayni_runtime_portable
     ayni_host_native ayni_warnings GTest::gtest_main)
 gtest_discover_tests(ayni_conversation_session_tests)
+
+# Sim Core + production file values keep publication progress deterministic across Hosts.
+add_executable(ayni_conversation_progress_tests conversation_progress_test.cpp)
+target_link_libraries(ayni_conversation_progress_tests PRIVATE ayni_runtime_portable
+    ayni_host_sim ayni_host_native ayni_warnings GTest::gtest_main)
+gtest_discover_tests(ayni_conversation_progress_tests)

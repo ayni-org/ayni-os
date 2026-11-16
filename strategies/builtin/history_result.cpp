@@ -77,17 +77,24 @@ ayni_status_t store_result_view(const ayni_body_store_v1 &bodies, uint64_t scope
     View view;
     view.facts = call;
     auto status = bodies.share(bodies.context, scope, &call.body, &view.value);
+    if (status == AYNI_OK && bodies.confirm && bodies.write == bodies.stage) {
+        // The chat alias owns its own durable manifest, independently from the Core Call.
+        status = bodies.confirm(bodies.context, &view.value);
+        if (status == AYNI_NOT_READY) {
+            status = AYNI_OK; // Requested only; Session confirms the complete graph before publish.
+        }
+    }
     if (status == AYNI_OK) {
-        status = put_body(
+        status = save_body(
             bodies, scope,
             {reinterpret_cast<const char *>(call.original_domain.data), call.original_domain.size},
             view.domain);
     }
     if (status == AYNI_OK) {
-        status = put_body(bodies, scope,
-                          {reinterpret_cast<const char *>(call.business_contract.data),
-                           call.business_contract.size},
-                          view.proof);
+        status = save_body(bodies, scope,
+                           {reinterpret_cast<const char *>(call.business_contract.data),
+                            call.business_contract.size},
+                           view.proof);
     }
     if (status != AYNI_OK) {
         return status;
@@ -98,20 +105,20 @@ ayni_status_t store_result_view(const ayni_body_store_v1 &bodies, uint64_t scope
     if (!archive.valid || encoded.size() != view_bytes) {
         return AYNI_INTERNAL;
     }
-    return put_body(bodies, scope, detail::view(encoded), out);
+    return save_body(bodies, scope, detail::view(encoded), out);
 }
-ayni_status_t load_result_view(const ayni_body_store_v1 &bodies, const BodyRef &ref,
-                               std::string &out, std::vector<BodyRef> *references) {
-    std::string encoded;
-    auto status = get_body(bodies, ref, encoded);
+ayni_status_t load_result_view(BodyReader &bodies, const BodyRef &ref, std::string &out,
+                               std::vector<BodyRef> *references) {
+    BodyReader::Body encoded;
+    auto status = bodies.read(ref, encoded);
     if (status != AYNI_OK) {
         return status;
     }
-    if (encoded.size() != view_bytes) {
+    if (encoded->size() != view_bytes) {
         return AYNI_INVALID_ARGUMENT;
     }
     View view;
-    Archive archive{nullptr, encoded};
+    Archive archive{nullptr, *encoded};
     archive.fields(view);
     if (!archive.valid || !archive.input.empty() || view.facts.outcome != AYNI_CALL_COMPLETED ||
         (view.facts.result_kind != AYNI_CALL_RESULT_TEXT &&
@@ -126,26 +133,26 @@ ayni_status_t load_result_view(const ayni_body_store_v1 &bodies, const BodyRef &
         }
         return AYNI_OK;
     }
-    std::string value, domain, proof;
-    for (const auto &pair : {std::pair<const BodyRef *, std::string *>{&view.value, &value},
+    BodyReader::Body value, domain, proof;
+    for (const auto &pair : {std::pair<const BodyRef *, BodyReader::Body *>{&view.value, &value},
                              {&view.domain, &domain},
                              {&view.proof, &proof}}) {
-        status = get_body(bodies, *pair.first, *pair.second);
+        status = bodies.read(*pair.first, *pair.second);
         if (status != AYNI_OK) {
             return status;
         }
     }
     auto &call = view.facts;
     call.struct_size = sizeof(call);
-    call.original_domain = {reinterpret_cast<const uint8_t *>(domain.data()),
-                            static_cast<uint32_t>(domain.size())};
-    call.business_contract = {reinterpret_cast<const uint8_t *>(proof.data()),
-                              static_cast<uint32_t>(proof.size())};
+    call.original_domain = {reinterpret_cast<const uint8_t *>(domain->data()),
+                            static_cast<uint32_t>(domain->size())};
+    call.business_contract = {reinterpret_cast<const uint8_t *>(proof->data()),
+                              static_cast<uint32_t>(proof->size())};
     if (call.result_kind == AYNI_CALL_RESULT_VALUE) {
-        call.encoded_value = {reinterpret_cast<const uint8_t *>(value.data()),
-                              static_cast<uint32_t>(value.size())};
+        call.encoded_value = {reinterpret_cast<const uint8_t *>(value->data()),
+                              static_cast<uint32_t>(value->size())};
     } else {
-        call.text = detail::view(value);
+        call.text = {value->data(), static_cast<uint32_t>(value->size())};
     }
     ayni::Workspace workspace;
     status = workspace.create(json::call_result_workspace_requirements);
@@ -162,5 +169,10 @@ ayni_status_t load_result_view(const ayni_body_store_v1 &bodies, const BodyRef &
     rendered.resize(bytes);
     out = std::move(rendered);
     return AYNI_OK;
+}
+ayni_status_t load_result_view(const ayni_body_store_v1 &bodies, const BodyRef &ref,
+                               std::string &out, std::vector<BodyRef> *references) {
+    BodyReader reader(bodies);
+    return load_result_view(reader, ref, out, references);
 }
 } // namespace ayni::strategies::detail

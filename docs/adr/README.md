@@ -163,3 +163,4 @@
 | [0104](0104-shared-conversation-bodies-and-dispatch-prefix.md) | 共享对话正文、异步保存与连续派发前缀 | 已接受用户选择；本轮仅软件实现与编译，板端暂缓 | ABI0.55、schema10、ToolLoop、正文与Host队列 |
 
 | [0105](0105-shared-conversation-flow-and-local-cost.md) | 共享对话主路径与本地重复工作 | 已实施并正常OTA；局部验证与未完成边界见实验记录 | 共享历史、Session、Native/ESP接入；ABI/schema不变 |
+| [0106](0106-bounded-body-reads-and-publication.md) | 操作内正文复用与会话发布确认 | 已实施，本地正常验证及独立复查通过；不OTA | 共享策略/Session；C ABI及持久格式不变 |

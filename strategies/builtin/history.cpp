@@ -52,33 +52,17 @@ void item(std::string &index, std::string_view literal, const BodyRef &ref,
 // ADR-0104: cold body reads defer independently. Discover dependencies with the
 // same index reader before rendering any saved result, so each subsequent wait
 // cannot repeat the full original-Schema projection of the already loaded prefix.
-ayni_status_t prepare_history(const ayni_body_store_v1 &bodies, const BodyRef &ref) {
+ayni_status_t prepare_history(BodyReader &bodies, const BodyRef &ref) {
     std::vector<BodyRef> references;
     std::string ignored;
     auto status = load_history(bodies, ref, ignored, &references);
     if (status != AYNI_OK) {
         return status;
     }
-    return prepare_references(bodies, references);
+    return bodies.prepare(references);
 }
 } // namespace
-ayni_status_t prepare_references(const ayni_body_store_v1 &bodies,
-                                 const std::vector<BodyRef> &references) {
-    std::string ignored;
-    bool pending = false;
-    for (const auto &body : references) {
-        const auto status = get_body(bodies, body, ignored);
-        if (status == AYNI_NOT_READY) {
-            pending = true;
-            continue;
-        }
-        if (status != AYNI_OK) {
-            return status;
-        }
-    }
-    return pending ? AYNI_NOT_READY : AYNI_OK;
-}
-ayni_status_t load_history(const ayni_body_store_v1 &bodies, const BodyRef &ref, std::string &out,
+ayni_status_t load_history(BodyReader &bodies, const BodyRef &ref, std::string &out,
                            std::vector<BodyRef> *references) {
     if (!ref.id) {
         out.clear();
@@ -90,12 +74,12 @@ ayni_status_t load_history(const ayni_body_store_v1 &bodies, const BodyRef &ref,
             return prepared;
         }
     }
-    std::string index;
-    auto status = get_body(bodies, ref, index);
+    BodyReader::Body index;
+    auto status = bodies.read(ref, index);
     if (status != AYNI_OK) {
         return status;
     }
-    std::string_view input(index);
+    std::string_view input(*index);
     uint64_t magic = 0;
     if (!take(input, wide_bytes, magic) || magic != index_magic) {
         return AYNI_INVALID_ARGUMENT; // The record explicitly declares an index (ADR-0104).
@@ -121,10 +105,17 @@ ayni_status_t load_history(const ayni_body_store_v1 &bodies, const BodyRef &ref,
             if (references) {
                 references->push_back(body);
             }
-            std::string bytes;
-            status = kind == call_result_view ? load_result_view(bodies, body, bytes, references)
+            std::string rendered;
+            BodyReader::Body raw;
+            std::string_view bytes;
+            status = kind == call_result_view ? load_result_view(bodies, body, rendered, references)
                      : references             ? AYNI_OK
-                                              : get_body(bodies, body, bytes);
+                                              : bodies.read(body, raw);
+            if (kind == call_result_view) {
+                bytes = rendered;
+            } else if (raw) {
+                bytes = *raw;
+            }
             if (status == AYNI_NOT_READY && references) {
                 pending = true; // Discover the other independent dependencies in this pass too.
                 continue;
@@ -208,7 +199,7 @@ ayni_status_t store_history(const ayni_body_store_v1 &bodies, Turn &turn) {
         const auto bytes = payload.bytes;
         const auto at = static_cast<size_t>(bytes.data - tail.data());
         BodyRef body = payload.view;
-        const auto status = body.id ? AYNI_OK : put_body(bodies, turn.record.id, bytes, body);
+        const auto status = body.id ? AYNI_OK : save_body(bodies, turn.record.id, bytes, body);
         if (status != AYNI_OK) {
             return status;
         }
@@ -221,7 +212,7 @@ ayni_status_t store_history(const ayni_body_store_v1 &bodies, Turn &turn) {
     }
     std::string candidate = turn.history_index + appended;
     BodyRef ref{};
-    const auto status = put_body(bodies, turn.record.id, view(candidate), ref);
+    const auto status = save_body(bodies, turn.record.id, view(candidate), ref);
     if (status == AYNI_OK) {
         turn.record.history = ref;
         turn.record.history_bytes = static_cast<uint32_t>(turn.history.size());
@@ -231,7 +222,7 @@ ayni_status_t store_history(const ayni_body_store_v1 &bodies, Turn &turn) {
     }
     return status;
 }
-ayni_status_t record_references(const ayni_body_store_v1 &bodies, const ConversationRecord &record,
+ayni_status_t record_references(BodyReader &bodies, const ConversationRecord &record,
                                 std::vector<BodyRef> &out) {
     Conversation::references(record, out);
     std::string ignored;
@@ -240,12 +231,22 @@ ayni_status_t record_references(const ayni_body_store_v1 &bodies, const Conversa
     if (status != AYNI_OK || !record.rounds.id) {
         return status;
     }
-    status = get_body(bodies, record.rounds, ignored);
+    status = bodies.copy(record.rounds, ignored);
     if (status != AYNI_OK) {
         return status;
     }
     std::vector<Round> rounds;
     return decode_rounds(bodies, view(ignored), record.round_count, record.last_round, rounds,
                          &out);
+}
+ayni_status_t load_history(const ayni_body_store_v1 &bodies, const BodyRef &ref, std::string &out,
+                           std::vector<BodyRef> *references) {
+    BodyReader reader(bodies);
+    return load_history(reader, ref, out, references);
+}
+ayni_status_t record_references(const ayni_body_store_v1 &bodies, const ConversationRecord &record,
+                                std::vector<BodyRef> &out) {
+    BodyReader reader(bodies);
+    return record_references(reader, record, out);
 }
 } // namespace ayni::strategies::detail

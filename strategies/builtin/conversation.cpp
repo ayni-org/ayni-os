@@ -298,7 +298,7 @@ ayni_status_t keep(const ayni_body_store_v1 &bodies, uint64_t scope, const std::
     if (present(ref) && ayni_body_verify(&ref, bytes) == AYNI_OK) {
         return AYNI_OK;
     }
-    return put_body(bodies, scope, view(text), ref);
+    return save_body(bodies, scope, view(text), ref);
 }
 ayni_status_t load(const ayni_body_store_v1 &bodies, const BodyRef &ref, std::string &out) {
     if (!present(ref)) {
@@ -312,44 +312,6 @@ ayni_status_t load(const ayni_body_store_v1 &bodies, const BodyRef &ref, std::st
 } // namespace
 
 namespace detail {
-bool valid_ref(const BodyRef &ref) {
-    return ref.reserved == 0U && (ref.id != 0U || (ref.digest == 0U && ref.size == 0U));
-}
-ayni_status_t put_body(const ayni_body_store_v1 &bodies, uint64_t scope, ayni_string_v1 text,
-                       BodyRef &out) {
-    if (!bodies.write || (text.size && !text.data)) {
-        return AYNI_INVALID_ARGUMENT;
-    }
-    const ayni_bytes_v1 bytes{reinterpret_cast<const uint8_t *>(text.data), text.size};
-    BodyRef stored{};
-    const auto status = bodies.write(bodies.context, scope, bytes, &stored);
-    if (status != AYNI_OK) {
-        return status;
-    }
-    // A store that answers with another body could make Core execute what was not authorized.
-    if (ayni_body_verify(&stored, bytes) != AYNI_OK) {
-        return AYNI_STORAGE_FAILED;
-    }
-    out = stored;
-    return AYNI_OK;
-}
-ayni_status_t get_body(const ayni_body_store_v1 &bodies, const BodyRef &ref, std::string &out) {
-    if (!bodies.read || !present(ref)) {
-        return AYNI_INVALID_ARGUMENT;
-    }
-    std::string bytes(ref.size, '\0');
-    const auto status =
-        bodies.read(bodies.context, &ref, reinterpret_cast<uint8_t *>(bytes.data()), ref.size);
-    if (status != AYNI_OK) {
-        return status;
-    }
-    if (ayni_body_verify(&ref, {reinterpret_cast<const uint8_t *>(bytes.data()), ref.size}) !=
-        AYNI_OK) {
-        return AYNI_STORAGE_FAILED;
-    }
-    out = std::move(bytes);
-    return AYNI_OK;
-}
 ayni_status_t encode_rounds(const ayni_body_store_v1 &bodies, uint64_t scope,
                             const std::vector<Round> &rounds, std::string &out) {
     out.assign(rounds.size() * round_bytes, '\0');
@@ -399,7 +361,7 @@ ayni_status_t read_round_references(ayni_string_v1 bytes, uint32_t count, uint64
     out = std::move(parsed);
     return AYNI_OK;
 }
-ayni_status_t decode_rounds(const ayni_body_store_v1 &bodies, ayni_string_v1 bytes, uint32_t count,
+ayni_status_t decode_rounds(BodyReader &bodies, ayni_string_v1 bytes, uint32_t count,
                             uint64_t last_round, std::vector<Round> &out,
                             std::vector<BodyRef> *references) {
     std::vector<RoundReferences> metadata;
@@ -417,9 +379,9 @@ ayni_status_t decode_rounds(const ayni_body_store_v1 &bodies, ayni_string_v1 byt
                 references->push_back(source.answer);
             }
         } else {
-            status = load(bodies, source.user, round.user);
+            status = bodies.copy_text(source.user, round.user);
             if (status == AYNI_OK) {
-                status = load(bodies, source.answer, round.answer);
+                status = bodies.copy_text(source.answer, round.answer);
             }
             if (status != AYNI_OK) {
                 return status;
@@ -446,11 +408,12 @@ bool same_history(const Turn &saved, const Turn &next) {
 }
 ayni_status_t load_turn_bodies(const ayni_body_store_v1 &bodies, Turn &parsed,
                                const Turn *previous) {
+    BodyReader reader(bodies);
     auto status = AYNI_OK;
     // C-POLICY-013: a later rounds/summary read must not throw away a history
     // projection already completed in this attempt. Prepare the whole turn first.
     std::vector<BodyRef> references;
-    status = record_references(bodies, parsed.record, references);
+    status = record_references(reader, parsed.record, references);
     if (status != AYNI_OK) {
         return status;
     }
@@ -468,7 +431,7 @@ ayni_status_t load_turn_bodies(const ayni_body_store_v1 &bodies, Turn &parsed,
             references.push_back(ref);
         }
     }
-    status = prepare_references(bodies, references);
+    status = reader.prepare(references);
     if (status != AYNI_OK) {
         return status;
     }
@@ -484,16 +447,16 @@ ayni_status_t load_turn_bodies(const ayni_body_store_v1 &bodies, Turn &parsed,
                        ref == &parsed.record.rounds)) {
             continue; // C-POLICY-013: exact immutable source identity was already decoded.
         }
-        status = ref == &parsed.record.history ? Conversation::history(bodies, parsed.record, *text)
-                 : ref == &parsed.record.rounds
-                     ? (present(*ref) ? get_body(bodies, *ref, *text) : AYNI_OK)
-                     : load(bodies, *ref, *text);
+        status = ref == &parsed.record.history && parsed.record.history_bytes
+                     ? load_history(reader, parsed.record.history, *text)
+                 : ref == &parsed.record.rounds ? reader.copy(*ref, *text)
+                                                : reader.copy_text(*ref, *text);
         if (status != AYNI_OK) {
             return status;
         }
     }
     status = reused ? AYNI_OK
-                    : decode_rounds(bodies, view(rounds), parsed.record.round_count,
+                    : decode_rounds(reader, view(rounds), parsed.record.round_count,
                                     parsed.record.last_round, parsed.rounds);
     if (status != AYNI_OK) {
         return status;
@@ -502,7 +465,7 @@ ayni_status_t load_turn_bodies(const ayni_body_store_v1 &bodies, Turn &parsed,
         return AYNI_INVALID_ARGUMENT;
     }
     if (!reused && parsed.record.history_bytes) {
-        status = get_body(bodies, parsed.record.history, parsed.history_index);
+        status = reader.copy(parsed.record.history, parsed.history_index);
         if (status != AYNI_OK) {
             return status;
         }
@@ -610,7 +573,7 @@ static ayni_status_t conversation_begin(const ayni_body_store_v1 &bodies,
     turn.record.draft = {};
     turn.base_revision = record.revision;
     turn.memory_id = memory_id;
-    status = put_body(bodies, scope_of(record), view(turn.input), turn.refs.input);
+    status = save_body(bodies, scope_of(record), view(turn.input), turn.refs.input);
     if (status != AYNI_OK) {
         return status;
     }
@@ -860,14 +823,15 @@ ayni_status_t Conversation::rounds(const ayni_body_store_v1 &bodies,
     if (!valid(record)) {
         return AYNI_INVALID_ARGUMENT;
     }
+    BodyReader reader(bodies);
     std::string encoded;
     if (present(record.rounds)) {
-        const auto status = get_body(bodies, record.rounds, encoded);
+        const auto status = reader.copy(record.rounds, encoded);
         if (status != AYNI_OK) {
             return status;
         }
     }
-    return decode_rounds(bodies, view(encoded), record.round_count, record.last_round, out);
+    return decode_rounds(reader, view(encoded), record.round_count, record.last_round, out);
 }
 ayni_status_t Conversation::latest_answer(const ayni_body_store_v1 &bodies,
                                           const ConversationRecord &record, std::string &out) {

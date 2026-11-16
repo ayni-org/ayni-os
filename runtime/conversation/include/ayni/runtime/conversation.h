@@ -53,8 +53,8 @@ class Session {
     // through the public API, resolve with owner authority, then continue polling.
     // Bridge file/version errors are sticky. BUSY is ordinary queue backpressure.
     ayni_status_t poll();
-    // OK copies input and starts storing it as a body, then the durable draft save. One turn at
-    // a time per Session.
+    // OK copies input. Durable mode saves its draft before admission; background mode stages
+    // it and starts the Goal while saving proceeds. One turn at a time per Session.
     // Completion is ready() with a new last_round; the final answer crosses Core ACK durability.
     ayni_status_t begin(ayni_string_v1 user, uint64_t memory_id = 0);
     ayni_status_t forget(ayni_context_action_t action, uint64_t turn = 0);
@@ -97,7 +97,9 @@ class Session {
         start_turn,
         turn,
         terminal,
-        publish,
+        prepare_publication, // Completed checkpoint copied once; candidate is not yet confirmed.
+        publishing, // Candidate confirmed and PUBLISH accepted; await its durable Core anchor.
+        publish,    // Reopened/durable-mode publication still needs its checkpoint candidate.
         acknowledge,
         acknowledged,
         collect,
@@ -115,6 +117,7 @@ class Session {
     ayni_status_t load(const ayni_context_info_v1 &);
     ayni_status_t save();
     ayni_status_t confirm(const strategies::ConversationRecord &);
+    bool confirmation_matches(const strategies::ConversationRecord &) const;
     ayni_status_t saved(const ayni_context_info_v1 &);
     ayni_status_t turn(const ayni_context_info_v1 &, uint64_t durable);
     ayni_status_t cancel_turn(uint64_t durable);
@@ -122,18 +125,20 @@ class Session {
     ayni_status_t unfinished();
     ayni_status_t settled(uint64_t durable) const;
     ayni_status_t collect_superseded(const strategies::ConversationRecord &);
+    ayni_status_t prepare_publication(const ayni_context_info_v1 &);
     ayni_status_t publish(const ayni_context_info_v1 &);
     ayni_status_t erase(const ayni_context_info_v1 &);
     ayni_status_t input();
-    struct Confirmed {
-        uint64_t generation = 0, revision = 0;
-        std::array<uint64_t, 4>
-            refs{}; // Immutable body identities whose complete graph was confirmed.
+    struct Confirmation {
+        uint64_t generation = 0, revision = 0; // Privacy/source versions; zero before admission.
+        std::array<strategies::BodyRef, 4> roots{}; // Exact immutable source graph.
+        std::vector<strategies::BodyRef> refs;      // Complete dependency set, walked only once.
+        size_t durable = 0; // refs[0..durable) confirmed; remaining suffix still pending.
     };
     std::optional<strategies::ConversationRecord>
         superseded_; // Exact old graph retained until deletion drains.
-    std::optional<Confirmed>
-        confirmed_; // Persistence proof only; all privacy gates still read Core.
+    std::optional<Confirmation>
+        confirmed_; // Graph confirmation progress/proof only; all privacy gates still read Core.
     Config config_{};
     Phase phase_ = Phase::empty;      // Sole lifecycle/worker-buffer state.
     Save save_ = Save::initialize;    // Meaningful only in save/saving.

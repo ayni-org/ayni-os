@@ -5,6 +5,7 @@
 #include <ayni/strategies/builtin.h>
 #include <ayni/values_json.hpp>
 #include <initializer_list>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -66,13 +67,47 @@ bool valid_ref(const BodyRef &ref);
 // Stores bytes in scope and verifies the reference the store returned.
 ayni_status_t put_body(const ayni_body_store_v1 &bodies, uint64_t scope, ayni_string_v1 text,
                        BodyRef &out);
+// Conversation-owned content requests background persistence when using stage as write.
+// Model request temporaries deliberately keep put_body's unconfirmed lifetime.
+ayni_status_t save_body(const ayni_body_store_v1 &, uint64_t scope, ayni_string_v1, BodyRef &);
 ayni_status_t get_body(const ayni_body_store_v1 &bodies, const BodyRef &ref, std::string &out);
+// One synchronous immutable read operation. Reuses verified small bodies within a
+// fixed scratch budget; large payload handles expire after their current consumer.
+// Nothing survives an owner call or a Core/privacy mutation.
+class BodyReader {
+  public:
+    using Body = std::shared_ptr<const std::string>; // Immutable caller lease; null before read.
+    // Keep additional ESP scratch small. Exhaustion uses uncached reads, never rejects data.
+    static constexpr size_t cache_bytes = 16U * 1024U, cache_entries = 64;
+    explicit BodyReader(const ayni_body_store_v1 &store) : store_(store) {}
+    BodyReader(const BodyReader &) = delete;
+    BodyReader &operator=(const BodyReader &) = delete;
+    // A successful immutable handle outlives map inserts and expires with its last owner.
+    ayni_status_t read(const BodyRef &, Body &);
+    // Copies a final field once; large uncached fields move directly from the store read.
+    ayni_status_t copy(const BodyRef &, std::string &);
+    // Text fields additionally require valid UTF-8; small cached bodies are checked once.
+    ayni_status_t copy_text(const BodyRef &, std::string &);
+    // Requests all independent references; uncached payloads are released each iteration.
+    ayni_status_t prepare(const std::vector<BodyRef> &);
+    // Owned cache capacity bytes, excluding bounded map/handle overhead; zero when empty.
+    size_t retained_bytes() const { return retained_; }
+
+  private:
+    struct Cached {
+        BodyRef reference; // Complete immutable identity, digest and byte length admitted at read.
+        Body bytes; // Verified immutable bytes; also borrowed by current synchronous consumers.
+        bool text_checked = false; // True only after these bytes passed UTF-8 validation.
+    };
+    const ayni_body_store_v1 &store_;   // Borrowed only through this synchronous operation.
+    std::map<uint64_t, Cached> loaded_; // Successful small reads, bounded by both limits above.
+    size_t retained_ = 0; // Sum of cached string capacities; never exceeds cache_bytes.
+};
 // Retained rounds body codec.
 ayni_status_t encode_rounds(const ayni_body_store_v1 &, uint64_t scope,
                             const std::vector<Round> &rounds, std::string &out);
-ayni_status_t decode_rounds(const ayni_body_store_v1 &, ayni_string_v1 bytes, uint32_t count,
-                            uint64_t last_round, std::vector<Round> &out,
-                            std::vector<BodyRef> *references = nullptr);
+ayni_status_t decode_rounds(BodyReader &, ayni_string_v1 bytes, uint32_t count, uint64_t last_round,
+                            std::vector<Round> &out, std::vector<BodyRef> *references = nullptr);
 ayni_string_v1 model_key(uint32_t round, char *buffer);
 ayni_string_v1 function_key(uint64_t source, uint32_t index, char *buffer);
 bool valid_text(ayni_string_v1 value);

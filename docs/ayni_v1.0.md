@@ -1,12 +1,12 @@
 # Ayni：通用原生 AgentOS 基础能力与实验实施计划
 
 > **文档性质**：工程实施计划与待实现契约，不代表已有软件能力。\
-> **文档版本**：v1.121 · 2026-11-16；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
+> **文档版本**：v1.122 · 2026-11-16；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
 > **产品定位**：跨平台、跨设备的通用原生 AgentOS；宿主与扩展决定提供哪些设备或软件能力，统一助理只是应用示例。\
 > **架构路线**：按 Ayni 的共享 Agent 状态、授权、资源及恢复需求设计原生 Core，复用宿主 OS，模型优先通过外部 API 获得；架构图仅参考 AIOS 的分层分组表达样式。\
 > **实施顺序**：先完成基础通用能力，再开展 ESP32-S3、Linux 系统等实验；设备与能力组合按实验目标选取，不要求宿主具备语音、视觉、运动或特定外设。\
 > **基准投入**：单人全职；阶段周期是相对工作量估算，不是开工日期或交付日期承诺。\
-> **当前状态**：通用基础与独立源码SDK已交付，见[基础报告](../reports/core/foundation-acceptance.md)和[独立接入报告](../reports/core/independent-consumption.md)。共享正文与连续提交已随[#137](https://github.com/RobotSe7en/ayni/pull/137)合并；后续存储误报、内部堆分配及共用对话重复工作已修正，正常OTA保持当前数据和配置，ABI0.55/schema10不变，见[ADR-0105](adr/0105-shared-conversation-flow-and-local-cost.md)及[实验记录](../experiments/esp32_wifi_chat/WIFI.md#2026-11-15-共用对话主路径与本地耗时简化)。2026-11-16继续去掉冷读结果的双遍投影及临时区重复擦除，正常软件验证、独立审查和ESP编译通过；开发板暂不可用，新候选未OTA。真实工具交接P95≤100 ms、板端长单步、新格式异常恢复、完整128K峰值及独立硬件停止链仍待对应证据。
+> **当前状态**：通用基础与独立源码SDK已交付，见[基础报告](../reports/core/foundation-acceptance.md)和[独立接入报告](../reports/core/independent-consumption.md)。共享正文与连续提交已随[#137](https://github.com/RobotSe7en/ayni/pull/137)合并；后续存储误报、内部堆分配及共用对话重复工作已修正，正常OTA保持当前数据和配置，ABI0.55/schema10不变，见[ADR-0105](adr/0105-shared-conversation-flow-and-local-cost.md)及[实验记录](../experiments/esp32_wifi_chat/WIFI.md#2026-11-15-共用对话主路径与本地耗时简化)。2026-11-16续作已去掉双遍投影/重复擦除，并实现有界操作内正文复用、新正文创建时请求保存及一次发布候选，见[ADR-0106](adr/0106-bounded-body-reads-and-publication.md)；正常本地验证和独立复查通过，本轮不OTA。真实工具交接P95≤100 ms、板端长单步、新格式异常恢复、完整128K峰值及独立硬件停止链仍待对应证据。
 
 > **本轮范围**：用户2026-10-31要求实施[独立工程接入与验收计划](architecture/independent-consumption-plan.md)：通用源码SDK、低栈工作区、Native/ESP存储及Host、共同应用和验收。平台适配保持独立目录，必要接口直接升级，正常存储和最小重开获授权；实机操作、付费模型及其他新专项不启动。
 
@@ -1097,6 +1097,8 @@ idf.py -p <SERIAL_PORT> flash monitor
 ## 14. 默认值与仍需用户决策的问题
 
 ### 14.1 已接受的实施默认值
+
+本次修订（v1.122，2026-11-16）：用户要求继续精简共用遍历、复制、校验及结束确认，只做本地验证、暂不OTA。正文在同步owner操作内有界复用，新增永久正文创建时请求后台保存，Session依赖确认和完成候选各只构建一次；保留原权限/隐私/派发、实际清理和最终ACK持久保证，不改C ABI及持久格式。见[ADR-0106](adr/0106-bounded-body-reads-and-publication.md)。
 
 本次修订（v1.121，2026-11-16）：继续同一共用对话性能定位，JSON输出改为调用方增长区域的一次投影，原证明/值codec仅清理自身临时字节，一般借区仍完整擦除。正常回归、独立审查及ESP编译通过；不改ABI/schema和持久格式，开发板不在身边，本轮未OTA或取得新板端耗时。见[ADR-0105](adr/0105-shared-conversation-flow-and-local-cost.md)。
 

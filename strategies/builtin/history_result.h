@@ -8,5 +8,7 @@ ayni_status_t store_result_view(const ayni_body_store_v1 &, uint64_t scope,
 // references selects index-only collection; the normal reader renders the original saved Schema.
 ayni_status_t load_result_view(const ayni_body_store_v1 &, const BodyRef &, std::string &,
                                std::vector<BodyRef> *references);
+ayni_status_t load_result_view(BodyReader &, const BodyRef &, std::string &,
+                               std::vector<BodyRef> *references);
 } // namespace ayni::strategies::detail
 #endif

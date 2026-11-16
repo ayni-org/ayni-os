@@ -152,7 +152,7 @@
 
 ## 交接状态（2026-11-16）
 
-- **当前对话流程：** 共享正文与连续前缀已随[#137](https://github.com/RobotSe7en/ayni/pull/137)合并，ABI0.55/schema10保持。后续存储误报、堆分配及共用历史/保存/展示重复工作已修正，91c0c65-localreuse正常OTA、自确认并保留当前数据和配置，见[ADR-0105](../../docs/adr/0105-shared-conversation-flow-and-local-cost.md)及[实验记录](../../experiments/esp32_wifi_chat/WIFI.md#2026-11-15-共用对话主路径与本地耗时简化)；2026-11-16续作已去掉双遍结果投影及重复擦除，软件验证/独立审查/ESP编译通过，候选36e5d44-onepass未OTA（开发板暂不可用）；板端长单步、真实工具交接P95/最大值和新格式异常恢复仍待后续。
+- **当前对话流程：** 共享正文与连续前缀已随[#137](https://github.com/RobotSe7en/ayni/pull/137)合并，ABI0.55/schema10保持。后续存储误报、堆分配及共用历史/保存/展示重复工作已修正，91c0c65-localreuse正常OTA、自确认并保留当前数据和配置，见[ADR-0105](../../docs/adr/0105-shared-conversation-flow-and-local-cost.md)及[实验记录](../../experiments/esp32_wifi_chat/WIFI.md#2026-11-15-共用对话主路径与本地耗时简化)；2026-11-16续作已去掉双遍投影/重复擦除，并完成有界正文复用、创建时请求保存和一次发布确认，见[ADR-0106](../../docs/adr/0106-bounded-body-reads-and-publication.md)；正常本地验证/独立复查通过，本轮不OTA；板端长单步、真实工具交接P95/最大值和新格式异常恢复仍待后续。
 - **共享交互运行时：** 会话取消/收尾、正文缓存清退、文件准入与命令辅助迁入共用组件，ESP改用Core上下文锚点；旧独立历史不迁移，见[ADR-0100](../../docs/adr/0100-shared-interactive-runtime.md)。已完成单子智能体独立审查，两项缓存问题按用户要求最小修复并提交推送；设备部署见实验记录，旧卷重放的完整归因仍未完成，本次授权清理不替代根因修复。
 - **独立平台实验：** 用户另选Web OTA与内存修复一起部署，USB安装及一次Wi-Fi双槽切换/启动确认通过；实施与正常更新结果见[ADR-0099](../../docs/adr/0099-esp32-web-ota.md)，不扩大故障回退专项。触屏Wi-Fi/RC003-MS语音及原电机能力迁入独立实验目录，USB入口撤除，继续复用内置ToolLoop和公开SDK；Core不改。128K完整峰值、60秒带电动作及停止链仍待另行实证，见[ADR-0097](../../docs/adr/0097-esp32-touch-wifi-voice-experiment.md)。
 

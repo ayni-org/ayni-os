@@ -1,9 +1,28 @@
+#include <algorithm>
 #include <ayni/memory.h>
 #include <ayni/runtime/conversation.h>
 #include <cstring>
 namespace ayni::runtime::conversation {
 using hosts::storage::FileValueRequest;
 using strategies::Conversation;
+namespace {
+bool same_reference(const strategies::BodyRef &a, const strategies::BodyRef &b) {
+    return a.id == b.id && a.digest == b.digest && a.size == b.size && a.reserved == b.reserved;
+}
+// One immutable identity can be shared by many history entries. Confirm/release it
+// once, and reject conflicting metadata before dedup can hide a malformed graph.
+ayni_status_t unique_references(std::vector<strategies::BodyRef> &refs) {
+    std::sort(refs.begin(), refs.end(), [](const auto &a, const auto &b) { return a.id < b.id; });
+    for (size_t index = 1; index < refs.size(); ++index) {
+        if (refs[index - 1U].id == refs[index].id &&
+            !same_reference(refs[index - 1U], refs[index])) {
+            return AYNI_STORAGE_FAILED;
+        }
+    }
+    refs.erase(std::unique(refs.begin(), refs.end(), same_reference), refs.end());
+    return AYNI_OK;
+}
+} // namespace
 ayni_status_t Session::context(ayni_context_info_v1 &out) const {
     out = initialized<ayni_context_info_v1>();
     return ayni_get_context(config_.kernel, config_.session, config_.owner_instance, &out);
@@ -151,41 +170,50 @@ ayni_status_t Session::load(const ayni_context_info_v1 &anchor) {
     phase_ = Phase::ready;
     return AYNI_OK;
 }
-ayni_status_t Session::confirm(const strategies::ConversationRecord &record) {
-    const Confirmed key{record.generation,
-                        record.revision,
-                        {record.summary.id, record.history.id, record.draft.id, record.rounds.id}};
-    if (confirmed_ && confirmed_->generation == key.generation &&
-        confirmed_->revision == key.revision && confirmed_->refs == key.refs) {
-        return AYNI_OK;
+bool Session::confirmation_matches(const strategies::ConversationRecord &record) const {
+    if (!confirmed_ || confirmed_->generation != record.generation ||
+        confirmed_->revision != record.revision) {
+        return false;
     }
+    const std::array<strategies::BodyRef, 4> roots{record.summary, record.history, record.draft,
+                                                   record.rounds};
+    return std::equal(roots.begin(), roots.end(), confirmed_->roots.begin(), same_reference);
+}
+// Own one immutable dependency set through asynchronous confirmation. A successful
+// reference leaves the pending suffix permanently; I/O failures still arrive through the store's
+// status.
+ayni_status_t Session::confirm(const strategies::ConversationRecord &record) {
     const auto *store = config_.bodies.store;
     if (!store->confirm) {
         return AYNI_OK;
     } // Legacy durable-only descriptor.
-    std::vector<strategies::BodyRef> refs;
-    auto status = Conversation::references(*store, record, refs);
-    if (status != AYNI_OK) {
-        return status;
-    }
-    bool pending = false;
-    for (const auto &ref : refs) {
-        status = store->confirm(store->context, &ref);
-        if (status == AYNI_NOT_READY) {
-            // C-HVAL-009: request every dependency in this owner pass. The store
-            // still admits one background quantum; publishing waits for all of them.
-            pending = true;
-            continue;
-        }
+    if (!confirmation_matches(record)) {
+        Confirmation next{record.generation,
+                          record.revision,
+                          {record.summary, record.history, record.draft, record.rounds},
+                          {},
+                          0};
+        const auto status = Conversation::references(*store, record, next.refs);
         if (status != AYNI_OK) {
             return status;
         }
+        const auto unique = unique_references(next.refs);
+        if (unique != AYNI_OK) {
+            return unique;
+        }
+        confirmed_ = std::move(next);
     }
-    if (pending) {
-        return AYNI_NOT_READY;
+    auto &progress = *confirmed_;
+    for (size_t index = progress.durable; index < progress.refs.size(); ++index) {
+        const auto status = store->confirm(store->context, &progress.refs[index]);
+        if (status == AYNI_OK) {
+            // Keep each success even if a later reference returns ordinary queue BUSY.
+            std::swap(progress.refs[progress.durable++], progress.refs[index]);
+        } else if (status != AYNI_NOT_READY) {
+            return status;
+        }
     }
-    confirmed_ = key;
-    return AYNI_OK;
+    return progress.durable == progress.refs.size() ? AYNI_OK : AYNI_NOT_READY;
 }
 ayni_status_t Session::save() {
     const auto durable = confirm(candidate_);
@@ -270,7 +298,8 @@ ayni_status_t Session::begin(ayni_string_v1 user, uint64_t memory_id) {
     }
     return AYNI_OK;
 }
-// Stores the accepted input as a body; NOT_READY until the body store made it durable.
+// Stage or durably store the input according to the configured policy; never accept a
+// partial body. Background publication still waits for the full graph to become durable.
 ayni_status_t Session::input() {
     auto bodies = *config_.bodies.store;
     if (config_.persistence == strategies::Persistence::background) {
@@ -312,7 +341,7 @@ ayni_status_t Session::turn(const ayni_context_info_v1 &anchor, uint64_t durable
         if (privacy.phase != AYNI_PRIVACY_IDLE && privacy.phase != AYNI_PRIVACY_COMPLETE) {
             return AYNI_BUSY;
         }
-        // begin() already encoded the exact input before the durable draft save.
+        // begin() already encoded the exact input before starting this Goal.
         // Re-encoding against that saved draft would append the same input twice.
         auto body = initialized<ayni_goal_create_v1>();
         body.goal_type_id = config_.goal_type;
@@ -367,12 +396,12 @@ ayni_status_t Session::turn(const ayni_context_info_v1 &anchor, uint64_t durable
             }
             copied =
                 Conversation::finish(config_.workspace, current_, parameters_.view(), candidate_);
-            if (copied == AYNI_OK) {
-                copied = confirm(candidate_);
-            }
             if (copied != AYNI_OK) {
-                return copied == AYNI_NOT_READY ? AYNI_BUSY : copied;
+                return copied;
             }
+            result_ = TurnResult{goal_, task.task_id, AYNI_OK, AYNI_REASON_NONE, false};
+            phase_ = Phase::prepare_publication;
+            return AYNI_OK;
         }
         result_ = TurnResult{goal_, task.task_id, AYNI_OK, AYNI_REASON_NONE, false};
         const auto accepted = command(AYNI_INTENT_CONTEXT_PUBLISH, anchor, task.task_id,
@@ -389,20 +418,40 @@ ayni_status_t Session::turn(const ayni_context_info_v1 &anchor, uint64_t durable
     }
     return AYNI_OK;
 }
+// The completed Task checkpoint is immutable. Confirm and publish that same candidate
+// without recopying it on each NOT_READY or after the Core publication becomes durable.
+ayni_status_t Session::prepare_publication(const ayni_context_info_v1 &anchor) {
+    const auto status = confirm(candidate_);
+    if (status != AYNI_OK) {
+        return status == AYNI_NOT_READY ? AYNI_BUSY : status;
+    }
+    const auto accepted = command(AYNI_INTENT_CONTEXT_PUBLISH, anchor, result_->task,
+                                  AYNI_CONTEXT_IDLE, candidate_.last_round);
+    if (accepted.status == AYNI_OK) {
+        phase_ = Phase::publishing;
+    }
+    return accepted.status;
+}
 ayni_status_t Session::publish(const ayni_context_info_v1 &anchor) {
     if (anchor.pending_action != AYNI_CONTEXT_PUBLISH || !anchor.pending_task_id) {
         return AYNI_NOT_READY;
     }
-    const auto copied = ayni_copy_task_checkpoint(
-        config_.kernel, anchor.pending_task_id, parameters_.bytes.data(),
-        static_cast<uint32_t>(parameters_.bytes.size()), &parameters_.size);
-    if (copied != AYNI_OK) {
-        return copied;
-    }
-    const auto status =
-        Conversation::finish(config_.workspace, current_, parameters_.view(), candidate_);
-    if (status != AYNI_OK) {
-        return status;
+    if (phase_ == Phase::publish) {
+        // Normal reopen has no in-memory candidate; reconstruct it once from the
+        // completed durable checkpoint, never resume the Task (C-SDK-009).
+        const auto copied = ayni_copy_task_checkpoint(
+            config_.kernel, anchor.pending_task_id, parameters_.bytes.data(),
+            static_cast<uint32_t>(parameters_.bytes.size()), &parameters_.size);
+        if (copied != AYNI_OK) {
+            return copied;
+        }
+        const auto status =
+            Conversation::finish(config_.workspace, current_, parameters_.view(), candidate_);
+        if (status != AYNI_OK) {
+            return status;
+        }
+    } else if (!result_ || result_->task != anchor.pending_task_id) {
+        return AYNI_REVISION_CONFLICT;
     }
     if (!matches(candidate_, anchor)) {
         return AYNI_REVISION_CONFLICT;
@@ -465,7 +514,10 @@ ayni_status_t Session::poll() {
     if (phase_ == Phase::failed) {
         return failure_;
     }
-    if (config_.persistence == strategies::Persistence::background && current_.id) {
+    // Only the active draft needs ongoing persistence requests. Once a completed
+    // candidate owns confirmation, do not alternate back to the superseded draft graph.
+    if (config_.persistence == strategies::Persistence::background && current_.id &&
+        (phase_ == Phase::start_turn || phase_ == Phase::turn)) {
         const auto stored = confirm(current_);
         if (stored != AYNI_OK && stored != AYNI_NOT_READY) {
             failure_ = stored;
@@ -516,6 +568,10 @@ ayni_status_t Session::poll() {
     case Phase::terminal:
         status = unfinished();
         break;
+    case Phase::prepare_publication:
+        status = prepare_publication(anchor);
+        break;
+    case Phase::publishing:
     case Phase::publish:
         status = publish(anchor);
         break;
@@ -633,25 +689,35 @@ ayni_status_t Session::settled(uint64_t durable) const {
 // File deletion and cache collection have one owner. Loaded bodies may have no cached
 // scope, so explicitly release the old record's references after its replacement is durable.
 ayni_status_t Session::collect_superseded(const strategies::ConversationRecord &old) {
-    std::vector<strategies::BodyRef> before, after;
+    std::vector<strategies::BodyRef> before, discovered;
     auto status = Conversation::references(*config_.bodies.store, old, before);
+    const auto *after = &discovered;
     if (status == AYNI_OK) {
-        status = Conversation::references(*config_.bodies.store, current_, after);
+        if (confirmation_matches(current_) && confirmed_->durable == confirmed_->refs.size()) {
+            after = &confirmed_->refs; // The exact complete graph already owns durable proof.
+        } else {
+            status = Conversation::references(*config_.bodies.store, current_, discovered);
+        }
+    }
+    if (status == AYNI_OK) {
+        status = unique_references(before);
     }
     if (status != AYNI_OK) {
         return status == AYNI_NOT_READY ? AYNI_BUSY : status;
     }
+    std::vector<uint64_t> retained;
+    retained.reserve(after->size());
+    for (const auto &ref : *after) {
+        retained.push_back(ref.id);
+    }
+    std::sort(retained.begin(), retained.end());
     const auto *store = config_.bodies.store;
     for (const auto &ref : before) {
-        bool named = false;
-        for (const auto &keep : after) {
-            named = named || keep.id == ref.id;
-        }
-        if (!named) {
+        if (!std::binary_search(retained.begin(), retained.end(), ref.id)) {
             store->release(store->context, &ref);
         }
     }
-    config_.bodies.collect(config_.bodies.context, current_.id, after);
+    config_.bodies.collect(config_.bodies.context, current_.id, *after);
     return AYNI_OK;
 }
 bool Session::active() const {
@@ -660,6 +726,8 @@ bool Session::active() const {
     case Phase::start_turn:
     case Phase::turn:
     case Phase::terminal:
+    case Phase::prepare_publication:
+    case Phase::publishing:
     case Phase::publish:
         return true;
     case Phase::failed:

@@ -133,30 +133,14 @@ ayni_string_v1 local_time(const LocalClock &clock, LocalTimeLines &buffer) {
     }
     return lines.text();
 }
-// Bodies are written before the checkpoint names them. A body the store has not yet made
-// durable defers the whole decision, which keeps no output; other statuses are the turn's own.
+// Durable writes precede the checkpoint. Background bodies request persistence at
+// creation; only Session's complete graph/file/ACK barrier publishes durable history.
+// An unaccepted body defers the decision without publishing a partial checkpoint.
 ayni_status_t save(Turn &turn, const ToolLoopConfig &config, ayni_policy_output_v1 &output) {
     const auto status = write_turn(turn, *config.bodies, output.checkpoint,
                                    output.checkpoint_capacity, output.checkpoint_size);
     if (status == AYNI_NOT_READY) {
         output.disposition = AYNI_POLICY_OUTPUT_DEFER;
-    }
-    if (status == AYNI_OK && config.persistence == Persistence::background) {
-        std::vector<BodyRef> refs;
-        auto saved = Conversation::references(*config.bodies, turn.record, refs);
-        if (saved != AYNI_OK) {
-            return saved;
-        }
-        refs.push_back(turn.refs.input);
-        for (const auto &ref : refs) {
-            if (!ref.id) {
-                continue;
-            }
-            saved = config.bodies->confirm(config.bodies->context, &ref);
-            if (saved != AYNI_OK && saved != AYNI_NOT_READY) {
-                return saved;
-            }
-        }
     }
     return status;
 }
