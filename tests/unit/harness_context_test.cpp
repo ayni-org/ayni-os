@@ -75,7 +75,8 @@ class ContextHarness : public StrategiesFixture {
             EXPECT_EQ(call.effect, AYNI_CALL_EFFECT_COMPLETE);
             std::string bytes(original.size(), '\0');
             uint32_t size = 0;
-            ASSERT_EQ(ayni_copy_call_result(work.kernel(), id, bytes.data(), bytes.size(), &size),
+            ASSERT_EQ(ayni_copy_call_result(work.kernel(), id, bytes.data(),
+                                            static_cast<uint32_t>(bytes.size()), &size),
                       AYNI_OK);
             if (call.body.id) {
                 ASSERT_EQ(policies::Conversation::text(*bodies.store(), call.body, bytes), AYNI_OK);

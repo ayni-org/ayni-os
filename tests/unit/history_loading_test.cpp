@@ -15,7 +15,7 @@ namespace {
 using namespace ayni::strategies::detail;
 using ayni::strategies::BodyRef;
 constexpr uint32_t result_count = 20, text_limit = 64, proof_capacity = 4096;
-constexpr size_t history_capacity = 32768;
+constexpr uint32_t history_capacity = 32768;
 struct ColdBodies {
     ayni::runtime::MemoryBodies memory;
     std::set<uint64_t> available, views;
@@ -66,7 +66,7 @@ TEST(HistoryLoading, cold_dependencies_are_prepared_before_saved_results_are_pro
     Turn turn;
     turn.record.id = 1;
     std::string history(history_capacity, '\0');
-    ayni::model::Writer messages(history.data(), history.size());
+    ayni::model::Writer messages(history.data(), history_capacity);
     messages.prefix();
     for (uint32_t index = 0; index < result_count; ++index) {
         const auto text = std::string("result ") + std::to_string(index);

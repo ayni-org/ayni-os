@@ -3,6 +3,7 @@
 #ifndef AYNI_TEST_WORKSPACE_FIXTURE_H
 #define AYNI_TEST_WORKSPACE_FIXTURE_H
 #include "foundation/workspace.h"
+#include <array>
 #include <ayni/calls.h>
 #include <ayni/workspace.hpp>
 #include <cstdlib>
