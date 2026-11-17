@@ -106,8 +106,8 @@ class Driver {
         runtime::Command state;
         state.operation = runtime::Operation::status;
         const auto startup_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-        // Only the initial outer-file save gates input. Recovered model work
-        // continues in the normal loop, where management and signals remain usable.
+        // Local context loading, saving and ACK gate startup, including gaps between I/O.
+        // Recovered model work continues in the normal loop; management/signals stay usable.
         while (status == AYNI_OK && app.execute(state).saving) {
             if (interrupted.load(std::memory_order_relaxed) ||
                 std::chrono::steady_clock::now() >= startup_deadline) {

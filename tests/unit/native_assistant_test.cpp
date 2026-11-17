@@ -105,6 +105,51 @@ class NativeAssistant : public ::testing::Test {
     Assistant app;
     std::vector<Notice> notices;
 };
+// C-NATIVE-001/002: startup must finish local loading without waiting for owner approval.
+TEST(NativeStartup, loading_stays_visible_until_the_original_turn_or_record_is_available) {
+    ayni::test::TempDirectory directory;
+    Assistant app;
+    std::vector<Notice> notices;
+    Command status;
+    status.operation = Operation::status;
+    Command say;
+    say.operation = Operation::say;
+    say.text = "startup draft";
+    uint64_t original_goal = 0;
+    for (uint32_t opening = 0; opening < 2U; ++opening) {
+        ASSERT_EQ(app.open(directory.path(), {}), AYNI_OK);
+        auto state = app.execute(status);
+        ASSERT_EQ(state.status, AYNI_OK);
+        EXPECT_TRUE(state.saving); // No poll has admitted the initial root read yet.
+        const auto deadline = std::chrono::steady_clock::now() + async_test_timeout;
+        while (state.saving && std::chrono::steady_clock::now() < deadline) {
+            ASSERT_EQ(app.advance(notices), AYNI_OK);
+            app.wait();
+            state = app.execute(status);
+            ASSERT_EQ(state.status, AYNI_OK);
+        }
+        ASSERT_FALSE(state.saving);
+        if (!original_goal) {
+            Command history;
+            history.operation = Operation::conversation;
+            EXPECT_EQ(app.execute(history).status, AYNI_OK);
+            const auto accepted = app.execute(say);
+            ASSERT_EQ(accepted.status, AYNI_OK);
+            original_goal = accepted.id;
+            ASSERT_NE(original_goal, 0U);
+        } else {
+            EXPECT_EQ(state.pending_goal, original_goal);
+            Command goals;
+            goals.operation = Operation::goals;
+            const auto view = app.execute(goals);
+            ASSERT_EQ(view.status, AYNI_OK);
+            ASSERT_EQ(view.goals.size(), 1U);
+            EXPECT_EQ(view.goals.front().goal_id, original_goal);
+            EXPECT_EQ(view.goals.front().lifecycle, AYNI_GOAL_PROPOSED);
+        }
+        ASSERT_EQ(app.close(), AYNI_OK);
+    }
+}
 // ADR-0072: one assistant; "check" is ordinary text for its model turn, not a rule route.
 TEST_F(NativeAssistant, check_text_is_an_ordinary_turn_of_the_single_assistant) {
     allow_chat();
