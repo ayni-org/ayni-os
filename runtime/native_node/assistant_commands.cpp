@@ -350,9 +350,10 @@ Reply Assistant::Impl::describe(const Command &command) const {
         reply.last_round = record ? record->last_round : reply.context.last_turn_id;
         reply.pending_goal = conversation.active() && !record ? conversation.latest_goal() : 0;
         reply.storage_status = storage_status;
-        // CLI startup waits for all local load/save/ACK phases, including gaps between
-        // worker requests. An attached original Core turn keeps running asynchronously.
-        reply.saving = !record && !conversation.awaiting_turn();
+        reply.saving = conversation.file_pending();
+        // Local readiness includes gaps between worker requests. Keep it separate from
+        // pending I/O: management may invalidate a publication between its file operations.
+        reply.context_ready = record || conversation.awaiting_turn();
         reply.pending_commands = pending_count;
         if (reply.status == AYNI_OK) {
             reply.status = applications::assistant::project(node.kernel(), reply.activity);

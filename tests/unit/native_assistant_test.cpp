@@ -120,15 +120,15 @@ TEST(NativeStartup, loading_stays_visible_until_the_original_turn_or_record_is_a
         ASSERT_EQ(app.open(directory.path(), {}), AYNI_OK);
         auto state = app.execute(status);
         ASSERT_EQ(state.status, AYNI_OK);
-        EXPECT_TRUE(state.saving); // No poll has admitted the initial root read yet.
+        EXPECT_FALSE(state.context_ready); // The first root read has not been admitted yet.
         const auto deadline = std::chrono::steady_clock::now() + async_test_timeout;
-        while (state.saving && std::chrono::steady_clock::now() < deadline) {
+        while (!state.context_ready && std::chrono::steady_clock::now() < deadline) {
             ASSERT_EQ(app.advance(notices), AYNI_OK);
             app.wait();
             state = app.execute(status);
             ASSERT_EQ(state.status, AYNI_OK);
         }
-        ASSERT_FALSE(state.saving);
+        ASSERT_TRUE(state.context_ready);
         if (!original_goal) {
             Command history;
             history.operation = Operation::conversation;
