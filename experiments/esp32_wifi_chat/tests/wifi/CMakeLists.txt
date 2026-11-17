@@ -20,5 +20,6 @@ target_include_directories(ayni_wifi_checks PRIVATE stubs ../../firmware/wifi ..
 target_compile_definitions(ayni_wifi_checks PRIVATE CONFIG_AYNI_WIFI_CHAT=1)
 target_link_libraries(ayni_wifi_checks PRIVATE Ayni::Core Ayni::Strategies Ayni::Conversation Ayni::PermitGate Ayni::ModelProtocol ayni_host_sim yyjson ayni_markdown GTest::gtest_main)
 include(GoogleTest)
-gtest_discover_tests(ayni_wifi_checks)
+gtest_discover_tests(ayni_wifi_checks
+    DISCOVERY_TIMEOUT ${AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS})
 add_subdirectory("${AYNI_ROOT}/tests/integration/esp32_wifi_chat" "esp32-integration")

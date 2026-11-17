@@ -9,8 +9,9 @@ include(FetchContent)
 # startup concurrently with several large links under the shared memory budget.
 # CTest enumerates every suite; individual runtime deadlines remain unchanged.
 set(CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE PRE_TEST)
-# The monolithic unit binary enumerates over 1600 cases under ASan/LSan. Its
-# default five-second process deadline cut off discovery in CI (#137).
+# ASan/LSan process startup exceeded the default five seconds for both the large
+# unit binary (#137) and the small C++ SDK binary (#139) under runner load. Share
+# one bounded list-only allowance; individual test runtime deadlines stay unchanged.
 set(AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS 30)
 
 set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)

@@ -12,4 +12,5 @@ enable_testing()
 add_executable(ayni_model_protocol_checks ../../unit/model_protocol_test.cpp)
 target_link_libraries(ayni_model_protocol_checks PRIVATE Ayni::ModelProtocol yyjson GTest::gtest_main)
 include(GoogleTest)
-gtest_discover_tests(ayni_model_protocol_checks)
+gtest_discover_tests(ayni_model_protocol_checks
+    DISCOVERY_TIMEOUT ${AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS})
