@@ -364,7 +364,7 @@ struct Profile::Impl {
             if (persistence == strategies::Persistence::background) {
                 c.reply_encoding = c.summary_reply_encoding = model::ReplyEncoding::framed;
             }
-            c.history = {&bodies, runtime::FileBodies::ready, nullptr, nullptr};
+            c.body_progress = {&bodies, runtime::FileBodies::progress};
             c.model.kind = c.summary.kind = AYNI_POLICY_REQUEST_MODEL;
             c.model.binding_id = text(model_bindings[at]);
             c.summary.binding_id = text("portable.summary");
@@ -482,17 +482,13 @@ ayni_status_t Profile::create_in(void *data, size_t bytes, const ayni_host_v1 &h
         return AYNI_INVALID_ARGUMENT;
     }
     impl_->values = impl_->value_admission.port();
-    status = impl_->bodies.configure(impl_->values);
+    constexpr size_t body_cache_bytes = 2U * 1024U * 1024U;
+    status = impl_->bodies.configure(impl_->values, body_cache_bytes);
     if (status != AYNI_OK) {
         return status;
     }
     impl_->persistence = persistence;
     if (persistence == strategies::Persistence::background) {
-        constexpr size_t background_cache_bytes = 2U * 1024U * 1024U;
-        status = impl_->bodies.set_cache_limit(background_cache_bytes);
-        if (status != AYNI_OK) {
-            return status;
-        }
         impl_->bodies.set_shared_call_results();
         impl_->model_a.use_staged_framed_replies();
         impl_->model_b.use_staged_framed_replies();
@@ -562,7 +558,7 @@ ayni_status_t Profile::tick() {
     if (info.lifecycle == AYNI_LIFECYCLE_STOPPED) {
         // Core stop ends device/model dispatch. Body chunks still owned by the
         // composition must drain before stopped() permits Host close (ADR-0104).
-        runtime::FileBodies::ready(&self.bodies, 0);
+        runtime::FileBodies::progress(&self.bodies, 0);
         return runtime::FileBodies::status(&self.bodies);
     }
     for (auto *model : {&self.model_a, &self.model_b, &self.summary}) {
@@ -585,7 +581,7 @@ ayni_status_t Profile::tick() {
     if (status != AYNI_OK) {
         return status;
     }
-    runtime::FileBodies::ready(&self.bodies, 0);
+    runtime::FileBodies::progress(&self.bodies, 0);
     status = runtime::FileBodies::status(&self.bodies);
     if (status != AYNI_OK) {
         return status;

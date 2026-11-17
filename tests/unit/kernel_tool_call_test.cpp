@@ -453,31 +453,29 @@ class ToolCalls : public ::testing::Test {
                                                               : AYNI_POLICY_REPORT_FAILURE,
                           snapshot, output);
         }
-        ayni_task_tool_call_v1 proposed{};
-        proposed.struct_size = sizeof(proposed);
-        EXPECT_EQ(ayni::test::read_tool_call(plan, plan.tool_call_count, &proposed),
-                  AYNI_NOT_FOUND);
-        proposed.call.input_kind = 99; // Successful public read overwrites an old tagged view.
-        const auto status = ayni::test::read_tool_call(plan, 0, &proposed);
+        ayni::test::ToolCalls proposed;
+        const auto status =
+            proposed.read({reinterpret_cast<const uint8_t *>(plan.text.data), plan.text.size});
         if (status != AYNI_OK) {
             return status;
         }
-        EXPECT_EQ(proposed.call.input_kind, AYNI_TOOL_INPUT_ARGUMENTS);
-        proposal_binding = string_of(proposed.call.function_name);
-        proposal_fields = proposed.call.input.arguments.node_count - 1U;
-        proposal_protocol = string_of(proposed.call.protocol_id);
+        const auto call = proposed.at(0);
+        EXPECT_EQ(call.input_kind, AYNI_TOOL_INPUT_ARGUMENTS);
+        proposal_binding = string_of(call.function_name);
+        proposal_fields = call.input.arguments.node_count - 1U;
+        proposal_protocol = string_of(call.protocol_id);
         if (hold_after_plan) {
             return AYNI_UNSUPPORTED; // Holds the Task with its call retained.
         }
         ayni_capability_detail_v1 detail{};
         detail.struct_size = sizeof(detail);
-        proposal_error = snapshot.inspect_capability(snapshot.call_context,
-                                                     proposed.call.function_name, 1, &detail);
+        proposal_error =
+            snapshot.inspect_capability(snapshot.call_context, call.function_name, 1, &detail);
         if (proposal_error == AYNI_OK) {
             struct State {
                 const ayni_tool_call_v1 &call;
                 ayni_policy_output_v1 &output;
-            } inspection{proposed.call, output};
+            } inspection{call, output};
             proposal_error = ayni_business_contract_read(
                 ::ayni::test::business_workspace(), detail.original_domain,
                 detail.business_contract, &inspection,

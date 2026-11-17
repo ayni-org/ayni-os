@@ -96,7 +96,8 @@ struct Reply {
     ayni_context_info_v1 context{};
     uint64_t last_round = 0, pending_goal = 0;
     ayni_status_t storage_status = AYNI_OK;
-    bool saving = false;
+    bool saving = false;        // Original input staging or file read/write is still pending.
+    bool context_ready = false; // Readable current record or attached original Core turn.
     uint32_t pending_commands = 0;
     applications::assistant::Activity activity;
     std::vector<applications::assistant::Presentation> presentations;
@@ -114,7 +115,8 @@ class Assistant {
     Assistant(const Assistant &) = delete;
     Assistant &operator=(const Assistant &) = delete;
     // Directory must be owner-private; creates missing directories with mode 0700.
-    // Boot/registration/file loading finishes before returning OK. No auto-grants.
+    // Boot/registration finishes before OK; advance completes local loading (context_ready).
+    // No auto-grants. A restored original turn continues asynchronously after loading.
     // Without a channel callback notifications fail explicitly with UNSUPPORTED.
     ayni_status_t open(const std::string &directory, const ModelConfig &config,
                        providers::presentation::Output output = {},

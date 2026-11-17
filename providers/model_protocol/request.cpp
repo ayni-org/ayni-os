@@ -1,4 +1,5 @@
 #include "json.h"
+#include <algorithm>
 #include <ayni/providers/model_protocol.h>
 #include <cstring>
 #include <new>
@@ -401,21 +402,23 @@ ayni_status_t Protocol::write_request(Writer &out, const RequestOptions &options
 }
 ayni_status_t Protocol::encode(const RequestOptions &options, ayni_string_v1 input,
                                std::string &out) const {
-    auto measure = Writer::measuring();
-    auto status = write_request(measure, options, input);
+    std::string encoded;
+    auto writer = Writer::growing(&encoded, [](void *context, size_t minimum) {
+        auto &value = *static_cast<std::string *>(context);
+        if (minimum > value.max_size()) {
+            return Writer::Buffer{};
+        }
+        value.resize(std::max(minimum, value.capacity()));
+        return Writer::Buffer{value.data(), value.size()};
+    });
+    const auto status = write_request(writer, options, input);
     size_t size = 0;
-    if (status != AYNI_OK) {
-        return status;
+    if (status != AYNI_OK || !writer.finish(size)) {
+        return status != AYNI_OK ? status : AYNI_CAPACITY_EXCEEDED;
     }
-    if (!measure.finish(size)) {
-        return AYNI_CAPACITY_EXCEEDED;
-    }
-    out.assign(size, '\0');
-    Writer writer(out.data(), size);
-    status = write_request(writer, options, input);
-    return status != AYNI_OK                           ? status
-           : writer.finish(size) && size == out.size() ? AYNI_OK
-                                                       : AYNI_CAPACITY_EXCEEDED;
+    encoded.resize(size);
+    out = std::move(encoded);
+    return AYNI_OK;
 }
 model::Projection Protocol::projection(RequestOptions &options) {
     return {&options,

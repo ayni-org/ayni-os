@@ -1,4 +1,5 @@
 #pragma once
+#include "../main/tool_outline.h"
 #include "../main/transport.h"
 #include "capture.h"
 #include "context_probe.h"
@@ -18,6 +19,7 @@ class Api {
     struct Job {
         Request request{};
         Packet input{}, output{};
+        ToolOutline outline; // Optional metadata only, generated before the decoded Answer dies.
         uint32_t generation = 0;
         int64_t deadline = 0;     // Monotonic microseconds, includes local queue wait.
         uint8_t *audio = nullptr; // ASR ownership transfers only after successful submit.

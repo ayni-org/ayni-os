@@ -1,5 +1,5 @@
 #include "workspace_fixture.h"
-// White-box tool-call list codec, ADR-0054 and tool-call list format 1 in
+// White-box tool-call list codec, ADR-0054 and tool-call list format 3 in
 // contracts/storage/records.md. Shape only; offers and authority are Kernel tests.
 #include "catalog/capability/argument_encoding.h"
 #include "catalog/capability/value_encoding.h"
@@ -79,8 +79,9 @@ TEST_F(ToolCallsTest, round_trip_keeps_named_arguments_without_retaining_source_
     ASSERT_EQ(encode(), AYNI_OK);
     nodes[3].value.text = text("changed after the post");
     ASSERT_EQ(tool_call_count(::ayni::test::codec_workspace(), list()), 2U);
-    ToolCallView call{};
-    ASSERT_TRUE(read_tool_call(::ayni::test::codec_workspace(), list(), 0, call));
+    ToolCallList decoded;
+    ASSERT_TRUE(read_tool_calls(::ayni::test::codec_workspace(), list(), decoded));
+    auto call = decoded.calls[0];
     EXPECT_EQ(string_of(call.function_name), "timer.set");
     EXPECT_EQ(string_of(call.protocol_id), "t1");
     EXPECT_EQ(call.input_kind, AYNI_TOOL_INPUT_ARGUMENTS);
@@ -93,9 +94,9 @@ TEST_F(ToolCallsTest, round_trip_keeps_named_arguments_without_retaining_source_
     EXPECT_EQ(string_of(value.nodes[2].name), "count");
     EXPECT_EQ(string_of(value.nodes[2].value.text), "-5");
     EXPECT_EQ(string_of(value.nodes[3].value.text), "早点提醒");
-    ASSERT_TRUE(read_tool_call(::ayni::test::codec_workspace(), list(), 1, call));
+    call = decoded.calls[1];
     EXPECT_EQ(string_of(call.function_name), "lamp.off");
-    EXPECT_FALSE(read_tool_call(::ayni::test::codec_workspace(), list(), 2, call));
+    EXPECT_EQ(decoded.count, 2U);
     EXPECT_EQ(string_of(call.function_name), "lamp.off");
 }
 
@@ -169,13 +170,55 @@ TEST_F(ToolCallsTest, persisted_lists_require_exact_framing_and_supported_source
     body = valid;
     constexpr uint32_t list_header_bytes = 16;
     EXPECT_EQ(ayni::foundation::load_le32(body.data() + list_header_bytes), 9U);
-    ToolCallView call{};
-    ASSERT_TRUE(read_tool_call(::ayni::test::codec_workspace(), list(), 0, call));
+    ToolCallList decoded;
+    ASSERT_TRUE(read_tool_calls(::ayni::test::codec_workspace(), list(), decoded));
+    auto call = decoded.calls[0];
     const auto payload_at = static_cast<size_t>(call.input.data - body.data());
     ayni::foundation::store_le32(body.data() + payload_at, 0);
     EXPECT_EQ(tool_call_count(::ayni::test::codec_workspace(), list()), 0U);
     body = valid;
     EXPECT_EQ(tool_call_count(::ayni::test::codec_workspace(), list()), 1U);
+}
+// C-CALL-014 / ABI0.56: the visitor receives decoded trees in source order, but
+// admission is all-or-nothing even when the invalid suffix follows valid candidates.
+TEST_F(ToolCallsTest, visitor_keeps_candidates_private_until_the_complete_list_is_admitted) {
+    ASSERT_EQ(encode(), AYNI_OK);
+    ayni::test::ToolCalls decoded;
+    ASSERT_EQ(decoded.read(list()), AYNI_OK);
+    ASSERT_EQ(decoded.count, calls.size());
+    const auto first = decoded.at(0);
+    ASSERT_EQ(first.input.arguments.node_count, nodes.size());
+    EXPECT_EQ(string_of(first.input.arguments.nodes[3].value.text), "早点提醒");
+    EXPECT_EQ(string_of(decoded.at(1).function_name), "lamp.off");
+    body.push_back(0); // Ordinary malformed input with a trailing byte.
+    uint32_t visited = 0, count = 99;
+    auto assistant = text("unchanged");
+    EXPECT_EQ(ayni_tool_calls_read(
+                  ayni::test::tool_calls_workspace(), list(), &visited,
+                  [](void *context, uint32_t index, const ayni_tool_call_v1 *) {
+                      auto &seen = *static_cast<uint32_t *>(context);
+                      EXPECT_EQ(index, seen++);
+                      return AYNI_OK;
+                  },
+                  &count, &assistant),
+              AYNI_INVALID_ARGUMENT);
+    EXPECT_EQ(visited, calls.size());
+    EXPECT_EQ(count, 99U);
+    EXPECT_EQ(string_of(assistant), "unchanged");
+}
+// C-CALL-014: a consumer capacity refusal is preserved; metadata is not published.
+TEST_F(ToolCallsTest, visitor_capacity_refusal_preserves_outputs) {
+    ASSERT_EQ(encode(), AYNI_OK);
+    uint32_t count = 99;
+    auto assistant = text("unchanged");
+    EXPECT_EQ(
+        ayni_tool_calls_read(
+            ayni::test::tool_calls_workspace(), list(), nullptr,
+            [](void *, uint32_t, const ayni_tool_call_v1 *) { return AYNI_CAPACITY_EXCEEDED; },
+            &count, &assistant),
+        AYNI_CAPACITY_EXCEEDED);
+    EXPECT_EQ(count, 99U);
+    EXPECT_EQ(string_of(assistant), "unchanged");
 }
 } // namespace
 

@@ -1,56 +1,19 @@
-#include "model_tools.h"
+#include "tool_outline.h"
+#include <algorithm>
 #include <ayni/model_messages.hpp>
 #include <ayni/values_json.hpp>
 #include <cstring>
-#include <memory>
-#include <new>
 namespace wifichat {
-ayni_status_t ModelTools::decode(ayni_bytes_v1 bytes, const ayni_workspace_v1 &workspace) {
-    count_ = 0;
-    assistant_ = {};
-    if (!bytes.data || bytes.size > wire_.size()) {
-        return AYNI_INVALID_ARGUMENT;
-    }
-    std::memcpy(wire_.data(), bytes.data, bytes.size);
-    const ayni_bytes_v1 owned{wire_.data(), bytes.size};
-    uint32_t count = 0;
-    auto status = ayni_tool_calls_read(&workspace, owned, &count, &assistant_);
-    if (status != AYNI_OK || count > calls_.size()) {
-        return status == AYNI_OK ? AYNI_CAPACITY_EXCEEDED : status;
-    }
-    auto view =
-        std::unique_ptr<ayni_task_tool_call_v1>(new (std::nothrow) ayni_task_tool_call_v1{});
-    if (!view) {
-        return AYNI_CAPACITY_EXCEEDED;
-    }
-    for (uint32_t at = 0; at < count; ++at) {
-        view->struct_size = sizeof(*view);
-        status = ayni_tool_call_read(&workspace, owned, at, view.get());
-        if (status != AYNI_OK) {
-            return status;
-        }
-        calls_[at] = view->call;
-        if (view->call.input_kind == AYNI_TOOL_INPUT_ARGUMENTS) {
-            const auto input = view->call.input.arguments;
-            if (input.node_count > nodes_per_tool) {
-                return AYNI_CAPACITY_EXCEEDED;
-            }
-            std::memcpy(nodes_[at].data(), input.nodes, input.node_count * sizeof(*input.nodes));
-            calls_[at].input.arguments = {nodes_[at].data(), input.node_count};
-        }
-    }
-    count_ = count;
-    return AYNI_OK;
-}
-ayni_status_t ModelTools::outline(char *buffer, size_t capacity, size_t &written) const {
+ayni_status_t write_tool_outline(const ayni_provider_result_v1 &result, char *buffer,
+                                 size_t capacity, size_t &written) {
     written = 0;
     ayni::json::Writer out(buffer, capacity);
     out.raw("[");
-    for (uint32_t at = 0; at < count_; ++at) {
+    for (uint32_t at = 0; at < result.tool_call_count; ++at) {
         if (at) {
             out.raw(",");
         }
-        const auto &call = calls_[at];
+        const auto &call = result.tool_calls[at];
         const std::string_view function(call.function_name.data, call.function_name.size);
         bool known = false;
         for (const auto &spec : ayni::model::functions) {

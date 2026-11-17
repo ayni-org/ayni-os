@@ -2,10 +2,10 @@
 #include "capture.h"
 #include "configuration.h"
 #include "model_codec.h"
-#include "model_tools.h"
 #include "motor_plan.h"
 #include "nvs_flash.h"
 #include "settings_codec.h"
+#include "tool_outline.h"
 #include <ayni/hosts/storage/value_admission.h>
 #include <ayni/strategies/builtin.h>
 #include <ayni/values_json.hpp>
@@ -252,25 +252,34 @@ TEST(WifiModel, MultipleToolsRoundTripThroughPublicSdkWithOwnedArguments) {
     std::vector<uint64_t> storage((bytes + sizeof(uint64_t) - 1) / sizeof(uint64_t));
     const ayni_workspace_v1 workspace{sizeof(workspace), 0, storage.data(),
                                       storage.size() * sizeof(uint64_t)};
-    auto tools = std::make_unique<ModelTools>();
-    ASSERT_EQ(tools->decode({packet->body.data() + model_result_header_bytes,
-                             packet->size - uint32_t(model_result_header_bytes)},
-                            workspace),
+    response.clear(); // The packet, rather than a second owner, retains all encoded arguments.
+    struct Checked {
+        uint32_t count = 0;
+    } checked;
+    uint32_t count = 0;
+    ayni_string_v1 assistant{};
+    ASSERT_EQ(ayni_tool_calls_read(
+                  &workspace,
+                  {packet->body.data() + model_result_header_bytes,
+                   packet->size - uint32_t(model_result_header_bytes)},
+                  &checked,
+                  [](void *ctx, uint32_t index, const ayni_tool_call_v1 *call) {
+                      ++static_cast<Checked *>(ctx)->count;
+                      EXPECT_EQ(index < 2U, true);
+                      EXPECT_EQ(
+                          std::string_view(call->function_name.data, call->function_name.size),
+                          "ayni_call_capability");
+                      EXPECT_EQ(call->input_kind, AYNI_TOOL_INPUT_ARGUMENTS);
+                      EXPECT_EQ(call->input.arguments.node_count, 3U);
+                      const auto value = call->input.arguments.nodes[1].value.text;
+                      EXPECT_EQ(std::string_view(value.data, value.size), "motor.status");
+                      return AYNI_OK;
+                  },
+                  &count, &assistant),
               AYNI_OK);
-    response.clear();
-    packet.reset();
-    ASSERT_EQ(tools->count(), 2U);
-    EXPECT_EQ(std::string_view(tools->assistant().data, tools->assistant().size), "查询台架");
-    const auto &second = tools->calls()[1];
-    EXPECT_EQ(std::string_view(second.protocol_id.data, second.protocol_id.size), "call-2");
-    const auto &call = tools->calls()[0];
-    EXPECT_EQ(std::string_view(call.protocol_id.data, call.protocol_id.size), "call-1");
-    EXPECT_EQ(std::string_view(call.function_name.data, call.function_name.size),
-              "ayni_call_capability");
-    ASSERT_EQ(call.input_kind, AYNI_TOOL_INPUT_ARGUMENTS);
-    ASSERT_EQ(call.input.arguments.node_count, 3U);
-    const auto &value = call.input.arguments.nodes[1].value.text;
-    EXPECT_EQ(std::string_view(value.data, value.size), "motor.status");
+    EXPECT_EQ(count, 2U);
+    EXPECT_EQ(checked.count, 2U);
+    EXPECT_EQ(std::string_view(assistant.data, assistant.size), "查询台架");
 }
 
 TEST(WifiMotor, ModelCommandsAcceptSixtySecondsAndRetainFinitePwmLimits) {
@@ -300,40 +309,28 @@ TEST(WifiMotor, BoardCalibrationReversesOnlySecondMotorAndPreservesCoast) {
 }
 
 TEST(WifiModel, ProgressOutlineDisclosesOnlyProtocolMetadata) {
-    // ADR-0097: execution progress is metadata, not private tool arguments or assistant prose.
+    // ADR-0097: only metadata is projected while the worker owns the decoded Answer.
     const std::string response =
         R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":"private-assistant-text","tool_calls":[{"id":"call-1","type":"function","function":{"name":"ayni_call_capability","arguments":"{\"binding_id\":\"speaker.speak_text\",\"binding_version\":1,\"arguments\":{\"text\":\"private-media-text\"}}"}}]}}]})";
     auto packet = std::make_unique<Packet>();
-    ASSERT_TRUE(decode_model(response, true, *packet));
-    size_t bytes = 0, alignment = 0;
-    ASSERT_EQ(ayni::strategies::ToolLoop::workspace_requirements(&bytes, &alignment), AYNI_OK);
-    std::vector<uint64_t> storage((bytes + sizeof(uint64_t) - 1) / sizeof(uint64_t));
-    const ayni_workspace_v1 workspace{sizeof(workspace), 0, storage.data(),
-                                      storage.size() * sizeof(uint64_t)};
-    auto tools = std::make_unique<ModelTools>();
-    ASSERT_EQ(tools->decode({packet->body.data() + model_result_header_bytes,
-                             packet->size - uint32_t(model_result_header_bytes)},
-                            workspace),
-              AYNI_OK);
-    std::array<char, tool_outline_bytes> out{};
-    size_t used = 0;
-    ASSERT_EQ(tools->outline(out.data(), out.size(), used), AYNI_OK);
+    ToolOutline outline;
+    ASSERT_TRUE(decode_model(response, true, *packet, {}, &outline));
     EXPECT_EQ(
-        std::string_view(out.data(), used),
+        std::string_view(outline.bytes.data(), outline.size),
         R"([{"function":"ayni_call_capability","binding":"speaker.speak_text","operation":"invoke"}])");
+    auto answer = std::make_unique<ayni::providers::model_protocol::Answer>();
+    ayni::providers::model_protocol::Protocol{}.decode({}, const_cast<char *>(response.data()),
+                                                       response.size(), *answer);
     std::array<char, 1> too_small{};
-    EXPECT_EQ(tools->outline(too_small.data(), too_small.size(), used), AYNI_BUFFER_TOO_SMALL);
+    size_t used = 0;
+    EXPECT_EQ(write_tool_outline(answer->result, too_small.data(), too_small.size(), used),
+              AYNI_BUFFER_TOO_SMALL);
 }
 
 TEST(WifiModel, ProgressOutlineNeverPromotesNestedBusinessFieldsOrUnknownTools) {
     // ADR-0097: unvalidated model proposals cannot smuggle business text into metadata.
-    size_t bytes = 0, alignment = 0;
-    ASSERT_EQ(ayni::strategies::ToolLoop::workspace_requirements(&bytes, &alignment), AYNI_OK);
-    std::vector<uint64_t> storage((bytes + sizeof(uint64_t) - 1) / sizeof(uint64_t));
-    const ayni_workspace_v1 workspace{sizeof(workspace), 0, storage.data(),
-                                      storage.size() * sizeof(uint64_t)};
     auto packet = std::make_unique<Packet>();
-    auto tools = std::make_unique<ModelTools>();
+    ToolOutline tools;
     for (
         const char *proposal :
         {R"({"id":"1","type":"function","function":{"name":"ayni_call_capability","arguments":"{\"arguments\":{\"binding_id\":\"private-nested\"}}"}})",
@@ -350,15 +347,8 @@ TEST(WifiModel, ProgressOutlineNeverPromotesNestedBusinessFieldsOrUnknownTools) 
             std::string(
                 R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[)") +
             proposal + R"(]}}]})";
-        ASSERT_TRUE(decode_model(response, true, *packet));
-        ASSERT_EQ(tools->decode({packet->body.data() + model_result_header_bytes,
-                                 packet->size - uint32_t(model_result_header_bytes)},
-                                workspace),
-                  AYNI_OK);
-        std::array<char, tool_outline_bytes> out{};
-        size_t used = 0;
-        ASSERT_EQ(tools->outline(out.data(), out.size(), used), AYNI_OK);
-        const std::string_view outline(out.data(), used);
+        ASSERT_TRUE(decode_model(response, true, *packet, {}, &tools));
+        const std::string_view outline(tools.bytes.data(), tools.size);
         EXPECT_EQ(outline.find("private"), outline.npos);
         EXPECT_NE(outline.find("\"binding\":\"\""), outline.npos);
         EXPECT_EQ(outline.find("7070707"), outline.npos);
@@ -369,13 +359,8 @@ TEST(WifiModel, ProgressOutlineNeverPromotesNestedBusinessFieldsOrUnknownTools) 
 
 TEST(WifiModel, ProgressRetainsTheRootProtocolOperationAfterTheBinding) {
     // ADR-0097: UI distinguishes invoke/start without disclosing private business input.
-    size_t bytes = 0, alignment = 0;
-    ASSERT_EQ(ayni::strategies::ToolLoop::workspace_requirements(&bytes, &alignment), AYNI_OK);
-    std::vector<uint64_t> storage((bytes + sizeof(uint64_t) - 1) / sizeof(uint64_t));
-    const ayni_workspace_v1 workspace{sizeof(workspace), 0, storage.data(),
-                                      storage.size() * sizeof(uint64_t)};
     auto packet = std::make_unique<Packet>();
-    auto tools = std::make_unique<ModelTools>();
+    ToolOutline tools;
     for (const auto mode : {"invoke", "start", "read", "wait", "cancel", "close"}) {
         const std::string arguments =
             std::string(
@@ -389,17 +374,52 @@ TEST(WifiModel, ProgressRetainsTheRootProtocolOperationAfterTheBinding) {
         json.raw(R"(}}]}}]})");
         size_t used = 0;
         ASSERT_TRUE(json.finish(used));
-        ASSERT_TRUE(decode_model({response.data(), used}, true, *packet));
-        ASSERT_EQ(tools->decode({packet->body.data() + model_result_header_bytes,
-                                 packet->size - uint32_t(model_result_header_bytes)},
-                                workspace),
-                  AYNI_OK);
-        std::array<char, tool_outline_bytes> outline{};
-        ASSERT_EQ(tools->outline(outline.data(), outline.size(), used), AYNI_OK);
-        const std::string_view metadata(outline.data(), used);
+        ASSERT_TRUE(decode_model({response.data(), used}, true, *packet, {}, &tools));
+        const std::string_view metadata(tools.bytes.data(), tools.size);
         EXPECT_NE(metadata.find(std::string("\"operation\":\"") + mode + '"'), metadata.npos);
         EXPECT_EQ(metadata.find("private"), metadata.npos);
     }
+}
+
+// ADR-0108 continuation: UI metadata uses the admitted Answer and imposes no 32-node limit.
+TEST(WifiModel, ProgressDoesNotLimitTheAdmittedArgumentTreeAndClearsBetweenReplies) {
+    std::string arguments = R"({"binding_id":"screen.show_text","binding_version":1,"arguments":[)";
+    constexpr uint32_t groups = 4, elements = 62; // Root/envelope + four lists = 256 nodes.
+    for (uint32_t group = 0; group < groups; ++group) {
+        if (group) {
+            arguments += ',';
+        }
+        arguments += '[';
+        for (uint32_t at = 0; at < elements; ++at) {
+            if (at) {
+                arguments += ',';
+            }
+            arguments += '0';
+        }
+        arguments += ']';
+    }
+    arguments += "]}";
+    std::string response(16384, '\0');
+    ayni::json::Writer out(response.data(), response.size());
+    out.raw(
+        R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"many","type":"function","function":{"name":"ayni_call_capability","arguments":)");
+    out.string(arguments);
+    out.raw(R"(}}]}}]})");
+    size_t bytes = 0;
+    ASSERT_TRUE(out.finish(bytes));
+    response.resize(bytes);
+    auto packet = std::make_unique<Packet>();
+    ToolOutline outline;
+    ASSERT_TRUE(decode_model(response, true, *packet, {}, &outline));
+    EXPECT_EQ(read_model_result_header(packet->body.data()).tool_call_count, 1U);
+    EXPECT_NE(std::string_view(outline.bytes.data(), outline.size).find("screen.show_text"),
+              std::string_view::npos);
+    ASSERT_TRUE(decode_model(
+        R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"done"}}]})",
+        false, *packet, {}, &outline));
+    EXPECT_EQ(outline.size, 0U);
+    EXPECT_TRUE(
+        std::all_of(outline.bytes.begin(), outline.bytes.end(), [](char c) { return c == 0; }));
 }
 
 TEST(WifiSettings, ApiAndStreamingOptionsPersistWithoutChangingSavedSecrets) {
@@ -424,36 +444,29 @@ TEST(WifiSettings, ApiAndStreamingOptionsPersistWithoutChangingSavedSecrets) {
     EXPECT_FALSE(parse_settings_patch(R"({"stream":"yes"})", patch));
     EXPECT_TRUE(parse_settings_patch(R"({"api_type":"responses","stream":"true"})", patch));
 }
-TEST(WifiSettings, LegacySettingsRetainChatNonStreamingDefaults) {
-    // ADR-0098: v1 snapshots remain readable; no factory reset or credential migration.
+TEST(WifiSettings, UnsupportedSettingsAreRefusedWithoutRewritingCredentials) {
+    // ADR-0108: only settings/v2 is supported; refusal preserves the stored blob.
     reset_nvs();
     Settings first;
-    std::strcpy(first.ssid.data(), "legacy-network");
-    std::strcpy(first.model_key.data(), "legacy-key");
-    constexpr size_t header = 8;
-    std::vector<uint8_t> record(header, 0);
-    put32(record.data(), 0x41594331);
-    put32(record.data() + 4, 1);
-    for (size_t at = 0; at < Settings::legacy_field_count; ++at) {
-        const size_t begin = record.size();
-        record.resize(begin + first.capacity(at), 0);
-        std::memcpy(record.data() + begin, first.field(at), std::strlen(first.field(at)));
-    }
-    const auto payload = record.size();
-    record.resize(payload + sizeof(uint32_t));
-    put32(record.data() + payload, checksum(record.data(), payload));
+    std::strcpy(first.ssid.data(), "fixture-network");
+    std::strcpy(first.model_key.data(), "fixture-key");
+    ASSERT_TRUE(first.save());
     nvs_handle_t store = 0;
     ASSERT_EQ(nvs_open("ayni_wifi", NVS_READWRITE, &store), ESP_OK);
-    ASSERT_EQ(nvs_set_blob(store, "settings", record.data(), record.size()), ESP_OK);
+    size_t size = 0;
+    ASSERT_EQ(nvs_get_blob(store, "settings", nullptr, &size), ESP_OK);
+    std::vector<uint8_t> bytes(size);
+    ASSERT_EQ(nvs_get_blob(store, "settings", bytes.data(), &size), ESP_OK);
+    put32(bytes.data() + sizeof(uint32_t), 1);
+    put32(bytes.data() + size - sizeof(uint32_t), checksum(bytes.data(), size - sizeof(uint32_t)));
+    ASSERT_EQ(nvs_set_blob(store, "settings", bytes.data(), size), ESP_OK);
     ASSERT_EQ(nvs_commit(store), ESP_OK);
-    nvs_close(store);
     Settings loaded;
-    ASSERT_TRUE(loaded.load());
-    EXPECT_STREQ(loaded.ssid.data(), "legacy-network");
-    EXPECT_STREQ(loaded.model_key.data(), "legacy-key");
-    EXPECT_STREQ(loaded.api_type.data(), "chat_completions");
-    EXPECT_STREQ(loaded.stream.data(), "false");
-    EXPECT_STREQ(loaded.output_limit.data(), "max_tokens");
+    EXPECT_FALSE(loaded.load());
+    std::vector<uint8_t> after(size);
+    ASSERT_EQ(nvs_get_blob(store, "settings", after.data(), &size), ESP_OK);
+    EXPECT_EQ(after, bytes);
+    nvs_close(store);
 }
 TEST(WifiModel, ResponsesStoredReplyKeepsContinuationAndUsageOutOfVisibleText) {
     // ADR-0098: the ESP queue carries the same selected reply encoding as Native.

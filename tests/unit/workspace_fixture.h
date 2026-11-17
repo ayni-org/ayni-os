@@ -3,10 +3,12 @@
 #ifndef AYNI_TEST_WORKSPACE_FIXTURE_H
 #define AYNI_TEST_WORKSPACE_FIXTURE_H
 #include "foundation/workspace.h"
+#include <array>
 #include <ayni/calls.h>
 #include <ayni/workspace.hpp>
 #include <cstdlib>
 #include <optional>
+#include <vector>
 
 namespace ayni::test {
 inline const ayni_workspace_v1 *value_workspace() {
@@ -24,13 +26,39 @@ inline const ayni_workspace_v1 *tool_calls_workspace() {
     }
     return memory.get();
 }
-// One proposal of a completed inline TOOL_CALLS result, whose text holds the list.
-inline ayni_status_t read_tool_call(const ayni_task_call_result_v1 &result, uint32_t index,
-                                    ayni_task_tool_call_v1 *out) {
-    return ayni_tool_call_read(
-        tool_calls_workspace(),
-        {reinterpret_cast<const uint8_t *>(result.text.data), result.text.size}, index, out);
-}
+// Test-owned decoded proposals. Strings borrow the caller's immutable list body.
+struct ToolCalls {
+    struct Item {
+        ayni_tool_call_v1 call{};
+        std::vector<ayni_argument_node_v1> nodes;
+    };
+    std::array<Item, AYNI_CALL_TOOL_COUNT_MAX> calls;
+    uint32_t count = 0;
+    ayni_string_v1 assistant{};
+    ayni_status_t read(ayni_bytes_v1 bytes) {
+        return ayni_tool_calls_read(
+            tool_calls_workspace(), bytes, this,
+            [](void *context, uint32_t index, const ayni_tool_call_v1 *call) {
+                auto &item = static_cast<ToolCalls *>(context)->calls[index];
+                item.call = *call;
+                if (call->input_kind == AYNI_TOOL_INPUT_ARGUMENTS) {
+                    const auto &args = call->input.arguments;
+                    item.nodes.assign(args.nodes, args.nodes + args.node_count);
+                    item.call.input.arguments = {};
+                }
+                return AYNI_OK;
+            },
+            &count, &assistant);
+    }
+    ayni_tool_call_v1 at(uint32_t index) const {
+        auto call = calls[index].call;
+        if (call.input_kind == AYNI_TOOL_INPUT_ARGUMENTS) {
+            const auto &nodes = calls[index].nodes;
+            call.input.arguments = {nodes.data(), static_cast<uint32_t>(nodes.size())};
+        }
+        return call;
+    }
+};
 inline const ayni_workspace_v1 *business_workspace() {
     static thread_local ::ayni::Workspace memory;
     if (memory.get() == nullptr && memory.create(::ayni::Workspace::Purpose::business) != AYNI_OK) {

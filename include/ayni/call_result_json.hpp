@@ -66,7 +66,8 @@ inline ayni_status_t write_original_result(void *opaque,
         if (value_query != AYNI_OK) {
             return value_query;
         }
-        auto value = state.workspace.take(value_bytes);
+        // C-SDK-007: ayni_value_read owns and erases its scratch before returning.
+        auto value = state.workspace.delegate(value_bytes);
         if (!value) {
             return AYNI_CAPACITY_EXCEEDED;
         }
@@ -103,7 +104,8 @@ inline ayni_status_t write_call_result(const ayni_workspace_v1 *region, Writer &
     if (proof_query != AYNI_OK) {
         return proof_query;
     }
-    auto proof = workspace.take(proof_bytes);
+    // C-SDK-007: the proof codec erases its own leases on success and refusal.
+    auto proof = workspace.delegate(proof_bytes);
     if (!proof) {
         return AYNI_CAPACITY_EXCEEDED;
     }

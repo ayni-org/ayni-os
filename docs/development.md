@@ -132,7 +132,7 @@ git diff --check
 
 `python3 tools/check_readability.py --list` 列出现存问题。`tools/readability_baseline.json` 按规则、路径、声明或表达式记录历史债务，不依赖行号；问题消除后须同时删除对应项。非 Kernel ID 的位运算只能用带理由、精确表达式和次数上限的例外排除。CI 不生成基线；`--write-baseline` 仅供显式记录现状，并须逐项审查 diff，不能用来绕过新违例。
 
-GoogleTest测试列表统一在CTest开始阶段发现（`PRE_TEST`），避免并行链接时同时启动多个sanitizer进程。最大单元二进制`ayni_unit_tests`使用30秒发现预算，避免1682项列表在ASan/LSan下触发默认5秒进程截止；其他二进制仍默认5秒，各用例运行时限不变。该预算只影响`--gtest_list_tests`；实际测试仍由可执行程序枚举，保留参数化用例（[CMake3.28文档](https://cmake.org/cmake/help/v3.28/module/GoogleTest.html#command:gtest_discover_tests)）。
+GoogleTest测试列表统一在CTest开始阶段发现（`PRE_TEST`），避免并行链接时同时启动多个sanitizer进程。全部GoogleTest二进制共用具名30秒发现预算：CI先在大单元二进制、后在小型C++ SDK二进制的ASan/LSan进程启动时超过默认5秒（#137/#139）。这属于列举进程的有限启动余量，各用例运行时限不变。该预算只影响`--gtest_list_tests`；实际测试仍由可执行程序枚举，保留参数化用例（[CMake3.28文档](https://cmake.org/cmake/help/v3.28/module/GoogleTest.html#command:gtest_discover_tests)）。
 
 ## ESP32-S3 固件
 
@@ -233,7 +233,7 @@ if (status == AYNI_OK) {
 
 同源可重复导入和增补组件；同一构建不能混用不同源码来源。源码、平台上下文和arena的生命周期仍按公开契约处理。独立隔离验证位于`tests/portability/`，完整接入阶段见[实施计划](architecture/independent-consumption-plan.md)，编译结果不代表ESP实机通过。
 
-P5 提供源码级 `include/ayni/ayni.hpp` 和 [五个公开接入示例](../examples/README.md)（ADR-0067）。`ayni_cpp_sdk_smoke` 与示例客户端按 C++17、`-fno-exceptions -fno-rtti` 编译；当前 C ABI minor 为 0.55、Core schema 10；各阶段版本及兼容决定见对应 ADR。ESP-IDF 组合根包含同一 header，完整 CI 编译不能替代板级执行。
+P5 提供源码级 `include/ayni/ayni.hpp` 和 [五个公开接入示例](../examples/README.md)（ADR-0067）。`ayni_cpp_sdk_smoke` 与示例客户端按 C++17、`-fno-exceptions -fno-rtti` 编译；当前 C ABI minor 为 0.56、Core schema 10；各阶段版本及兼容决定见对应 ADR。ESP-IDF 组合根包含同一 header，完整 CI 编译不能替代板级执行。
 
 普通测试套件通过 CTest 运行 `CppSdk.*`、`cpp_sdk_without_exceptions_or_rtti`、`Examples.*`；`Examples.assistant_demo` 运行 Mock CLI 脚本。第二模型用本地 HTTP fixture，不使用真实服务或密钥。具体操作见示例 README；构建前仍按本页资源预算设置显式并行度。
 
@@ -334,7 +334,7 @@ Xtensa GCC15的`-Os`对上游链接标签成功路径产生maybe-uninitialized�
 
 ### 共享交互运行时的源码接口
 
-`Session::Config::bodies`使用`BodyCollection`，FileBodies调用方传入`collection()`；端口和所有异步缓冲保持到Host join。默认保留草稿，交互应用可显式选`UnfinishedTurn::discard`并使用cancel/abandon/take_result；关闭前反复quiesce并继续step，完成文件/ACK排空后再shutdown。旧工作必须先由组合根取消并确认终态；Core shutdown不等于取消所有持久Goal。FileBodies的set_cache_limit/trim_cache管理驻留正文，ready检查包含未受理删除。ValueAdmission的额度由部署选择；portable Profile的外层值为4槽，调用方打开的Host队列至少5槽。CommandClient要求每principal一个独占命令流；多命令窗口的Native CLI复用CommandSequence生成身份并保持原回执窗口。详见ADR-0100。
+`Session::Config::bodies`使用`BodyCollection`，FileBodies调用方传入`collection()`；端口和所有异步缓冲保持到Host join。默认保留草稿，交互应用可显式选`UnfinishedTurn::discard`并使用cancel/abandon/take_result；关闭前反复quiesce并继续step，完成文件/ACK排空后再shutdown。旧工作必须先由组合根取消并确认终态；Core shutdown不等于取消所有持久Goal。FileBodies::configure必须显式正数缓存预算，set_cache_limit拒绝0，trim_cache管理驻留正文，ready检查包含未受理删除。ValueAdmission的额度由部署选择；portable Profile的外层值为4槽，调用方打开的Host队列至少5槽。CommandClient要求每principal一个独占命令流；多命令窗口的Native CLI复用CommandSequence生成身份并保持原回执窗口。详见ADR-0100。
 
 相关正常检查为`ayni_conversation_session_tests`、`FileValues.*`/`FileBodies.*`和独立ESP实验的Wi-Fi检查；`tests/portability/run_native.py`继续覆盖默认保留模式及隔离SDK正常关闭重开。板端部署和新故障专项不由这些命令启动。
 
@@ -342,4 +342,6 @@ Xtensa GCC15的`-Os`对上游链接标签成功路径产生maybe-uninitialized�
 
 ABI0.55要求完整body descriptor；旧write接口仍持久确认后成功。stage只在有界内存接收，share取得独立scope引用，confirm请求保存且不阻塞。FileBodies暂存需要正数cache预算；每次至多一个4 KiB文件借用，Core请求优先。Session/ToolLoop默认durable，ESP明确background；portable Profile::create_in可显式选择同一策略用于正常软件回归。模型临时输入在原Call终态持久后过期；原始模型提议及必要结果后台保存，不能以trim删除尚未保存的所有者。
 
-Core schema10、ConversationRecord6、turn7、SQLite4直接升级且拒旧保留。首次完整Call及快照type21/v2，后续journal状态type21/v3。新格式异常恢复未验证；本轮不执行板卡更新或清理，后续只通过既有停止/关闭后的指定分区流程处置旧数据，见ADR-0104。
+Core schema10、ConversationRecord6、turn8、结果视图2、SQLite5直接升级且拒旧保留。首次完整Call及快照type21/v2，后续journal状态type21/v3。新格式异常恢复未验证；本轮不执行板卡更新或清理，后续只通过既有停止/关闭后的指定分区流程处置旧数据，见ADR-0104及ADR-0108。
+
+Native已使用共享Session/FileBodies，只有SqliteValues保留SQLite I/O；默认durable、显式retain_and_append。共享默认retain仍要求显式abandon；保留模式正常关闭/重开挂接原Goal，不复制新动作。pending_result供异步通知读取正文后再消费，awaiting_turn只表示原Core回合等待，不能将保存/清理当空闲。详见ADR-0108及Native会话契约。

@@ -82,17 +82,13 @@ ayni_status_t operation_source(const ayni_tool_call_v1 &proposal,
                              : status;
 }
 
-// The raw result is archived through the existing store before any chunking; no second result
-// ledger.
+// Result summaries retain the original shared body/proof graph; no separate backend archive.
 ayni_status_t operation_result(Workspace &workspace, const ayni_operation_info_v1 &info,
                                const ToolLoopConfig &config, const ayni_task_snapshot_v1 &snapshot,
-                               Turn &turn, ayni_policy_output_v1 &output, char *buffer,
-                               uint32_t capacity, ToolBudget budget, ayni_string_v1 &response,
-                               ayni_status_t wait_status) {
-    ayni_task_call_result_v1 original{};
+                               ayni_policy_output_v1 &output, char *buffer, uint32_t capacity,
+                               ToolReply &reply, ayni_status_t wait_status) {
+    auto &original = reply.call;
     const ayni_task_call_result_v1 *body = nullptr;
-    ArchivedResult archived;
-    std::string owned;
     if (info.call.outcome && info.call.outcome != AYNI_CALL_ABANDONED &&
         info.call.effect != AYNI_CALL_EFFECT_UNKNOWN) {
         const auto read = result(snapshot, {info.step_key.data, info.step_key.size}, original);
@@ -100,7 +96,7 @@ ayni_status_t operation_result(Workspace &workspace, const ayni_operation_info_v
             return read;
         }
         if (read == AYNI_OK) {
-            const auto resolved = resolve_result_body(*config.bodies, original, owned);
+            const auto resolved = resolve_result_body(*config.bodies, original, reply.owned);
             if (resolved == AYNI_NOT_READY) {
                 output.disposition = AYNI_POLICY_OUTPUT_DEFER;
             }
@@ -108,36 +104,21 @@ ayni_status_t operation_result(Workspace &workspace, const ayni_operation_info_v
                 return resolved;
             }
             body = &original;
-            if (config.history.archive) {
-                const auto status =
-                    archive_result(config, snapshot, turn.record, original, archived, output);
-                if (status != AYNI_OK) {
-                    return status;
-                }
-            }
+        } else {
+            original = {}; // Expired original has no body eligible for retention/summary.
         }
     }
-    const auto status = render(workspace, info, body, wait_status, buffer, capacity, response);
-    if (status == AYNI_OK && budget.fits(response)) {
-        return AYNI_OK;
-    }
-    if (body && config.history.archive && (status == AYNI_OK || status == AYNI_CAPACITY_EXCEEDED)) {
-        turn.archived_result = archived;
-        turn.result_summary = {};
-        turn.phase = TurnPhase::result_summary;
-        response = {};
-        return AYNI_OK;
-    }
-    return status == AYNI_OK ? AYNI_CAPACITY_EXCEEDED : status;
+    return render(workspace, info, body, wait_status, buffer, capacity, reply.text);
 }
 
 // Controls stage one intent; a committed control only reads back, so retries cannot
 // reopen/re-cancel.
 ayni_status_t native_operation(Workspace &workspace, const ayni_tool_call_v1 &proposal,
                                const ToolLoopConfig &config, const ayni_task_snapshot_v1 &snapshot,
-                               Turn &turn, ayni_string_v1 step, ayni_policy_output_v1 &output,
-                               char *buffer, uint32_t capacity, ToolBudget budget,
-                               ayni_string_v1 &response, bool &requested, bool &handled) {
+                               ayni_string_v1 step, ayni_policy_output_v1 &output, char *buffer,
+                               uint32_t capacity, ToolReply &reply, bool &requested,
+                               bool &handled) {
+    auto &response = reply.text;
     handled = false;
     if (!name(proposal.function_name, model::call_function)) {
         return AYNI_OK;
@@ -201,7 +182,7 @@ ayni_status_t native_operation(Workspace &workspace, const ayni_tool_call_v1 &pr
         wait && !info.call.outcome && ayni_operation_frontier_equal(&info.frontier, &control.after)
             ? AYNI_EXPIRED
             : AYNI_OK;
-    return operation_result(workspace, info, config, snapshot, turn, output, buffer, capacity,
-                            budget, response, waited);
+    return operation_result(workspace, info, config, snapshot, output, buffer, capacity, reply,
+                            waited);
 }
 } // namespace ayni::strategies::detail

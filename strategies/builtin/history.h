@@ -7,6 +7,11 @@ namespace ayni::strategies::detail {
 ayni_status_t store_history(const ayni_body_store_v1 &, Turn &);
 ayni_status_t load_history(const ayni_body_store_v1 &, const BodyRef &, std::string &,
                            std::vector<BodyRef> *references = nullptr);
+// Shared operation reader avoids re-copying or re-verifying discovered dependencies.
+ayni_status_t load_history(BodyReader &, const BodyRef &, std::string &,
+                           std::vector<BodyRef> *references = nullptr);
+ayni_status_t record_references(BodyReader &, const ConversationRecord &, std::vector<BodyRef> &,
+                                std::vector<RoundReferences> *rounds = nullptr);
 ayni_status_t record_references(const ayni_body_store_v1 &, const ConversationRecord &,
                                 std::vector<BodyRef> &);
 } // namespace ayni::strategies::detail

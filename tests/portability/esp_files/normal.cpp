@@ -5,10 +5,12 @@
 #include <ayni/ayni.h>
 #include <ayni/hosts/storage/file_log.h>
 #include <ayni/hosts/storage/file_value.h>
+#include <ayni/runtime/conversation/file_bodies.h>
 #include <ayni/storage_format.h>
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
+#include <optional>
 #include <vector>
 namespace {
 constexpr std::size_t medium_bytes = 1024 * 1024;
@@ -16,6 +18,35 @@ constexpr std::size_t erase_bytes = 4096;
 esp_partition_t partition{medium_bytes, false};
 std::vector<uint8_t> medium(medium_bytes, 0xff);
 std::size_t programmed_bytes = 0;
+// Normal asynchronous value borrows, serialized as on the Host worker. No I/O failures injected.
+class Values {
+  public:
+    explicit Values(ayni::hosts::storage::Files &files) : files_(files) {}
+    ayni::hosts::storage::FileValuePort port() { return {this, submit}; }
+    bool advance() {
+        if (!request_) {
+            return false;
+        }
+        const auto request = *request_;
+        request_.reset();
+        const auto result = ayni::hosts::storage::serve_file_value(files_, request);
+        request.complete(request.context, result);
+        return true;
+    }
+
+  private:
+    static ayni_submit_result_t submit(void *context,
+                                       const ayni::hosts::storage::FileValueRequest *request) {
+        auto &self = *static_cast<Values *>(context);
+        if (self.request_) {
+            return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+        }
+        self.request_ = *request;
+        return AYNI_SUBMIT_ACCEPTED;
+    }
+    ayni::hosts::storage::Files &files_;
+    std::optional<ayni::hosts::storage::FileValueRequest> request_;
+};
 #define CHECK(expression)                                                                          \
     do {                                                                                           \
         if (!(expression)) {                                                                       \
@@ -113,6 +144,9 @@ int main() {
         CHECK(files.read(first, fresh.size(), out.data(), out.size(), count) == 0 && out == old);
         files.close(first);
         CHECK(files.remove("first") == 0);
+        // C-HVAL-004: an ordinary missing delete must not poison subsequent namespace work.
+        CHECK(files.remove("first") == ENOENT);
+        CHECK(files.sync_namespace() == 0);
         uint64_t available = 0;
         CHECK(files.free_bytes(available) == 0 && available > 0);
     }
@@ -194,6 +228,47 @@ int main() {
         std::array<uint8_t, payload.size()> journal{};
         CHECK(log.read_prefix(4, journal.data(), journal.size()).value == journal.size());
         CHECK(journal == payload);
+        // C-HVAL-004: outer removal is idempotent, including the normal directory confirmation.
+        request = {};
+        request.key = {1, 2};
+        request.kind = FileValueRequest::Kind::remove;
+        request.complete = [](void *, const FileValueResult &) noexcept {};
+        CHECK(serve_file_value(files, request).status == AYNI_OK);
+        CHECK(serve_file_value(files, request).status == AYNI_OK);
+        CHECK(log.append(5, payload.data(), payload.size()).outcome == AYNI_WRITE_OK);
+    }
+    // C-HVAL-004/007, ADR-0104: a discarded staged tail may never have created any files.
+    // Cleanup must fully drain and allow a later ordinary write on the same live volume.
+    {
+        LittleFiles files(false);
+        CHECK(files.begin("ayni_test") == 0);
+        Values values(files);
+        ayni::runtime::FileBodies bodies;
+        CHECK(bodies.configure(values.port(), 2U * 1024U * 1024U) == AYNI_OK);
+        constexpr uint32_t cache_bytes = 4096, progress_limit = 32;
+        constexpr uint64_t scope = 7;
+        CHECK(bodies.set_cache_limit(cache_bytes) == AYNI_OK);
+        const auto *store = bodies.store();
+        ayni_body_ref_v1 ref{};
+        CHECK(store->stage(store->context, scope, {payload.data(), payload.size()}, &ref) ==
+              AYNI_OK);
+        bodies.collect(scope, {});
+        for (uint32_t at = 0; at < progress_limit; ++at) {
+            const bool idle = ayni::runtime::FileBodies::ready(&bodies, 0) != 0;
+            if (!values.advance() && idle) {
+                break;
+            }
+        }
+        CHECK(bodies.idle());
+        CHECK(ayni::runtime::FileBodies::status(&bodies) == AYNI_OK);
+        FileValueRequest request;
+        request.key = {1, 2};
+        request.kind = FileValueRequest::Kind::write;
+        request.generation = 1;
+        request.data = payload.data();
+        request.size = payload.size();
+        request.complete = [](void *, const FileValueResult &) noexcept {};
+        CHECK(serve_file_value(files, request).status == AYNI_OK);
     }
     // C-HOST-010/017: an ordinary large-log reopen preserves every inherited byte.
     // Revalidation must write linearly rather than copy the LittleFS tail after each chunk.

@@ -52,7 +52,7 @@ ayni_status_t Assistant::open(const std::string &directory, const ModelConfig &c
     return status;
 }
 // Check the outer file under the Host lock before boot can write or dispatch anything.
-// Legacy files lack source evidence and require an explicit future migration.
+// Unsupported storage stays intact; this deployment has no migration or automatic erase.
 ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelConfig &config,
                                      providers::presentation::Output output,
                                      applications::assistant::QuietHours quiet) {
@@ -64,14 +64,20 @@ ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelCo
     if (status != AYNI_OK) {
         return status;
     }
-    status = node.assemble(directory.c_str(), demo_config(config.harness), store.bodies());
+    status = node.assemble(directory.c_str(), demo_config(config.harness), bodies.store());
     if (status != AYNI_OK) {
         return status;
     }
-    const auto file_status = store.open(directory.c_str(), current);
-    if (file_status != AYNI_OK && file_status != AYNI_NOT_FOUND) {
-        return file_status;
+    status = store.open(directory.c_str());
+    if (status != AYNI_OK) {
+        return status;
     }
+    constexpr size_t body_cache_bytes = 16U * 1024U * 1024U;
+    status = bodies.configure(store.files(), body_cache_bytes);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    bodies.set_shared_call_results();
     if (!output.write) {
         output.write = unavailable_channel;
     }
@@ -80,8 +86,8 @@ ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelCo
                                output,
                                std::move(quiet),
                                {this, propose},
-                               store.history_port(),
-                               store.bodies()});
+                               {&bodies, FileBodies::progress},
+                               bodies.store()});
     if (status != AYNI_OK) {
         return status;
     }
@@ -92,9 +98,7 @@ ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelCo
     const auto deadline = SteadyClock::now() + boot_timeout;
     ayni_lifecycle_t lifecycle = AYNI_LIFECYCLE_RECOVERING;
     while (lifecycle == AYNI_LIFECYCLE_RECOVERING) {
-        ayni_step_report_v1 report{};
-        report.struct_size = sizeof(report);
-        status = ayni_step(node.kernel(), step_units, step_us, &report);
+        status = advance_kernel();
         if (status != AYNI_OK) {
             return status;
         }
@@ -105,9 +109,7 @@ ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelCo
         if (SteadyClock::now() > deadline) {
             return AYNI_BUSY;
         }
-        if (!report.more_ready) {
-            node.wait_for_wake(std::chrono::milliseconds(2));
-        }
+        node.wait_for_wake(std::chrono::milliseconds(2));
     }
     if (lifecycle != AYNI_LIFECYCLE_RUNNING) {
         return AYNI_NOT_READY;
@@ -131,9 +133,7 @@ ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelCo
         }
         // RUNNING precedes the initial owner-binding durability barrier.
         // C-AUTH-010 admits a management session only after that barrier.
-        ayni_step_report_v1 report{};
-        report.struct_size = sizeof(report);
-        status = ayni_step(node.kernel(), step_units, step_us, &report);
+        status = advance_kernel();
         if (status != AYNI_OK) {
             return status;
         }
@@ -145,7 +145,7 @@ ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelCo
     if (status != AYNI_OK) {
         return status;
     }
-    status = initialize_context(file_status == AYNI_NOT_FOUND);
+    status = initialize_context();
     if (status != AYNI_OK) {
         return status;
     }
@@ -177,21 +177,12 @@ ayni_status_t Assistant::Impl::ids(ayni_object_kind_t kind, std::vector<uint64_t
     out.resize(count);
     return ayni_list_objects(node.kernel(), kind, out.data(), count, &count);
 }
-ayni_status_t Assistant::Impl::persist(SavedConversation candidate, Notice notice,
-                                       ConversationStore::Erasure erasure, uint64_t turn) {
-    if (saving) {
-        return AYNI_BUSY;
-    }
-    const auto status = store.save(candidate, erasure, turn);
+ayni_status_t Assistant::Impl::advance_kernel() {
+    FileBodies::progress(&bodies, 0);
+    auto status = FileBodies::status(&bodies);
     if (status == AYNI_OK) {
-        saving = Saving{std::move(candidate), std::move(notice)};
-    } else {
-        storage_status = status;
+        status = profile.advance();
     }
-    return status;
-}
-ayni_status_t Assistant::Impl::pump(std::vector<Notice> &notices) {
-    auto status = profile.advance();
     if (status != AYNI_OK) {
         return status;
     }
@@ -213,7 +204,7 @@ ayni_status_t Assistant::Impl::pump(std::vector<Notice> &notices) {
     if (status != AYNI_OK) {
         return status;
     }
-    if (shutting_down) {
+    if (!session || shutting_down) {
         return AYNI_OK; // Preserve pending work; next open publishes only through the live anchor.
     }
     ayni_privacy_info_v1 privacy{};
@@ -225,13 +216,22 @@ ayni_status_t Assistant::Impl::pump(std::vector<Notice> &notices) {
     if (status != AYNI_OK || privacy.progress_status != AYNI_OK) {
         return status != AYNI_OK ? status : privacy.progress_status;
     }
-    status = collect(notices);
-    return status == AYNI_OK ? announce(notices) : status;
+    return AYNI_OK;
+}
+ayni_status_t Assistant::Impl::pump(std::vector<Notice> &notices) {
+    const auto status = advance_kernel();
+    if (status != AYNI_OK || shutting_down) {
+        return status;
+    }
+    const auto collected = collect(notices);
+    return collected == AYNI_OK ? announce(notices) : collected;
 }
 bool Assistant::Impl::idle() const {
-    if (!opened || saving || awaiting_notice || pending_count || proposal_count) {
+    if (!opened || pending_count || proposal_count ||
+        (!conversation.record() && !conversation.awaiting_turn())) {
         return false;
     }
+    const auto waiting_goal = conversation.awaiting_turn() ? conversation.latest_goal() : 0;
     ayni_kernel_info_v1 info{};
     info.struct_size = sizeof(info);
     if (ayni_get_kernel_info(node.kernel(), &info) != AYNI_OK) {
@@ -239,7 +239,7 @@ bool Assistant::Impl::idle() const {
     }
     ayni_context_info_v1 context{};
     if (context_info(context) != AYNI_OK || context.pending_action != AYNI_CONTEXT_IDLE ||
-        context.commit_seq > info.durable_seq || !context.usable || !matches(current, context)) {
+        context.commit_seq > info.durable_seq || !context.usable) {
         return false;
     }
     ayni_privacy_info_v1 privacy{};
@@ -279,7 +279,7 @@ bool Assistant::Impl::idle() const {
         }
         // Completion is not yet a saved conversation: collect must cross both
         // the Kernel durable barrier and the outer file commit before /wait ends.
-        if (task.goal_id == current.pending_goal && task.lifecycle != AYNI_TASK_PAUSED) {
+        if (task.goal_id == waiting_goal && task.lifecycle != AYNI_TASK_PAUSED) {
             return false;
         }
     }
@@ -299,10 +299,10 @@ bool Assistant::Impl::idle() const {
         // not a reason for /wait to block. A due first occurrence still is.
         if (goal.commit_seq > info.durable_seq ||
             (goal.lifecycle == AYNI_GOAL_ACTIVE && !goal.group_paused && !goal.last_task_id &&
-             (due_now || goal.goal_id == current.pending_goal))) {
+             (due_now || goal.goal_id == waiting_goal))) {
             return false;
         }
-        if (goal.goal_id == current.pending_goal &&
+        if (goal.goal_id == waiting_goal &&
             (goal.lifecycle == AYNI_GOAL_SATISFIED || goal.lifecycle == AYNI_GOAL_CANCELLED ||
              goal.lifecycle == AYNI_GOAL_EXPIRED || goal.lifecycle == AYNI_GOAL_FAILED)) {
             return false;
@@ -323,14 +323,12 @@ ayni_status_t Assistant::Impl::stop() {
     std::vector<Notice> ignored;
     const auto deadline = SteadyClock::now() + boot_timeout;
     while (opened && state == AYNI_LIFECYCLE_RUNNING) {
-        ayni_context_info_v1 context{};
-        status = context_info(context);
-        if (status != AYNI_OK) {
-            return status;
-        }
-        if (!saving && !awaiting_notice && !pending_count &&
-            context.pending_action == AYNI_CONTEXT_IDLE) {
+        status = conversation.quiesce();
+        if (status == AYNI_OK && !pending_count) {
             break;
+        }
+        if (status != AYNI_OK && status != AYNI_BUSY) {
+            return status;
         }
         status = pump(ignored);
         if (status != AYNI_OK || SteadyClock::now() > deadline) {
@@ -359,20 +357,17 @@ ayni_status_t Assistant::Impl::stop() {
             node.wait_for_wake(std::chrono::milliseconds(2));
         }
     }
-    // A save queued by the last running step must finish before releasing the lock.
-    while (saving) {
-        ayni_status_t result;
-        if (store.poll(result)) {
-            if (result != AYNI_OK) {
-                return result;
-            }
-            current = saving->candidate;
-            saving.reset();
+    while (!bodies.idle()) {
+        FileBodies::progress(&bodies, 0);
+        const auto buffered = FileBodies::status(&bodies);
+        if (buffered != AYNI_OK || SteadyClock::now() > deadline) {
+            return buffered != AYNI_OK ? buffered : AYNI_BUSY;
         }
-        if (SteadyClock::now() > deadline) {
-            return AYNI_BUSY;
-        }
-        node.wait_for_wake(std::chrono::milliseconds(2));
+        node.wait_for_wake(std::chrono::milliseconds(1));
+    }
+    const auto body_status = FileBodies::status(&bodies);
+    if (body_status != AYNI_OK) {
+        return body_status;
     }
     store.close();
     // STOPPED accounts for consumed completions, but producer post() may still

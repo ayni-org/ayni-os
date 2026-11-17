@@ -1,8 +1,9 @@
 /*
  * Pins the published layout of the implemented ABI structs (C-VER-002): a
- * field may be appended, never moved, retyped or removed. A violation fails
- * the build. Pointer-sized fields are measured in sizeof(void *) so that the
- * same checks fit 32-bit targets; only the native build compiles them so far.
+ * layout changes require an explicit ABI decision (C-VER-006). A violation fails
+ * the build; ABI0.56 removes the former task-tool output type (ADR-0107). Pointer-sized fields are
+ * measured in sizeof(void *) so that the same checks fit 32-bit targets; only the native build
+ * compiles them so far.
  */
 #include <ayni/authority.h>
 #include <ayni/ayni.h>
@@ -775,16 +776,6 @@ AYNI_LAYOUT(tool_call_function, offsetof(ayni_tool_call_v1, function_name) == 8)
 AYNI_LAYOUT(tool_call_protocol, offsetof(ayni_tool_call_v1, protocol_id) == 8 + 2 * AYNI_PTR);
 AYNI_LAYOUT(tool_call_input, offsetof(ayni_tool_call_v1, input) == 8 + 4 * AYNI_PTR);
 AYNI_LAYOUT(tool_call_size, sizeof(ayni_tool_call_v1) == 8 + 6 * AYNI_PTR);
-AYNI_LAYOUT(task_tool_call_struct_size, offsetof(ayni_task_tool_call_v1, struct_size) == 0);
-AYNI_LAYOUT(task_tool_call_reserved, offsetof(ayni_task_tool_call_v1, reserved) == 4);
-AYNI_LAYOUT(task_tool_call_call, offsetof(ayni_task_tool_call_v1, call) == 8);
-AYNI_LAYOUT(task_tool_call_nodes,
-            offsetof(ayni_task_tool_call_v1, nodes) == 8 + sizeof(ayni_tool_call_v1));
-AYNI_LAYOUT(task_tool_call_size,
-            sizeof(ayni_task_tool_call_v1) ==
-                AYNI_ROUND8(8 + sizeof(ayni_tool_call_v1) +
-                            AYNI_VALUE_NODE_COUNT_MAX * sizeof(ayni_argument_node_v1)));
-
 AYNI_LAYOUT(config_call_capacity, offsetof(ayni_config_v1, call_capacity) == 132);
 AYNI_LAYOUT(config_call_input_max_bytes, offsetof(ayni_config_v1, call_input_max_bytes) == 136);
 AYNI_LAYOUT(config_call_result_max_bytes, offsetof(ayni_config_v1, call_result_max_bytes) == 140);

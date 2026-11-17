@@ -190,15 +190,6 @@ typedef struct ayni_task_call_result_v1 {
     ayni_body_ref_v1 body;
 } ayni_task_call_result_v1;
 
-/* Since 0.50. Caller-owned proposal view. Nodes point into this output; all
- * strings borrow the list body it was read from. */
-typedef struct ayni_task_tool_call_v1 {
-    uint32_t struct_size;                                   /* Exact ABI layout. */
-    uint32_t reserved;                                      /* Written zero. */
-    ayni_tool_call_v1 call;                                 /* Decoded native function proposal. */
-    ayni_argument_node_v1 nodes[AYNI_VALUE_NODE_COUNT_MAX]; /* ARGUMENTS storage only. */
-} ayni_task_tool_call_v1;
-
 typedef struct ayni_call_resource_v1 {
     ayni_string_v1 resource_id; /* Nonempty catalog ID; unique within the group. */
     uint32_t units;             /* Positive units, bounded by resource capacity. */
@@ -338,16 +329,20 @@ ayni_status_t ayni_tool_calls_measure(const ayni_tool_call_v1 *calls, uint32_t c
 ayni_status_t ayni_tool_calls_write(const ayni_tool_call_v1 *calls, uint32_t count,
                                     ayni_string_v1 assistant_text, uint8_t *out, uint32_t capacity,
                                     uint32_t *out_size);
-/* Since 0.54. Region for the two readers below, which decode argument trees. */
+/* Region for the proposal reader below. Since 0.54. */
 ayni_status_t ayni_tool_calls_workspace_requirements(size_t *bytes, size_t *alignment);
-/* Since 0.54. Strict decode of a whole list: its count and assistant text, borrowing
- * body. INVALID_ARGUMENT, preserving outputs, when body is not a valid list. */
-ayni_status_t ayni_tool_calls_read(const ayni_workspace_v1 *region, ayni_bytes_v1 body,
-                                   uint32_t *out_count, ayni_string_v1 *out_assistant_text);
-/* Since 0.54. One proposal of a valid list; strings borrow body, nodes live in out.
- * NOT_FOUND past the end. Replaces the snapshot call_tool callback. */
-ayni_status_t ayni_tool_call_read(const ayni_workspace_v1 *region, ayni_bytes_v1 body,
-                                  uint32_t index, ayni_task_tool_call_v1 *out);
+/* Since 0.56. Read a complete list once, visiting proposals in order. Strings
+ * borrow immutable body; argument nodes borrow region only during receive.
+ * receive may be NULL for metadata-only reading. It must not throw, retain region
+ * views, reenter Core or execute tools. Callback candidates remain private until
+ * this function returns OK: a later malformed item invalidates the whole list.
+ * Negative callback refusal is preserved; positive returns are INVALID_ARGUMENT.
+ * Count/assistant outputs change only on complete success. The reader allocates
+ * nothing and does no I/O; candidate storage belongs to receive. */
+ayni_status_t
+ayni_tool_calls_read(const ayni_workspace_v1 *region, ayni_bytes_v1 body, void *context,
+                     ayni_status_t (*receive)(void *, uint32_t index, const ayni_tool_call_v1 *),
+                     uint32_t *out_count, ayni_string_v1 *out_assistant_text);
 
 /* Any non-ISR thread, including synchronous submission. Copies into capacity
  * reserved for the attempt, independently of storage/event queue pressure.

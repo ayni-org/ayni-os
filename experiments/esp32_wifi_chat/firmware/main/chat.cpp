@@ -22,15 +22,11 @@ constexpr uint32_t version = 1, step_units = 32, step_us = 4000;
 constexpr uint64_t presentation_wait_us = UINT64_C(120) * 1000000;
 constexpr uint64_t principal = 1;
 constexpr char chat_type[] = "wifi.chat", probe_type[] = "wifi.context-probe";
-constexpr char model_capability[] = "usb.model.text", summary_capability[] = "usb.model.summary",
-               model_binding[] = "usb.model", summary_binding[] = "usb.summary",
-               strategy_id[] = "usb.chat", reply_capability[] = "wifi.model.text",
-               reply_binding[] = "wifi.model", tools_capability[] = "wifi.model.tools",
-               tools_binding[] = "wifi.tools";
-constexpr const char *grant_capabilities[] = {
-    model_capability, summary_capability, reply_capability, tools_capability,
-    "screen.text",    "speaker.tone",     "speaker.speech", "motor.status",
-    "motor.plan",     "motor.run",        "motor.stop"};
+constexpr char reply_capability[] = "wifi.model.text", reply_binding[] = "wifi.model",
+               tools_capability[] = "wifi.model.tools", tools_binding[] = "wifi.tools";
+constexpr const char *grant_capabilities[] = {reply_capability, tools_capability, "screen.text",
+                                              "speaker.tone",   "speaker.speech", "motor.status",
+                                              "motor.plan",     "motor.run",      "motor.stop"};
 constexpr uint64_t motor_grant_us = UINT64_C(24) * 60 * 60 * 1000000;
 constexpr uint64_t grant_count = sizeof(grant_capabilities) / sizeof(grant_capabilities[0]);
 // Deployment-neutral identity; tool protocol and authorization rules come from
@@ -101,16 +97,6 @@ void Chat::trace_latency(const char *phase) {
                timing_.step_calls, timing_.max_step_us, timing_.conversation_us / 1000);
     timing_.storage = current;
 }
-// Only protocol identities/modes, never business arguments or assistant/user text, cross
-// this progress lane. The UI labels them as proposals until a Provider reports work.
-void Chat::publish_proposals() {
-    std::array<char, tool_outline_bytes> buffer{};
-    size_t used = 0;
-    if (model_tools_.outline(buffer.data(), buffer.size(), used) == AYNI_OK) {
-        std::printf("wifi tools outline=%.*s\n", int(used), buffer.data());
-        transport_.send(Kind::tool_outline, turn_, buffer.data(), used);
-    }
-}
 void Chat::status(uint64_t id, const char *message) {
     if (!std::strncmp(message, "registration ", 13) ||
         !std::strncmp(message, "model registration ", 19) ||
@@ -152,15 +138,10 @@ ayni_status_t Chat::initialize(const ModelSelection &selection) {
     if (!values_.configure(host_->value_store())) {
         return AYNI_INVALID_STATE;
     }
-    auto rc = bodies_.configure(values_.port());
+    constexpr size_t cache_bytes = 2U * 1024U * 1024U;
+    auto rc = bodies_.configure(values_.port(), cache_bytes);
     if (rc != AYNI_OK) {
         status(0, "stage: bodies");
-        return rc;
-    }
-    // This deployment caps cached payloads independently from the model token window.
-    constexpr size_t cache_bytes = 2 * 1024 * 1024;
-    rc = bodies_.set_cache_limit(cache_bytes);
-    if (rc != AYNI_OK) {
         return rc;
     }
     bodies_.set_shared_call_results();
@@ -334,8 +315,7 @@ ayni_status_t Chat::configure_model() {
     const ayni_authority_field_desc_v1 field{sizeof(field), AYNI_MODEL_DESTINATION_FIELD_ID,
                                              AYNI_AUTHORITY_EGRESS_DESTINATION, 0, domain};
     auto rc = AYNI_OK;
-    for (const char *id :
-         {model_capability, summary_capability, reply_capability, tools_capability}) {
+    for (const char *id : {reply_capability, tools_capability}) {
         const ayni_capability_desc_v1 cap{sizeof(cap), version, text(id), 1, 0, &field};
         if (rc == AYNI_OK) {
             rc = check("capability", ayni_register_capability(kernel_, &cap));
@@ -352,44 +332,37 @@ ayni_status_t Chat::configure_model() {
     destination.flags = AYNI_SCHEMA_REQUIRED;
     destination.choice_count = 1;
     destination.choices = &destination_;
-    // Preserve legacy model contract limits for retained Calls; current bindings
-    // use the separate large BodyRef contract below.
     auto &body = input_schema_[2];
     body.kind = AYNI_VALUE_TEXT;
     body.field_id = AYNI_MODEL_BODY_FIELD_ID;
     body.subtree_end = input_schema_.size();
     body.name = text("body");
     body.flags = AYNI_SCHEMA_REQUIRED | AYNI_SCHEMA_EXTERNAL;
-    body.max_count = tx_bytes;
+    body.max_count = harness::model_body_bytes;
     projection_.field_id = AYNI_MODEL_DESTINATION_FIELD_ID;
     projection_.path_count = 1;
     projection_.path[0] = AYNI_MODEL_DESTINATION_FIELD_ID;
-    large_input_schema_ = input_schema_;
-    large_input_schema_[2].max_count = harness::model_body_bytes;
-    for (uint32_t at = 0; at < business_.size(); ++at) {
-        auto &result = result_schema_[at];
-        result.kind = AYNI_VALUE_TEXT;
-        result.subtree_end = 1;
-        result.max_count = at == 0 ? answer_bytes : summary_bytes;
-        const auto &input = at >= 2 ? large_input_schema_ : input_schema_;
-        business_[at] = {{input.data(), uint32_t(input.size())}, {&result, 1}, 1, 0, &projection_};
-    }
+    result_schema_.kind = AYNI_VALUE_TEXT;
+    result_schema_.subtree_end = 1;
+    result_schema_.max_count = summary_bytes;
+    business_ = {{input_schema_.data(), uint32_t(input_schema_.size())},
+                 {&result_schema_, 1},
+                 1,
+                 0,
+                 &projection_};
     const uint32_t input_bytes = model_input_bytes(destination_);
     for (uint32_t at = 0; at < capabilities_.size(); ++at) {
-        const bool tools = at == 0 || at == 3;
+        const bool tools = at == 1;
         capabilities_[at] = {
             sizeof(ayni_call_capability_v1),
             version,
-            text(at == 0   ? model_capability
-                 : at == 1 ? summary_capability
-                 : at == 2 ? reply_capability
-                           : tools_capability),
+            text(tools ? tools_capability : reply_capability),
             {sizeof(ayni_call_contract_v1), AYNI_CALL_UNARY, AYNI_CALL_MODEL,
              AYNI_CALL_EFFECT_EGRESS | AYNI_CALL_EFFECT_BILLING, AYNI_CALL_NOT_IDEMPOTENT,
              AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_REQUEST, 0, harness::request_timeout_ms,
              AYNI_CALL_INPUT_VALUE, tools ? AYNI_CALL_RESULT_TOOL_CALLS : AYNI_CALL_RESULT_TEXT,
              input_bytes, static_cast<uint32_t>(summary_bytes), 1, &resource_, nullptr},
-            &business_[at]};
+            &business_};
         if (rc == AYNI_OK) {
             rc = check("call capability",
                        ayni_register_call_capability(kernel_, &capabilities_[at]));
@@ -398,7 +371,7 @@ ayni_status_t Chat::configure_model() {
     provider_ = {sizeof(provider_),
                  version,
                  destination_,
-                 text("usb.endpoint"),
+                 text("wifi.endpoint"),
                  destination_,
                  this,
                  uint32_t(capabilities_.size()),
@@ -432,10 +405,7 @@ ayni_status_t Chat::configure_model() {
     for (uint32_t at = 0; rc == AYNI_OK && at < capabilities_.size(); ++at) {
         const ayni_binding_v1 binding{sizeof(binding),
                                       version,
-                                      text(at == 0   ? model_binding
-                                           : at == 1 ? summary_binding
-                                           : at == 2 ? reply_binding
-                                                     : tools_binding),
+                                      text(at == 0 ? reply_binding : tools_binding),
                                       capabilities_[at].capability_id,
                                       version,
                                       version,
@@ -456,7 +426,7 @@ ayni_status_t Chat::configure_strategy() {
     destination_field_ = {sizeof(destination_field_), AYNI_MODEL_DESTINATION_FIELD_ID, domain};
     destination_scope_ = {sizeof(destination_scope_), 1, &destination_field_};
     ayni::strategies::ToolLoopConfig config;
-    config.identity.id = text(strategy_id);
+    config.identity.id = text(chat_type);
     config.model.kind = config.summary.kind = AYNI_POLICY_REQUEST_MODEL;
     config.model.binding_id = text(tools_binding);
     config.summary.binding_id = text(reply_binding);
@@ -466,7 +436,7 @@ ayni_status_t Chat::configure_strategy() {
                      harness::compact_target_tokens, harness::tool_result_max_tokens};
     config.bodies = bodies_.store();
     config.persistence = ayni::strategies::Persistence::background;
-    config.history = {&bodies_, ayni::runtime::FileBodies::ready, nullptr, nullptr};
+    config.body_progress = {&bodies_, ayni::runtime::FileBodies::progress};
     config.tool_exposure = ayni::strategies::ToolExposure::preloaded;
     config.reply_encoding = config.summary_reply_encoding = ayni::model::ReplyEncoding::framed;
     protocol_options_.model = selection_.model.data();
@@ -498,7 +468,7 @@ ayni_status_t Chat::configure_strategy() {
         {text("motor.stop"), motor_version, AYNI_TOOL_ROLE_CAPABILITY}};
     auto type = sized<ayni_goal_type_v1>();
     type.version = version;
-    type.goal_type_id = text(strategy_id);
+    type.goal_type_id = text(probe_type);
     type.strategy_id = strategy_.strategy_id;
     type.ctx = &workspace_;
     type.validate = ayni::strategies::Conversation::validate_turn;
@@ -508,13 +478,9 @@ ayni_status_t Chat::configure_strategy() {
     type.tools = tools;
     type.tool_count = sizeof(tools) / sizeof(tools[0]);
     type.tool_authorization = AYNI_TOOLS_ON_DEMAND;
-    // Retained legacy Tasks are cancelled before admission; their original type stays intact.
+    // The local diagnostic does not attach to the real conversation context.
     type.context_mode = AYNI_GOAL_CONTEXT_NONE;
     status = ayni_register_goal_type(kernel_, &type);
-    if (status == AYNI_OK) {
-        type.goal_type_id = text(probe_type);
-        status = ayni_register_goal_type(kernel_, &type);
-    }
     if (status == AYNI_OK) {
         type.goal_type_id = text(chat_type);
         type.context_mode = AYNI_GOAL_CONTEXT_AGENT;
@@ -556,10 +522,8 @@ ayni_submit_result_t Chat::submit_model(void *ctx, const ayni_provider_request_v
         !request || !completion) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
-    const bool summary = same(request->capability_id, summary_capability) ||
-                         same(request->capability_id, reply_capability);
-    if (!summary && !same(request->capability_id, model_capability) &&
-        !same(request->capability_id, tools_capability)) {
+    const bool summary = same(request->capability_id, reply_capability);
+    if (!summary && !same(request->capability_id, tools_capability)) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     ayni::ValueReader reader;
@@ -697,6 +661,14 @@ ayni_status_t Chat::command(ayni_intent_kind_t kind, const void *body, uint64_t 
     return out.status;
 }
 void Chat::incoming(const Packet &p) {
+    if (p.kind == Kind::tool_outline) {
+        if (p.id == call_ && p.size <= tool_outline_bytes &&
+            (model_ == ModelState::text || model_ == ModelState::tools) &&
+            reply_intent_ == ReplyIntent::present && closing_ == Closing::open) {
+            transport_.send(Kind::tool_outline, turn_, p.body.data(), p.size);
+        }
+        return; // Metadata never changes model acceptance, execution or its terminal outcome.
+    }
     if (p.kind == Kind::voice_reply_setting && p.size == 1 && p.body[0] <= 1) {
         voice_reply_enabled_ = p.body[0] != 0;
         voice_notice_ = VoiceNotice{p.id, p.body[0]};
@@ -785,15 +757,11 @@ void Chat::incoming(const Packet &p) {
             const auto count = metadata.tool_call_count;
             const ayni_bytes_v1 bytes{p.body.data() + model_result_header_bytes,
                                       p.size - static_cast<uint32_t>(model_result_header_bytes)};
-            if (count <= AYNI_CALL_TOOL_COUNT_MAX && (!summary_ || !count) &&
-                (!count || model_tools_.decode(bytes, workspace_) == AYNI_OK)) {
+            if (count <= AYNI_CALL_TOOL_COUNT_MAX && (!summary_ || !count)) {
                 model_tool_count_ = count;
                 model_usage_ = metadata.model_usage;
                 model_answer_.assign(reinterpret_cast<const char *>(bytes.data), bytes.size);
                 model_ = count ? ModelState::tools : ModelState::text;
-                if (count) {
-                    publish_proposals();
-                }
             }
         }
     } else if (p.kind == Kind::render_info && screen_ == ScreenState::waiting &&
@@ -813,13 +781,23 @@ void Chat::incoming(const Packet &p) {
         probe_.reset();
         if (probe) {
             if ((p.size != 0 && p.size != sizeof(uint32_t)) ||
-                (p.size &&
+                (p.size && get32(p.body.data()) != current_history_probe &&
                  get32(p.body.data()) > harness::model_body_bytes / SyntheticHistory::han.size())) {
                 status(p.id, "input refused: invalid diagnostic size");
                 return;
             }
             probe_.emplace();
-            probe_->characters = p.size ? get32(p.body.data()) : 0;
+            const auto mode = p.size ? get32(p.body.data()) : 0;
+            if (mode == current_history_probe) {
+                probe_->source = ProbeTurn::Source::current_history;
+                const auto *current = history_.record();
+                transport_.diagnostics().record(
+                    "wifi probe current_history rounds=%lu history_bytes=%lu no_model_http=1\n",
+                    static_cast<unsigned long>(current ? current->round_count : 0),
+                    static_cast<unsigned long>(current ? current->history_bytes : 0));
+            } else {
+                probe_->characters = mode;
+            }
             transport_.diagnostics().record("wifi probe template_begin history_rounds=%llu\n",
                                             static_cast<unsigned long long>(rounds()));
             input_ = "synthetic context diagnostic";
@@ -834,7 +812,7 @@ void Chat::incoming(const Packet &p) {
         reply_intent_ = ReplyIntent::present;
         hold_reported_ = false;
         preparation_wait_ = {};
-        turn_state_ = Turn::preparing_input;
+        turn_state_ = Turn::input;
         progress_ = true;
         status(turn_, "accepted");
         trace("accepted");
@@ -842,8 +820,7 @@ void Chat::incoming(const Packet &p) {
         reply_end_ = "turn failed/cancelled; answer retained; no automatic retry";
         turn_state_ = Turn::reply_done;
         progress_ = true;
-    } else if (p.kind == Kind::cancel &&
-               (turn_state_ == Turn::input || turn_state_ == Turn::preparing_input)) {
+    } else if (p.kind == Kind::cancel && turn_state_ == Turn::input) {
         end_turn("turn failed/cancelled before task creation; no automatic retry");
     } else if (p.kind == Kind::cancel && (goal_ || history_.active())) {
         cancel_requested_ = true;
@@ -886,16 +863,21 @@ ayni_status_t Chat::settle_session(uint64_t durable_seq, bool &settled) {
             return rc;
         }
         const bool chat_goal = goal.goal_type_version == version &&
-                               (same({goal.goal_type_id, goal.goal_type_id_size}, strategy_id) ||
-                                same({goal.goal_type_id, goal.goal_type_id_size}, chat_type) ||
+                               (same({goal.goal_type_id, goal.goal_type_id_size}, chat_type) ||
                                 same({goal.goal_type_id, goal.goal_type_id_size}, probe_type));
         const bool voice_goal =
             goal.goal_type_version == ReplyVoice::version &&
             same({goal.goal_type_id, goal.goal_type_id_size}, ReplyVoice::type_id);
         const bool check_goal =
             MotorCheck::owns({goal.goal_type_id, goal.goal_type_id_size}, goal.goal_type_version);
-        if (goal.owner_instance_id != instance_ || (!chat_goal && !check_goal && !voice_goal)) {
+        if (goal.owner_instance_id != instance_) {
             continue;
+        }
+        if (!chat_goal && !check_goal && !voice_goal) {
+            // Missing types remain held by Core. Reject this deployment's old data
+            // explicitly instead of waiting forever for its held Tasks (ADR-0108).
+            status(0, "unsupported retained goal type; data preserved");
+            return AYNI_UNSUPPORTED_VERSION;
         }
         if (goal.lifecycle == AYNI_GOAL_PROPOSED || goal.lifecycle == AYNI_GOAL_ACTIVE ||
             goal.lifecycle == AYNI_GOAL_PAUSED) {
@@ -1408,6 +1390,15 @@ ayni_status_t Chat::probe_input(ayni_string_v1 user, ayni::strategies::Encoded &
     ayni::strategies::ConversationRecord record{};
     record.id = probe_record_id;
     record.owner_instance_id = instance_;
+    if (probe.source == ProbeTurn::Source::current_history) {
+        const auto *current = history_.record();
+        if (!current) {
+            return AYNI_NOT_READY;
+        }
+        record = *current;
+        record.id = probe_record_id; // Private writes/cleanup cannot alter real history owners.
+        record.draft = {};
+    }
     if (probe.characters && !probe.history_ref.id) {
         if (!probe.history) {
             const auto bytes =
@@ -1523,23 +1514,6 @@ ayni_status_t Chat::observe_probe(const ayni_kernel_info_v1 &info) {
 }
 // One user turn: durable input body, Goal, completed Task, durable record, then the answer.
 ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
-    if (turn_state_ == Turn::preparing_input) {
-        // Clear caches after every prior terminal, including cancellation. Disk
-        // values remain available to retained Calls and conversation references.
-        static_cast<void>(ayni::runtime::FileBodies::ready(&bodies_, 0));
-        const auto status = bodies_.trim_cache();
-        if (status == AYNI_BUSY) {
-            wait_for("body_cleanup", "preparing input: waiting for body cleanup", status);
-            return AYNI_OK;
-        }
-        if (status != AYNI_OK) {
-            end_turn("turn failed: body cache unavailable; no automatic retry");
-            return AYNI_OK;
-        }
-        trace("body_cache_ready");
-        turn_state_ = Turn::input;
-        progress_ = true;
-    }
     if (forget_ == Forget::requested && turn_state_ == Turn::idle && history_.ready()) {
         const auto rc = history_.forget(AYNI_CONTEXT_ERASE_ALL);
         if (rc == AYNI_OK) {
@@ -1663,18 +1637,16 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
     }
     if (turn_state_ == Turn::saving) {
         const auto *record = history_.record();
-        std::vector<ayni::strategies::Round> rounds;
-        const auto rc =
-            record ? ayni::strategies::Conversation::rounds(*bodies_.store(), *record, rounds)
-                   : AYNI_NOT_READY;
+        const auto rc = record ? ayni::strategies::Conversation::latest_answer(*bodies_.store(),
+                                                                               *record, answer_)
+                               : AYNI_NOT_READY;
         if (rc == AYNI_NOT_READY) {
             return AYNI_OK;
         }
-        if (rc != AYNI_OK || rounds.empty()) {
+        if (rc != AYNI_OK) {
             end_turn("turn failed: saved answer unavailable");
             return AYNI_OK;
         }
-        answer_ = std::move(rounds.back().answer);
         turn_state_ = Turn::answer;
         trace("answer_saved");
         reply_deadline_ = uint64_t(esp_timer_get_time()) + presentation_wait_us;

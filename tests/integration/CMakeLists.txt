@@ -23,7 +23,8 @@ target_link_libraries(ayni_normal_fixture_tests PRIVATE ayni_sim_normal_fixtures
     ayni_warnings GTest::gtest_main)
 target_compile_definitions(ayni_normal_fixture_tests PRIVATE
     AYNI_NORMAL_ARTIFACT_ROOT="${CMAKE_CURRENT_BINARY_DIR}/normal-artifacts")
-gtest_discover_tests(ayni_normal_fixture_tests NO_PRETTY_VALUES PROPERTIES TIMEOUT 30)
+gtest_discover_tests(ayni_normal_fixture_tests NO_PRETTY_VALUES PROPERTIES TIMEOUT 30
+    DISCOVERY_TIMEOUT ${AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS})
 add_test(NAME NormalFixtures.artifacts_replay COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/normal_artifacts_test.py" $<TARGET_FILE:ayni-sim>
     "${CMAKE_CURRENT_BINARY_DIR}/normal-artifacts")
@@ -35,7 +36,8 @@ set_tests_properties(MultinodeNormal.artifacts_replay PROPERTIES TIMEOUT 120)
 add_executable(ayni_experiment_tests experiment_fixture_test.cpp replacement_policy_test.cpp)
 target_include_directories(ayni_experiment_tests PRIVATE "${AYNI_ROOT}/runtime/sim_node")
 target_link_libraries(ayni_experiment_tests PRIVATE ayni_sim_experiments ayni_experiment_policy ayni_strategies ayni_provider_mock_execution ayni_warnings GTest::gtest_main)
-gtest_discover_tests(ayni_experiment_tests NO_PRETTY_VALUES PROPERTIES TIMEOUT 30)
+gtest_discover_tests(ayni_experiment_tests NO_PRETTY_VALUES PROPERTIES TIMEOUT 30
+    DISCOVERY_TIMEOUT ${AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS})
 add_test(NAME ExperimentFixtures.artifacts_replay COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/experiment_artifacts_test.py" $<TARGET_FILE:ayni-sim>)
 set_tests_properties(ExperimentFixtures.artifacts_replay PROPERTIES TIMEOUT 120)

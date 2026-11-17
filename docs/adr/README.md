@@ -161,3 +161,12 @@
 | [0103](0103-reuse-immutable-admission-in-live-calls.md) | 运行期复用不可变准入并接收多工具批次 | 已接受用户选择；软件验证与实机边界见实验记录 | Core契约读取、执行门、ESP多工具串行 |
 
 | [0104](0104-shared-conversation-bodies-and-dispatch-prefix.md) | 共享对话正文、异步保存与连续派发前缀 | 已接受用户选择；本轮仅软件实现与编译，板端暂缓 | ABI0.55、schema10、ToolLoop、正文与Host队列 |
+
+| [0105](0105-shared-conversation-flow-and-local-cost.md) | 共享对话主路径与本地重复工作 | 已实施并正常OTA；局部验证与未完成边界见实验记录 | 共享历史、Session、Native/ESP接入；ABI/schema不变 |
+| [0106](0106-bounded-body-reads-and-publication.md) | 操作内正文复用与会话发布确认 | 已实施，本地正常验证及独立复查通过；不OTA | 共享策略/Session；C ABI及持久格式不变 |
+
+| [0107](0107-single-pass-proposals-and-reference-rounds.md) | 单遍提议、引用轮次及旧机制清理 | 已接受，实施及本地验证见实验记录；不OTA | ABI0.56、ToolLoop、ModelProtocol、引用轮次 |
+
+| [0108](0108-unified-conversation-and-result-storage.md) | 统一会话和结果存储，删除兼容与无限缓存 | 已接受；实施及本地验证见实验记录，不OTA | Session/FileBodies、BodyProgress、turn8/ANRV2/SQLite5 |
+
+| [0109](0109-owned-conversation-text-and-scoped-cleanup.md) | 不可变正文复用与按会话确认清理 | 已实施；本地验证及独立复查见实验记录，不OTA | Session/FileBodies、ToolLoop、ESP工具进度；ABI及持久格式不变 |

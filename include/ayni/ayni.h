@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 55u
+#define AYNI_ABI_MINOR 56u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -1781,8 +1781,8 @@ typedef struct ayni_task_snapshot_v1 {
     ayni_status_t (*call_result)(const void *context, ayni_string_v1 step_key,
                                  struct ayni_task_call_result_v1 *out);
     /* Since 0.37 the call_tool callback; null since 0.54 (ADR-0096), keeping the layout
-     * (C-VER-002). A result's tool calls are read with ayni_tool_calls_read and
-     * ayni_tool_call_read from its text, or from its body when it is stored. */
+     * (C-VER-002). A result's tool calls are read with ayni_tool_calls_read from its text,
+     * or from its body when it is stored. */
     const void *reserved_call_tool;
     /* Since 0.40. Restricted memory view; null when memory is disabled. */
     const struct ayni_memory_view_v1 *memory;

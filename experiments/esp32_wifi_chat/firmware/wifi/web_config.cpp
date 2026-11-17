@@ -3,6 +3,7 @@
 #include "model_buffer.h"
 #include "network_time.h"
 #include "ota_update.h"
+#include "protocol.h"
 #include <ayni/model_messages.hpp>
 #include <charconv>
 #include <cstdio>
@@ -261,15 +262,22 @@ esp_err_t WebConfig::probe(httpd_req_t *request) {
     auto &self = *static_cast<WebConfig *>(request->user_ctx);
     uint32_t characters = UINT32_MAX, expected = 0;
     if (httpd_req_get_url_query_len(request)) {
-        char query[64]{}, number[16]{};
-        if (httpd_req_get_url_query_str(request, query, sizeof(query)) != ESP_OK ||
-            httpd_query_key_value(query, "characters", number, sizeof(number)) != ESP_OK) {
+        char query[64]{}, number[16]{}, history[16]{};
+        if (httpd_req_get_url_query_str(request, query, sizeof(query)) != ESP_OK) {
             return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid test size");
         }
-        const auto parsed = std::from_chars(number, number + std::strlen(number), characters);
-        if (!*number || parsed.ec != std::errc{} || *parsed.ptr || !characters ||
-            characters > harness::model_body_bytes / 3) {
-            return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid test size");
+        if (httpd_query_key_value(query, "history", history, sizeof(history)) == ESP_OK &&
+            !std::strcmp(history, "current")) {
+            characters = current_history_probe;
+        } else {
+            if (httpd_query_key_value(query, "characters", number, sizeof(number)) != ESP_OK) {
+                return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid test size");
+            }
+            const auto parsed = std::from_chars(number, number + std::strlen(number), characters);
+            if (!*number || parsed.ec != std::errc{} || *parsed.ptr || !characters ||
+                characters > harness::model_body_bytes / 3) {
+                return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, "Invalid test size");
+            }
         }
     }
     if (!self.editable_.load(std::memory_order_acquire) ||

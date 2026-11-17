@@ -13,10 +13,21 @@ namespace ayni::json {
 // output storage. Since 0.48.
 class Writer {
   public:
+    // Caller-owned contiguous output. Null data refuses growth; capacity is bytes.
+    struct Buffer {
+        char *data = nullptr; // Mutable bytes valid until the next Grow call or Writer destruction.
+        size_t capacity = 0; // Available bytes; a successful Grow must cover the requested minimum.
+    };
+    // Synchronous owner callback; preserves the written prefix, never retains input views,
+    // and cannot reenter this Writer. Independent Writers may use independent output storage.
+    using Grow = Buffer (*)(void *context, size_t minimum_bytes);
     // Capacity is bytes; null is valid only for a lane that cannot accept bytes.
     Writer(char *buffer, size_t capacity) : data_(buffer), capacity_(capacity) {}
     // Count the exact escaped encoding without an output lane. Since 0.50.
     static Writer measuring() { return Writer(Measure{}); }
+    // Since 0.55: one-pass output with caller-selected growth and capacity refusal. The
+    // context/callback outlive this Writer; no allocation or I/O is performed by Writer itself.
+    static Writer growing(void *context, Grow grow) { return Writer(Growth{context, grow}); }
     // One cursor owns the append position; cloning it would share mutable state.
     Writer(const Writer &) = delete;
     // Same exclusivity rule as construction.
@@ -26,7 +37,21 @@ class Writer {
         if (!ok_) {
             return;
         }
-        if (value.size() > capacity_ - used_ || (value.size() && !data_ && !measuring_)) {
+        if (value.size() > SIZE_MAX - used_) {
+            ok_ = false;
+            return;
+        }
+        const auto needed = used_ + value.size();
+        if (mode_ == Mode::growing && needed > capacity_) {
+            const auto buffer = growth_.grow(growth_.context, needed);
+            if (!buffer.data || buffer.capacity < needed) {
+                ok_ = false;
+                return;
+            }
+            data_ = buffer.data;
+            capacity_ = buffer.capacity;
+        }
+        if (needed > capacity_ || (value.size() && !data_ && mode_ != Mode::measuring)) {
             ok_ = false;
             return;
         }
@@ -130,14 +155,23 @@ class Writer {
 
   private:
     struct Measure {};
-    explicit Writer(Measure) : data_(nullptr), capacity_(SIZE_MAX), measuring_(true) {}
+    struct Growth {
+        void *context; // Borrowed caller state; null is valid if grow accepts it.
+        Grow grow; // Null refuses construction; otherwise preserves each existing output prefix.
+    };
+    enum class Mode { fixed, measuring, growing };
+    explicit Writer(Measure) : data_(nullptr), capacity_(SIZE_MAX), mode_(Mode::measuring) {}
+    explicit Writer(Growth growth)
+        : data_(nullptr), capacity_(0), ok_(growth.grow != nullptr), mode_(Mode::growing),
+          growth_(growth) {}
     static constexpr size_t integer_format_bytes = sizeof("-18446744073709551615") - 1;
-    char *data_;             // Caller-owned output, borrowed until the last append.
-    size_t capacity_;        // Byte capacity; used_ never exceeds it.
-    size_t used_ = 0;        // Written prefix bytes; zero before the first append.
-    size_t characters_ = 0;  // Serialized Unicode characters; <=used_, not a model token count.
-    bool ok_ = true;         // Sticky formatting/capacity status; no bytes append after failure.
-    bool measuring_ = false; // Explicit counting sink; never a writable output lane.
+    char *data_;              // Caller-owned output, borrowed until the last append.
+    size_t capacity_;         // Byte capacity; used_ never exceeds it.
+    size_t used_ = 0;         // Written prefix bytes; zero before the first append.
+    size_t characters_ = 0;   // Serialized Unicode characters; <=used_, not a model token count.
+    bool ok_ = true;          // Sticky formatting/capacity status; no bytes append after failure.
+    Mode mode_ = Mode::fixed; // Construction selects a fixed, counting or caller-grown lane.
+    Growth growth_{}; // Used only in growing mode, while the caller's context remains alive.
 };
 
 namespace detail {

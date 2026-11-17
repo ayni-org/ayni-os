@@ -1,6 +1,5 @@
 #pragma once
 #include "../wifi/model_buffer.h"
-#include "model_tools.h"
 #include "motor.h"
 #include "motor_check.h"
 #include "reply_voice.h"
@@ -72,7 +71,6 @@ class Chat {
     void wait_for(const char *phase, const char *label, ayni_status_t);
     void status(uint64_t, const char *);
     void publish_model();
-    void publish_proposals();      // Best-effort UI metadata, never execution approval.
     void trace(const char *phase); // Fixed phase/timing metadata only.
     void trace_latency(const char *phase);
     void diagnostics();
@@ -115,9 +113,10 @@ class Chat {
     enum class ReplyIntent { present, cancelled };
     ReplyIntent reply_intent_ = ReplyIntent::present; // Independent of Core Goal cancellation.
     // One turn at a time: its text until the Goal exists, then the Goal until its answer.
-    enum class Turn { idle, preparing_input, input, running, saving, answer, speaking, reply_done };
+    enum class Turn { idle, input, running, saving, answer, speaking, reply_done };
     Turn turn_state_ = Turn::idle;
     struct ProbeTurn {
+        enum class Source { synthetic, current_history } source = Source::synthetic;
         uint32_t characters = 0; // Zero only primes the transport template; otherwise Han text.
         std::unique_ptr<wifi::ModelBuffer> history;
         ayni_body_ref_v1 history_ref{};
@@ -155,12 +154,13 @@ class Chat {
     char route_[32]{};
     // The model service: tool-calling turns and text-only summaries, one slot, one destination.
     ayni_call_resource_v1 resource_{};
-    std::array<ayni_schema_node_v1, 3> input_schema_{}, large_input_schema_{};
-    // Index 0: tool-calling turns (answer_bytes of text); 1: summaries (summary_bytes).
-    std::array<ayni_schema_node_v1, 4> result_schema_{};
+    std::array<ayni_schema_node_v1, 3> input_schema_{};
+    // Both current capabilities share the same external input and text-result Schema.
+    ayni_schema_node_v1 result_schema_{};
     ayni_authority_projection_v1 projection_{};
-    std::array<ayni_business_contract_v1, 4> business_{};
-    std::array<ayni_call_capability_v1, 4> capabilities_{};
+    ayni_business_contract_v1 business_{};
+    // Index 0: text-only replies/summaries; 1: tool-calling turns.
+    std::array<ayni_call_capability_v1, 2> capabilities_{};
     ayni_provider_v1 provider_{};
     ayni_string_v1 destination_{};
     ayni_scope_field_v1 destination_field_{};
@@ -176,8 +176,7 @@ class Chat {
     uint32_t model_tool_count_ = 0;
     ayni_model_usage_v1 model_usage_{};
     ayni_provider_result_v1 model_failure_{}; // Explicit adapter refusal, otherwise UNKNOWN.
-    ModelTools model_tools_;
-    std::array<char, 1024> diagnostics_{}; // Metadata-only capacity/status rendering.
+    std::array<char, 1024> diagnostics_{};    // Metadata-only capacity/status rendering.
     ayni_provider_completion_t *screen_completion_ = nullptr;
     ayni_attempt_ref_v1 screen_attempt_{};
     uint64_t screen_call_ = 0, screen_deadline_ = 0;

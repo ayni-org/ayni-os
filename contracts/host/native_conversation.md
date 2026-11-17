@@ -1,18 +1,20 @@
-# Native 会话历史与原始结果
+# Native 共享会话与 SQLite 值端口
 
-- **关联**：ADR-0085；C-POLICY-012、C-MEM-009/010；实现 `runtime/native_node/conversation_*`。
-- **属主**：Runtime/Host 拥有 SQLite、worker、缓存与 namespace；Core 只持有小引用、调用事实、原日志与快照。
+- **关联**：ADR-0108/0109；C-SDK-009/011、C-HVAL-002/005/007/009、C-POLICY-012/013。
+- **属主**：共享 Session 独占会话状态与发布/隐私 ACK；FileBodies 独占正文、所有权、有限缓存和回收；Native 的 SqliteValues 只实现异步 FileValuePort。Core 独占授权、Goal/Task/Call 与原持久事实。
 
-启动持有原 Native 目录锁，只接受私有普通非链接数据库文件。存在旧 conversation.bin 时在新写入前拒绝并保留目录；SQLite application_id=0x41594E49、user_version=4，不认识版本拒绝。会话记录格式6、turn格式7独立于Core schema10；均拒绝旧格式，无reader或迁移。摘要游标保持规范数据偏移。新回复续传随对应历史正文保存，公开轮次/结果摘要只显示规范回答，不显示内部封套；旧二进制不能接管当前格式。旧二进制/原目录用于回退，无自动迁移或清空。
+Native 与 ESP/portable 使用同一个 Session 和 FileBodies。Native 选择 durable 草稿准入、retain_and_append 未完成输入策略及16 MiB正文缓存；ESP 可显式选择 background，二者共用存储/确认机制。ToolLoop准入不等待整个FileBodies队列空闲，只按当前步骤依赖的读写状态DEFER；会话发布、清理和关闭仍等待各自真实确认及ACK。默认 retain 仍要求显式 abandon，Native 的新输入显式追加保留草稿；不把待批准 Goal 当作已完成会话。正常重开只按完整来源基线挂接原已接受 Goal，不创建新 Goal 或重放旧动作。原已完成 Goal 的参数已被隐私退休时跳过；待定工作的缺失/冲突证据仍拒绝。
 
-启动后一个 worker 独占 SQL，owner callbacks 仅在 mutex 下复制有界作业。state save、history load/save、raw archive 各一 lane，queued/writing 时明确 NOT_READY；全局 ready 覆盖全部共享 lane。SQLite FULL 同步、DELETE journal、foreign_keys、secure_delete 与 trusted_schema=OFF；事务提交后才报告完成并允许 Core 保存引用。ready 与 decide 之间完成用显式 DEFER 处理，不允许静默吞掉服务错误。关闭先停止 Kernel 消费，再排空所有 lane、join worker、关数据库；Core step 不等 SQL。
+启动持有 Native 目录锁，只接受私有、同用户、单链接普通数据库文件。旧 conversation.bin 或未知 SQLite 版本在 Core 启动写入前拒绝并保留。当前 application_id=0x41594E49、user_version=5，仅有 state(owner,object,generation,body) 表，以(owner,object)为主键。共享会话记录6、turn8、结果视图2、正文manifest1与Core schema10独立版本化；删除旧reader、archive及迁移路径，不自动擦除。回退需保留匹配的旧二进制与原目录，不能让旧程序接管新目录。
 
-bodies表按引用id保存scope、digest、content；body_data按content只保存一份不可变正文：对话文本按会话记录 id、模型请求与结果按各自作用域写入（ADR-0096）。stage在16 MiB共享payload预算及4096引用额度内立即复制，share共用payload但有独立scope引用；confirm排队持久化，write复用stage/confirm且事务提交前回答NOT_READY。读取校验digest。最后引用移除时，同一隐私事务清理无引用body_data；正常关闭重开仍可读。无挂起轮次的保存会回收记录不再引用的本作用域正文。正文长度只受 token 设置限制，不再有工作历史缓冲；Task 参数/checkpoint 只存正文引用和控制状态。
+SqliteValues 一个worker独占数据库，至多两个排队请求元数据槽及一个执行中的借用；接受后缓冲活至恰好一次完成回调。普通会话值优先于后台正文，同优先级FIFO，正在执行的借用不中断；排队满拒绝且不保留。FileBodies一次最多借用4 KiB正文文件，Core日志仍走Host自己的存储端口。owner提交/回调不等待SQL，不在Core step内同步I/O。
 
-results 以 namespace/task/call/sequence 唯一保存原文、规范值、原授权域/业务契约证明、真实 outcome/status/reason/effect、模型 usage 和 JSON 视图。回调返回前复制借用，提交后才发 result_ref。已有行与当前 Core 原始事实/正文及重新生成 JSON 比较；持久 JSON 不拥有执行事实。原文按需分配、不截断，摘要分块按 tool_result_max_tokens 并保持 UTF-8 边界。结果摘要失败不删除原行、不重新执行业务动作。
+SQLite使用DELETE journal、synchronous=EXTRA、secure_delete=ON、trusted_schema=OFF；启动核对journal、同步及安全删除配置。EXTRA在DELETE模式额外同步删除journal的目录，避免以FULL等同最高提交持久性（[SQLite说明](https://www.sqlite.org/pragma.html#pragma_synchronous)）。写入CAS、同版本精确字节重试及删除遵守FileValuePort；事务提交后才报告成功。此设置不替代真实掉电/介质证据，secure_delete不宣称清除文件系统快照、备份或磨损副本。
 
-所有读取/写入都检查 owner、conversation、generation；worker 写前再次检查当前 state。删除事务清除旧视图/原始结果和派生消息；单轮删除保留其他独立 user 输入，全删除不保留旧正文。提交后同 mutex 更新 namespace、清除旧缓存及排队作业，再允许 ACK；迟到旧代际读写返回 EXPIRED。这里的 secure_delete 不宣称清除了文件系统快照、备份或设备磨损副本。
+正文数据与独立scope所有权由FileBodies的共享manifest/4 KiB块表示，SQLite不另建body_data/results表示或缓存。零预算拒绝；缓存不足明确背压，未保存/借用中正文不能清退。工具原始规范值、域和证明与可选模型展示摘要采用同一结果视图；摘要不取代原始事实，未知结果不重试。会话查询按需投影文本，不长期复制整份历史。
 
-正常验证：`ConversationDatabase.large_bodies_round_trip_once_and_survive_reopen`、`ConversationDatabase.idle_save_collects_bodies_the_record_no_longer_names`、`ConversationDatabase.erasing_the_conversation_removes_every_body`、`NativeAssistant.short_history_and_conversation_survive_clean_close_and_reopen`。新 SQL 路径未执行故障切断/恢复专项，不以现有 Core 历史证据代替。
+共享Session只stage一次输入，等待其confirm和根值保存完成后才创建durable Goal，不在每次等待时重编码输入。发布按完整引用确认正文及所有权，再保存根值；旧图按当前scope实际释放/收集完成后，才提交精确Core ACK并等待持久。BodyCollection.collected返回BUSY表示该scope释放尚未持久完成；共享payload等待移除owner的manifest版本，最后owner等待正文及manifest实际删除，不受后续无关写入拖延。异步适配器必须提供collected；同步实现可省略。progress只推进工作，ready/idle保留给全局关闭排空，sticky失败仍阻止成功。删除待批准/暂停回合也走同一取消、持久终态、保留独立输入、保存/收集/ACK路径；来源失效立即阻止旧正文曝光。启动和普通推进共用正文/Provider/Core/隐私维护，不让启动漏推进异步清理。答案通知在正文读取成功后才消费一次终态结果。关闭先quiesce会话，Core停止，排空正文，join SQLite worker，再join生产者及释放Kernel/Host；失败保留借用并返回原错误。
 
-ABI0.55的可选background策略使用消息索引、共享round引用与原规范结果投影（ADR-0104）；默认Native会话保留durable及可选archive策略。完整结果归档仍是该策略的显式旧消费者，不是ESP共享路径的必经阶段。新字段与生命周期均重新编译；新格式异常恢复、板端耗时及OTA未在本轮执行。
+新增正常证据：`DurableConversationProgress.waiting_for_input_durability_does_not_restage_the_input`、`ConversationProgress.publication_does_not_wait_for_unrelated_body_persistence`、`ConversationProgress.asynchronous_collection_requires_scoped_completion`、`ScopedBodyCleanup.shared_owner_release_has_an_independent_durable_completion`、`ScopedBodyCleanup.temporary_release_preserves_cold_cleanup_under_queue_backpressure`。队列背压与正常完成不替代异常恢复证据。
+
+正常回归：`SqliteValuesTest.*`、`NativeAssistant.short_history_and_conversation_survive_clean_close_and_reopen`、`NativeAssistant.proposed_turn_can_be_approved_after_normal_reopen`、`NativeAssistant.whole_context_delete_erases_content_and_preserves_actual_work_outcomes`、`NativeAssistant.invalidating_publication_preserves_draft_across_reopen_and_next_turn`及既有Session/FileBodies正常用例。实际平台、命令及结果见ADR-0108关联记录；本轮未启动新故障/恢复专项，不以配置或正常重开宣称异常恢复已验证。

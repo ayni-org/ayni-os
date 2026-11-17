@@ -91,7 +91,7 @@ HTTP 分类与非法参数、列表数量/编码上限由 `OpenaiHttpError`、`O
 
 ## 共用模型协议补充（ADR-0098，C-PROV-004/006/011）
 
-可选ModelProtocol支持Chat Completions/Responses及SSE；当前ABI0.55/schema10，见ADR-0104。
+可选ModelProtocol支持Chat Completions/Responses及SSE；当前ABI0.56/schema10，见ADR-0104。
 默认旧TEXT消费者继续Chat非流式。Responses必须使用显式FRAMED回复，Provider与策略匹配编码；
 旧工具列表assistant_text或TEXT正文承载版本化回复，历史assistant/calls的v2帧绑定续传。
 有序output Items、reasoning/encrypted_content与规范回答/调用一同从完成响应生成；续传的API、

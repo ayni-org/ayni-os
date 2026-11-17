@@ -1,6 +1,7 @@
 #include "strategy_workspace_fixture.h"
 // ADR-0056 / C-POLICY-005..012: real registered policies, local protocol only.
 #include "strategies_fixture.h"
+#include <ayni/ayni.hpp>
 
 namespace {
 using namespace ayni::test;
@@ -152,6 +153,158 @@ class BackgroundStrategies : public StrategiesFixture {
         };
     }
 };
+class ReusedMessageBodies : public BackgroundStrategies {
+  protected:
+    static inline thread_local std::map<std::string, uint32_t> staged;
+    ayni_body_store_v1 observed{};
+    void SetUp() override {
+        observed = *bodies.store();
+        observed.stage = [](void *ctx, uint64_t scope, ayni_bytes_v1 bytes, ayni_body_ref_v1 *out) {
+            ++staged[std::string(reinterpret_cast<const char *>(bytes.data), bytes.size)];
+            auto &memory = *static_cast<ayni::runtime::MemoryBodies *>(ctx);
+            return memory.store()->stage(ctx, scope, bytes, out);
+        };
+        body_store = &observed;
+        staged.clear();
+        BackgroundStrategies::SetUp();
+    }
+};
+// C-POLICY-013: user/assistant frames use their already owned raw body references.
+TEST_F(ReusedMessageBodies, history_index_reuses_input_and_final_answer_bodies) {
+    const auto task = start();
+    ASSERT_EQ(pending.size(), 1U);
+    EXPECT_EQ(staged["hello"], 0U); // begin admitted this input before the strategy ran.
+    post(0, text("one final answer"));
+    pump();
+    ASSERT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+    EXPECT_EQ(staged["one final answer"], 1U);
+    finish(task);
+    const auto history = text_of(conversation.history);
+    EXPECT_NE(history.find("hello"), history.npos);
+    EXPECT_NE(history.find("one final answer"), history.npos);
+}
+class CountedCompaction : public StrategiesFixture {
+  protected:
+    uint32_t replacement_projections = 0;
+    CountedCompaction() {
+        configure_loop = [this](policies::ToolLoopConfig &config) {
+            config.projection.context = &replacement_projections;
+            config.projection.context_writer = [](void *ctx, ayni::json::Writer &out,
+                                                  ayni_string_v1 input, ayni::model::Mode mode,
+                                                  ayni::model::Completeness complete) {
+                if (mode == ayni::model::Mode::assistant &&
+                    std::string_view(input.data, input.size).find("Unconfirmed model summary") !=
+                        std::string_view::npos) {
+                    ++*static_cast<uint32_t *>(ctx);
+                }
+                return ayni::model::write_context(out, input, mode, complete);
+            };
+            config.projection.reply_writer = [](void *, ayni::json::Writer &out, ayni_string_v1 id,
+                                                ayni_string_v1 content) {
+                out.raw(",{\"role\":\"tool\",\"tool_call_id\":");
+                out.string(id);
+                out.raw(",\"content\":");
+                out.string(content);
+                out.raw("}");
+            };
+        };
+    }
+};
+// C-POLICY-012/013: compact replacement enters the normal request projection once.
+TEST_F(CountedCompaction, completed_summary_is_projected_only_for_the_next_request) {
+    const auto task = start_until_budget_summary();
+    ASSERT_NE(task, 0U);
+    uint32_t chunks = 0;
+    while (pending.back().capability == "summary") {
+        ASSERT_LT(chunks++, 32U);
+        post(static_cast<uint32_t>(pending.size() - 1U), text("short summary"));
+        pump();
+    }
+    ASSERT_EQ(pending.back().capability, "model");
+    EXPECT_EQ(replacement_projections, 1U);
+    post(static_cast<uint32_t>(pending.size() - 1U), text("done"));
+    pump();
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+}
+class UnrelatedBodyWork : public StrategiesFixture {
+  protected:
+    uint32_t progress_calls = 0;
+    UnrelatedBodyWork() {
+        configure_loop = [this](policies::ToolLoopConfig &config) {
+            config.body_progress = {&progress_calls, [](void *context, uint64_t) {
+                                        ++*static_cast<uint32_t *>(context);
+                                        return 0U; // Other body work keeps the worker busy.
+                                    }};
+        };
+    }
+};
+// C-POLICY-013: durable mode waits for its own store operations, not queue-wide idle.
+TEST_F(UnrelatedBodyWork, durable_task_completes_while_unrelated_body_work_remains) {
+    const auto task = start();
+    ASSERT_EQ(pending.size(), 1U);
+    propose(0, 1);
+    ASSERT_EQ(pending.size(), 2U);
+    post(1, text("result"));
+    pump();
+    ASSERT_EQ(pending.size(), 3U);
+    post(2, text("answer"));
+    pump();
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+    EXPECT_GT(progress_calls, 0U);
+    finish(task);
+}
+class ReusedHistory : public BackgroundStrategies {
+  protected:
+    static inline thread_local uint64_t watched_history = 0;
+    static inline thread_local uint32_t history_reads = 0;
+    ayni_body_store_v1 observed{};
+    void SetUp() override {
+        observed = *bodies.store();
+        observed.read = [](void *context, const ayni_body_ref_v1 *ref, uint8_t *out,
+                           uint32_t capacity) {
+            history_reads += ref->id == watched_history ? 1U : 0U;
+            auto &memory = *static_cast<ayni::runtime::MemoryBodies *>(context);
+            return memory.store()->read(context, ref, out, capacity);
+        };
+        body_store = &observed;
+        watched_history = history_reads = 0;
+        BackgroundStrategies::SetUp();
+    }
+};
+// C-POLICY-013: the next Task reuses the exact completed graph within the existing bound;
+// the same owner privacy-progress input still clears all decoded private representations.
+TEST_F(ReusedHistory, next_turn_reuses_completed_history_and_privacy_clears_it) {
+    auto task = start();
+    propose(0, 1);
+    post(1, text("first tool result"));
+    pump();
+    post(2, text("first answer"));
+    pump();
+    ASSERT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+    finish(task);
+    auto privacy = ayni::initialized<ayni_privacy_info_v1>();
+    ASSERT_EQ(ayni_get_privacy_status(work.kernel(), work.session(), &privacy), AYNI_OK);
+    ASSERT_EQ(loop.maintain(work.kernel(), privacy), AYNI_OK);
+    ASSERT_EQ(loop.cached_turns(), 1U);
+    watched_history = conversation.history.id;
+    history_reads = 0;
+    task = start();
+    ASSERT_EQ(pending.size(), 4U);
+    EXPECT_NE(pending.back().text.find("first tool result"), std::string::npos);
+    EXPECT_NE(pending.back().text.find("first answer"), std::string::npos);
+    // Current ownership/digest remain checked; the cached graph needs no second
+    // history projection. This permits the discovery and preparation reads only.
+    EXPECT_GT(history_reads, 0U);
+    EXPECT_LE(history_reads, 2U);
+    EXPECT_EQ(loop.cached_turns(), 1U);
+    post(3, text("second answer"));
+    pump();
+    finish(task);
+    privacy.phase = AYNI_PRIVACY_ERASING;
+    privacy.request_seq = 1;
+    ASSERT_EQ(loop.maintain(work.kernel(), privacy), AYNI_OK);
+    EXPECT_EQ(loop.cached_turns(), 0U);
+}
 // ADR-0104: shared staged bodies preserve ordering for the maximum serial proposal batch.
 TEST_F(BackgroundStrategies, eight_tools_preserve_message_order_and_completed_round) {
     const auto task = start();

@@ -14,7 +14,7 @@ RC003-MS 松键后整段 ASR，识别文字显示并自动提交。只有一个 
 
 配置页采用统一卡片与分组：[网络](screenshots/network-settings-preview.png)、[模型与语音](screenshots/endpoint-settings-preview.png)、[模型选项](screenshots/model-options-preview.png)。示例值不来自真实凭据。完成固件字体生成后，在本目录使用`cmake -S tests/wifi/preview -B build/screen-preview`配置Native预览，按资源预算编译；`build/screen-preview/ayni_screen_preview output.ppm home|voice|motor|network|model|options`输出同一绘图代码的PPM，Native预览单独依赖系统zlib。
 
-先检查资源并设置正整数CMAKE_BUILD_PARALLEL_LEVEL、CTEST_PARALLEL_LEVEL，再运行 ./build.sh。固定ESP-IDF6.0.3；device.py deploy只写应用/分区表，保留配置、配对和数据，不自动擦卷。详见[Wi-Fi说明](WIFI.md)。历史usb.chat等私有身份只保留数据读取/旧任务取消用途，不代表仍有USB运行版本。
+先检查资源并设置正整数CMAKE_BUILD_PARALLEL_LEVEL、CTEST_PARALLEL_LEVEL，再运行 ./build.sh。固定ESP-IDF6.0.3；device.py deploy只写应用/分区表，保留配置、配对和数据，不自动擦卷。详见[Wi-Fi说明](WIFI.md)。旧usb.model/usb.chat能力、Binding和GoalType不再注册；不支持的旧属主Goal明确拒绝并保留数据，不自动擦除或重放。
 
 ## 2026-11-11 共用模型协议
 
@@ -28,4 +28,8 @@ RC003-MS 松键后整段 ASR，识别文字显示并自动提交。只有一个 
 
 聊天复用`runtime/conversation::Session`，输入、Goal、终态、文件保存、Core发布/ACK和清空由同一实现管理。显式discard模式允许取消后继续，发布中的回答保留已确认历史，界面只抑制晚到展示。启动先取消旧实验工作，合成容量诊断使用独立类型、不进入真实历史。原实验History、BodyCache和ValueQueue已移除；正文缓存2 MiB预算及清退、8/16文件请求准入和不可复制命令客户端均使用共享接口。
 
-按用户决定不迁移旧独立历史文件；新锚点对应的新会话正常持久和重开，Core任务/调用证据与配置保留，无启动自动擦卷。本轮未烧录或OTA，完整跨存储中断恢复及硬件内存峰值未验证，独立审查由用户后续安排。见[ADR-0100](../../docs/adr/0100-shared-interactive-runtime.md)。
+按用户决定不迁移旧独立历史文件；新锚点对应的新会话正常持久和重开，Core任务/调用证据与配置保留，无启动自动擦卷。ADR-0100实施轮未烧录或OTA；后续部署与修复见[实验记录](WIFI.md)。完整跨存储中断恢复及硬件内存峰值仍未验证。见[ADR-0100](../../docs/adr/0100-shared-interactive-runtime.md)。
+
+默认malloc/new在本部署中优先PSRAM，包括小正文与所有权元数据；显式INTERNAL/DMA的Host、任务栈、控制状态和硬件缓冲仍在内部RAM。仅配置TLS外部内存不足以保护内部堆，构建拒绝残留的2048字节内部优先配置。每次API处理后的数值堆快照用于区分跨回合保留和连接临时占用，不记录正文或密钥；实际结果及限制见[实验记录](WIFI.md)。
+
+输入接入直接使用共享Session和ToolLoop，不再在每回合前全清正文缓存；共享读取合并独立依赖并复用同源派生表示，Session保留全部持久屏障，展示只取最新答案。诊断`POST /api/diagnostics/context-test?history=current`只读当前历史、隔离scope并返回本地模板，不调用云端/工具、不保存到真实会话；其GoalType/可见性复核与真实聊天不同，不能代替真实板端性能验收。见[ADR-0105](../../docs/adr/0105-shared-conversation-flow-and-local-cost.md)和[实际记录](WIFI.md#2026-11-15-共用对话主路径与本地耗时简化)。

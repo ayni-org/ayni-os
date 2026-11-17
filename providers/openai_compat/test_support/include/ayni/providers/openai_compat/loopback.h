@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <functional>
 #include <mutex>
+#include <poll.h>
 #include <stdexcept>
 #include <string>
 #include <sys/socket.h>
@@ -122,7 +123,14 @@ class LoopbackHttp {
         }
     }
     void run() {
+        constexpr int accept_poll_ms = 10;
         while (!stopping_.load()) {
+            // shutdown(listener) does not wake accept on every POSIX Host (notably macOS).
+            // Bound the idle wait so normal fixture teardown can always join the worker.
+            pollfd readable{listener_, POLLIN, 0};
+            if (poll(&readable, 1, accept_poll_ms) <= 0 || !(readable.revents & POLLIN)) {
+                continue;
+            }
             const int client = accept(listener_, nullptr, nullptr);
             if (client < 0) {
                 break;

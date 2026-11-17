@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <ayni/runtime/conversation/file_bodies.h>
 #include <cstring>
+#include <iterator>
 namespace ayni::runtime {
 namespace {
 using hosts::storage::FileValueRequest;
@@ -21,8 +22,9 @@ uint64_t take(const std::string &in, size_t &at, uint32_t count) {
     return value;
 }
 } // namespace
-ayni_status_t FileBodies::configure(hosts::storage::FileValuePort files, uint64_t base) {
-    if (!files.submit || !base || base > UINT64_MAX - chunks(UINT32_MAX) - 1U) {
+ayni_status_t FileBodies::configure(hosts::storage::FileValuePort files, size_t cache_bytes,
+                                    uint64_t base) {
+    if (!files.submit || !cache_bytes || !base || base > UINT64_MAX - chunks(UINT32_MAX) - 1U) {
         return AYNI_INVALID_ARGUMENT;
     }
     std::lock_guard<std::mutex> lock(mutex_);
@@ -30,6 +32,7 @@ ayni_status_t FileBodies::configure(hosts::storage::FileValuePort files, uint64_
         return AYNI_INVALID_STATE;
     }
     files_ = files;
+    cache_limit_ = cache_bytes;
     base_ = base;
     owner_ = std::this_thread::get_id();
     return AYNI_OK;
@@ -48,7 +51,8 @@ bool FileBodies::valid_ref(const ayni_body_ref_v1 *ref) {
 }
 bool FileBodies::owns(const Entry &entry, uint64_t id) {
     const auto has = [id](const auto &owner) { return owner.id == id; };
-    return std::find(entry.releases.begin(), entry.releases.end(), id) == entry.releases.end() &&
+    return std::none_of(entry.releases.begin(), entry.releases.end(),
+                        [id](const auto &release) { return release.id == id; }) &&
            (std::any_of(entry.owners.begin(), entry.owners.end(), has) ||
             std::any_of(entry.additions.begin(), entry.additions.end(), has));
 }
@@ -85,6 +89,10 @@ ayni_status_t FileBodies::add_owner(Entry &entry, uint64_t scope, uint64_t id) {
     if (entry.deleting) {
         return AYNI_NOT_READY;
     }
+    if (std::any_of(entry.releases.begin(), entry.releases.end(),
+                    [id](const auto &release) { return release.id == id; })) {
+        return AYNI_NOT_READY; // Finish the old alias's durable removal before recreating it.
+    }
     auto &owners = entry.manifest_loaded ? entry.owners : entry.additions;
     if (owners.size() == owner_limit || entry.revision == UINT64_MAX) {
         return AYNI_CAPACITY_EXCEEDED;
@@ -97,23 +105,57 @@ ayni_status_t FileBodies::add_owner(Entry &entry, uint64_t scope, uint64_t id) {
 void FileBodies::drop_owner(Entry &entry, uint64_t id) {
     entry.temporary.erase(std::remove(entry.temporary.begin(), entry.temporary.end(), id),
                           entry.temporary.end());
-    if (!entry.manifest_loaded) {
-        if (std::find(entry.releases.begin(), entry.releases.end(), id) == entry.releases.end()) {
-            entry.releases.push_back(id);
+    auto release = std::find_if(entry.releases.begin(), entry.releases.end(),
+                                [id](const auto &item) { return item.id == id; });
+    if (release == entry.releases.end()) {
+        if (entry.manifest_loaded &&
+            std::none_of(entry.owners.begin(), entry.owners.end(),
+                         [id](const auto &owner) { return owner.id == id; })) {
+            return; // Already-proved absence cannot acquire a new wait on unrelated revisions.
         }
-        return;
+        if (entry.releases.size() == owner_limit || entry.revision == UINT64_MAX) {
+            failure_ = entry.failure = AYNI_CAPACITY_EXCEEDED;
+            entry.state = State::failed;
+            return; // A refused release must never be acknowledged as completed cleanup.
+        }
+        entry.releases.push_back({id, std::nullopt});
+        release = std::prev(entry.releases.end());
     }
-    const auto end = std::remove_if(entry.owners.begin(), entry.owners.end(),
-                                    [id](const auto &owner) { return owner.id == id; });
-    if (end != entry.owners.end()) {
-        entry.owners.erase(end, entry.owners.end());
+    if (entry.manifest_loaded && !release->revision) {
+        apply_release(entry, *release);
+        retire_releases(entry);
+    }
+}
+bool FileBodies::apply_release(Entry &entry, Entry::Release &release) {
+    const auto id = release.id;
+    const auto owner = std::find_if(entry.owners.begin(), entry.owners.end(),
+                                    [id](const auto &item) { return item.id == id; });
+    if (owner != entry.owners.end()) {
+        if (entry.revision == UINT64_MAX) {
+            failure_ = entry.failure = AYNI_CAPACITY_EXCEEDED;
+            entry.state = State::failed;
+            return false;
+        }
+        entry.owners.erase(owner);
         ++entry.revision;
     }
+    release.revision = entry.revision;
     const bool started = !entry.deleting && entry.owners.empty();
     entry.deleting = entry.owners.empty();
     if (started) {
         entry.chunk = 0;
     }
+    return true;
+}
+void FileBodies::retire_releases(Entry &entry) {
+    if (!entry.deleting) {
+        entry.releases.erase(std::remove_if(entry.releases.begin(), entry.releases.end(),
+                                            [&](const auto &release) {
+                                                return release.revision &&
+                                                       *release.revision <= entry.saved_revision;
+                                            }),
+                             entry.releases.end());
+    } // Last-owner removal completes only after payload chunks and the manifest are deleted.
 }
 std::string FileBodies::encode_manifest(const Entry &entry) {
     std::string out;
@@ -235,7 +277,7 @@ ayni_status_t FileBodies::stage(void *context, uint64_t scope, ayni_bytes_v1 bod
     auto &self = *static_cast<FileBodies *>(context);
     {
         std::lock_guard<std::mutex> lock(self.mutex_);
-        if (!self.cache_limit_) {
+        if (!self.files_.submit) {
             return AYNI_INVALID_STATE;
         }
     }
@@ -423,7 +465,8 @@ void FileBodies::release_temporary(void *context, const ayni_body_ref_v1 *ref) {
                           entry->temporary.end()) {
             return;
         }
-        if (!entry->manifest_loaded && !entry->pending && !entry->persist_requested) {
+        if (!entry->manifest_loaded && !entry->pending && !entry->persist_requested &&
+            entry->releases.empty() && !entry->deleting) {
             entry->additions.erase(
                 std::remove_if(entry->additions.begin(), entry->additions.end(),
                                [&](const auto &owner) { return owner.id == ref->id; }),
@@ -612,14 +655,22 @@ void FileBodies::complete(void *context, const FileValueResult &result) noexcept
                 entry.state = State::failed;
                 self.failure_ = entry.failure = AYNI_CAPACITY_EXCEEDED;
             } else {
-                for (const auto id : entry.releases) {
-                    self.drop_owner(entry, id);
+                for (auto &release : entry.releases) {
+                    if (!self.apply_release(entry, release)) {
+                        break;
+                    }
+                    if (missing) {
+                        release.revision = entry.saved_revision;
+                    } // A missing manifest already proves absence; shared staged bytes stay
+                      // RAM-only.
                 }
-                entry.releases.clear();
+                self.retire_releases(entry);
                 if (entry.owners.empty()) {
                     entry.deleting = true;
                 }
-                if (entry.staged) {
+                if (entry.state == State::failed) {
+                    // Preserve capacity failure from applying the cold ownership removals.
+                } else if (entry.staged) {
                     entry.state = missing ? State::writing : State::durable;
                 } else if (!entry.deleting) {
                     entry.state = entry.load_payload ? State::loading : State::evicted;
@@ -629,6 +680,7 @@ void FileBodies::complete(void *context, const FileValueResult &result) noexcept
     } else if (pending->operation == Operation::manifest_write) {
         entry.generation = result.generation;
         entry.saved_revision = pending->revision;
+        self.retire_releases(entry);
     } else if (pending->operation == Operation::remove) {
         if (entry.chunk++ == chunks(entry.size)) {
             self.entries_.erase(pending->id);
@@ -662,6 +714,25 @@ uint32_t FileBodies::ready(void *context, uint64_t) {
     self.flush();
     return self.idle() ? 1U : 0U;
 }
+uint32_t FileBodies::progress(void *context, uint64_t) {
+    static_cast<FileBodies *>(context)->flush();
+    return 1U;
+}
+ayni_status_t FileBodies::collected(void *context, uint64_t scope) {
+    auto &self = *static_cast<FileBodies *>(context);
+    std::lock_guard<std::mutex> lock(self.mutex_);
+    if (self.failure_ != AYNI_OK) {
+        return self.failure_;
+    }
+    for (const auto &[id, entry] : self.entries_) {
+        const auto alias = identity(scope, entry.digest);
+        if (std::any_of(entry.releases.begin(), entry.releases.end(),
+                        [alias](const auto &release) { return release.id == alias; })) {
+            return AYNI_BUSY;
+        }
+    }
+    return AYNI_OK;
+}
 bool FileBodies::idle() const {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!pending_.empty()) {
@@ -672,7 +743,8 @@ bool FileBodies::idle() const {
     }
     for (const auto &[id, entry] : entries_) {
         if (entry.state != State::failed &&
-            (entry.persist_requested || !entry.staged || entry.deleting) &&
+            (entry.persist_requested || !entry.staged || entry.deleting ||
+             !entry.releases.empty()) &&
             (!entry.manifest_loaded || entry.deleting || entry.state == State::writing ||
              entry.state == State::loading || entry.saved_revision != entry.revision)) {
             return false;
@@ -716,16 +788,16 @@ ayni_status_t FileBodies::trim_cache(size_t target) {
 }
 ayni_status_t FileBodies::set_cache_limit(size_t bytes) {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (bytes && trim_locked(bytes, false) != AYNI_OK) {
+    if (!bytes) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (trim_locked(bytes, false) != AYNI_OK) {
         return AYNI_BUSY;
     }
     cache_limit_ = bytes;
     return AYNI_OK;
 }
 ayni_status_t FileBodies::reserve_cache(size_t bytes) {
-    if (!cache_limit_) {
-        return AYNI_OK;
-    }
     if (bytes > cache_limit_) {
         return AYNI_CAPACITY_EXCEEDED;
     }

@@ -101,7 +101,7 @@ struct Serving {
         out->boot_epoch = 1;
         out->owner_instance_id = 1;
         out->goal_type_version = 1;
-        constexpr char id[] = "usb.chat";
+        constexpr char id[] = "wifi.chat";
         out->goal_type_size = sizeof(id) - 1;
         std::memcpy(out->goal_type_id, id, sizeof(id) - 1);
         return AYNI_OK;
@@ -159,7 +159,7 @@ void large_context(std::string_view glyph, unsigned rounds) {
     // Repeated complete normal turns grow its real history beyond the old 32KiB path.
     ValueFiles files;
     ayni::runtime::FileBodies bodies;
-    ASSERT_EQ(bodies.configure({&files, ValueFiles::submit}), AYNI_OK);
+    ASSERT_EQ(bodies.configure({&files, ValueFiles::submit}, 2U * 1024U * 1024U), AYNI_OK);
     const auto *store = bodies.store();
     size_t bytes = 0, alignment = 0;
     ASSERT_EQ(ayni::strategies::ToolLoop::workspace_requirements(&bytes, &alignment), AYNI_OK);
@@ -167,7 +167,7 @@ void large_context(std::string_view glyph, unsigned rounds) {
     ayni_workspace_v1 workspace{sizeof(workspace), 0, region.data(),
                                 region.size() * sizeof(uint64_t)};
     ayni::strategies::ToolLoopConfig config;
-    config.identity.id = text("usb.chat");
+    config.identity.id = text("wifi.chat");
     config.model.kind = config.summary.kind = AYNI_POLICY_REQUEST_MODEL;
     config.model.binding_id = text("model.tools");
     config.summary.binding_id = text("summary.text");
@@ -210,7 +210,7 @@ void large_context(std::string_view glyph, unsigned rounds) {
         snapshot.goal_id = round + 1;
         snapshot.owner_instance_id = 1;
         snapshot.goal_type_version = 1;
-        snapshot.goal_type_id = text("usb.chat");
+        snapshot.goal_type_id = text("wifi.chat");
         snapshot.goal_parameters = parameters.view();
         snapshot.step_capacity = AYNI_TASK_STEP_CAPACITY_MAX;
         snapshot.call_context = &serving;
@@ -314,7 +314,7 @@ TEST(WifiReply, RealToolLoopCompletesTextAfterOneModelRequestAndSavesItsOwnHisto
         ayni::strategies::Conversation::begin(&workspace, store, record, text("你好"), parameters),
         AYNI_OK);
     ayni::strategies::ToolLoopConfig config;
-    config.identity.id = text("usb.chat");
+    config.identity.id = text("wifi.chat");
     config.model.kind = config.summary.kind = AYNI_POLICY_REQUEST_MODEL;
     config.model.binding_id = text("model.tools");
     config.summary.binding_id = text("summary.text");
@@ -332,7 +332,7 @@ TEST(WifiReply, RealToolLoopCompletesTextAfterOneModelRequestAndSavesItsOwnHisto
     snapshot.goal_id = 1;
     snapshot.owner_instance_id = 1;
     snapshot.goal_type_version = 1;
-    snapshot.goal_type_id = text("usb.chat");
+    snapshot.goal_type_id = text("wifi.chat");
     snapshot.goal_parameters = parameters.view();
     snapshot.step_capacity = AYNI_TASK_STEP_CAPACITY_MAX;
     snapshot.call_context = &service;
@@ -376,7 +376,7 @@ TEST(WifiReply, CacheTrimRetainsCleanupUntilNormalFileQueueHasCapacity) {
     // ADR-0097: a normal full file queue cannot cause cache trimming to discard deferred removals.
     ValueFiles files;
     ayni::runtime::FileBodies bodies;
-    ASSERT_EQ(bodies.configure({&files, ValueFiles::submit}), AYNI_OK);
+    ASSERT_EQ(bodies.configure({&files, ValueFiles::submit}, 2U * 1024U * 1024U), AYNI_OK);
     const auto *port = bodies.store();
     const uint8_t value[] = "retired body";
     ayni_body_ref_v1 reference{};

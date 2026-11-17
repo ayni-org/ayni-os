@@ -14,15 +14,12 @@ std::string_view normalized_api_root(std::string_view url) {
 }
 namespace {
 constexpr Settings layout{};
-constexpr size_t record_header = 8, record_body = layout.ssid.size() + layout.password.size() +
-                                                  layout.speech_url.size() +
-                                                  layout.model_url.size() +
-                                                  layout.model_key.size() + layout.model.size();
-constexpr size_t legacy_record_bytes = record_header + record_body + sizeof(uint32_t);
-constexpr size_t options_bytes =
-    layout.api_type.size() + layout.stream.size() + layout.output_limit.size();
-constexpr size_t record_bytes = legacy_record_bytes + options_bytes;
-constexpr uint32_t record_magic = 0x41594331, legacy_record_version = 1, record_version = 2;
+constexpr size_t record_header = 8;
+constexpr size_t record_bytes =
+    record_header + layout.ssid.size() + layout.password.size() + layout.speech_url.size() +
+    layout.model_url.size() + layout.model_key.size() + layout.model.size() +
+    layout.api_type.size() + layout.stream.size() + layout.output_limit.size() + sizeof(uint32_t);
+constexpr uint32_t record_magic = 0x41594331, record_version = 2;
 } // namespace
 char *Settings::field(size_t index) {
     switch (index) {
@@ -120,8 +117,7 @@ bool Settings::load() {
         return true;
     }
     const auto version = get32(record.data() + sizeof(uint32_t));
-    const bool legacy = version == legacy_record_version && size == legacy_record_bytes;
-    if (rc != ESP_OK || (!legacy && (size != record.size() || version != record_version)) ||
+    if (rc != ESP_OK || (size != record.size() || version != record_version) ||
         get32(record.data()) != record_magic ||
         get32(record.data() + size - sizeof(uint32_t)) !=
             checksum(record.data(), size - sizeof(uint32_t))) {
@@ -129,7 +125,7 @@ bool Settings::load() {
     }
     Settings candidate{};
     size_t at = record_header;
-    for (size_t i = 0; i < (legacy ? legacy_field_count : field_count); ++i) {
+    for (size_t i = 0; i < field_count; ++i) {
         const auto bytes = capacity(i);
         if (!std::memchr(record.data() + at, 0, bytes)) {
             return false;

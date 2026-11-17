@@ -167,6 +167,7 @@ bool Api::submit(Request kind, uint64_t id, const void *data, size_t bytes, uint
     job.output.id = id;
     job.output.kind = {};
     job.output.size = 0;
+    job.outline.clear();
     job.ok = false;
     job.error.fill(0);
     job.generation = generation_.load(std::memory_order_acquire);
@@ -200,6 +201,7 @@ void Api::release(Job *job) {
     job->response_bytes = 0;
     std::fill(job->input.body.begin(), job->input.body.end(), 0);
     std::fill(job->output.body.begin(), job->output.body.end(), 0);
+    job->outline.clear();
     xQueueSend(free_, &index, 0);
 }
 void *Api::work(void *context) {
@@ -210,6 +212,7 @@ void *Api::work(void *context) {
             continue;
         }
         auto &job = self.jobs_[index];
+        const auto internal_before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         self.transport_->diagnostics().record(
             "wifi api phase=begin request=%u id=%llu queue_ms=%lld\n", unsigned(job.request),
             static_cast<unsigned long long>(job.input.id),
@@ -233,6 +236,15 @@ void *Api::work(void *context) {
         erase_free(job.audio, job.audio_bytes);
         job.audio = nullptr;
         job.audio_bytes = 0;
+        // perform has returned: its client, parser and scratch borrows are gone. Other
+        // owner/worker activity may overlap, so this is a heap snapshot, not leak attribution.
+        self.transport_->diagnostics().record(
+            "wifi api memory request=%u id=%llu internal_before=%zu internal_after=%zu "
+            "internal_largest=%zu psram_free=%zu\n",
+            unsigned(job.request), static_cast<unsigned long long>(job.input.id), internal_before,
+            heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+            heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+            heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
         // Every queued slot reserves one result slot, so this cannot block on UI work.
         xQueueSend(self.done_, &index, portMAX_DELAY);
         self.outstanding_.fetch_sub(1, std::memory_order_acq_rel);
@@ -500,10 +512,11 @@ bool Api::http(Job &job, const char *url, const char *content_type, const void *
             static_cast<unsigned long long>(job.input.id));
         transport_->diagnostics().record(
             "wifi http_tls id=%llu status=%ld code=%d flags=%d internal_free=%zu "
-            "internal_min=%zu\n",
+            "internal_min=%zu internal_largest=%zu\n",
             static_cast<unsigned long long>(job.input.id), long(tls_status), tls_code, tls_flags,
             heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-            heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+            heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+            heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     }
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
@@ -624,39 +637,28 @@ void Api::model(Job &job, const char *url) {
     }
     auto options = model_options(tools_allowed);
     const ayni::providers::model_protocol::Protocol codec;
-    const auto encode = [&](ayni::json::Writer &out) {
-        return codec.write_request(out, options, context);
-    };
-    auto measured = ayni::json::Writer::measuring();
+    ModelBuffer json;
+    auto out = ayni::json::Writer::growing(&json, [](void *opaque, size_t minimum) {
+        auto &buffer = *static_cast<ModelBuffer *>(opaque);
+        return buffer.grow(minimum, harness::model_body_bytes)
+                   ? ayni::json::Writer::Buffer{reinterpret_cast<char *>(buffer.data), buffer.size}
+                   : ayni::json::Writer::Buffer{};
+    });
     size_t size = 0;
-    const auto encoded = encode(measured);
-    if (encoded != AYNI_OK || !measured.finish(size) || size > harness::model_body_bytes) {
+    const auto encoded = codec.write_request(out, options, context);
+    if (encoded != AYNI_OK || !out.finish(size)) {
         model_failure(job.output, encoded != AYNI_OK ? encoded : AYNI_CAPACITY_EXCEEDED,
                       AYNI_REASON_NONE, AYNI_CALL_EFFECT_NONE);
-        std::snprintf(job.error.data(), job.error.size(), "模型上下文编码超限");
-        return;
-    }
-    ModelBuffer json(size);
-    if (!json.data) {
-        model_failure(job.output, AYNI_CAPACITY_EXCEEDED, AYNI_REASON_NONE, AYNI_CALL_EFFECT_NONE);
-        std::snprintf(job.error.data(), job.error.size(), "上下文发送内存不足；未请求模型");
-        return;
-    }
-    ayni::json::Writer out(reinterpret_cast<char *>(json.data), size);
-    const auto written_status = encode(out);
-    if (written_status != AYNI_OK || !out.finish(size)) {
-        model_failure(job.output,
-                      written_status != AYNI_OK ? written_status : AYNI_CAPACITY_EXCEEDED,
-                      AYNI_REASON_NONE, AYNI_CALL_EFFECT_NONE);
-        std::snprintf(job.error.data(), job.error.size(), "模型上下文编码失败");
+        std::snprintf(job.error.data(), job.error.size(), "模型上下文编码失败或超限；未请求模型");
         return;
     }
     transport_->diagnostics().record(
         "wifi context framed_bytes=%lu wire_bytes=%zu wire_est_tokens=%llu "
-        "internal_free=%zu psram_free=%zu psram_largest=%zu\n",
+        "internal_free=%zu internal_largest=%zu psram_free=%zu psram_largest=%zu\n",
         static_cast<unsigned long>(reference.size), size,
-        static_cast<unsigned long long>(ayni::model::estimate_tokens(measured.characters())),
+        static_cast<unsigned long long>(ayni::model::estimate_tokens(out.characters())),
         heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
         heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
         heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     framed.reset(); // Only the projected JSON remains during the HTTP request.
@@ -670,7 +672,7 @@ void Api::model(Job &job, const char *url) {
             options.api == ayni::providers::model_protocol::Api::responses
                 ? R"({"status":"completed","output":[{"type":"message","id":"diagnostic","role":"assistant","status":"completed","content":[{"type":"output_text","text":"local diagnostic only"}]}]})"
                 : R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"local diagnostic only"}}]})";
-        job.ok = decode_model(response, tools_allowed, job.output, options);
+        job.ok = decode_model(response, tools_allowed, job.output, options, &job.outline);
         transport_->diagnostics().record("wifi probe template_only=1 no_model_http=1 status=%ld\n",
                                          long(job.ok ? AYNI_OK : AYNI_INVALID_ARGUMENT));
         return;
@@ -728,14 +730,14 @@ void Api::model(Job &job, const char *url) {
                 new (std::nothrow) ayni::providers::model_protocol::Answer{});
             if (answer) {
                 stream->finish(*answer);
-                job.ok = package_model(options, *answer, tools_allowed, job.output);
+                job.ok = package_model(options, *answer, tools_allowed, job.output, &job.outline);
             } else {
                 model_failure(job.output, AYNI_CAPACITY_EXCEEDED, AYNI_REASON_MODEL_OUTPUT);
             }
         } else {
             job.ok =
                 decode_model({reinterpret_cast<const char *>(job.response), job.response_bytes},
-                             tools_allowed, job.output, options);
+                             tools_allowed, job.output, options, &job.outline);
         }
         if (!job.ok) {
             std::snprintf(job.error.data(), job.error.size(), "模型未返回完整有效回答，未重试");

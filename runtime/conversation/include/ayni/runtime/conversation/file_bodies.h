@@ -9,6 +9,7 @@
 #include <list>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
@@ -20,17 +21,24 @@ class FileBodies {
     FileBodies() = default;
     FileBodies(const FileBodies &) = delete;
     FileBodies &operator=(const FileBodies &) = delete;
-    ayni_status_t configure(hosts::storage::FileValuePort files, uint64_t base = default_base);
+    ayni_status_t configure(hosts::storage::FileValuePort files, size_t cache_bytes,
+                            uint64_t base = default_base);
     const ayni_body_store_v1 *store() const { return &store_; }
     void set_shared_call_results() { store_.reserved |= AYNI_BODY_STORE_SHARED_RESULTS; }
-    BodyCollection collection() { return {store(), this, collect_port, ready, status}; }
-    // Zero retains the legacy unlimited payload cache. Staging requires a positive limit.
+    BodyCollection collection() {
+        return {store(), this, collect_port, ready, status, collected, progress};
+    }
+    // Every configured store has a positive payload budget; zero is rejected.
     // Accepted, unsaved bytes and worker borrows cannot be reclaimed.
     ayni_status_t set_cache_limit(size_t bytes);
     ayni_status_t trim_cache(size_t target_bytes = 0);
     size_t cached_bytes() const;
     // Progress/drain only; it never hides errors returned by read/stage/confirm.
     static uint32_t ready(void *context, uint64_t task);
+    // Owner progress only; the return value permits the existing strategy callback shape.
+    static uint32_t progress(void *context, uint64_t task);
+    // Owner-thread scope query: BUSY until its releases are durable; sticky failures propagate.
+    static ayni_status_t collected(void *context, uint64_t scope);
     // Pure queue query: no worker borrow and all work drained, or blocked by a sticky failure.
     // Unconfirmed chat tails need no persistence. Always check status for a successful close.
     bool idle() const;
@@ -52,6 +60,10 @@ class FileBodies {
         uint64_t id = 0;
     };
     struct Entry {
+        struct Release {
+            uint64_t id; // Removed scope alias; retained until its durable absence is proved.
+            std::optional<uint64_t> revision; // None until the ownership manifest is loaded.
+        };
         uint64_t digest = 0;
         uint32_t size = 0;
         std::string bytes; // One immutable resident payload, shared by all owners.
@@ -60,8 +72,9 @@ class FileBodies {
         std::vector<Owner> owners;       // Desired ownership; loaded before a durable confirmation.
         std::vector<uint64_t> temporary; // New scope owners not yet explicitly confirmed.
         std::vector<Owner> additions;    // Staged owners while the disk manifest is being read.
-        std::vector<uint64_t> releases;  // Releases racing a manifest read.
-        uint64_t generation = 0;         // Last confirmed manifest CAS generation; zero if absent.
+        std::vector<Release>
+            releases;            // Bounded ownership-removal fences, including cold manifests.
+        uint64_t generation = 0; // Last confirmed manifest CAS generation; zero if absent.
         uint64_t revision = 0, saved_revision = 0; // Owner changes vs confirmed manifest.
         uint32_t chunk = 0;                        // Next payload chunk to load/write/remove.
         bool manifest_loaded = false;
@@ -99,6 +112,8 @@ class FileBodies {
     static bool valid_ref(const ayni_body_ref_v1 *);
     ayni_status_t add_owner(Entry &, uint64_t scope, uint64_t id);
     void drop_owner(Entry &, uint64_t id);
+    bool apply_release(Entry &, Entry::Release &);
+    static void retire_releases(Entry &);
     bool decode_manifest(Entry &, const std::string &);
     static std::string encode_manifest(const Entry &);
     bool conflicting(const ayni_body_ref_v1 &) const;
@@ -112,7 +127,8 @@ class FileBodies {
     bool prepare(uint64_t id, Entry &);
     hosts::storage::FileValuePort files_{};
     uint64_t base_ = default_base;
-    size_t cache_limit_ = 0;
+    size_t cache_limit_ =
+        0; // Zero only before configure; every configured store has a finite budget.
     std::thread::id owner_;
     mutable std::mutex mutex_;
     std::map<uint64_t, Entry> entries_; // Content identity -> payload and durable owner manifest.

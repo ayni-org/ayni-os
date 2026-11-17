@@ -1,5 +1,5 @@
 #include "model_codec.h"
-#include "../main/model_tools.h"
+#include "../main/tool_outline.h"
 #include <algorithm>
 #include <ayni/providers/model_protocol.h>
 #include <cstring>
@@ -18,7 +18,10 @@ void model_failure(Packet &packet, ayni_status_t status, ayni_reason_t reason, u
 }
 bool package_model(const ayni::providers::model_protocol::RequestOptions &options,
                    ayni::providers::model_protocol::Answer &answer, bool tools_allowed,
-                   Packet &packet) {
+                   Packet &packet, ToolOutline *outline) {
+    if (outline) {
+        outline->clear();
+    }
     const auto &result = answer.result;
     if (result.outcome != AYNI_CALL_COMPLETED || result.status != AYNI_OK ||
         (!tools_allowed && result.tool_call_count)) {
@@ -31,14 +34,6 @@ bool package_model(const ayni::providers::model_protocol::RequestOptions &option
         }
         return false;
     }
-    for (uint32_t at = 0; at < result.tool_call_count; ++at) {
-        const auto &call = result.tool_calls[at];
-        if (call.input_kind == AYNI_TOOL_INPUT_ARGUMENTS &&
-            call.input.arguments.node_count > ModelTools::nodes_per_tool) {
-            model_failure(packet, AYNI_CAPACITY_EXCEEDED, AYNI_REASON_MODEL_OUTPUT);
-            return false;
-        }
-    }
     std::string encoded;
     const auto encoded_status =
         ayni::providers::model_protocol::encode_answer(options, answer, encoded);
@@ -49,6 +44,9 @@ bool package_model(const ayni::providers::model_protocol::RequestOptions &option
         std::fill(encoded.begin(), encoded.end(), 0);
         return false;
     }
+    if (outline) {
+        outline->capture(result);
+    }
     packet.kind = Kind::model_result;
     write_model_result_header(packet.body.data(), result);
     std::memcpy(packet.body.data() + model_result_header_bytes, encoded.data(), encoded.size());
@@ -57,7 +55,11 @@ bool package_model(const ayni::providers::model_protocol::RequestOptions &option
     return true;
 }
 bool decode_model(std::string_view response, bool tools_allowed, Packet &packet,
-                  const ayni::providers::model_protocol::RequestOptions &options) {
+                  const ayni::providers::model_protocol::RequestOptions &options,
+                  ToolOutline *outline) {
+    if (outline) {
+        outline->clear();
+    }
     constexpr size_t response_bytes_max = 32768;
     if (response.empty() || response.size() > response_bytes_max) {
         model_failure(packet,
@@ -74,6 +76,6 @@ bool decode_model(std::string_view response, bool tools_allowed, Packet &packet,
     }
     ayni::providers::model_protocol::Protocol{}.decode(options, const_cast<char *>(response.data()),
                                                        response.size(), *answer);
-    return package_model(options, *answer, tools_allowed, packet);
+    return package_model(options, *answer, tools_allowed, packet, outline);
 }
 } // namespace wifichat::wifi

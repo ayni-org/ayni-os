@@ -49,9 +49,5 @@ void write_tool_calls(const ayni_tool_call_v1 *calls, uint32_t count, uint8_t *o
 // Strict decode of a whole list, with the measure rules and unique protocol
 // identities; its call count, or 0 when the body is not a valid list.
 uint32_t tool_call_count(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body);
-// Call index of a valid list; false, preserving out, past its end.
-bool read_tool_call(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body, uint32_t index,
-                    ToolCallView &out);
-
 } // namespace ayni::work
 #endif

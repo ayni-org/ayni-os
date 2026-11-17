@@ -355,7 +355,11 @@ Goal/Task/Checkpoint 的 provenance_required 是完整当前正文的一部分�
 
 清理 phase：memories=1、contexts=2、goals=3、tasks=4、calls=5、commands=6、files=7、compact=8、purge=9、complete=10；idle=0 不序列化。effect：none=0、memory=1、context=2、goal=3、task=4、call=5、command=6、remove_memory=7。cursor 是对象稳定 ID；命令阶段使用原 commit_seq。Context effect 之后唯一允许的回退是 memories/cursor=0/effect=none，直至来源稳定；其他普通进度不能倒退。files→compact 须所有 Context ACK 且外部借用释放；目标 snapshot_generation 为当前代际+2，溢出明确停止并报告容量失败。purge/complete 快照不能宣称超过本快照 generation 的轮转已完成。scrubbed Memory 从新快照省略；erased Provenance 保留不可用身份标记，正文/依赖为空，运行时完成双槽覆盖后移除 tombstone。
 
-**Native 外层文件**不属于 Core schema：AYNF v3 固定 32 字节头为 `magic:u32, version:u32, encoded_size:u64, pending_goal:u64, context_id:u64`。正文 AYNC v2 为 magic/version 后的 Conversation 字段：7 个 u64（id、owner、隐私 generation、文件 revision、last_round、summary_first、summary_last），长度前缀 summary、独立 draft、round_count:u32，再逐轮 number:u64/user/answer。AYNT v2 固定头 28 字节（magic、version、done、base_revision、memory_id）后接相同 Conversation 字段和本轮 input。独立草稿与 pending_goal 同次保存；发布前必须保存完毕。正常保留 3 轮、额外 1 槽承接失效发布原始输入；原轮号不重新分配。旧 AYNF/AYNC v1 在 Kernel 启动写入之前拒绝；AYNF v2 是双 Agent 版本的目录（布局与 v3 相同，Kernel 状态含第二个 Agent），同样在启动写入之前以 UNSUPPORTED_VERSION 拒绝（ADR-0072）；均无自动迁移。
+**会话私有格式（ADR-0108）**独立于Core schema10，无旧reader或迁移；未知版本保留并拒绝，不自动擦除。Native的SQLite5只保存共享值；AYFV1文件、正文AYNB1及4 KiB块布局见[C-HVAL](../host/file_values.md)，Native具体SQL约束见[Native会话](../host/native_conversation.md)。
+
+- **AYNC6**：8字节magic/version后，Conversation字段由`strategies/builtin/conversation.cpp::fields`单一读写遍历定义。文本均为24字节BodyRef(id:u64,digest:u64,size:u32,reserved:u32=0)，包括summary/draft/history/rounds；保留原id、owner、隐私/文件版本、轮次、usage、披露来源和context_version，不复制正文。rounds索引为count:u32后逐项number:u64/user:BodyRef/answer:BodyRef，user必有、answer可无；稀疏轮号不复用。
+- **AYNT8**：8字节magic/version后为done:u32/base_revision:u64/memory_id:u64，再接同一Conversation字段、input:BodyRef、phase/compact_resume两u32及controller_fields。结果摘要源为完整BodyRef与json_bytes:u32，后续offset/next/chunk三u32和summary:BodyRef；不再保存Native archive结果ID。模型提议和过长结果的临时投影只属于活Turn缓存，不持久编码；冷读按原Call来源重新构建，不重执动作。
+- **ANRV2结果视图**：固定152字节小端，magic=0x56524e41/format=2（偏移0/4，u32）；原logical_call_id/operation_id/requires_seq（8/16/24，u64）；outcome/status/reason/effect/result_kind/reserved（32/36/40/44/48/52，u32，reserved=0）；value/domain/proof/presentation四个BodyRef（56/80/104/128）。前3个引用必有，presentation可无；终态completed/failed/cancelled/skipped，排除未知结果/未知effect。一个ViewCodec共用读写，读取再验证所选来源的Call身份/序号、终态和完整值/域/证明内容身份；presentation只改变给模型的展示，不替代原值和证明。
 
 
 ## P4 日历记录（ADR-0061，ABI 0.41）

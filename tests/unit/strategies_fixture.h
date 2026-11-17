@@ -29,7 +29,7 @@ class StrategiesFixture : public ::testing::Test {
     bool software_tools = false;
     ayni::providers::software::WorkProvider software;
     uint32_t tool_alias_count = 0;
-    policies::HistoryPort history_port{};
+    bool large_tool_result = false; // This fixture's registered business result bound.
     const ayni_body_store_v1 *body_store = nullptr; // ToolLoop store; null uses bodies.
     // Compaction starts above 5000 - 1000 - 1000 = 3000 estimated tokens.
     policies::TokenLimits limits{5000, 1000, 1000, 1000};
@@ -51,7 +51,6 @@ class StrategiesFixture : public ::testing::Test {
         cfg.summary = {AYNI_POLICY_REQUEST_MODEL, text("summary"), 1, empty_scope(), {}};
         cfg.limits = limits;
         cfg.bodies = body_store ? body_store : bodies.store();
-        cfg.history = history_port;
         if (configure_loop) {
             configure_loop(cfg);
         }
@@ -130,7 +129,7 @@ class StrategiesFixture : public ::testing::Test {
             offer.capability_id = id;
             const bool model = at != 2;
             // Without an archive a tool's declared result must fit tool_result_max_tokens.
-            const uint32_t result_bytes = model || history_port.archive ? 4096U : 1024U;
+            const uint32_t result_bytes = model || large_tool_result ? 4096U : 1024U;
             offer.contract = {sizeof(ayni_call_contract_v1),
                               !model && action_tool ? AYNI_CALL_ACTION : AYNI_CALL_UNARY,
                               model ? AYNI_CALL_MODEL : AYNI_CALL_TOOL,

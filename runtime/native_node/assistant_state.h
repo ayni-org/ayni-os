@@ -1,35 +1,29 @@
 #ifndef AYNI_RUNTIME_ASSISTANT_STATE_H
 #define AYNI_RUNTIME_ASSISTANT_STATE_H
-#include "conversation_store.h"
+#include "sqlite_values.h"
 #include <array>
 #include <ayni/calls.h>
 #include <ayni/commands.hpp>
 #include <ayni/context.h>
 #include <ayni/host_authority.h>
+#include <ayni/runtime/conversation.h>
+#include <ayni/runtime/conversation/file_bodies.h>
 #include <ayni/runtime/native_node.h>
 #include <ayni/runtime/native_node/assistant.h>
+#include <ayni/workspace.hpp>
 #include <cstring>
 #include <optional>
 namespace ayni::runtime {
 // Contexts precede the node so normal destruction releases the Kernel first.
 // An unsuccessful explicit close causes Assistant to retain the whole Impl.
 struct Assistant::Impl {
-    ayni::Workspace conversation_workspace; // Owner-only pure conversation operations.
+    ayni::Workspace conversation_workspace;
+    SqliteValues store; // Adapter/worker outlive the Kernel and Session's borrowed ports.
+    FileBodies bodies;
+    conversation::Session conversation;
     DemoProfile profile;
     NativeNode node;
-    ConversationStore store;
-    SavedConversation current;
-    struct Saving {
-        SavedConversation candidate;
-        Notice notice;
-    };
-    std::optional<Saving> saving;
-    struct AwaitingNotice {
-        uint32_t revision;
-        uint64_t generation;
-        Notice notice;
-    };
-    std::optional<AwaitingNotice> awaiting_notice; // Released only after exact file ACK is durable.
+    uint64_t notified_generation = 0; // UI erasure notice cursor; zero before the initial load.
     ayni_status_t storage_status = AYNI_OK;
     uint64_t session = 0;
     CommandSequence command_ids; // Shared identity rule; CLI retains its multi-command window.
@@ -45,20 +39,12 @@ struct Assistant::Impl {
     bool shutting_down = false;
     ayni_status_t start(const std::string &, const ModelConfig &, providers::presentation::Output,
                         applications::assistant::QuietHours);
+    ayni_status_t advance_kernel(); // Progress only; never consumes UI observations.
     ayni_status_t pump(std::vector<Notice> &);
     ayni_status_t collect(std::vector<Notice> &);
     ayni_status_t context_info(ayni_context_info_v1 &) const;
-    ayni_status_t initialize_context(bool missing);
-    Reply context_command(ayni_intent_kind_t, const ayni_context_info_v1 &, uint64_t task = 0,
-                          ayni_context_action_t action = AYNI_CONTEXT_IDLE, uint64_t turn = 0);
-    ayni_status_t collect_file(const ayni_context_info_v1 &, std::vector<Notice> &);
-    ayni_status_t collect_turn();
-    ayni_status_t publish_context(const ayni_context_info_v1 &);
-    ayni_status_t erase_context(const ayni_context_info_v1 &);
+    ayni_status_t initialize_context();
     ayni_status_t collect_receipts();
-    ayni_status_t persist(SavedConversation, Notice notice = {},
-                          ConversationStore::Erasure erasure = ConversationStore::Erasure::none,
-                          uint64_t turn = 0);
     ayni_status_t announce(std::vector<Notice> &);
     static ayni_status_t propose(void *, const ayni_goal_create_v1 *, uint64_t *);
     ayni_status_t stop();
@@ -88,11 +74,6 @@ struct Assistant::Impl {
     ayni_status_t ids(ayni_object_kind_t kind, std::vector<uint64_t> &out) const;
     uint64_t assistant() const; // Current instance of the one assistant Agent.
 };
-inline bool matches(const SavedConversation &file, const ayni_context_info_v1 &context) {
-    return file.context_id == context.context_id && file.record.generation == context.revision &&
-           file.record.revision == context.generation &&
-           file.record.last_round == context.last_turn_id;
-}
 inline ayni_string_v1 runtime_text(const std::string &s) {
     return {s.data(), static_cast<uint32_t>(s.size())};
 }

@@ -6,16 +6,16 @@ namespace {
 // Render while the decoded registered contract is borrowed. Only owned JSON escapes this
 // callback; no schema pointer or directory view survives a decide (ADR-0098).
 template <class Write> ayni_status_t render(std::string &value, Write write) {
-    auto measured = json::Writer::measuring();
-    write(measured);
+    std::string rendered;
+    auto out = growing_json(rendered);
+    write(out);
     size_t size = 0;
-    if (!measured.finish(size)) {
+    if (!out.finish(size)) {
         return AYNI_CAPACITY_EXCEEDED;
     }
-    value.resize(size);
-    json::Writer out(value.data(), size);
-    write(out);
-    return out.finish(size) ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
+    rendered.resize(size);
+    value = std::move(rendered);
+    return AYNI_OK;
 }
 ayni_status_t branch(Workspace &workspace, const ayni_capability_detail_v1 &detail,
                      std::string &value) {

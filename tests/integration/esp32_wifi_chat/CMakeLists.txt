@@ -9,4 +9,5 @@ target_include_directories(ayni_esp32_chat_integration_tests PRIVATE
     "${AYNI_ROOT}/experiments/esp32_wifi_chat/firmware/main")
 target_link_libraries(ayni_esp32_chat_integration_tests PRIVATE
     Ayni::Core Ayni::Strategies Ayni::ModelProtocol ayni_host_sim ayni_markdown ayni_warnings GTest::gtest_main)
-gtest_discover_tests(ayni_esp32_chat_integration_tests NO_PRETTY_VALUES PROPERTIES TIMEOUT 30)
+gtest_discover_tests(ayni_esp32_chat_integration_tests NO_PRETTY_VALUES PROPERTIES TIMEOUT 30
+    DISCOVERY_TIMEOUT ${AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS})

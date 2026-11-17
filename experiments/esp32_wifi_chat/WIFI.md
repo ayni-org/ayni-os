@@ -10,7 +10,9 @@ RC003-MS按住语音键录音，松开后整段上传ASR，识别文字显示并
 
 上下文预算128 × 1024个估算token，包含预留1800输出token；摘要目标4096，满时仍使用原ToolLoop压缩。HTTP请求正文和投影JSON各最多768 KiB，经24字节BodyRef加4字节模式传递；普通队列32 KiB。worker按实长分配，投影后清零释放原正文；共享FileBodies按预算清退已持久缓存而不删仍引用的磁盘正文，PCM只在能力调用期间分配。
 
-128K是配置预算，不是完整长上下文硬件验收。估算token、字节长度、PSRAM峰值和Flash余量分别限制部署。旧usb.chat等私有身份仅为现有数据/取消收尾保留；未知结果不授权透明重试。
+128K是配置预算，不是完整长上下文硬件验收。估算token、字节长度、PSRAM峰值和Flash余量分别限制部署。旧usb.model/usb.chat能力、Binding和GoalType已撤除；旧属主Goal类型不受当前部署支持时明确拒绝并保留数据，不自动擦除。未知结果不授权透明重试。
+
+输入由共享Session一次暂存；Native默认先确认草稿再创建Goal，ESP后台模式允许执行与存储并发。ToolLoop按依赖加载、复用正文和历史，生成一次模型请求；普通工具仍顺序执行，Core保留权限/参数/资源校验及派发前持久屏障。网络worker首次解析即生成有界安全进度，不再为界面复制完整提议。最终输入/答案引用直接进入历史索引；正文和根记录确认、当前scope真实清理及精确ACK完成后才展示答案。自动语音随后完成朗读和终态通知；关闭仍排空全部存储工作。
 
 ## 设置与操作
 
@@ -533,3 +535,243 @@ Native arena实际查询：默认1489824 B，最小work596960 B，两Agent Call 
 同一独立审查者复核修复并重新链接运行原关闭consumer1/1、ASan新增缓存用例2/2，通过且无剩余阻断发现。四项分别通过：PREPARED最终屏障注释保持（action_record.h:89）；Kernel主结构无新增字段，隐私序号归ToolLoop owner；mutable_payload_size只定义于call_records.cpp:182、round_bytes只定义于conversation.cpp:18；版本/长度/阈值均使用具名常量并与记录契约一致。独立复现日志位于仓库外/tmp/ayni-merge-review/normal_close_fixed.log。完整代码审查、实际适用CI及合并记录集中在[#137](https://github.com/RobotSe7en/ayni/pull/137)。本轮未新增异常恢复/故障/变异专项，板端与新格式异常恢复的未验证边界保持。
 
 完整CI随后暴露既有消费者遗漏：独立正常程序仍用text读新版历史索引，改为原history展开接口；记录切点探针仍按完整行读取delta，改用属主full/delta codec；F1及组合版本夹具依赖PREPARED单独等待，改用单item步与写就绪FakeClock选择同一持久前缀，原身份、权限、零派发和重启断言保留。独立正常程序仅替换历史读取调用后完整通过，日志在仓库外/tmp/ayni-portable-review/normal_fixed.log。最大单元二进制的用例枚举预算由5秒调为30秒，其他测试运行时限保持。既有完整套件的最终结果集中在PR，不把这些夹具适配解释为新增格式异常恢复验收。
+
+## 2026-11-15 main正常OTA与指定旧卷清理
+
+用户要求拉取最新main并OTA，随后引用原对话记录确认继续。已从引用聊天的用户原始实施计划核实：允许不迁移并清空旧聊天/任务，保留配置、密钥、配对和偏好。本次仅恢复正常OTA及启动核对，不自动恢复先前暂缓的20次PWM、固定长历史或完整板端性能验收；沿用驱动不断电的软件停止、排空与真实关闭屏障。
+
+本地main快进至`c6fc731`，未跟踪的品牌素材保留。板上原为`d754ca4`/ABI0.54/schema9，现有4个Goal及旧UNKNOWN记录不能由schema10读取；不把格式不匹配变成启动自动擦卷。为避免要求USB，临时从原`d754ca4`源码构建`d754ca4-s10prep`过渡应用：保持原停止/关闭/镜像校验流程，只接受后续`c6fc731`版本；完整候选通过`esp_ota_end`后，复用原ResetWorker核对`ayni`/0x800000/8 MiB并等擦除完成，再选择新槽。整个过程不写bootloader、分区表或配置/配对区。临时源码及补丁保存在本机忽略目录，未加入main；不能据此自动开展未来擦卷。
+
+两份镜像均使用ESP-IDF6.0.3/Xtensa GCC15.2.0编译，Wi-Fi配置逐项一致，项目身份、checksum/validation hash、固定双槽及软件回退配置核对通过。资源检查后构建2任务、相关检查串行；现有UpdatePlan/ResetPlan正常检查4/4通过，提取实际过渡transfer/helper的正常完整包与分块接收检查2/2通过，验证完整候选校验→精确分区清理→启动槽选择的次序；没有执行新的异常/故障/恢复专项。过渡应用2751296 B，最终main应用2771968 B，最小3 MiB槽余373760 B（约12%）。
+
+首次过渡上传遇到用户正在使用的回合，入口返回HTTP409；只读复核phase=idle、received=0且没有OTA请求/关闭记录，确认未刷写。待该回合自然终态后再提交：过渡镜像正常上传32.126秒、HTTP200，切换至ota_1；启动23.950秒会话就绪、28.985秒自确认，原配置标记一致。随后上传最终main共56.544秒、HTTP200；旧应用日志明确记录Core/Host会话已关闭、指定清理开始及status=0、完整接收2771968/2771968且OTA status=0，之后才重启。
+
+最终设备运行`c6fc731`/ota_0，ABI0.55/schema10。启动5.729秒电机资源初始化ready/status=0、7.190秒会话就绪、12.232秒OTA自确认status=0；GET确认pending_verify=false/error=0。空卷正常初始化为goals=0/4，旧聊天/任务已按授权放弃；password_set/model_key_set及api_type/stream/output_limit与两次更新前一致。配置、密钥、配对和偏好所在分区均保留，未通过USB操作，也没有重试旧UNKNOWN动作。最终启动快照内部空闲54167 B、PSRAM空闲1466404 B；不作为完整上下文或媒体峰值验收。
+
+复跑现有12字符无模型/无电机合成诊断，template_only=1/no_model_http=1/status=0并记录loop_complete，完整回合1516 ms、最长step 639423 us，日志dropped=0；但紧随其后的存储收尾失败，不能判定该诊断整体通过（见下述纠正）。该样本来自清理后的空历史，与旧卷样本不能当严格同条件性能对比；它没有测量两段真实工具交接P95，不据此宣称达到100 ms目标。本次代理未发云端模型、语音或真实电机命令；用户在首次上传前自行使用产生的回合保留为当时事实，不记作本次验证。
+
+完整镜像、临时过渡源码/补丁、正常检查及脱敏部署记录保存在本机忽略的`build/ota-main-20261115/`，属于仓库外证据。新格式异常恢复、掉电/故障回退、耐久、固定长历史与两段交接P95/最大值、完整128K峰值和独立硬件停止链仍未验证。
+
+### 同日启动状态纠正
+
+用户随后报告启动失败。重新读取同一boot（1223410715）的完整日志，确认固件仍为c6fc731/ota_0，pending_verify=false/error=0，没有回退；7.190秒会话就绪、12.232秒OTA自确认属实。但是34.107秒诊断回合终态之后，34.156秒即出现`wifi session=3 kernel stopped/held=-14`。-14为AYNI_STORAGE_FAILED，应用已进入failed状态，不能按当前版本已正常可用交付。
+
+这条失败实际已包含在首次`probe-after.json`的末尾；原脚本只断言template成功/回合终态/dropped=0，漏检其后的失败事件，因而上一轮“诊断通过”的结论错误。固件Web的error=0仅描述OTA传输/启动确认，不表示聊天运行健康。错误来自Chat::tick的返回值，上层统一显示kernel stopped/held，现有日志没有底层文件名、errno或完整失败层级，不能据此断定Core journal、Flash损坏或空间耗尽。时序上位于诊断scope收集后的后台推进，具体根因尚未证实。
+
+本次仅只读查询固件、配置标记和完整日志，沿调用链检查状态传播；未再次运行诊断、请求模型、操作电机、重启、刷写或清空。现场和新快照保存在原本机忽略目录的`startup-investigation-*.json`，属于仓库外证据。后续修复及正常功能复核仍未完成，旧数据清理授权不扩为再次擦卷。
+
+
+## 2026-11-15 缺失正文删除导致的存储错误修复
+
+用户明确要求继续定位并修复，正常验证后再OTA。本地用生产LittleFiles、真实锁版LittleFS2.11（joltwallet/littlefs1.23.1）及RAM NOR介质重现：stage正文未请求持久化，collect最后一个scope后删除不存在的文件；lfs_remove返回正常LFS_ERR_NOENT，但namespace_result无差别把卷标为poisoned。共用外层值端口虽然按C-HVAL-004接受ENOENT，随后sync_namespace却得到EIO，FileBodies记录AYNI_STORAGE_FAILED（-14）。该普通路径足以重现板上的终态后错误，不需要Flash损坏、容量耗尽或故障注入。
+
+修复只在LittleFiles::remove识别这个正常查找缺失，复用原errno映射返回ENOENT，保留卷的mounted状态；其他remove及全部rename错误仍沿原不确定元数据处理。没有Core、ABI0.55、schema10或分区布局变化，也没有新增启动清空、迁移或错误吞并。初次隔离复现的三项正常检查在修复前均失败、修复后均通过，随后将正式回归并入既有tests/portability/esp_files，未保留第二套测试框架。
+
+既有RAM NOR完整正常检查及其ASan/UBSan配置通过，覆盖普通文件、打开文件替换、租约、共享日志重开/轮转、缺失及重复删除、未持久暂存正文回收后继续写入。编译环境AppleClang21.0.0/CMake4.0.3；clang-format18、依赖、契约及diff检查通过。ESP-IDF6.0.3/Xtensa GCC15.2.0编译和镜像校验通过，候选c6fc731-storagefix为2771968 B，3 MiB槽仍余373760 B。Native/ESP各2构建任务、测试串行，合计不超过4任务，按实际内存/swap及活动任务留余量。
+
+作者设计自查：删除注释无丢失，原namespace_result的不确定错误说明保留；无Kernel新增字段；errno规则复用cause，正式回归复用既有RAM介质；无新记录偏移、版本或公共代码，测试缓存、scope及推进上限具名。改动在ESP文件边界，未增加文件stat或另一层错误管理；共享正文与外层值的正常删除策略仍由原属主负责。以上是代码检查，不算故障路径执行；新的故障/恢复/掉电专项仍未运行。
+
+部署前设备仍为旧c6fc731失败锁定状态。owner在failed后忽略维护输入，不能正常关闭并进入OTA；用户随后按一次Reset/EN并确认Ayni就绪，只读观察到新boot后进入正常更新流程。新诊断校验在每次终态后继续观察15秒并检查session失败/held、重启及日志丢失，避免再次漏检收尾错误。
+
+
+### 修复版正常OTA及收尾复核
+
+修复版来自c6fc731加当前工作区最小修复，固件版本标签为c6fc731-storagefix，修复源码与部署记录同步交付。一次正常Web上传33.270秒、HTTP200及updated/restarting=true；日志确认会话真实关闭、接收2771968/2771968、OTA status=0，从ota_0切换ota_1。新启动3.286秒电机资源ready/status=0、5.420秒会话就绪、10.458秒OTA自确认status=0；保留旧schema10卷，启动重放goals=1/4，无擦卷或USB。配置password_set/model_key_set及api_type/stream/output_limit与更新前一致；配置、配对和偏好分区未修改。
+
+连续三次现有12字符合成本地诊断均记录template_only=1/no_model_http=1/status=0及loop_complete，回合耗时分别1490、1082、1040 ms；终态后又分别观察15.272、15.164、15.169秒，完整日志无session failed/held、Core storage restricted/fenced、重启或dropped/lost。第一轮校验脚本误把接口正常HTTP202受理当成HTTP200而提前退出，随后只从原游标继续观察同一已受理请求，没有重复发送第一轮；该校验问题及原记录保留在本机目录。
+
+最终GET确认version=c6fc731-storagefix/running=ota_1/pending_verify=false/error=0，boot=1479087488，应用健康；三次回合后仍可读配置与完整日志，没有此前34.156秒的-14收尾失败。最后内部空闲45955 B、PSRAM空闲1464424 B，仅为该快照。此次未调用云端模型、语音或真实电机，不把整回合时间当作真实工具交接P95，也不扩为新格式异常恢复、掉电、故障回退或耐久验收。
+
+正常复现前后输出、既有RAM NOR与ASan/UBSan、固件构建/镜像检查、部署和三次完整收尾日志在本机忽略的build/storage-fix-20261115/，属于仓库外证据。仓库中的正式回归保留在既有esp_files_emulated_normal_medium；文档契约/依赖/diff及clang-format18检查通过，适用远端CI本轮未运行。
+
+
+## 2026-11-15 内部RAM保留与TLS上传修复
+
+用户要求继续定位并修复，正常验证后再OTA。上次最新真实回合包含四段正常电机输出，第5次模型请求在HTTPS上传阶段失败，ESP_ERR_MBEDTLS_SSL_WRITE_FAILED/PSA_ERROR_GENERIC_ERROR（32792/-132），按RESULT_UNKNOWN/-17暂停；记录upload=0/17625不证明服务端没有收到任何字节，不能盲目重试。API请求构造前内部空闲依次28907、23683、17707、11099、10467 B，失败时6651 B、历史最低1104 B，而PSRAM仍约1.4 MiB。缺失删除的-14修复没有回退或复现；这是另一个资源/传输问题。
+
+固定IDF6.0.3源码确认：CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC只选择TLS分配，普通malloc/new仍按SPIRAM_MALLOC_ALWAYSINTERNAL阈值选堆。原阈值2048令小正文、map节点和owner向量优先占内部RAM；后台对话阶段允许尚未持久的正文被后续步骤读取，因此这类仍有所有者的对象不能直接trim丢弃。本地只运行生产FileBodies的普通stage/共享缓存分配跟踪：每轮四份1 KiB正文保留5120 B、8轮40960 B的≤2048字节分配，owner销毁后跟踪分配归零。该例证明正常保留占用的机制，不能作为实机所有下降字节的完整归账或其他组件无泄漏证明。
+
+HTTP完成路径的close/cleanup、Stream/ModelBuffer请求寿命及UI结果slot释放已沿调用链检查，未发现足以证明永久连接泄漏的路径。ESP AES在PSRAM参与加密时另需内部DMA bounce buffer/descriptor，分配失败可以经过PSA转换为通用-132；此前日志没有逐分配失败栈，不能将此可能路径写成已单独证实的历史根因。
+
+修复限于独立部署：默认正数malloc/new改为PSRAM优先（阈值0），显式INTERNAL/DMA的Host、worker栈/TCB、PermitGate、MotorOutput和RMT保持原分配；Core、ABI0.55/schema10、所有权与持久屏障不变，TLS证书/日期校验、期限和UNKNOWN不重试保持。SDK在首选堆不足时仍有自己的fallback，不声称普通分配永不使用内部RAM；大型模型scratch继续显式PSRAM并保留容量失败。CMake拒绝残留旧阈值，API结束后增加数值堆快照与最大内部块；不同worker会重叠，快照差不当作精确泄漏归因。
+
+本机正常Wi-Fi检查74/74及8轮普通分配跟踪通过，后者ASan/UBSan通过且销毁后归零。ESP-IDF6.0.3/GCC15.2.0编译和镜像校验通过，候选9e95582-memfix为2772240 B，最小3 MiB槽仍余12%；生成配置与前版唯一差异为阈值2048→0。Native/ESP各2构建任务，另一个短编译探针1任务，按主机内存/swap及其他作业留余量。clang-format18、契约、依赖和diff检查通过；本轮尚未进行远端CI、完整128K峰值、实机TLS或新的故障/恢复专项。
+
+作者自查分别确认：未删除仍成立的注释；无Kernel新字段；分配政策复用IDF已有阈值，没有新allocator或常驻管理模块；未引入记录长度/版本/公共代码裸值。控制关键对象的内部位置通过显式caps核对，未靠调低缓存或丢弃未保存内容释放内存。细节、构建和正常探针在本机忽略的build/internal-memory-20261115/，属于仓库外证据；实际部署结果补充如下。
+
+用户所指取消前错误为RESULT_UNKNOWN/-17，对应上述上传失败，不是新增存储故障。用户随后在屏幕取消，终态记录在5957070 ms，原未知Call证据保留；取消后的通用未发布答案提示为NOT_READY/-5，没有新的kernel stopped/held或session=3。按用户选择，暂缓真实模型/TLS验证。
+
+正常OTA一次上传2772240 B、HTTP200，用时40.447秒，从c6fc731-storagefix/ota_1切到9e95582-memfix/ota_0。新启动Core ABI0.55、schema10不变，Ayni就绪和OTA自确认status=0，pending_verify=false；密码/模型密钥存在标志、API类型、stream和输出限额前后相同，没有擦卷或旧请求重放。启动后就绪快照内部空闲61511 B、最大块31744 B、最低59832 B；仅为当前正常启动及局部工作集观察，不代表完整TLS峰值。
+
+板端连续三次现有characters=12本地ToolLoop模板探针通过，耗时1537/1300/947 ms，每次终态后继续观察15秒；均明确no_model_http=1，没有电机PWM。三次前后内部空闲均61511 B、最大连续块均31744 B、最低空闲59832 B；各API worker前后内部空闲相同，未见此夹具下的逐轮下降。PSRAM收尾快照依次1445432/1445224/1445192 B，首次额外占用含正常工作/缓存保留，不能据这三次小夹具声明全局无泄漏。首轮观察脚本曾把启动累计dropped=2误作新增丢弃，改为与排队前基线比较后只续读已接受探针、没有重复提交；所有观察窗口均无新增丢弃或游标覆盖，无kernel stopped/held、session=3及-14。该探针没有TLS握手或加密上传，真实TLS故障是否消除、完整多工具工作集及长期稳定性仍未验证。
+
+
+## 2026-11-15 共用对话主路径与本地耗时简化
+
+用户要求先查首请求前17秒，再处理工具交接和答案保存；随后明确简化输入→模型→工具→结束，直接改共用实现及契约。原真实完整回合从accepted到answer_saved为51974 ms，扣除5次API worker区间11655 ms和4段PWM区间12003 ms后，本地28316 ms；其中首次派发前17022 ms，结果投递到PWM合计3115 ms，PWM结束到下次派发4380 ms，末次模型结果到答案保存3626 ms。自动语音下载/播放重叠区间另计，不能重复相加。
+
+问题不是尚未实施共享正文：ESP每个新输入前仍全量trim；ToolLoop只有完整读成功后才缓存，冷读中每个NOT_READY会重做前缀结果的Schema解码/JSON投影/临时区清零；最终展示还读全部round。冷读后的round/summary等待也会丢掉刚完成的历史投影。已在共用Strategies中合并同一推进中的独立依赖读取，整轮所需正文可读后才投影，复用一个索引/轮次reader；不增加第二个执行流程。
+
+ToolLoop原cached_turns额度同时承载活动图和每会话最近一份完成图，下一Task在owner、版本及完整引用匹配时复用已解析的history/rounds；当前引用所有权/摘要仍检查，run仍检查当前权限/可见性，隐私进度清空全部副本，取消/失败工作副本退休。正常替换不积累同会话完成图，未扩大缓存槽数或新增结果缓存管理器。Core CONTEXT_FORGET会请求隐私维护，因此完成图也在原ACK前维护路径中清理。该表示复用不能重试/重放任何已执行调用。
+
+共用Session一次请求全部候选引用的confirm，不再在第一个NOT_READY处延后其余请求；FileBodies仍仅一个后台4 KiB借用，完整正文/manifest→外层文件→Core ACK顺序不变。新共用latest_answer只读round索引和最新答案，Native/ESP展示均采用；完整rounds留给历史查询。ESP删除强制清缓存及preparing_input状态，继续使用共享2 MiB正文预算/自动清退。C ABI0.55/schema10及已有文件/视图格式不改；另修正append_group漏计，append_ms不再把整组追加遗漏为0。契约见C-POLICY-013、C-HVAL-009与ADR-0105。
+
+本机正常冷读夹具（20个保存的工具结果，独立正文各有一次普通NOT_READY）：44→4次尝试、正文C接口读取1711→305次、47.831→2.663 ms。C接口次数不是物理文件读取次数。整个相同夹具的函数计数包括准备阶段：DecodedBusiness构造/解码路径1680→160，Workspace释放8404→804；前者源自相同历史反复校验/投影，不能把桌面收益直接换算为ESP端到端。新的400次读取回归上限为该固定正常夹具留有余量，不是新的通用产品性能承诺。
+
+最终相关50项ASan/UBSan检查通过，包含跨Task复用且保留当前来源读取、缓存槽替换、取消/隐私维护及Chat/Responses既有正常流程。共享Session+生产FileBodies+真实LittleFS RAM NOR连续5个输入/模型夹具/软件工具/最终发布回合、排空及关闭在ASan/UBSan下通过；该临时探针不冒充Linux或ESP硬件。ESP接入74/74通过，Native展示适配clang++语法检查通过。未在macOS运行Linux Native Host完整套件或远端CI，未新增故障/恢复/变异/耐久专项。主机资源检查后Native/ESP各2构建任务、测试1任务，留出桌面余量。
+
+首个候选91c0c65-localfix正常OTA（2772912 B，HTTP200，38.091秒），从ota_0切至ota_1，启动就绪、自确认及10秒观察通过，配置存在标志保持，无擦卷。对当前11轮、13676 B消息历史的隔离本地诊断：首请求派发4310 ms、整个回合4978 ms，终态后15秒观察无存储失败，内部空闲61507 B、最大块31744 B、最低59844 B。该夹具的GoalType与真实聊天不同，保留原disclosure隐私复核，真实历史只读、生成内容只属于probe scope，不发布真实会话；原17.022秒和这次4.310秒不是完全相同夹具，不能声明严格P95收益。冷加载集中完成时单次Core推进仍达2087759 us，毫秒级目标尚未完成；这促成同一缓存内的跨Task复用补充。
+
+最终候选91c0c65-localreuse已通过ESP-IDF6.0.3/GCC15.2.0编译，2773792 B，3 MiB槽余12%，分区/项目/回滚配置及镜像校验通过；实际最终部署结果补充如下。详细脱敏记录保存在本机忽略的build/local-cost-20261115/，属于仓库外证据。按用户选择未自动请求真实模型或执行电机/语音；真实工具交接和答案保存的板端P95/最大值、完整128K峰值及长期稳定性仍待对应证据。
+
+
+最终91c0c65-localreuse正常OTA一次上传2773792 B、HTTP200，用时39.308秒，ota_1→ota_0；启动就绪、自确认pending_verify=false及10秒观察通过，配置存在标志和设置白名单前后一致，原数据/旧UNKNOWN证据保留，无擦卷。随后两次当前历史本地诊断均通过且终态后各观察15秒：首请求准备7389/2507 ms，回合7998/3161 ms，内部空闲均61507 B、最大块31744 B、历史最低59832 B；未出现新存储失败、重启或实际PWM。最终首轮存储完成111项、worker处理4748 ms，其中正文4546 ms；后续降为6次文件读/288 B，worker处理838 ms，Core单步仍有1673844 us。不同启动/表退休/后台工作的确切贡献未归清，不能只选早期4.310秒候选当最终性能结论。
+
+该诊断每次从真实历史建立隔离Task，但不把生成答案发布回真实会话，因此后续输入的源图不同于上一诊断的完成图；它能验证当前历史读取及收尾，不能据此证明真实连续会话的跨Task缓存命中。跨Task复用目前由共用正常回归与Session/LittleFS夹具验证，真实板端工具交接/最终保存及100 ms目标未通过验收。
+
+**用户2026-11-15要求先提交推送，明天再继续；性能定位已暂停。** 该停点的提交范围为现有共用修正、契约、正常验证及OTA记录。下次先查暖态仍达1.674秒的单次Core推进，区分Schema/结果投影与调度抢占，再核对旧Goal/Call退休引起的后台正文清理是否挡住新输入。队列阻塞目前只是待证假设；不得把本轮标为全部秒级开销已解决，也不自动启动云端、物理动作或新恢复/故障专项。
+
+
+## 2026-11-16 单次结果投影与临时区重复擦除
+
+用户要求继续上一停点，追问历史工具结果、校验及引用的目的。引用保持一份不可变正文供执行事实/历史/模型上下文共享，避免重复持久保存并维持独立所有权；读历史不重新执行动作。原Schema解释和当前所有权边界保留，但相同冷读结果没有必要为测长与正式输出完整解码两次。
+
+共享JSON Writer新增同步调用方增长回调，保持固定/计数接口，检查溢出和增长拒绝，失败前缀不得发布。历史结果、工具说明及Native SQLite archive改为一次输出，字符串仍由策略/worker拥有，Core不分配堆。原证明和值codec已在各返回路径通过RAII清除自己写入的临时字节；结果投影外层原先又擦除整块查询容量。内部Workspace委托模式只交给这两个同步自清理codec，外层仅恢复独占游标；一般take/with_workspace及任意回调仍完整擦除，原隐私和持久屏障、C ABI0.55/schema10与持久格式不变。
+
+同一20个TEXT结果、每个独立正文首次NOT_READY的冷读夹具，输出逐字节一致，尝试4次/正文C接口读取305次保持。基线临时区擦除400次/33728640 B（32.166 MiB），单次投影后200次/16864320 B，进一步去掉外层重复擦除后180次/6798720 B（6.484 MiB）。插桩桌面耗时分别3.127/2.212/2.175 ms；包含函数计时插桩，不替代ESP耗时。此处只累计冷读阶段，不把相同夹具准备阶段混入擦除量，C接口次数仍不代表物理Flash读取。
+
+正常验证：69项相关ASan/UBSan通过，涵盖增长/固定Writer字节和字符数一致、拒绝增长、真实值codec和原证明codec（含正常回调拒绝）的擦除/立即复用、历史加载、跨Task复用、隐私/取消及共享模型流程；补跑结构化工具结果、预置工具和业务JSON的17项既有检查通过。SQLite ConversationDatabase 6/6通过，新增原结果archive与固定输出逐字节一致且仅一行；生产FileBodies+LittleFS RAM NOR连续5个软件工具会话和排空关闭通过。首次测试启动指定detect_leaks=1被本机Apple ASan拒绝，改为detect_leaks=0后实际执行上述检查；未宣称LeakSanitizer通过。RAM NOR空白卷首次挂载的Corrupted dir pair是既有正常format-on-empty初始化输出，随后五轮及关闭均成功，不是运行期存储退化。
+
+独立只读审查及补充擦除测试/契约的复查通过；作者四项自查分别确认：原测长注释已因实现替换而更新，容量准入说明保留；无Kernel新字段，擦除责任与Writer模式由各自属主维护；Region两种责任共用同一准入构造，策略增长集中在support，Native单独限制其UINT32_MAX持久字段；无新增未命名生产偏移、计数或阈值。契约、依赖、机械可读性、clang-format18和diff检查通过。详细逐项审查和实际输出在本机忽略目录build/local-cost-20261116/，属于仓库外证据。
+
+ESP-IDF6.0.3/GCC15.2.0候选36e5d44-onepass编译、分区尺寸和镜像描述校验通过，2774080 B，3 MiB槽余12%；保留原配置和分区。构建前检查16 GiB主机内存/swap及活动作业，两个独立构建各2任务、测试1任务，留桌面余量。开发板原地址不可达，用户说明现在不在身边，因此本轮未OTA、未擦卷、未请求模型或执行真实设备。增长字符串沿用capacity策略，可能比原精确分配多留容量，PSRAM最低余量及真实冷/暖单步仍需板端复测；没有新板端耗时、真实TLS、100 ms交接或长期稳定性结论。Linux Native Host完整套件、远端CI、优化器擦除专用链接检查及新故障/恢复/变异专项本轮未执行。
+
+
+## 2026-11-16 操作内读取与结束确认简化
+
+用户要求继续精简重复遍历、复制、校验及结束确认，直接修改共用代码和契约，保留必要权限/持久保证，只做本地验证，暂不OTA。实施基于65c8c20；C ABI0.55、schema10及持久格式保持，未擦卷或请求设备。最终机制见ADR-0106、C-POLICY-013、C-HVAL-009、C-SDK-009/011。
+
+正文读取/返回引用验证及后台保存请求归入Strategies的body_reader.cpp，与会话序列化分开。一次同步owner操作最多复用16 KiB字符串capacity和64条目，完整引用一致才命中，文本仍做UTF-8校验；另有有界map/handle开销。大正文/预算满时流式读取，不把整张原始图再长期保留一份；跨Core推进/隐私变化不保留读区。20个独立64 KiB正文（原始共1.25 MiB）的正常准备检查结束后，操作缓存保留量为0；65个独立小正文验证64条目后仍能成功读取但不再缓存。以上是组件容量证据，不是ESP实际heap/PSRAM峰值。
+
+新增永久输入、历史帧/索引、rounds、摘要及结果原证明，在创建时请求后台保存，共享工具结果的聊天别名单独请求自己的所有权确认；ToolLoop每次检查点不再扫描整份旧历史。模型请求临时正文仍走原put_body，未提前confirm，原终态持久后的到期释放保持。保存受理不当作持久成功，最终Session仍确认完整图。
+
+Session只遍历、去重一次候选依赖，校验同ID冲突；一个引用数组中的已确认前缀即时推进，后续普通BUSY不丢失进度，待确认后缀逐次推进。background完成检查点只复制/组装一次候选，在prepare_publication/publishing中等待；正常重开无内存候选时按原完成检查点重建，不重跑Task。旧引用只释放一次，新引用集借用已确认图，成员判定使用排序ID向量。完整正文/所有权→外层文件→真实清理→精确Core ACK持久顺序保持，当前权限/隐私/派发/停止及UNKNOWN不重试规则不变。
+
+同一20个TEXT结果、每个独立正文首次NOT_READY的冷读夹具，4次尝试、43次首次异步等待保持，正文C接口读取由305降到110；全就绪的一次加载只读43个独立引用，完整输出逐字节一致。工作区清零量保持上轮的6798720 B，并非本次再降。相同函数插桩桌面单样本由2.175变为2.446 ms，没有据此宣称CPU或端到端耗时改善；新容器/引用操作也影响插桩成本。C接口次数不等于物理Flash次数，板端收益和100 ms交接目标均未测。
+
+实际本地检查：Apple Clang21/CMake4.0.3，Debug ASan/UBSan相关88项通过；Sim Core+真实POSIX外层文件的4项正常进度检查通过，覆盖成功确认后单次普通队列BUSY、每个依赖成功确认一次、PUBLISH/ACK各一次、最终持久前不展示、发布中取消、隐私删除后新输入、正常关闭重开不再调用模型，以及默认durable策略。SQLite原结果archive等6项通过；共98项。另在ASan/UBSan下运行生产Session/FileBodies/LittleFS RAM NOR的5个连续软件工具回合、实际答案发布及排空关闭，全部通过；空白RAM NOR首次挂载的Corrupted dir pair为既有format-on-empty初始化输出。LeakSanitizer在此Apple环境不支持，显式关闭，未声称已验证泄漏。
+
+独立只读审查、增量修正及复查完成，无未处理发现。作者四项自查：正文验证说明随实现迁到body_reader.cpp，过时的全等待注释按background语义更新；无Kernel新字段，Confirmation归Session、仅一个引用数组和持久前缀计数；完整引用去重/冲突检查共用unique_references，复制/摘要边界共用BodyReader/get_body，没有新增第二执行流程；16 KiB/64条目均命名，无新增裸记录偏移/版本。模块依赖、契约、clang-format18、机械可读性与diff检查通过。相关详细审查、微基准、真实输出和临时本地CMake配置位于本机忽略目录build/local-flow-20261116/，属于仓库外证据。
+
+ESP-IDF6.0.3/GCC15.2.0最终候选65c8c20-localflow本地编译、分区大小及镜像描述检查通过，镜像2778080 B，3 MiB槽余12%；原分区和配置保留。构建前及过程中检查16 GiB/10CPU主机的swap、内存与活动作业，独立Native/Profile构建各2任务、后续ESP2任务，测试1任务。没有OTA、设备网络请求、云端模型或真实动作；用户随后要求提交并推送本批代码、契约与验证记录，本批随当前提交交付，继续保持不OTA。Linux Native Host完整套件、远端CI、板端耗时/PSRAM及新故障/恢复/变异/耐久专项未执行。
+
+
+## 2026-11-16 单遍提议与引用轮次清理
+
+用户要求执行下一批流程精简，并清理之前简化留下的代码；明确尚未公开发布，不保留兼容，优先清晰的层级、所有权和逻辑。实施基于e041b25，当前源码ABI0.56；ATC3、Core schema10、ConversationRecord6/turn7、SQLite4及现有分区均保持。未请求设备、OTA、云端模型或真实执行能力。决定与契约见[ADR-0107](../../docs/adr/0107-single-pass-proposals-and-reference-rounds.md)、C-CALL-014、C-POLICY-013。
+
+本批直接删除旧逐项ayni_tool_call_read、ayni_task_tool_call_v1及read_proposal，不留适配入口；ayni_tool_calls_read一次顺序访问完整列表。回调只有私有候选，整组准入成功后才能消费。共享ToolLoop按精确原Call/事实序号/完整正文身份保留一个活工具组，参数只解码一次，仍在每次决定查询当前Core事实、权限与来源。固定8槽及实际节点前缀使用可检查分配；组结束、来源失效、缓存退休及隐私清空均释放。
+
+Turn轮次改为序号及原user/answer引用，删除旧轮次正文副本、重复轮次投影和保存时重新提交旧正文的路径。公开完整历史查询仍投影Round文本，最新答案只读索引与所选答案；上下文失效时只为重建历史用户输入加载正文。参数、操作事实、摘要及ModelProtocol/ESP请求JSON改为单遍输出，原预算预检、公共参数树准入与摘要选段继续分别维护。BodyReader删除操作内shared_ptr控制块，句柄只借同步读区或独占当前流式正文；原16 KiB/64条目限制保持。Session一次候选和引用确认状态是最终持久保证的属主，保留真实确认/文件/清理/精确ACK顺序，未添加第二套结束流程。
+
+实际正常本地验证：Apple Clang21.0.0、CMake4.0.3，构建2任务、CTest上限1；ASan/UBSan Debug（ASAN_OPTIONS=detect_leaks=0，UBSAN_OPTIONS=halt_on_error=1）下，共用流程/工具codec/Mock工具/上下文/取消/隐私等106项、ModelProtocol 28项、SQLite 6项、Session进度4项通过，共144项。新增用例核对完整visitor成功前候选不可发布、容量拒绝保持输出、模型组只读一次正文但每次查Core事实、全局合法但超当前组的游标拒绝、保存索引不重提旧正文；既有正常8工具串行和共享Chat/Responses回归保持。LeakSanitizer在此Apple环境不支持，未声称验证泄漏。
+
+另运行生产Session/FileBodies/LittleFS RAM NOR的5个连续正常软件工具回合及排空关闭，全部通过；该夹具来源沿用前轮本机忽略目录，属于仓库外证据。Wi-Fi桌面相关60项通过，包含新PSRAM边界替身检查：UTF-8输出字节一致、增长后前缀保持、配置容量上限显式拒绝，以及替换/最终缓冲擦除（测试使用64 B/8 KiB，部署上限768 KiB），不代表实机PSRAM测量。C99 ABI布局/调用smoke、无异常/RTTI的C++17 smoke语法检查通过；Native OpenAI消费者语法检查通过，现有结构化绑定捕获触发2条C++20扩展警告，未修改无关测试。没有执行Native HTTP回环或Linux Host完整套件。
+
+Native实际查询ToolLoop工作区由731424降到706720 B（删除两块旧最大输出视图，共24704 B），8 B对齐。当前活工具组固定对象608 B，另有原编码字符串capacity与实际节点；最多8×256×48=98304 B节点（Native布局），不是整个策略heap上限。Core arena查询默认1489824 B、最小work596960 B、双Agent Call1932312 B、双Agent execution1993496 B；最大容量自动存储查询1738661968 B，未分配该最大arena。前四项与已有schema10记录相同。ESP增长时旧新PSRAM区短暂共存；上述工作区下降不能证明整体heap/PSRAM峰值下降。旧BodyReader共享控制块和旧轮次正文复制确已删除，但板端耗时、128K峰值及长期内存稳定性仍未验证。
+
+独立只读审查发现并修复：ESP诊断引用已删除测长Writer导致编译失败、工具游标跨当前组边界会越界，以及新节点容器分配缺少明确失败路径；修复后增量复查通过。作者四项自查：旧输出类型的借用说明随删除失效，checkpoint与轮次所有权说明迁到各自类型，visitor规则写入calls.h；无Kernel新状态，Visitor只持同步借用、PreparedProposals只管理同owner线程的不可变组；完整列表codec及轮次索引读写各一处，保留公开JSON树检查与预算决定，未宣称所有校验只跑一次；增长初始容量、倍数、槽数及节点上限均命名/引用现有限额，无新增裸记录偏移。模块依赖、clang-format18、契约/diff和机械可读性检查通过；ESP八个Core归档的无堆符号检查通过。
+
+ESP-IDF6.0.3/GCC15.2.0最终候选e041b25-cleanup本地编译及分区检查通过，镜像2776736 B，3 MiB槽余12%；仍使用原sdkconfig/分区及PSRAM分配配置。构建前及过程中检查16 GiB/10CPU主机可用内存、swap和活动作业，有界并行且为桌面留余量。完整命令、过滤器、临时本地CMake及原输出保存在本机忽略目录build/local-cleanup-20261116/与build/performance-checks-src/，属于仓库外证据；仓库内正常测试源可由现有单元/Wi-Fi目标执行。远端CI、硬件、OTA、新故障/恢复/变异及耐久专项均未执行。
+
+本批相对e041b25，生产代码增加491行、删除440行，净增51行；测试及构建/替身增加334行、删除60行，净增274行（不含用户未跟踪品牌文件）。生产净增主要是只保存实际前缀的提议所有权与显式容量失败，删除的逐项reader、最大输出类型、正文双状态和同步共享控制块均无兼容副本；保留Turn工作副本是为了未接受/DEFER决定的事务语义。
+
+
+## 2026-11-16 统一会话和结果存储
+
+用户继续要求把弃用、双机制和无限缓存清理干净，统一会话/工具结果，改全体调用方、契约和测试；保留必要权限及持久保证，先本地验证、暂不OTA。本批与前一未提交清理共同基于e041b25，架构/版本决定见[ADR-0108](../../docs/adr/0108-unified-conversation-and-result-storage.md)。当前ABI0.56、Core schema10、ATC3、ConversationRecord6保持，turn8/ANRV2/SQLite5直接升级，Wi-Fi设置仅支持当前v2；拒绝旧格式并保留原目录/配置，不提供旧reader、迁移器或自动擦除。
+
+Native删除ConversationStore及独立history/results文件、SavedConversation和重复发布/取消/归档状态，直接使用共享Session/FileBodies。SqliteValues只实现通用值端口，以state表保存共享根/manifest/chunk；两个排队元数据槽、一个在途借用、普通值优先后台正文，同优先级FIFO。SQLite DELETE+EXTRA、secure_delete保持提交/隐私边界；CAS统一STALE，COMMIT失败保留RESULT_UNKNOWN，尝试回滚不宣称已经撤销。Native默认durable、显式retain_and_append；ESP仍显式background。FileBodies所有部署必须正数预算：Native16 MiB，ESP/portable2 MiB；零配置/调整拒绝，无无限模式。
+
+工具结果统一规范值/域/证明/事实及可选展示引用，删除HistoryPort、ArchivedResult、archive/result_chunk和原结果大小预拒绝分叉。长结果摘要只投影一次再按UTF-8边界分块，原始执行事实和正文继续保留，每次决定仍查当前Core来源；当前正常回归证实多个摘要块只读取原值正文一次。只为一个活结果保留临时完整投影，借现有有界Turn缓存退休，无独立无限结果缓存；取舍是摘要期间持有该完整投影，板端峰值未测。
+
+正常重开按完整基线挂接原Goal，不重建动作。共享Session保留默认retain的显式abandon，Native才允许追加；peek终态元数据后待答案正文成功才消费通知。启动和正常推进使用同一正文/Provider/Core/隐私维护入口；原整会话删除重开曾出现一次BUSY，审查发现启动未推进FileBodies的缺口并修正，最终正常重开通过，但未把该缺口当作原超时根因已被独立证实。删除待批准/暂停回合走同一取消→持久终态→保留独立输入→保存/收集→精确ACK；Native空闲判断不能提前越过文件/清理。既有停止回归还发现仅记录取消请求会让下一次Provider先处理排队工具，已在共享cancel即时尝试原Goal取消，BUSY保留待处理意图，已发出的真实效果不被改写为撤销。
+
+实际本地正常检查：Apple Clang21.0.0/CMake4.0.3，Debug ASan/UBSan（detect_leaks=0、halt_on_error=1）相关190项通过：共享策略/结果/codec114、Native/Session/FileBodies39、SQLite5、会话进度4、ModelProtocol28。Native39包含实际本机HTTP模型/工具/摘要/外发授权及停止夹具，未访问云端；本地Shell管道保留规范VALUE及base64 stdout。Wi-Fi桌面60项通过，含只拒绝旧设置且不改存储凭据、有限缓存及PSRAM缓冲替身；Wi-Fi该目标未启用ASan，不混称250项全部sanitizer。另在ASan/UBSan下运行生产Session/FileBodies/LittleFS RAM NOR连续5个正常软件工具回合、最终答案及排空关闭，全部通过。Apple环境未运行LeakSanitizer。
+
+Native代码本来选择Linux Host；本机无可用Linux容器运行时。本轮在macOS用真实POSIX文件/线程、SQLite及相同Native组合代码执行正常路径，仅对Linux adjtimex/pipe2声明使用忽略目录内的测试适配，因此不声称Linux Host验收通过。既有LoopbackHttp在macOS的shutdown(listener)不能唤醒accept，线程栈确认测试本身已执行到析构；夹具改为具名10 ms poll后正常join，未改生产网络端口。最初Wi-Fi新增测试要求NVS查询blob长度，替身未实现out=null语义，补齐替身后60项全过。
+
+设计自查与独立只读增量审查完成，发现均已处理。公开接口删除和所有调用方迁移共同构成一个完整清理包，按会话属主、结果表示、值I/O、消费者四组审查；不按跨文件行数拆出无法独立工作的过渡层。四项分别结论：
+
+- 删除注释：旧Store/History/Results说明随旧机制失效，持久借用/所有权迁至`runtime/native_node/assistant_state.h:17`及`sqlite_values.h:1`；旧未来迁移注释也按无迁移决定更新。
+- Kernel字段：搜索本批`core/`及`include/ayni/` diff，无Kernel新增状态字段；会话阶段与候选/旧图仍归`runtime/conversation/include/ayni/runtime/conversation.h`的Session所有。
+- 重复规则：intake/forget共用`runtime/conversation/conversation.cpp:50`的current_context；结果读写共用`strategies/builtin/history_result.cpp:16`的ViewCodec，SQL只遵守值CAS，不复制会话规则。Native查询末端的实时隐私检查只读一次，跨异步读取所需的检查继续保留。
+- 裸数字：`history_result.cpp:8`/`:10`命名记录版本/字节数，`runtime/native_node/sqlite_values.cpp:15`/`:16`命名同步级别/版本，`sqlite_values.h:29`命名队列容量，`providers/openai_compat/test_support/include/ayni/providers/openai_compat/loopback.h:126`命名等待；布局见contracts/storage/records.md。
+
+机械可读性、依赖、契约追踪、clang-format18和diff检查通过；新故障/恢复/断电行为只做设计审查，未启动专项。
+
+ToolLoop查询工作区仍706720 B、8 B对齐；当前ModelProposals固定数据600 B，检查分配的共享owner另带计数；8组节点上限98304 B（Native布局），并不包含完整字符串capacity或整个平台heap。相对e041b25，本批统一提交两轮C/C++清理，生产代码净删约747行，正常测试/替身净增约245行；统计包含新SqliteValues而不含用户品牌资产、文档或CMake。保留的候选/旧图/确认状态服务真实异步借用、DEFER及持久屏障，不是旧兼容副本。
+
+ESP-IDF6.0.3/GCC15.2.0候选e041b25-unified本地编译、分区检查通过；3 MiB应用槽仍余12%，镜像2779968 B。原sdkconfig/分区保持。构建前及过程中检查16 GiB/10CPU主机的内存、swap和活动任务，构建显式2任务、CTest并行上限1，保留桌面余量。实际命令、过滤器、临时CMake、线程栈和输出在本机忽略目录build/local-cleanup-20261116/与build/performance-checks-src/，属于仓库外证据；仓库中保留对应正常测试源。用户随后要求将本批代码、契约和验证记录提交并推送；本批随当前提交保存并推送原分支，继续暂不OTA。未擦数据或执行真实动作；远端CI、Linux完整套件、板端100 ms交接/内存峰值及新故障/恢复/变异/耐久专项未执行。
+
+## 2026-11-16 流程精简复查续作
+
+用户要求落实对18881d1/a43a027流程复查的全部精简建议，两个待计数路径也先用正常夹具计数。范围及取舍见[ADR-0108续作](../../docs/adr/0108-unified-conversation-and-result-storage.md#2026-11-16-复查续作)。不变C ABI0.56、Core schema10、turn8/ANRV2/SQLite5；不OTA、不擦数据、不调用云端或真实动作。
+
+- ESP撤除usb.model.*、usb.model/usb.summary Binding及usb.chat GoalType/选择分支，改当前Wi-Fi策略/端点身份。两项现行模型能力共用相同大正文及结果Schema，不再保留旧小正文或重复Schema。当前部署不支持的属主Goal明确UNSUPPORTED_VERSION，保留原记录，不继续等Core已hold的Task；旧调用事实和UNKNOWN约束不改。
+- ToolLoop直接追加到decide已有工作副本，8项模型提议在一个Writer中封装；失败整个候选不发布。普通/受管结果汇到公共最终预算及超限摘要，list必要缩页候选仍计量，选中页/inspect传递已测成本。正常回调计数分别证实普通回复一次、受管start与read各一次、list选中页和inspect各一次。
+- 历史压缩在同一代持有共享不可变规范投影，完成/来源失效/隐私清理/缓存退休释放；不会为DEFER工作副本深拷贝它。代价是压缩期间保留一份完整投影，未扩大缓存槽，板端峰值未测。
+- Native和background均按当前步骤读写的NOT_READY推迟，不再等整个FileBodies队列空闲；worker仍推进，默认durable的草稿准入、会话完整图/文件/清理与最终ACK保持。begin直接交付已生成输入引用，外部Core准入校验保留。
+- 记忆由初始决定两次read减为每次决定一次；后续仍采样当前来源/权限，只有初始化构建新上下文文本。大正文保留16 KiB操作缓存取舍：20份64 KiB正文预读20次，选中一份正式读取后合计21次，缓存不常驻这20份正文；不以额外常驻1.25 MiB换这一次复制。计数不是板端耗时或峰值证据。
+
+实际本地验证使用Linux容器GCC13.3.0、CMake3.31.6、clang-format18.1.3。Debug策略77项、共享Session10项、Native助理/查询/SQLite29项、ESP公开Core/Sim集成16项、FileValues/FileBodies11项通过；Wi-Fi桌面60项通过。ASan/UBSan开启detect_leaks=1及halt_on_error=1，策略77项和Session10项通过。均为相关套件，不是Core完整套件或全配置矩阵；真实网络仅既有本机HTTP夹具。
+
+Native首轮200 KiB SQLite正常写入夹具超出原5秒观察窗，单独隔离复现仍在5.898秒返回NOT_READY后失败；该夹具现在统一到其他Native异步夹具的具名30秒有限观察窗，生产确认/超时规则未改；最终该测试6884 ms完成，Native目标29项全过。ESP-IDF6.0.3/GCC15.2.0编译和分区检查通过，镜像2779248 B，3 MiB应用槽余12%。ESP首次构建拒绝过期生成sdkconfig的PSRAM内部优先配置；保留该生成副本后按已跟踪defaults/wifi重新生成，未改设备或已跟踪配置。
+
+设计自查和独立只读增量复查已处理发现：拒旧启动等待、list/inspect成功回复重复计量及记忆测试来源替身字段均修正。四项分别结论：
+
+- 删除注释：`strategies/builtin/tool_loop.cpp:161`把完整frame保证移到决定事务工作副本；`chat.cpp`旧小正文兼容说明随旧注册失效，当前诊断无真实上下文的说明保留。
+- Kernel字段：搜索`git diff -- core/ include/ayni/`为空；`support.h`的history_projection归当前Turn压缩，`harness.h`的ToolReply只拥有同步回复/结果字节及已选成本。
+- 重复规则：`strategies/builtin/tool_loop.cpp:879`公共最终预算/摘要入口和`strategies/builtin/harness.h:85`的ToolBudget::measure共享计量规则；begin把同一已生成引用交给Session，Core边界校验仍在，Session直接接收输入引用见`runtime/conversation/conversation.cpp:401`。
+- 裸数字：`tests/unit/sqlite_values_test.cpp:18`的async_test_timeout命名观察窗；ESP两项当前能力的固定槽含义写在chat.h，持久布局/版本不变。
+
+clang-format18、契约追踪、依赖及机械可读性检查和`git diff --check`通过；机械检查保留原19项public-code-comment基线及1项已审例外，无新增违规。
+
+本轮命令和输出保存在本机忽略目录`build/simplify-followup-*.log`，属于外部原始证据；仓库保留正常测试源及契约映射。构建前和执行中检查可用内存、swap、活动容器；Native构建4任务/测试上限4，ESP构建2任务，Wi-Fi3任务，容器CPU/内存按并行阶段限制并保留桌面余量。新故障/恢复/断电/变异/耐久专项、远端CI、板端拒旧启动、100 ms交接及完整128K峰值未验证。
+
+用户随后要求将本轮代码、契约和验证记录提交并推送到原分支，继续暂不OTA。
+
+## 2026-11-16 正文归属与按会话收尾精简
+
+用户要求再次梳理输入到结束的完整流程，并实施复查提出的全部七项优化。决定见[ADR-0109](../../docs/adr/0109-owned-conversation-text-and-scoped-cleanup.md)。C ABI0.56、Core schema10、ConversationRecord6/turn8、ATC3、ANRV2、SQLite5保持；不OTA、不擦卷、不调用云端或真实设备。
+
+| 路径 | 本次实现与正常证据 |
+|---|---|
+| 输入 | Session对支持stage/confirm的端口只stage一次；默认durable仍confirm正文和根记录后才创建Goal。`DurableConversationProgress.waiting_for_input_durability_does_not_restage_the_input`在32次无完成轮询期间观察同一输入只stage一次、无Goal，正常推进后仍一次。 |
+| 检查点 | 不可变输入引用直接复用；SummaryProgress拥有文字与引用，替换/清空文字即失效。`HistoryLoading.writing_retained_round_metadata_does_not_restage_its_text`扩展检查未变检查点零额外正文写入；`summary_replacement_reuses_progress_body_and_invalidates_only_changed_text`确认每份新摘要只保存一次、已存候选直接作为正式摘要。散列减少来自源码检查，未测板端CPU耗时。 |
+| 历史索引 | 新user/最终assistant帧关联原raw引用，完成保存或上下文替换时清理关联，压缩后当前输入仍复用。`ReusedMessageBodies.history_index_reuses_input_and_final_answer_bodies`验证策略不再次stage已准入输入，最终答案仅一次，重建历史正确；工具结果仍用专用视图种类。 |
+| 请求封套 | 同一Writer先写封套头再写完整消息，删除整份messages搬出后重封装。现有真实Chat/Responses投影和预置工具回归覆盖格式、预算与顺序；公开边界校验保持。 |
+| 历史压缩 | 删除完成时未使用的完整context投影，正常ready路径负责下一请求计量。`CountedCompaction.completed_summary_is_projected_only_for_the_next_request`观察带新摘要的完整上下文只投影一次。必要选段/摘要请求预算仍分别计算。 |
+| ESP进度 | Api网络worker首次解析Answer后派生最多2048字节安全outline；权威结果先入队，进度尽力发送。移除ModelTools的完整wire/节点副本、主owner二次解码及32节点旧门。进度只含固定function/合法binding/固定operation，当前Call取消或关闭后不显示；Job释放/复用清空。`WifiModel.ProgressDoesNotLimitTheAdmittedArgumentTreeAndClearsBetweenReplies`验证256节点的合法提议可接受且下一纯文字回复清空进度，原敏感字段过滤回归保留。 |
+| 收尾 | BodyCollection.collected(scope)只等待当前scope释放凭据；共享payload等待移除owner的manifest版本，最后owner等待块和manifest实际删除。`ConversationProgress.publication_does_not_wait_for_unrelated_body_persistence`在其他scope仍有工作时完成真实发布及Core ACK；两个`ScopedBodyCleanup`正常用例覆盖共享owner独立完成和冷manifest/临时释放遇队列背压。关闭仍全局ready/idle排空，sticky错误仍失败。 |
+
+独立只读审查发现：冷manifest释放排队后，临时引用的原快速清退分支在普通队列满时可能连同释放凭据一起删掉。现已要求无release/deleting才可快速清退，并由`ScopedBodyCleanup.temporary_release_preserves_cold_cleanup_under_queue_backpressure`验证先BUSY、真实删除后才完成。另将异步BodyCollection缺少collected的配置明确拒绝，避免旧聚合初始化静默当作同步清理。末尾四处增量复查（压缩frame关联、有效Call进度门、已证明缺失owner、配置拒绝）通过，未发现剩余具体问题。作者沿调用方继续去掉Native普通推进/CLI和portable tick中未使用的全局idle查询，关闭仍保留显式idle判断及Session全局排空。
+
+实际本地验证：Linux容器GCC13.3.0、CMake3.31.6、clang-format18.1.3；Debug策略80、会话进度9、Session10、FileBodies/FileValues11、Native助理/查询/SQLite29、ESP公开Core/Sim集成16项，共155项通过。Wi-Fi桌面61项通过。ASan/UBSan策略80、会话进度9、Session10项，共99项通过，启用detect_leaks=1、halt_on_error=1；策略末尾改动后两配置增量重建复验均80项通过；纯推进调用替换后，Debug会话进度9、Session10、Native助理/查询/SQLite29项及ASan/UBSan会话进度9、Session10项复验通过。上述为相关套件，未运行Core全套或全配置矩阵。
+
+实现中正常测试曾发现空rounds索引不能保存成非空引用，现空索引保持无引用；最终策略回归通过。新增256节点夹具初稿使用250项单列表，违反既有64项上限；改为四个各62项的嵌套列表，总256节点，不放宽生产限制，最终Wi-Fi61项通过。
+
+ESP-IDF6.0.3/GCC15.2.0最终增量编译、链接及分区检查通过，镜像0x2a6b10（2779920）字节，3 MiB应用槽余12%。未连接开发板或执行OTA。构建前和过程中检查可用内存、swap及活动任务；Native构建4任务/测试上限4，Wi-Fi3任务，ESP2任务，容器按并行阶段设CPU/内存上限并留桌面余量。
+
+设计自查四项分别结论：
+
+- 删除注释：`runtime/conversation/conversation.cpp:395`改为stage一次/保存阶段确认的属主说明；原ModelTools副本/解码说明因机制删除失效，安全进度限制移到`firmware/main/tool_outline.h:4`，`chat.cpp:670`保留元数据不改变执行结论的原因。
+- Kernel字段：`git diff HEAD -- core/ include/ayni/`为空；释放凭据归`file_bodies.h:63`的Entry，候选文字/引用归`support.h:94`的SummaryProgress，进度归Api::Job，不复制Core权限状态或新增Kernel布尔状态。
+- 重复规则：`strategies/builtin/conversation.cpp:295`只复用属主已验证引用，`support.h:100`集中使变化失效；`history.cpp:181`区分原raw正文与结果视图；`tool_loop.cpp:188`单Writer写封套、压缩统计只重置一次。公开边界校验、实时来源与权限仍各归原属主。
+- 裸数字：继续使用owner_limit、tool_outline_bytes、messages_prefix及原协议限制；释放版本有optional明确无值，未新增持久偏移或版本。合法256节点边界夹具解释每层64项约束，未另建部署限制。
+
+clang-format18、`tools/check_contracts.py`（含追踪同步）、`tools/check_deps.py`、`tools/check_readability.py`和`git diff --check`通过；机械检查无新增违规，保留既有19项public-code-comment及1项已审例外。原始命令输出在本机忽略目录`build/flow-reuse-native-final.log`、`flow-reuse-last-strategies.log`、`flow-reuse-asan.log`、`flow-reuse-last-runtime.log`、`flow-reuse-last-runtime-asan.log`、`flow-reuse-wifi-final.log`、`flow-reuse-esp-final.log`，属于仓库外证据；仓库保留正常测试源及契约关联。
+
+本轮没有新故障/恢复/断电/变异/耐久专项、远端CI、真实模型/工具或硬件测量。有限正文缓存及摘要期间一份完整投影的取舍保持，桌面计数不代表板端P95≤100 ms、完整128K峰值或异常恢复已验证。
+
+2026-11-17用户要求直接在原分支完成PR #139修复后提交推送；本批已完成优化与CLI就绪修复使用聚焦提交一起推送，仍不OTA。新的CI结果见[PR #139](https://github.com/RobotSe7en/ayni/pull/139)。

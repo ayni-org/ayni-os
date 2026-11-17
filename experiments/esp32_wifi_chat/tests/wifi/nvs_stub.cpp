@@ -25,10 +25,12 @@ esp_err_t nvs_get_blob(nvs_handle_t handle, const char *name, void *out, size_t 
         return ESP_ERR_NVS_NOT_FOUND;
     }
     const auto &blob = found->second;
-    if (*size < blob.size()) {
+    if (out && *size < blob.size()) {
         return ESP_FAIL;
     }
-    std::memcpy(out, blob.data(), blob.size());
+    if (out) {
+        std::memcpy(out, blob.data(), blob.size());
+    }
     *size = blob.size();
     return ESP_OK;
 }
