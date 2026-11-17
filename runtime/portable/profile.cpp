@@ -364,7 +364,7 @@ struct Profile::Impl {
             if (persistence == strategies::Persistence::background) {
                 c.reply_encoding = c.summary_reply_encoding = model::ReplyEncoding::framed;
             }
-            c.body_progress = {&bodies, runtime::FileBodies::ready};
+            c.body_progress = {&bodies, runtime::FileBodies::progress};
             c.model.kind = c.summary.kind = AYNI_POLICY_REQUEST_MODEL;
             c.model.binding_id = text(model_bindings[at]);
             c.summary.binding_id = text("portable.summary");
@@ -558,7 +558,7 @@ ayni_status_t Profile::tick() {
     if (info.lifecycle == AYNI_LIFECYCLE_STOPPED) {
         // Core stop ends device/model dispatch. Body chunks still owned by the
         // composition must drain before stopped() permits Host close (ADR-0104).
-        runtime::FileBodies::ready(&self.bodies, 0);
+        runtime::FileBodies::progress(&self.bodies, 0);
         return runtime::FileBodies::status(&self.bodies);
     }
     for (auto *model : {&self.model_a, &self.model_b, &self.summary}) {
@@ -581,7 +581,7 @@ ayni_status_t Profile::tick() {
     if (status != AYNI_OK) {
         return status;
     }
-    runtime::FileBodies::ready(&self.bodies, 0);
+    runtime::FileBodies::progress(&self.bodies, 0);
     status = runtime::FileBodies::status(&self.bodies);
     if (status != AYNI_OK) {
         return status;

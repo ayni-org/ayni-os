@@ -90,11 +90,21 @@ struct ResultProjection {
     std::string text;                // One complete rendering, shared across chunk decisions.
 };
 enum class TurnPhase : uint32_t { initial, ready, model, tools, summary, result_summary };
+enum class SummaryChange { unchanged, clear, replacement };
 struct SummaryProgress {
     uint32_t offset = 0; // Bytes already covered by the last successful chunk.
     uint32_t next = 0;   // End of the outstanding chunk; offset<=next<=original length.
     uint32_t chunk = 0;  // Monotone summary Call ordinal within its source.
     std::string text;    // Unconfirmed candidate; originals remain in the body store.
+    BodyRef reference{}; // Names text after saving; text changes invalidate it together.
+    void set_text(ayni_string_v1 value) {
+        text.assign(value.data, value.size);
+        reference = {};
+    }
+    void clear_text() {
+        text.clear();
+        reference = {};
+    }
 };
 // Immutable retained round metadata. The conversation store owns the referenced bodies;
 // the execution path loads text only when reconstructing missing history or displaying it.
@@ -109,16 +119,17 @@ struct RoundReferences {
 struct Turn {
     ConversationRecord record;
     uint64_t base_revision = 0;
-    uint64_t memory_id = 0; // Optional explicit source selected for this turn; zero selects none.
-    std::string input;
-    std::string definitions;    // Transient request-only tools; regenerated from each snapshot.
+    uint64_t memory_id = 0;  // Optional explicit source selected for this turn; zero selects none.
+    std::string input;       // Immutable after admission; refs.input was verified with these bytes.
+    std::string definitions; // Transient request-only tools; regenerated from each snapshot.
     uint32_t history_saved = 0; // Appended prefix already represented by history_index.
     std::map<std::string, BodyRef>
-        result_views;          // New tool protocol IDs -> derived views of shared Call results.
+        result_views; // New tool protocol IDs -> derived views of shared Call results.
+    std::map<uint32_t, BodyRef> history_texts; // New frame start -> already saved raw text.
     std::string history_index; // Owned small ordered framing/reference index, never full text.
     std::string history;       // record.history's messages, standard framing.
-    std::string summary;       // record.summary.
-    std::vector<RoundReferences> rounds;  // record.rounds, oldest first.
+    SummaryChange summary_change = SummaryChange::unchanged; // Replacement uses history_summary.
+    std::vector<RoundReferences> rounds;                     // record.rounds, oldest first.
     TurnPhase phase = TurnPhase::initial; // Sole owner of current model/group/compaction progress.
     uint32_t model_round = 0;    // Monotone main Call ordinal, never reset on context invalidation.
     uint32_t tool_index = 0;     // Next proposal in the current durable model result.
@@ -138,8 +149,8 @@ struct Turn {
     PreparedProposals proposals; // Current source group; no authorization cache.
     bool done = false;
     struct Refs {
-        BodyRef input{}, history_summary{}, result_summary{};
-    } refs; // Body references of input and the two summary candidates.
+        BodyRef input{};
+    } refs; // The immutable admitted input; summary progress owns its own text/reference pair.
 };
 // Reads every body the encoded turn names. NOT_READY when the store is still loading.
 ayni_status_t read_turn(Workspace &workspace, const ayni_body_store_v1 &bodies, ayni_bytes_v1 bytes,

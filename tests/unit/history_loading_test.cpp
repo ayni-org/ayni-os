@@ -368,6 +368,52 @@ TEST(HistoryLoading, writing_retained_round_metadata_does_not_restage_its_text) 
     ASSERT_EQ(rounds.size(), 1U);
     EXPECT_EQ(rounds.front().user, "old user");
     EXPECT_EQ(rounds.front().answer, "old answer");
+    writes.texts.clear();
+    ASSERT_EQ(
+        write_turn(turn, port, checkpoint.bytes.data(), checkpoint.bytes.size(), checkpoint.size),
+        AYNI_OK);
+    EXPECT_TRUE(
+        writes.texts.empty()); // C-POLICY-013: unchanged owned text needs no new store call.
+}
+// C-POLICY-013: progress and the published summary share one body; changing text invalidates it.
+TEST(HistoryLoading, summary_replacement_reuses_progress_body_and_invalidates_only_changed_text) {
+    ayni::runtime::MemoryBodies memory;
+    const auto &store = *memory.store();
+    struct Writes {
+        const ayni_body_store_v1 *store;
+        std::map<std::string, uint32_t> texts;
+    } writes{&store, {}};
+    auto port = store;
+    port.context = &writes;
+    port.write = [](void *ctx, uint64_t scope, ayni_bytes_v1 bytes, BodyRef *out) {
+        auto &s = *static_cast<Writes *>(ctx);
+        ++s.texts[std::string(reinterpret_cast<const char *>(bytes.data), bytes.size)];
+        return s.store->write(s.store->context, scope, bytes, out);
+    };
+    Turn turn;
+    turn.record.id = 1;
+    turn.record.owner_instance_id = 2;
+    turn.record.summary_first = turn.record.summary_last = turn.record.last_round = 1;
+    turn.input = "input";
+    turn.history_summary.set_text({"first summary", 13});
+    turn.summary_change = SummaryChange::replacement;
+    ayni::strategies::Encoded checkpoint;
+    ASSERT_EQ(
+        write_turn(turn, port, checkpoint.bytes.data(), checkpoint.bytes.size(), checkpoint.size),
+        AYNI_OK);
+    const auto first = turn.record.summary;
+    EXPECT_EQ(first.id, turn.history_summary.reference.id);
+    EXPECT_EQ(writes.texts["first summary"], 1U);
+    turn.history_summary.set_text({"second summary", 14});
+    EXPECT_EQ(turn.history_summary.reference.id, 0U);
+    turn.summary_change = SummaryChange::replacement;
+    ASSERT_EQ(
+        write_turn(turn, port, checkpoint.bytes.data(), checkpoint.bytes.size(), checkpoint.size),
+        AYNI_OK);
+    EXPECT_NE(turn.record.summary.id, first.id);
+    EXPECT_EQ(turn.record.summary.id, turn.history_summary.reference.id);
+    EXPECT_EQ(writes.texts["second summary"], 1U);
+    EXPECT_EQ(writes.texts["input"], 1U);
 }
 // C-POLICY-013: source matching precedes rendering. Index-only collection checks the
 // immutable identity without interpreting these test-only opaque proof bytes as a Schema.

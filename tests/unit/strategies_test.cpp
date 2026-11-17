@@ -153,6 +153,79 @@ class BackgroundStrategies : public StrategiesFixture {
         };
     }
 };
+class ReusedMessageBodies : public BackgroundStrategies {
+  protected:
+    static inline thread_local std::map<std::string, uint32_t> staged;
+    ayni_body_store_v1 observed{};
+    void SetUp() override {
+        observed = *bodies.store();
+        observed.stage = [](void *ctx, uint64_t scope, ayni_bytes_v1 bytes, ayni_body_ref_v1 *out) {
+            ++staged[std::string(reinterpret_cast<const char *>(bytes.data), bytes.size)];
+            auto &memory = *static_cast<ayni::runtime::MemoryBodies *>(ctx);
+            return memory.store()->stage(ctx, scope, bytes, out);
+        };
+        body_store = &observed;
+        staged.clear();
+        BackgroundStrategies::SetUp();
+    }
+};
+// C-POLICY-013: user/assistant frames use their already owned raw body references.
+TEST_F(ReusedMessageBodies, history_index_reuses_input_and_final_answer_bodies) {
+    const auto task = start();
+    ASSERT_EQ(pending.size(), 1U);
+    EXPECT_EQ(staged["hello"], 0U); // begin admitted this input before the strategy ran.
+    post(0, text("one final answer"));
+    pump();
+    ASSERT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+    EXPECT_EQ(staged["one final answer"], 1U);
+    finish(task);
+    const auto history = text_of(conversation.history);
+    EXPECT_NE(history.find("hello"), history.npos);
+    EXPECT_NE(history.find("one final answer"), history.npos);
+}
+class CountedCompaction : public StrategiesFixture {
+  protected:
+    uint32_t replacement_projections = 0;
+    CountedCompaction() {
+        configure_loop = [this](policies::ToolLoopConfig &config) {
+            config.projection.context = &replacement_projections;
+            config.projection.context_writer = [](void *ctx, ayni::json::Writer &out,
+                                                  ayni_string_v1 input, ayni::model::Mode mode,
+                                                  ayni::model::Completeness complete) {
+                if (mode == ayni::model::Mode::assistant &&
+                    std::string_view(input.data, input.size).find("Unconfirmed model summary") !=
+                        std::string_view::npos) {
+                    ++*static_cast<uint32_t *>(ctx);
+                }
+                return ayni::model::write_context(out, input, mode, complete);
+            };
+            config.projection.reply_writer = [](void *, ayni::json::Writer &out, ayni_string_v1 id,
+                                                ayni_string_v1 content) {
+                out.raw(",{\"role\":\"tool\",\"tool_call_id\":");
+                out.string(id);
+                out.raw(",\"content\":");
+                out.string(content);
+                out.raw("}");
+            };
+        };
+    }
+};
+// C-POLICY-012/013: compact replacement enters the normal request projection once.
+TEST_F(CountedCompaction, completed_summary_is_projected_only_for_the_next_request) {
+    const auto task = start_until_budget_summary();
+    ASSERT_NE(task, 0U);
+    uint32_t chunks = 0;
+    while (pending.back().capability == "summary") {
+        ASSERT_LT(chunks++, 32U);
+        post(static_cast<uint32_t>(pending.size() - 1U), text("short summary"));
+        pump();
+    }
+    ASSERT_EQ(pending.back().capability, "model");
+    EXPECT_EQ(replacement_projections, 1U);
+    post(static_cast<uint32_t>(pending.size() - 1U), text("done"));
+    pump();
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+}
 class UnrelatedBodyWork : public StrategiesFixture {
   protected:
     uint32_t progress_calls = 0;

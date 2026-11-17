@@ -12,6 +12,8 @@ RC003-MS按住语音键录音，松开后整段上传ASR，识别文字显示并
 
 128K是配置预算，不是完整长上下文硬件验收。估算token、字节长度、PSRAM峰值和Flash余量分别限制部署。旧usb.model/usb.chat能力、Binding和GoalType已撤除；旧属主Goal类型不受当前部署支持时明确拒绝并保留数据，不自动擦除。未知结果不授权透明重试。
 
+输入由共享Session一次暂存；Native默认先确认草稿再创建Goal，ESP后台模式允许执行与存储并发。ToolLoop按依赖加载、复用正文和历史，生成一次模型请求；普通工具仍顺序执行，Core保留权限/参数/资源校验及派发前持久屏障。网络worker首次解析即生成有界安全进度，不再为界面复制完整提议。最终输入/答案引用直接进入历史索引；正文和根记录确认、当前scope真实清理及精确ACK完成后才展示答案。自动语音随后完成朗读和终态通知；关闭仍排空全部存储工作。
+
 ## 设置与操作
 
 1. 首页九个应用图标分别进入聊天、语音回复、网络、模型、遥控器、电机、屏幕、状态和清理；子页左上角返回主页。网络页选择 2.4 GHz 网络、填写密码，保存并重启。首次可不填模型 Key。
@@ -738,3 +740,38 @@ clang-format18、契约追踪、依赖及机械可读性检查和`git diff --che
 本轮命令和输出保存在本机忽略目录`build/simplify-followup-*.log`，属于外部原始证据；仓库保留正常测试源及契约映射。构建前和执行中检查可用内存、swap、活动容器；Native构建4任务/测试上限4，ESP构建2任务，Wi-Fi3任务，容器CPU/内存按并行阶段限制并保留桌面余量。新故障/恢复/断电/变异/耐久专项、远端CI、板端拒旧启动、100 ms交接及完整128K峰值未验证。
 
 用户随后要求将本轮代码、契约和验证记录提交并推送到原分支，继续暂不OTA。
+
+## 2026-11-16 正文归属与按会话收尾精简
+
+用户要求再次梳理输入到结束的完整流程，并实施复查提出的全部七项优化。决定见[ADR-0109](../../docs/adr/0109-owned-conversation-text-and-scoped-cleanup.md)。C ABI0.56、Core schema10、ConversationRecord6/turn8、ATC3、ANRV2、SQLite5保持；不OTA、不擦卷、不调用云端或真实设备。
+
+| 路径 | 本次实现与正常证据 |
+|---|---|
+| 输入 | Session对支持stage/confirm的端口只stage一次；默认durable仍confirm正文和根记录后才创建Goal。`DurableConversationProgress.waiting_for_input_durability_does_not_restage_the_input`在32次无完成轮询期间观察同一输入只stage一次、无Goal，正常推进后仍一次。 |
+| 检查点 | 不可变输入引用直接复用；SummaryProgress拥有文字与引用，替换/清空文字即失效。`HistoryLoading.writing_retained_round_metadata_does_not_restage_its_text`扩展检查未变检查点零额外正文写入；`summary_replacement_reuses_progress_body_and_invalidates_only_changed_text`确认每份新摘要只保存一次、已存候选直接作为正式摘要。散列减少来自源码检查，未测板端CPU耗时。 |
+| 历史索引 | 新user/最终assistant帧关联原raw引用，完成保存或上下文替换时清理关联，压缩后当前输入仍复用。`ReusedMessageBodies.history_index_reuses_input_and_final_answer_bodies`验证策略不再次stage已准入输入，最终答案仅一次，重建历史正确；工具结果仍用专用视图种类。 |
+| 请求封套 | 同一Writer先写封套头再写完整消息，删除整份messages搬出后重封装。现有真实Chat/Responses投影和预置工具回归覆盖格式、预算与顺序；公开边界校验保持。 |
+| 历史压缩 | 删除完成时未使用的完整context投影，正常ready路径负责下一请求计量。`CountedCompaction.completed_summary_is_projected_only_for_the_next_request`观察带新摘要的完整上下文只投影一次。必要选段/摘要请求预算仍分别计算。 |
+| ESP进度 | Api网络worker首次解析Answer后派生最多2048字节安全outline；权威结果先入队，进度尽力发送。移除ModelTools的完整wire/节点副本、主owner二次解码及32节点旧门。进度只含固定function/合法binding/固定operation，当前Call取消或关闭后不显示；Job释放/复用清空。`WifiModel.ProgressDoesNotLimitTheAdmittedArgumentTreeAndClearsBetweenReplies`验证256节点的合法提议可接受且下一纯文字回复清空进度，原敏感字段过滤回归保留。 |
+| 收尾 | BodyCollection.collected(scope)只等待当前scope释放凭据；共享payload等待移除owner的manifest版本，最后owner等待块和manifest实际删除。`ConversationProgress.publication_does_not_wait_for_unrelated_body_persistence`在其他scope仍有工作时完成真实发布及Core ACK；两个`ScopedBodyCleanup`正常用例覆盖共享owner独立完成和冷manifest/临时释放遇队列背压。关闭仍全局ready/idle排空，sticky错误仍失败。 |
+
+独立只读审查发现：冷manifest释放排队后，临时引用的原快速清退分支在普通队列满时可能连同释放凭据一起删掉。现已要求无release/deleting才可快速清退，并由`ScopedBodyCleanup.temporary_release_preserves_cold_cleanup_under_queue_backpressure`验证先BUSY、真实删除后才完成。另将异步BodyCollection缺少collected的配置明确拒绝，避免旧聚合初始化静默当作同步清理。末尾四处增量复查（压缩frame关联、有效Call进度门、已证明缺失owner、配置拒绝）通过，未发现剩余具体问题。作者沿调用方继续去掉Native普通推进/CLI和portable tick中未使用的全局idle查询，关闭仍保留显式idle判断及Session全局排空。
+
+实际本地验证：Linux容器GCC13.3.0、CMake3.31.6、clang-format18.1.3；Debug策略80、会话进度9、Session10、FileBodies/FileValues11、Native助理/查询/SQLite29、ESP公开Core/Sim集成16项，共155项通过。Wi-Fi桌面61项通过。ASan/UBSan策略80、会话进度9、Session10项，共99项通过，启用detect_leaks=1、halt_on_error=1；策略末尾改动后两配置增量重建复验均80项通过；纯推进调用替换后，Debug会话进度9、Session10、Native助理/查询/SQLite29项及ASan/UBSan会话进度9、Session10项复验通过。上述为相关套件，未运行Core全套或全配置矩阵。
+
+实现中正常测试曾发现空rounds索引不能保存成非空引用，现空索引保持无引用；最终策略回归通过。新增256节点夹具初稿使用250项单列表，违反既有64项上限；改为四个各62项的嵌套列表，总256节点，不放宽生产限制，最终Wi-Fi61项通过。
+
+ESP-IDF6.0.3/GCC15.2.0最终增量编译、链接及分区检查通过，镜像0x2a6b10（2779920）字节，3 MiB应用槽余12%。未连接开发板或执行OTA。构建前和过程中检查可用内存、swap及活动任务；Native构建4任务/测试上限4，Wi-Fi3任务，ESP2任务，容器按并行阶段设CPU/内存上限并留桌面余量。
+
+设计自查四项分别结论：
+
+- 删除注释：`runtime/conversation/conversation.cpp:395`改为stage一次/保存阶段确认的属主说明；原ModelTools副本/解码说明因机制删除失效，安全进度限制移到`firmware/main/tool_outline.h:4`，`chat.cpp:670`保留元数据不改变执行结论的原因。
+- Kernel字段：`git diff HEAD -- core/ include/ayni/`为空；释放凭据归`file_bodies.h:63`的Entry，候选文字/引用归`support.h:94`的SummaryProgress，进度归Api::Job，不复制Core权限状态或新增Kernel布尔状态。
+- 重复规则：`strategies/builtin/conversation.cpp:295`只复用属主已验证引用，`support.h:100`集中使变化失效；`history.cpp:181`区分原raw正文与结果视图；`tool_loop.cpp:188`单Writer写封套、压缩统计只重置一次。公开边界校验、实时来源与权限仍各归原属主。
+- 裸数字：继续使用owner_limit、tool_outline_bytes、messages_prefix及原协议限制；释放版本有optional明确无值，未新增持久偏移或版本。合法256节点边界夹具解释每层64项约束，未另建部署限制。
+
+clang-format18、`tools/check_contracts.py`（含追踪同步）、`tools/check_deps.py`、`tools/check_readability.py`和`git diff --check`通过；机械检查无新增违规，保留既有19项public-code-comment及1项已审例外。原始命令输出在本机忽略目录`build/flow-reuse-native-final.log`、`flow-reuse-last-strategies.log`、`flow-reuse-asan.log`、`flow-reuse-last-runtime.log`、`flow-reuse-last-runtime-asan.log`、`flow-reuse-wifi-final.log`、`flow-reuse-esp-final.log`，属于仓库外证据；仓库保留正常测试源及契约关联。
+
+本轮没有新故障/恢复/断电/变异/耐久专项、远端CI、真实模型/工具或硬件测量。有限正文缓存及摘要期间一份完整投影的取舍保持，桌面计数不代表板端P95≤100 ms、完整128K峰值或异常恢复已验证。
+
+2026-11-17用户要求直接在原分支完成PR #139修复后提交推送；本批已完成优化与CLI就绪修复使用聚焦提交一起推送，仍不OTA。新的CI结果见后续修复记录。

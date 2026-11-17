@@ -168,3 +168,5 @@
 | [0107](0107-single-pass-proposals-and-reference-rounds.md) | 单遍提议、引用轮次及旧机制清理 | 已接受，实施及本地验证见实验记录；不OTA | ABI0.56、ToolLoop、ModelProtocol、引用轮次 |
 
 | [0108](0108-unified-conversation-and-result-storage.md) | 统一会话和结果存储，删除兼容与无限缓存 | 已接受；实施及本地验证见实验记录，不OTA | Session/FileBodies、BodyProgress、turn8/ANRV2/SQLite5 |
+
+| [0109](0109-owned-conversation-text-and-scoped-cleanup.md) | 不可变正文复用与按会话确认清理 | 已实施；本地验证及独立复查见实验记录，不OTA | Session/FileBodies、ToolLoop、ESP工具进度；ABI及持久格式不变 |

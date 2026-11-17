@@ -11,7 +11,7 @@ include("${AYNI_ROOT}/cmake/AyniMarkdown.cmake")
 enable_testing()
 add_subdirectory("${AYNI_ROOT}/hosts/sim" "sim-host")
 add_executable(ayni_wifi_checks codec_test.cpp preferences_test.cpp reply_voice_test.cpp app_menu_test.cpp nvs_stub.cpp
-    ../../firmware/main/model_tools.cpp
+    ../../firmware/main/tool_outline.cpp
     ../../firmware/wifi/model_codec.cpp
     ../../firmware/wifi/settings_codec.cpp ../../firmware/wifi/settings.cpp ../../firmware/wifi/capture.cpp
     ../../firmware/main/motor_check.cpp ../../firmware/main/reply_voice.cpp ../../firmware/main/speech_text.cpp ../../firmware/wifi/preferences.cpp

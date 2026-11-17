@@ -67,6 +67,7 @@ ayni_status_t Session::configure(Config config) {
     if (!config.kernel || !config.session || !config.owner_instance || !config.goal_type.data ||
         !config.goal_type.size || !config.workspace || !config.files.submit ||
         !config.bodies.store || !config.bodies.collect || !config.commands.submit ||
+        ((config.bodies.ready || config.bodies.progress) && !config.bodies.collected) ||
         (config.persistence == strategies::Persistence::background &&
          (!config.bodies.store->stage || !config.bodies.store->share ||
           !config.bodies.store->confirm))) {
@@ -391,11 +392,11 @@ ayni_status_t Session::begin(ayni_string_v1 user, uint64_t memory_id) {
     }
     return AYNI_OK;
 }
-// Stage or durably store the input according to the configured policy; never accept a
-// partial body. Background publication still waits for the full graph to become durable.
+// Stage the input once when supported; the save phase owns durable confirmation before Goal
+// admission. Background publication still waits for the full graph to become durable.
 ayni_status_t Session::input() {
     auto bodies = *config_.bodies.store;
-    if (config_.persistence == strategies::Persistence::background) {
+    if (bodies.stage && bodies.confirm) {
         bodies.write = bodies.stage;
     }
     strategies::BodyRef input{};
@@ -614,9 +615,9 @@ ayni_status_t Session::erase(const ayni_context_info_v1 &anchor) {
 // Each invocation performs one queue operation or one public state transition.
 // No owner text escapes until both the file and the exact Core ACK are durable.
 ayni_status_t Session::poll() {
-    if (config_.bodies.ready) {
+    if (config_.bodies.progress) {
         // Idle Sessions must also advance queued body cleanup after ordinary backpressure.
-        static_cast<void>(config_.bodies.ready(config_.bodies.context, 0));
+        static_cast<void>(config_.bodies.progress(config_.bodies.context, 0));
     }
     if (config_.bodies.status) {
         const auto stored = config_.bodies.status(config_.bodies.context);
@@ -721,13 +722,14 @@ ayni_status_t Session::poll() {
         if (status != AYNI_OK) {
             break;
         }
-        if (!config_.bodies.ready || config_.bodies.ready(config_.bodies.context, 0)) {
-            if (status == AYNI_OK) {
-                superseded_.reset();
-                phase_ = save_ == Save::discard    ? Phase::ready
-                         : save_ == Save::retained ? Phase::terminal
-                                                   : Phase::acknowledge;
-            }
+        status = config_.bodies.collected
+                     ? config_.bodies.collected(config_.bodies.context, current_.id)
+                     : AYNI_OK;
+        if (status == AYNI_OK) {
+            superseded_.reset();
+            phase_ = save_ == Save::discard    ? Phase::ready
+                     : save_ == Save::retained ? Phase::terminal
+                                               : Phase::acknowledge;
         }
         break;
     case Phase::acknowledge:

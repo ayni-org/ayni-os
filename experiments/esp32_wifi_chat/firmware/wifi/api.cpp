@@ -167,6 +167,7 @@ bool Api::submit(Request kind, uint64_t id, const void *data, size_t bytes, uint
     job.output.id = id;
     job.output.kind = {};
     job.output.size = 0;
+    job.outline.clear();
     job.ok = false;
     job.error.fill(0);
     job.generation = generation_.load(std::memory_order_acquire);
@@ -200,6 +201,7 @@ void Api::release(Job *job) {
     job->response_bytes = 0;
     std::fill(job->input.body.begin(), job->input.body.end(), 0);
     std::fill(job->output.body.begin(), job->output.body.end(), 0);
+    job->outline.clear();
     xQueueSend(free_, &index, 0);
 }
 void *Api::work(void *context) {
@@ -670,7 +672,7 @@ void Api::model(Job &job, const char *url) {
             options.api == ayni::providers::model_protocol::Api::responses
                 ? R"({"status":"completed","output":[{"type":"message","id":"diagnostic","role":"assistant","status":"completed","content":[{"type":"output_text","text":"local diagnostic only"}]}]})"
                 : R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"local diagnostic only"}}]})";
-        job.ok = decode_model(response, tools_allowed, job.output, options);
+        job.ok = decode_model(response, tools_allowed, job.output, options, &job.outline);
         transport_->diagnostics().record("wifi probe template_only=1 no_model_http=1 status=%ld\n",
                                          long(job.ok ? AYNI_OK : AYNI_INVALID_ARGUMENT));
         return;
@@ -728,14 +730,14 @@ void Api::model(Job &job, const char *url) {
                 new (std::nothrow) ayni::providers::model_protocol::Answer{});
             if (answer) {
                 stream->finish(*answer);
-                job.ok = package_model(options, *answer, tools_allowed, job.output);
+                job.ok = package_model(options, *answer, tools_allowed, job.output, &job.outline);
             } else {
                 model_failure(job.output, AYNI_CAPACITY_EXCEEDED, AYNI_REASON_MODEL_OUTPUT);
             }
         } else {
             job.ok =
                 decode_model({reinterpret_cast<const char *>(job.response), job.response_bytes},
-                             tools_allowed, job.output, options);
+                             tools_allowed, job.output, options, &job.outline);
         }
         if (!job.ok) {
             std::snprintf(job.error.data(), job.error.size(), "模型未返回完整有效回答，未重试");

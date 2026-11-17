@@ -97,16 +97,6 @@ void Chat::trace_latency(const char *phase) {
                timing_.step_calls, timing_.max_step_us, timing_.conversation_us / 1000);
     timing_.storage = current;
 }
-// Only protocol identities/modes, never business arguments or assistant/user text, cross
-// this progress lane. The UI labels them as proposals until a Provider reports work.
-void Chat::publish_proposals() {
-    std::array<char, tool_outline_bytes> buffer{};
-    size_t used = 0;
-    if (model_tools_.outline(buffer.data(), buffer.size(), used) == AYNI_OK) {
-        std::printf("wifi tools outline=%.*s\n", int(used), buffer.data());
-        transport_.send(Kind::tool_outline, turn_, buffer.data(), used);
-    }
-}
 void Chat::status(uint64_t id, const char *message) {
     if (!std::strncmp(message, "registration ", 13) ||
         !std::strncmp(message, "model registration ", 19) ||
@@ -446,7 +436,7 @@ ayni_status_t Chat::configure_strategy() {
                      harness::compact_target_tokens, harness::tool_result_max_tokens};
     config.bodies = bodies_.store();
     config.persistence = ayni::strategies::Persistence::background;
-    config.body_progress = {&bodies_, ayni::runtime::FileBodies::ready};
+    config.body_progress = {&bodies_, ayni::runtime::FileBodies::progress};
     config.tool_exposure = ayni::strategies::ToolExposure::preloaded;
     config.reply_encoding = config.summary_reply_encoding = ayni::model::ReplyEncoding::framed;
     protocol_options_.model = selection_.model.data();
@@ -671,6 +661,14 @@ ayni_status_t Chat::command(ayni_intent_kind_t kind, const void *body, uint64_t 
     return out.status;
 }
 void Chat::incoming(const Packet &p) {
+    if (p.kind == Kind::tool_outline) {
+        if (p.id == call_ && p.size <= tool_outline_bytes &&
+            (model_ == ModelState::text || model_ == ModelState::tools) &&
+            reply_intent_ == ReplyIntent::present && closing_ == Closing::open) {
+            transport_.send(Kind::tool_outline, turn_, p.body.data(), p.size);
+        }
+        return; // Metadata never changes model acceptance, execution or its terminal outcome.
+    }
     if (p.kind == Kind::voice_reply_setting && p.size == 1 && p.body[0] <= 1) {
         voice_reply_enabled_ = p.body[0] != 0;
         voice_notice_ = VoiceNotice{p.id, p.body[0]};
@@ -759,15 +757,11 @@ void Chat::incoming(const Packet &p) {
             const auto count = metadata.tool_call_count;
             const ayni_bytes_v1 bytes{p.body.data() + model_result_header_bytes,
                                       p.size - static_cast<uint32_t>(model_result_header_bytes)};
-            if (count <= AYNI_CALL_TOOL_COUNT_MAX && (!summary_ || !count) &&
-                (!count || model_tools_.decode(bytes, workspace_) == AYNI_OK)) {
+            if (count <= AYNI_CALL_TOOL_COUNT_MAX && (!summary_ || !count)) {
                 model_tool_count_ = count;
                 model_usage_ = metadata.model_usage;
                 model_answer_.assign(reinterpret_cast<const char *>(bytes.data), bytes.size);
                 model_ = count ? ModelState::tools : ModelState::text;
-                if (count) {
-                    publish_proposals();
-                }
             }
         }
     } else if (p.kind == Kind::render_info && screen_ == ScreenState::waiting &&

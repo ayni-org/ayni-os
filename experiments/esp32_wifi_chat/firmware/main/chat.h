@@ -1,6 +1,5 @@
 #pragma once
 #include "../wifi/model_buffer.h"
-#include "model_tools.h"
 #include "motor.h"
 #include "motor_check.h"
 #include "reply_voice.h"
@@ -72,7 +71,6 @@ class Chat {
     void wait_for(const char *phase, const char *label, ayni_status_t);
     void status(uint64_t, const char *);
     void publish_model();
-    void publish_proposals();      // Best-effort UI metadata, never execution approval.
     void trace(const char *phase); // Fixed phase/timing metadata only.
     void trace_latency(const char *phase);
     void diagnostics();
@@ -178,8 +176,7 @@ class Chat {
     uint32_t model_tool_count_ = 0;
     ayni_model_usage_v1 model_usage_{};
     ayni_provider_result_v1 model_failure_{}; // Explicit adapter refusal, otherwise UNKNOWN.
-    ModelTools model_tools_;
-    std::array<char, 1024> diagnostics_{}; // Metadata-only capacity/status rendering.
+    std::array<char, 1024> diagnostics_{};    // Metadata-only capacity/status rendering.
     ayni_provider_completion_t *screen_completion_ = nullptr;
     ayni_attempt_ref_v1 screen_attempt_{};
     uint64_t screen_call_ = 0, screen_deadline_ = 0;

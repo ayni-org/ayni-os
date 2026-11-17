@@ -126,13 +126,13 @@ template <typename Archive, typename State> void controller_fields(Archive &a, S
     a.u32(s.history_summary.chunk);
     a.u32(s.history_summary.next);
     a.u32(s.compact_generation);
-    a.ref(s.refs.history_summary);
+    a.ref(s.history_summary.reference);
     a.ref(s.result_source.view);
     a.u32(s.result_source.json_bytes);
     a.u32(s.result_summary.offset);
     a.u32(s.result_summary.next);
     a.u32(s.result_summary.chunk);
-    a.ref(s.refs.result_summary);
+    a.ref(s.result_summary.reference);
 }
 template <typename Archive, typename Record> void fields(Archive &a, Record &r) {
     a.u64(r.id);
@@ -290,16 +290,15 @@ ayni_status_t encode_turn(const Turn &turn, uint8_t *data, uint32_t capacity, ui
     size = writer.size();
     return AYNI_OK;
 }
-// An empty text has no body. A text whose reference already names it is not rewritten.
+// These private owners invalidate references when changing text. Admitted unchanged
+// bytes need no second digest walk; store/read boundaries still verify complete descriptors.
 ayni_status_t keep(const ayni_body_store_v1 &bodies, uint64_t scope, const std::string &text,
                    BodyRef &ref) {
     if (text.empty()) {
         ref = {};
         return AYNI_OK;
     }
-    const ayni_bytes_v1 bytes{reinterpret_cast<const uint8_t *>(text.data()),
-                              static_cast<uint32_t>(text.size())};
-    if (present(ref) && ayni_body_verify(&ref, bytes) == AYNI_OK) {
+    if (present(ref)) {
         return AYNI_OK;
     }
     return save_body(bodies, scope, view(text), ref);
@@ -398,10 +397,9 @@ ayni_status_t load_turn_bodies(const ayni_body_store_v1 &bodies, Turn &parsed,
         parsed.history = previous->history;
         parsed.history_index = previous->history_index;
         parsed.history_saved = previous->history_saved;
-        parsed.summary = previous->summary;
     }
     for (const auto &ref :
-         {parsed.refs.input, parsed.refs.history_summary, parsed.refs.result_summary}) {
+         {parsed.refs.input, parsed.history_summary.reference, parsed.result_summary.reference}) {
         if (present(ref)) {
             references.push_back(ref);
         }
@@ -413,10 +411,9 @@ ayni_status_t load_turn_bodies(const ayni_body_store_v1 &bodies, Turn &parsed,
     for (const auto &[ref, text] :
          {std::pair<const BodyRef *, std::string *>{&parsed.refs.input, &parsed.input},
           {&parsed.record.history, &parsed.history},
-          {&parsed.record.summary, &parsed.summary},
-          {&parsed.refs.history_summary, &parsed.history_summary.text},
-          {&parsed.refs.result_summary, &parsed.result_summary.text}}) {
-        if (reused && (ref == &parsed.record.history || ref == &parsed.record.summary)) {
+          {&parsed.history_summary.reference, &parsed.history_summary.text},
+          {&parsed.result_summary.reference, &parsed.result_summary.text}}) {
+        if (reused && ref == &parsed.record.history) {
             continue; // C-POLICY-013: exact immutable source identity was already decoded.
         }
         status = ref == &parsed.record.history && parsed.record.history_bytes
@@ -426,6 +423,13 @@ ayni_status_t load_turn_bodies(const ayni_body_store_v1 &bodies, Turn &parsed,
             return status;
         }
     }
+    if (!reused && parsed.record.summary.id) {
+        std::string checked_summary;
+        status = reader.copy_text(parsed.record.summary, checked_summary);
+        if (status != AYNI_OK) {
+            return status;
+        }
+    } // Preserve validation of externally loaded summary text without keeping an unused copy.
     if (!reused && !valid_history(parsed.history)) {
         return AYNI_INVALID_ARGUMENT;
     }
@@ -470,9 +474,8 @@ ayni_status_t write_turn(Turn &turn, const ayni_body_store_v1 &bodies, uint8_t *
     }
     for (const auto &[text, ref] :
          {std::pair<const std::string *, BodyRef *>{&turn.input, &turn.refs.input},
-          {&turn.summary, &turn.record.summary},
-          {&turn.history_summary.text, &turn.refs.history_summary},
-          {&turn.result_summary.text, &turn.refs.result_summary}}) {
+          {&turn.history_summary.text, &turn.history_summary.reference},
+          {&turn.result_summary.text, &turn.result_summary.reference}}) {
         if (status != AYNI_OK) {
             return status;
         }
@@ -481,7 +484,14 @@ ayni_status_t write_turn(Turn &turn, const ayni_body_store_v1 &bodies, uint8_t *
     if (status != AYNI_OK) {
         return status;
     }
+    if (turn.summary_change != SummaryChange::unchanged) {
+        turn.record.summary = turn.summary_change == SummaryChange::replacement
+                                  ? turn.history_summary.reference
+                                  : BodyRef{};
+        turn.summary_change = SummaryChange::unchanged;
+    }
     if (changed_rounds) {
+        turn.record.rounds = {};
         status = keep(bodies, scope, rounds, turn.record.rounds);
         if (status != AYNI_OK) {
             return status;
@@ -503,8 +513,11 @@ ayni_status_t store_rounds(const ayni_body_store_v1 &bodies, ConversationRecord 
                            const std::vector<RoundReferences> &rounds) {
     std::string encoded;
     encode_rounds(rounds, encoded);
-    const auto status = keep(bodies, scope_of(record), encoded, record.rounds);
+    BodyRef stored{};
+    const auto status =
+        encoded.empty() ? AYNI_OK : save_body(bodies, scope_of(record), view(encoded), stored);
     if (status == AYNI_OK) {
+        record.rounds = stored;
         record.round_count = static_cast<uint32_t>(rounds.size());
     }
     return status;
@@ -878,7 +891,7 @@ ayni_status_t Conversation::turn_references(const ayni_workspace_v1 *region, ayn
         out.push_back(turn.result_source.view);
     }
     for (const auto *ref :
-         {&turn.refs.input, &turn.refs.history_summary, &turn.refs.result_summary}) {
+         {&turn.refs.input, &turn.history_summary.reference, &turn.result_summary.reference}) {
         if (present(*ref)) {
             out.push_back(*ref);
         }

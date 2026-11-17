@@ -292,7 +292,7 @@ ayni_status_t summarize_result(Workspace &workspace, Turn &turn, const ToolLoopC
         turn.result_summary.next <= turn.result_summary.offset) {
         return AYNI_INVALID_ARGUMENT;
     }
-    turn.result_summary.text.assign(summary.text.data, summary.text.size);
+    turn.result_summary.set_text(summary.text);
     turn.result_summary.offset = turn.result_summary.next;
     if (turn.result_summary.chunk == UINT32_MAX) {
         return AYNI_CAPACITY_EXCEEDED;

@@ -106,3 +106,5 @@ ABI 0.55（ADR-0104）为正文存储追加stage/share/confirm/release_temporary
 ABI0.56（ADR-0107）将 `ayni_tool_calls_read` 直接改为一次顺序visitor签名，删除 `ayni_tool_call_read` 与 `ayni_task_tool_call_v1`；所有仓库消费者统一重编译，不保留旧接口/适配层。visitor只借同步工作区，完整列表成功前候选不可发布，失败保持元数据输出。Core schema10、ATC3、ConversationRecord6/turn7、SQLite4均不变，无数据迁移或清空。
 
 ADR-0108直接删除C++ HistoryPort/ArchivedResult及Native独立会话/归档控制器，所有调用方改用共享Session/FileBodies与BodyProgress；FileBodies配置须显式正数预算。当前ABI0.56、Core schema10、ATC3、ConversationRecord6保持，私有turn升级8、结果视图ANRV升级2、SQLite值端口升级5（无旧reader或迁移）。旧格式保留并拒绝；版本布局及回退边界见storage/records.md与host/native_conversation.md。
+
+ADR-0109直接升级C++ BodyCollection：异步实现须提供collected(scope)证明该scope已请求释放的持久完成，可用progress推进工作；ready/idle仍表示全局排空。所有仓库调用方同步更新，无旧端口适配层。C ABI0.56及上述持久版本保持，turn8摘要引用字段顺序不变；无需迁移或擦除。

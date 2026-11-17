@@ -86,7 +86,7 @@ ayni_status_t Assistant::Impl::start(const std::string &directory, const ModelCo
                                output,
                                std::move(quiet),
                                {this, propose},
-                               {&bodies, FileBodies::ready},
+                               {&bodies, FileBodies::progress},
                                bodies.store()});
     if (status != AYNI_OK) {
         return status;
@@ -178,7 +178,7 @@ ayni_status_t Assistant::Impl::ids(ayni_object_kind_t kind, std::vector<uint64_t
     return ayni_list_objects(node.kernel(), kind, out.data(), count, &count);
 }
 ayni_status_t Assistant::Impl::advance_kernel() {
-    FileBodies::ready(&bodies, 0);
+    FileBodies::progress(&bodies, 0);
     auto status = FileBodies::status(&bodies);
     if (status == AYNI_OK) {
         status = profile.advance();
@@ -358,7 +358,7 @@ ayni_status_t Assistant::Impl::stop() {
         }
     }
     while (!bodies.idle()) {
-        FileBodies::ready(&bodies, 0);
+        FileBodies::progress(&bodies, 0);
         const auto buffered = FileBodies::status(&bodies);
         if (buffered != AYNI_OK || SteadyClock::now() > deadline) {
             return buffered != AYNI_OK ? buffered : AYNI_BUSY;

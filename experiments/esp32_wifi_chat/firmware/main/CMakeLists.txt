@@ -6,7 +6,7 @@ if(AYNI_WIFI_PROFILE)
     set(wifi_dependencies bt nvs_flash esp_wifi esp_netif esp_http_client mbedtls
         esp_driver_i2c nimble_central_utils esp_http_server app_update)
 endif()
-idf_component_register(SRCS "main.cpp" "transport.cpp" "display.cpp" "chat.cpp" "screen.cpp" "speaker.cpp" "model_tools.cpp" "motor.cpp" "motor_check.cpp" "reply_voice.cpp" "speech_text.cpp" "motor_execution.cpp" "motor_output.cpp" "motor_worker.cpp" ${wifi_sources}
+idf_component_register(SRCS "main.cpp" "transport.cpp" "display.cpp" "chat.cpp" "screen.cpp" "speaker.cpp" "tool_outline.cpp" "motor.cpp" "motor_check.cpp" "reply_voice.cpp" "speech_text.cpp" "motor_execution.cpp" "motor_output.cpp" "motor_worker.cpp" ${wifi_sources}
     INCLUDE_DIRS "."
     PRIV_REQUIRES esp_idf esp_timer heap esp_psram spi_flash log freertos pthread
         esp_lcd esp_driver_spi esp_driver_gpio esp_driver_i2s esp_driver_rmt esp_driver_pcnt ${wifi_dependencies})

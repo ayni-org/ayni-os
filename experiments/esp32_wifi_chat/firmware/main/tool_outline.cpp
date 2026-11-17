@@ -1,50 +1,19 @@
-#include "model_tools.h"
+#include "tool_outline.h"
 #include <algorithm>
 #include <ayni/model_messages.hpp>
 #include <ayni/values_json.hpp>
 #include <cstring>
 namespace wifichat {
-ayni_status_t ModelTools::decode(ayni_bytes_v1 bytes, const ayni_workspace_v1 &workspace) {
-    count_ = 0;
-    assistant_ = {};
-    if (!bytes.data || bytes.size > wire_.size()) {
-        return AYNI_INVALID_ARGUMENT;
-    }
-    std::memcpy(wire_.data(), bytes.data, bytes.size);
-    const ayni_bytes_v1 owned{wire_.data(), bytes.size};
-    uint32_t count = 0;
-    const auto status = ayni_tool_calls_read(
-        &workspace, owned, this,
-        [](void *context, uint32_t index, const ayni_tool_call_v1 *call) {
-            auto &self = *static_cast<ModelTools *>(context);
-            if (index >= self.calls_.size() ||
-                (call->input_kind == AYNI_TOOL_INPUT_ARGUMENTS &&
-                 call->input.arguments.node_count > nodes_per_tool)) {
-                return AYNI_CAPACITY_EXCEEDED;
-            }
-            self.calls_[index] = *call;
-            if (call->input_kind == AYNI_TOOL_INPUT_ARGUMENTS) {
-                const auto &args = call->input.arguments;
-                std::copy_n(args.nodes, args.node_count, self.nodes_[index].data());
-                self.calls_[index].input.arguments.nodes = self.nodes_[index].data();
-            }
-            return AYNI_OK;
-        },
-        &count, &assistant_);
-    if (status == AYNI_OK) {
-        count_ = count;
-    }
-    return status;
-}
-ayni_status_t ModelTools::outline(char *buffer, size_t capacity, size_t &written) const {
+ayni_status_t write_tool_outline(const ayni_provider_result_v1 &result, char *buffer,
+                                 size_t capacity, size_t &written) {
     written = 0;
     ayni::json::Writer out(buffer, capacity);
     out.raw("[");
-    for (uint32_t at = 0; at < count_; ++at) {
+    for (uint32_t at = 0; at < result.tool_call_count; ++at) {
         if (at) {
             out.raw(",");
         }
-        const auto &call = calls_[at];
+        const auto &call = result.tool_calls[at];
         const std::string_view function(call.function_name.data, call.function_name.size);
         bool known = false;
         for (const auto &spec : ayni::model::functions) {

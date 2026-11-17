@@ -683,6 +683,11 @@ void Runtime::results() {
                 if (!transport_.post(job->output.kind, job->input.id, job->output.body.data(),
                                      job->output.size)) {
                     message("模型结果提交失败，将按超时收尾");
+                } else if (job->ok && job->outline.size) {
+                    // Best-effort metadata follows the accepted result, so it cannot occupy
+                    // the queue slot needed by the authoritative model completion.
+                    transport_.post(Kind::tool_outline, job->input.id, job->outline.bytes.data(),
+                                    job->outline.size);
                 }
             } else {
                 transport_.post(Kind::model_error, job->input.id, nullptr, 0);

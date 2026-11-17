@@ -168,16 +168,22 @@ ayni_status_t store_history(const ayni_body_store_v1 &bodies, Turn &turn) {
     struct Payload {
         ayni_string_v1 bytes;
         BodyRef view{};
+        uint32_t kind = raw_body;
     };
     std::vector<Payload> payloads;
+    uint32_t frame_start = start ? start : prefix;
     while (reader.next(message)) {
         if (message.text.size) {
             const auto found = message.role == model::Role::tool
                                    ? turn.result_views.find(
                                          std::string(message.tool_id.data, message.tool_id.size))
                                    : turn.result_views.end();
-            payloads.push_back(
-                {message.text, found == turn.result_views.end() ? BodyRef{} : found->second});
+            const auto raw = turn.history_texts.find(frame_start);
+            const auto reference = found != turn.result_views.end()  ? found->second
+                                   : raw != turn.history_texts.end() ? raw->second
+                                                                     : BodyRef{};
+            payloads.push_back({message.text, reference,
+                                found == turn.result_views.end() ? raw_body : call_result_view});
         }
         if (message.continuation.data.size) {
             payloads.push_back({message.continuation.data, {}});
@@ -187,6 +193,8 @@ ayni_status_t store_history(const ayni_body_store_v1 &bodies, Turn &turn) {
                 payloads.push_back({message.functions[at].arguments, {}});
             }
         }
+        frame_start = (start ? start - prefix : 0U) + static_cast<uint32_t>(tail.size()) -
+                      reader.remaining_bytes();
     }
     if (!reader.finished()) {
         return AYNI_INVALID_ARGUMENT;
@@ -203,8 +211,7 @@ ayni_status_t store_history(const ayni_body_store_v1 &bodies, Turn &turn) {
         if (status != AYNI_OK) {
             return status;
         }
-        item(appended, std::string_view(tail).substr(position, at - position), body,
-             payload.view.id ? call_result_view : raw_body);
+        item(appended, std::string_view(tail).substr(position, at - position), body, payload.kind);
         position = at + bytes.size;
     }
     if (position < tail.size()) {
@@ -219,6 +226,7 @@ ayni_status_t store_history(const ayni_body_store_v1 &bodies, Turn &turn) {
         turn.history_saved = turn.record.history_bytes;
         turn.history_index = std::move(candidate);
         turn.result_views.clear();
+        turn.history_texts.clear();
     }
     return status;
 }

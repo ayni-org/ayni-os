@@ -2,6 +2,7 @@
 // publication once. Deterministic ordinary queue waits; no model service or fault injection.
 #include "../../hosts/native/posix_files.h"
 #include "temp_directory.h"
+#include <array>
 #include <ayni/hosts/sim.h>
 #include <ayni/hosts/storage/file_value.h>
 #include <ayni/runtime/portable.h>
@@ -48,6 +49,10 @@ struct ObservedBodies {
     enum class Pressure { none, after_success, observed };
     Pressure pressure = Pressure::none;
     const ayni_body_store_v1 *original = nullptr;
+    BodyCollection collection;
+    std::map<std::string, uint32_t> staged;
+    bool queue_unrelated = false;
+    ayni_body_ref_v1 unrelated{};
     std::map<uint64_t, uint32_t> reads, confirmed;
     ayni_body_store_v1 port{};
     void configure(const ayni_body_store_v1 *store) {
@@ -77,6 +82,7 @@ struct ObservedBodies {
         };
         port.stage = [](void *ctx, uint64_t scope, ayni_bytes_v1 bytes, ayni_body_ref_v1 *out) {
             auto &s = *static_cast<ObservedBodies *>(ctx);
+            ++s.staged[std::string(reinterpret_cast<const char *>(bytes.data), bytes.size)];
             return s.original->stage(s.original->context, scope, bytes, out);
         };
         port.share = [](void *ctx, uint64_t scope, const ayni_body_ref_v1 *ref,
@@ -125,7 +131,41 @@ class ConversationProgress : public testing::Test {
     void bind() {
         observed.configure(profile.bodies());
         auto collection = static_cast<FileBodies *>(profile.bodies()->context)->collection();
+        observed.collection = collection;
         collection.store = &observed.port;
+        collection.context = &observed;
+        collection.collect = [](void *ctx, uint64_t scope,
+                                const std::vector<ayni_body_ref_v1> &keep) {
+            auto &s = *static_cast<ObservedBodies *>(ctx);
+            s.collection.collect(s.collection.context, scope, keep);
+        };
+        collection.ready = [](void *ctx, uint64_t task) {
+            auto &s = *static_cast<ObservedBodies *>(ctx);
+            return s.collection.ready(s.collection.context, task);
+        };
+        collection.progress = [](void *ctx, uint64_t task) {
+            auto &s = *static_cast<ObservedBodies *>(ctx);
+            return s.collection.progress(s.collection.context, task);
+        };
+        collection.status = [](void *ctx) {
+            auto &s = *static_cast<ObservedBodies *>(ctx);
+            return s.collection.status(s.collection.context);
+        };
+        collection.collected = [](void *ctx, uint64_t scope) {
+            auto &s = *static_cast<ObservedBodies *>(ctx);
+            const auto status = s.collection.collected(s.collection.context, scope);
+            if (status == AYNI_OK && s.queue_unrelated && !s.unrelated.id) {
+                constexpr uint64_t other_scope = UINT64_C(0xfeed);
+                const std::string bytes(128U * 1024U, 'x');
+                EXPECT_EQ(s.original->stage(s.original->context, other_scope,
+                                            {reinterpret_cast<const uint8_t *>(bytes.data()),
+                                             uint32_t(bytes.size())},
+                                            &s.unrelated),
+                          AYNI_OK);
+                EXPECT_EQ(s.original->confirm(s.original->context, &s.unrelated), AYNI_NOT_READY);
+            }
+            return status;
+        };
         ASSERT_EQ(session.configure({profile.kernel(),
                                      profile.session(),
                                      profile.instance(0),
@@ -314,5 +354,139 @@ TEST_F(DurableConversationProgress, durable_default_completes_the_same_shared_pu
     ASSERT_TRUE(until([&] { return session.take_result(result); }));
     EXPECT_TRUE(result.published);
     EXPECT_EQ(session.record()->last_round, 1U);
+}
+// C-HVAL-009/C-SDK-009: default durable admission stages once through ordinary worker delay.
+TEST_F(DurableConversationProgress, waiting_for_input_durability_does_not_restage_the_input) {
+    ASSERT_EQ(session.begin(text("sum")), AYNI_OK);
+    for (uint32_t poll = 0; poll < 32; ++poll) {
+        const auto status = session.poll();
+        ASSERT_TRUE(status == AYNI_OK || status == AYNI_BUSY);
+    }
+    EXPECT_EQ(session.latest_goal(), 0U);
+    EXPECT_EQ(observed.staged["sum"], 1U);
+    conversation::TurnResult result;
+    ASSERT_TRUE(until([&] { return session.take_result(result); }));
+    EXPECT_TRUE(result.published);
+    EXPECT_EQ(observed.staged["sum"], 1U);
+}
+// C-SDK-009/011: this graph's cleanup and exact ACK complete despite another scope's write.
+TEST_F(ConversationProgress, publication_does_not_wait_for_unrelated_body_persistence) {
+    ASSERT_EQ(session.begin(text("sum")), AYNI_OK);
+    observed.queue_unrelated = true;
+    conversation::TurnResult result;
+    ASSERT_TRUE(until([&] { return session.take_result(result); }));
+    EXPECT_TRUE(result.published);
+    EXPECT_NE(observed.unrelated.id, 0U);
+    EXPECT_FALSE(static_cast<FileBodies *>(profile.bodies()->context)->idle());
+    EXPECT_EQ(context().pending_action, AYNI_CONTEXT_IDLE);
+}
+// C-SDK-009: an asynchronous collection adapter cannot silently omit its cleanup proof.
+TEST_F(ConversationProgress, asynchronous_collection_requires_scoped_completion) {
+    conversation::Session unconfigured;
+    auto collection = static_cast<FileBodies *>(profile.bodies()->context)->collection();
+    collection.collected = nullptr;
+    conversation::Config config;
+    config.kernel = profile.kernel();
+    config.session = profile.session();
+    config.owner_instance = profile.instance(0);
+    config.goal_type = text("portable.chat.a");
+    config.workspace = profile.value_workspace();
+    config.files = values.port();
+    config.bodies = collection;
+    config.commands = {this, command};
+    EXPECT_EQ(unconfigured.configure(config), AYNI_INVALID_ARGUMENT);
+}
+
+class ScopedBodyCleanup : public testing::Test {
+  protected:
+    void SetUp() override {
+        ASSERT_EQ(files.begin(directory.path().c_str()), 0);
+        ASSERT_EQ(bodies.configure(values.port(), 2U * 1024U * 1024U), AYNI_OK);
+        ASSERT_EQ(reopened.configure(values.port(), 2U * 1024U * 1024U), AYNI_OK);
+    }
+    void TearDown() override {
+        EXPECT_TRUE(until([&] { return bodies.idle() && reopened.idle(); }));
+    }
+    template <class Done> bool until(Done done) {
+        constexpr uint32_t limit = 10000;
+        for (uint32_t at = 0; at < limit && !done(); ++at) {
+            FileBodies::progress(&bodies, 0);
+            FileBodies::progress(&reopened, 0);
+            values.advance();
+        }
+        return done();
+    }
+    ayni_body_ref_v1 stage(uint64_t scope, const char *text) {
+        const auto *store = bodies.store();
+        ayni_body_ref_v1 ref{};
+        EXPECT_EQ(store->stage(
+                      store->context, scope,
+                      {reinterpret_cast<const uint8_t *>(text), uint32_t(std::strlen(text))}, &ref),
+                  AYNI_OK);
+        return ref;
+    }
+    void confirm(ayni_body_ref_v1 ref) {
+        const auto *store = bodies.store();
+        ayni_status_t status = AYNI_NOT_READY;
+        ASSERT_TRUE(until(
+            [&] { return (status = store->confirm(store->context, &ref)) != AYNI_NOT_READY; }));
+        ASSERT_EQ(status, AYNI_OK);
+    }
+    ayni::test::TempDirectory directory;
+    ayni::hosts::native::PosixFiles files;
+    Values values{files};
+    FileBodies bodies, reopened;
+};
+// C-HVAL-009: shared-owner removal waits for its manifest CAS; another owner's bytes survive.
+TEST_F(ScopedBodyCleanup, shared_owner_release_has_an_independent_durable_completion) {
+    const auto first = stage(1, "shared");
+    const auto *store = bodies.store();
+    ayni_body_ref_v1 second{};
+    ASSERT_EQ(store->share(store->context, 2, &first, &second), AYNI_OK);
+    confirm(first);
+    confirm(second);
+    store->release(store->context, &first);
+    EXPECT_EQ(FileBodies::collected(&bodies, 1), AYNI_BUSY);
+    ASSERT_TRUE(until([&] { return FileBodies::collected(&bodies, 1) == AYNI_OK; }));
+    std::array<uint8_t, 6> out{};
+    EXPECT_EQ(store->read(store->context, &second, out.data(), out.size()), AYNI_OK);
+    const auto unrelated = stage(3, "new unrelated body");
+    EXPECT_EQ(store->confirm(store->context, &unrelated), AYNI_NOT_READY);
+    EXPECT_FALSE(bodies.idle());
+    EXPECT_EQ(FileBodies::collected(&bodies, 1), AYNI_OK);
+}
+// C-HVAL-009: queue backpressure cannot let a temporary alias discard a cold release fence.
+TEST_F(ScopedBodyCleanup, temporary_release_preserves_cold_cleanup_under_queue_backpressure) {
+    const auto first = stage(1, "shared");
+    confirm(first);
+    const auto *store = reopened.store();
+    ayni_body_ref_v1 temporary{};
+    ASSERT_EQ(store->stage(store->context, 2, {reinterpret_cast<const uint8_t *>("shared"), 6},
+                           &temporary),
+              AYNI_OK);
+    FileValueRequest occupied;
+    occupied.key = {99, 1};
+    occupied.complete = [](void *, const FileValueResult &) noexcept {};
+    const auto port = values.port();
+    for (uint32_t at = 0; at < portable::value_request_capacity; ++at) {
+        ASSERT_EQ(port.submit(port.context, &occupied), AYNI_SUBMIT_ACCEPTED);
+    }
+    store->release(store->context, &first);
+    store->release_temporary(store->context, &temporary);
+    EXPECT_EQ(FileBodies::collected(&reopened, 1), AYNI_BUSY);
+    constexpr uint32_t limit = 10000;
+    for (uint32_t at = 0; at < limit && !reopened.idle(); ++at) {
+        FileBodies::progress(&reopened, 0);
+        values.advance();
+    }
+    EXPECT_TRUE(reopened.idle());
+    EXPECT_EQ(FileBodies::collected(&reopened, 1), AYNI_OK);
+    std::array<uint8_t, 6> out{};
+    EXPECT_EQ(store->read(store->context, &first, out.data(), out.size()), AYNI_NOT_READY);
+    for (uint32_t at = 0; at < limit && !reopened.idle(); ++at) {
+        FileBodies::progress(&reopened, 0);
+        values.advance();
+    }
+    EXPECT_EQ(store->read(store->context, &first, out.data(), out.size()), AYNI_NOT_FOUND);
 }
 } // namespace

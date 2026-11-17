@@ -469,7 +469,7 @@ Reply Assistant::execute(const Command &command) {
                     }
                     return reply;
                 }
-                FileBodies::ready(&impl_->bodies, 0);
+                FileBodies::progress(&impl_->bodies, 0);
                 const auto stored = FileBodies::status(&impl_->bodies);
                 if (stored != AYNI_OK) {
                     return failure(stored);

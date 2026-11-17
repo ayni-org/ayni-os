@@ -173,8 +173,15 @@ template <typename Append> ayni_status_t append_history(Turn &turn, Append appen
     return AYNI_OK;
 }
 ayni_status_t append_text(Turn &turn, model::Role role, ayni_string_v1 text,
-                          model::Continuation continuation = {}) {
-    return append_history(turn, [&](model::Writer &out) { out.text(role, text, continuation); });
+                          model::Continuation continuation = {}, BodyRef stored = {}) {
+    const auto start = turn.history.empty() ? static_cast<uint32_t>(model::messages_prefix.size())
+                                            : static_cast<uint32_t>(turn.history.size());
+    const auto status =
+        append_history(turn, [&](model::Writer &out) { out.text(role, text, continuation); });
+    if (status == AYNI_OK && stored.id) {
+        turn.history_texts[start] = stored;
+    }
+    return status;
 }
 // Shared framing keeps transport buffers separate from the token estimate.
 // Messages, structure and fixed tools all participate in the selected estimate.
@@ -183,6 +190,9 @@ ayni_status_t frame_context(const ToolLoopConfig &config, const std::string &his
                             ayni_string_v1 definitions = {}) {
     scratch.clear();
     auto out = growing(scratch);
+    if (definitions.size) {
+        model::write_request_frame(out, definitions, {});
+    }
     out.prefix();
     if (config.model.text.size) {
         out.text(model::Role::system, config.model.text);
@@ -208,15 +218,6 @@ ayni_status_t frame_context(const ToolLoopConfig &config, const std::string &his
     }
     if (!out.finish(body)) {
         return AYNI_CAPACITY_EXCEEDED;
-    }
-    if (definitions.size) {
-        std::string messages = std::move(scratch);
-        scratch.clear();
-        auto envelope = growing(scratch);
-        model::write_request_frame(envelope, definitions, view(messages));
-        if (!envelope.finish(body)) {
-            return AYNI_CAPACITY_EXCEEDED;
-        }
     }
     return AYNI_OK;
 }
@@ -417,7 +418,8 @@ ayni_status_t revalidate(Workspace &workspace, Turn &turn, const ToolLoopConfig 
         turn.history_index.clear();
         turn.record.last_usage = {};
         turn.record.last_request_characters = 0;
-        turn.summary.clear();
+        turn.summary_change = SummaryChange::clear;
+        turn.history_texts.clear();
         turn.record.summary_first = turn.record.summary_last = 0;
         ++turn.record.context_version;
         turn.record.rounds = {}; // Answers changed even when retained user count stays equal.
@@ -436,7 +438,7 @@ ayni_status_t revalidate(Workspace &workspace, Turn &turn, const ToolLoopConfig 
         turn.result_summary = {};
         turn.group_start = 0;
         turn.compact_prefix = turn.history_summary.offset = turn.history_summary.next = 0;
-        turn.history_summary.text.clear();
+        turn.history_summary.clear_text();
         turn.history_projection.reset();
     }
     if (status != AYNI_OK) {
@@ -487,7 +489,7 @@ ayni_status_t revalidate(Workspace &workspace, Turn &turn, const ToolLoopConfig 
             }
         }
         turn.group_start = static_cast<uint32_t>(turn.history.size());
-        status = append_text(turn, model::Role::user, view(turn.input));
+        status = append_text(turn, model::Role::user, view(turn.input), {}, turn.refs.input);
         if (status == AYNI_OK && memory.size) {
             status = append_text(turn, model::Role::context, memory);
         }
@@ -522,10 +524,7 @@ ayni_status_t complete(Turn &turn, const ToolLoopConfig &config, ayni_string_v1 
     if (!valid_text(answer)) {
         return AYNI_INVALID_ARGUMENT;
     }
-    auto status = append_text(turn, model::Role::assistant, answer, continuation);
-    if (status != AYNI_OK) {
-        return status;
-    }
+    auto status = AYNI_OK;
     BodyRef body{};
     if (answer.size) {
         status = save_body(*config.bodies, turn.record.id, answer, body);
@@ -535,6 +534,10 @@ ayni_status_t complete(Turn &turn, const ToolLoopConfig &config, ayni_string_v1 
         if (status != AYNI_OK) {
             return status;
         }
+    }
+    status = append_text(turn, model::Role::assistant, answer, continuation, body);
+    if (status != AYNI_OK) {
+        return status;
     }
     turn.rounds.push_back({++turn.record.last_round, turn.refs.input, body});
     retain_inputs(turn.rounds, config.limits.compact_target_tokens);
@@ -662,7 +665,7 @@ ayni_status_t compact(Workspace &workspace, Turn &turn, const ToolLoopConfig &co
     if (turn.history_summary.next <= turn.history_summary.offset) {
         return AYNI_CAPACITY_EXCEEDED;
     }
-    turn.history_summary.text.assign(call.text.data, call.text.size);
+    turn.history_summary.set_text(call.text);
     turn.history_summary.offset = turn.history_summary.next;
     if (turn.history_summary.chunk == UINT32_MAX) {
         return AYNI_CAPACITY_EXCEEDED;
@@ -691,6 +694,7 @@ ayni_status_t compact(Workspace &workspace, Turn &turn, const ToolLoopConfig &co
             break;
         }
     }
+    const auto input_frame = static_cast<uint32_t>(replacement.size());
     if (!tail_has_user) {
         history.text(model::Role::user, view(turn.input));
     }
@@ -701,27 +705,16 @@ ayni_status_t compact(Workspace &workspace, Turn &turn, const ToolLoopConfig &co
     if (!history.finish(replaced) || turn.record.context_version == UINT64_MAX) {
         return AYNI_CAPACITY_EXCEEDED;
     }
-    const auto original_record = turn.record;
-    auto original_history = std::move(turn.history);
-    turn.record.last_usage = {};
-    turn.record.last_request_characters = 0;
-    turn.record.last_input_estimate = 0;
     turn.history = std::move(replacement);
     turn.history_saved = 0;
     turn.history_index.clear();
+    turn.history_texts.clear();
+    turn.history_texts[input_frame] = turn.refs.input;
     status = known_operations(turn, snapshot);
-    LocalTimeLines time;
-    ayni_string_v1 body{};
-    uint64_t cost = 0;
-    if (status == AYNI_OK) {
-        status = context(config, turn, local_time(config.clock, time), scratch, body, cost);
-    }
     if (status != AYNI_OK) {
-        turn.record = original_record;
-        turn.history = std::move(original_history);
         return status;
     }
-    turn.summary = turn.history_summary.text;
+    turn.summary_change = SummaryChange::replacement;
     turn.record.summary_first = 1;
     turn.record.summary_last = std::max(uint64_t{1}, turn.record.last_round);
     ++turn.record.context_version;
@@ -730,6 +723,7 @@ ayni_status_t compact(Workspace &workspace, Turn &turn, const ToolLoopConfig &co
     turn.group_start = static_cast<uint32_t>(model::messages_prefix.size());
     turn.record.last_usage = {}; // The old observation describes the previous context version.
     turn.record.last_request_characters = 0;
+    turn.record.last_input_estimate = 0;
     turn.compact_prefix = turn.history_summary.offset = turn.history_summary.next = 0;
     turn.history_projection.reset();
     turn.phase = turn.compact_resume;
@@ -1050,7 +1044,7 @@ ayni_status_t run(Workspace &workspace, Turn &turn, const ToolLoopConfig &config
                 turn.history_summary.offset = 0;
                 turn.history_summary.next = turn.history_summary.offset;
                 turn.history_summary.chunk = 0;
-                turn.history_summary.text.clear();
+                turn.history_summary.clear_text();
                 turn.history_projection.reset();
                 ++turn.compact_generation;
                 turn.compact_resume = TurnPhase::ready;
