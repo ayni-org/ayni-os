@@ -183,28 +183,27 @@ void Host::Storage::serve_queue() {
         serve(queued);
     }
 }
-// Preserve serve -> refresh reservations -> post ordering; publish observations only afterwards.
+// Preserve serve -> refresh reservations -> publish completed counters -> post/wake -> add post_us
+// so an owner sampling immediately upon completion observes the I/O that triggered the transition.
 void Host::Storage::serve(const Queued &queued) {
     const auto started = static_cast<uint64_t>(esp_timer_get_time());
     const auto result = storage::serve_work(log_, files_, queued.work);
     const auto served = static_cast<uint64_t>(esp_timer_get_time());
     static_cast<void>(refresh_space(storage::work_reservation(queued.work)));
     const auto refreshed = static_cast<uint64_t>(esp_timer_get_time());
-    if (result.post()) {
-        Host::wake(&owner_);
-    }
-    const auto posted = static_cast<uint64_t>(esp_timer_get_time());
     const auto file_metrics = files_.metrics();
+    const auto scan_frames = log_.append_scan_frames();
+    const auto queue_us = started - queued.submitted_us;
+    const auto service_us = served - started;
+    const auto space_us = refreshed - served;
     portENTER_CRITICAL(&mutex_);
     ++metrics_.completed;
-    metrics_.queue_us += started - queued.submitted_us;
-    metrics_.io_us += served - started;
-    metrics_.space_us += refreshed - served;
-    metrics_.post_us += posted - refreshed;
-    metrics_.max_queue_us = std::max(metrics_.max_queue_us, started - queued.submitted_us);
-    metrics_.max_io_us = std::max(metrics_.max_io_us, served - started);
-    metrics_.max_space_us = std::max(metrics_.max_space_us, refreshed - served);
-    const auto service_us = served - started;
+    metrics_.queue_us += queue_us;
+    metrics_.io_us += service_us;
+    metrics_.space_us += space_us;
+    metrics_.max_queue_us = std::max(metrics_.max_queue_us, queue_us);
+    metrics_.max_io_us = std::max(metrics_.max_io_us, service_us);
+    metrics_.max_space_us = std::max(metrics_.max_space_us, space_us);
     if (const auto *core = std::get_if<Request>(&queued.work.value)) {
         if (core->port == Request::Port::append || core->port == Request::Port::append_group) {
             ++metrics_.append_calls;
@@ -227,8 +226,15 @@ void Host::Storage::serve(const Queued &queued) {
             break;
         }
     }
-    metrics_.scan_frames = log_.append_scan_frames();
+    metrics_.scan_frames = scan_frames;
     metrics_.files = file_metrics;
+    portEXIT_CRITICAL(&mutex_);
+    if (result.post()) {
+        Host::wake(&owner_);
+    }
+    const auto post_us = static_cast<uint64_t>(esp_timer_get_time()) - refreshed;
+    portENTER_CRITICAL(&mutex_);
+    metrics_.post_us += post_us;
     portEXIT_CRITICAL(&mutex_);
 }
 void Host::Storage::stop() {

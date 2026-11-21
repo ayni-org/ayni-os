@@ -12,6 +12,8 @@ struct FileIoMetrics {
 };
 // Coherent cumulative completed-work snapshot. All durations are wall-clock microseconds,
 // including preemption. io includes file read/write/sync; append and value_* are subsets of io.
+// Completed service/file counters publish before owner notification so an immediate snapshot on
+// completion sees the triggering I/O; post_us is added separately once notification returns.
 // idle_space is separate from per-request space. Maxima are lifetime values, not deltas.
 struct StorageMetrics {
     uint64_t completed = 0, queue_us = 0, io_us = 0, space_us = 0, post_us = 0;
