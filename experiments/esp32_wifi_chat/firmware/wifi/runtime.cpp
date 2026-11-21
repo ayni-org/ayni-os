@@ -1,5 +1,6 @@
 #include "runtime.h"
 #include "../main/speaker.h"
+#include "../main/turn_diagnostics.h"
 #include "../main/turn_status.h"
 #include "../main/wake.h"
 #include "api.h"
@@ -130,6 +131,7 @@ class Runtime {
     Remote remote_{};
     MotorPanel motor_{};
     Api api_{};
+    UiFrameWindow last_frame_{}; // chat-io only; monotonic draw()/paint() window of last frame.
     WebConfig web_{};
     OtaUpdate update_{};
     bool web_started_ = false;
@@ -675,6 +677,7 @@ void Runtime::results() {
             continue;
         }
         if (job->request == Request::model || job->request == Request::template_capture) {
+            const auto ui_dequeued_us = uint64_t(esp_timer_get_time());
             if (active_model_ == job->input.id) {
                 clear_preview();
             }
@@ -693,6 +696,34 @@ void Runtime::results() {
                 transport_.post(Kind::model_error, job->input.id, nullptr, 0);
                 message(job->error.data());
             }
+            const auto post_ui_us = uint64_t(esp_timer_get_time());
+            uint64_t frame_wait_us = 0;
+            const auto overlap = last_frame_.classify(job->done_enqueued_us, frame_wait_us);
+            const uint64_t pack_us =
+                job->http_complete_us && job->done_enqueued_us >= job->http_complete_us
+                    ? job->done_enqueued_us - job->http_complete_us
+                    : 0;
+            const uint64_t ui_wait_us =
+                job->done_enqueued_us && ui_dequeued_us >= job->done_enqueued_us
+                    ? ui_dequeued_us - job->done_enqueued_us
+                    : 0;
+            transport_.diagnostics().record(
+                "wifi model_handoff turn=%llu call=%llu ok=%u http_us=%llu done_us=%llu ui_us=%llu "
+                "post_ui_us=%llu pack_us=%llu ui_wait_us=%llu draw_us=%llu..%llu "
+                "paint_us=%llu..%llu ui_frame=%s frame_wait_us=%llu\n",
+                static_cast<unsigned long long>(turn_),
+                static_cast<unsigned long long>(job->input.id), unsigned(job->ok),
+                static_cast<unsigned long long>(job->http_complete_us),
+                static_cast<unsigned long long>(job->done_enqueued_us),
+                static_cast<unsigned long long>(ui_dequeued_us),
+                static_cast<unsigned long long>(post_ui_us),
+                static_cast<unsigned long long>(pack_us),
+                static_cast<unsigned long long>(ui_wait_us),
+                static_cast<unsigned long long>(last_frame_.draw_begin_us),
+                static_cast<unsigned long long>(last_frame_.draw_end_us),
+                static_cast<unsigned long long>(last_frame_.paint_begin_us),
+                static_cast<unsigned long long>(last_frame_.paint_end_us),
+                UiFrameWindow::name(overlap), static_cast<unsigned long long>(frame_wait_us));
         } else if (job->request == Request::recognize) {
             work_ = Work::idle;
             if (job->ok) {
@@ -1518,8 +1549,13 @@ void Runtime::run() {
         }
         if (dirty_ && now - drawn >= redraw_us) {
             const bool first_frame = drawn == 0;
+            const auto draw_begin_us = uint64_t(esp_timer_get_time());
             draw();
-            if (!transport_.local_display().paint(canvas_.pixels(), screen_bytes)) {
+            const auto draw_end_us = uint64_t(esp_timer_get_time());
+            const bool painted = transport_.local_display().paint(canvas_.pixels(), screen_bytes);
+            const auto paint_end_us = uint64_t(esp_timer_get_time());
+            last_frame_ = {draw_begin_us, draw_end_us, draw_end_us, paint_end_us};
+            if (!painted) {
                 dirty_ = true;
             }
             if (first_frame) {

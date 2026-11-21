@@ -58,44 +58,155 @@ uint32_t model_input_bytes(ayni_string_v1 destination) {
     ayni_value_v1 value{};
     return shape.finish(value) == AYNI_OK ? ayni::encoded_bytes(value) : 0U;
 }
-void Chat::trace(const char *phase) {
-    if (turn_) {
-        transport_.diagnostics().record(
-            "wifi turn phase=%s model_requests=%lu elapsed_ms=%llu\n", phase,
-            static_cast<unsigned long>(model_requests_),
-            static_cast<unsigned long long>((uint64_t(esp_timer_get_time()) - turn_started_) /
-                                            1000));
-        trace_latency(phase);
+Chat::PhaseSnapshot Chat::capture_phase_snapshot(uint64_t at_us) const {
+    PhaseSnapshot snapshot{};
+    snapshot.at_us = at_us ? at_us : uint64_t(esp_timer_get_time());
+    snapshot.step_calls = timing_.step_calls;
+    snapshot.step_us = timing_.step_us;
+    snapshot.max_step_us = timing_.max_step_us;
+    snapshot.conversation_us = timing_.conversation_us;
+    snapshot.model_requests = model_requests_;
+    if (host_) {
+        snapshot.storage = host_->storage_metrics();
     }
+    return snapshot;
+}
+void Chat::emit_phase_trace(const char *phase, const PhaseSnapshot &snapshot) {
+    if (!turn_) {
+        return;
+    }
+    const uint64_t elapsed_ms =
+        snapshot.at_us >= turn_started_ ? (snapshot.at_us - turn_started_) / 1000 : 0;
+    transport_.diagnostics().record(
+        "wifi turn turn=%llu phase=%s model_requests=%lu elapsed_ms=%llu at_us=%llu\n",
+        static_cast<unsigned long long>(turn_), phase,
+        static_cast<unsigned long>(snapshot.model_requests),
+        static_cast<unsigned long long>(elapsed_ms),
+        static_cast<unsigned long long>(snapshot.at_us));
+    trace_latency(phase, snapshot);
+}
+void Chat::trace(const char *phase, uint64_t at_us) {
+    if (!turn_) {
+        return;
+    }
+    const auto snapshot = capture_phase_snapshot(at_us);
+    // Multi-round tool turns emit an earlier model_result_posted before the next model_requested.
+    if (timing_.pending_model_post.valid && !timing_.publication.has_session_stage()) {
+        flush_pending_model_post();
+    }
+    emit_phase_trace(phase, snapshot);
 }
 // Phase-local storage deltas plus cumulative owner work distinguish asynchronous waits from
-// time spent running Core. These wall times overlap; they must not be summed as a turn total.
-void Chat::trace_latency(const char *phase) {
+// time spent stepping Core. Stage wall time, queue_ms and io_ms may overlap; turn_core_ms is
+// ayni_step() wall time (including preemption), not exclusive task CPU time.
+void Chat::trace_latency(const char *phase, const PhaseSnapshot &snapshot) {
     if (!host_) {
         return;
     }
-    const auto current = host_->storage_metrics();
-    const auto &last = timing_.storage;
+    const uint64_t wall_us = timing_.phase_started_us && snapshot.at_us >= timing_.phase_started_us
+                                 ? snapshot.at_us - timing_.phase_started_us
+                                 : 0;
+    timing_.phase_started_us = snapshot.at_us;
+    const auto &current = snapshot.storage;
+    const auto delta = StoragePhaseDelta::between(timing_.storage, current, wall_us);
     auto &log = transport_.diagnostics();
+    log.record("wifi latency turn=%llu phase=%s wall_ms=%llu n=%llu queue_ms=%llu io_ms=%llu "
+               "space_ms=%llu lfs_size_n=%llu lfs_size_ms=%llu post_us=%llu idle_space_ms=%llu "
+               "max_queue_ms=%llu max_io_ms=%llu max_space_ms=%llu\n",
+               static_cast<unsigned long long>(turn_), phase,
+               static_cast<unsigned long long>(delta.wall_us / 1000),
+               static_cast<unsigned long long>(delta.completed),
+               static_cast<unsigned long long>(delta.queue_us / 1000),
+               static_cast<unsigned long long>(delta.io_us / 1000),
+               static_cast<unsigned long long>(delta.space_us / 1000),
+               static_cast<unsigned long long>(delta.lfs_size_calls),
+               static_cast<unsigned long long>(delta.lfs_size_us / 1000),
+               static_cast<unsigned long long>(delta.post_us),
+               static_cast<unsigned long long>(delta.idle_space_us / 1000),
+               static_cast<unsigned long long>(current.max_queue_us / 1000),
+               static_cast<unsigned long long>(current.max_io_us / 1000),
+               static_cast<unsigned long long>(current.max_space_us / 1000));
     log.record(
-        "wifi latency phase=%s n=%llu queue_ms=%llu io_ms=%llu space_ms=%llu "
-        "post_us=%llu idle_space_ms=%llu max_queue_ms=%llu max_io_ms=%llu max_space_ms=%llu\n",
-        phase, current.completed - last.completed, (current.queue_us - last.queue_us) / 1000,
-        (current.io_us - last.io_us) / 1000, (current.space_us - last.space_us) / 1000,
-        current.post_us - last.post_us, (current.idle_space_us - last.idle_space_us) / 1000,
-        current.max_queue_us / 1000, current.max_io_us / 1000, current.max_space_us / 1000);
-    log.record("wifi io phase=%s append_ms=%llu value_ms=%llu scan_frames=%llu reads=%llu "
-               "read_bytes=%llu read_ms=%llu write_ms=%llu sync_ms=%llu "
-               "turn_core_ms=%llu steps=%llu max_step_us=%llu turn_converse_ms=%llu\n",
-               phase, (current.append_us - last.append_us) / 1000,
-               (current.value_us - last.value_us) / 1000, current.scan_frames - last.scan_frames,
-               current.files.read_calls - last.files.read_calls,
-               current.files.read_bytes - last.files.read_bytes,
-               (current.files.read_us - last.files.read_us) / 1000,
-               (current.files.write_us - last.files.write_us) / 1000,
-               (current.files.sync_us - last.files.sync_us) / 1000, timing_.step_us / 1000,
-               timing_.step_calls, timing_.max_step_us, timing_.conversation_us / 1000);
+        "wifi io turn=%llu phase=%s append_n=%llu append_ms=%llu value_ms=%llu "
+        "vread_n=%llu vread_ms=%llu vwrite_n=%llu vwrite_ms=%llu vremove_n=%llu vremove_ms=%llu "
+        "scan_frames=%llu reads=%llu read_bytes=%llu read_ms=%llu write_ms=%llu sync_ms=%llu "
+        "turn_core_ms=%llu steps=%llu max_step_us=%llu turn_converse_ms=%llu\n",
+        static_cast<unsigned long long>(turn_), phase,
+        static_cast<unsigned long long>(delta.append_calls),
+        static_cast<unsigned long long>(delta.append_us / 1000),
+        static_cast<unsigned long long>(delta.value_us / 1000),
+        static_cast<unsigned long long>(delta.value_read_calls),
+        static_cast<unsigned long long>(delta.value_read_us / 1000),
+        static_cast<unsigned long long>(delta.value_write_calls),
+        static_cast<unsigned long long>(delta.value_write_us / 1000),
+        static_cast<unsigned long long>(delta.value_remove_calls),
+        static_cast<unsigned long long>(delta.value_remove_us / 1000),
+        static_cast<unsigned long long>(delta.scan_frames),
+        static_cast<unsigned long long>(delta.file_read_calls),
+        static_cast<unsigned long long>(delta.file_read_bytes),
+        static_cast<unsigned long long>(delta.file_read_us / 1000),
+        static_cast<unsigned long long>(delta.file_write_us / 1000),
+        static_cast<unsigned long long>(delta.file_sync_us / 1000),
+        static_cast<unsigned long long>(snapshot.step_us / 1000),
+        static_cast<unsigned long long>(snapshot.step_calls),
+        static_cast<unsigned long long>(snapshot.max_step_us),
+        static_cast<unsigned long long>(snapshot.conversation_us / 1000));
     timing_.storage = current;
+}
+void Chat::flush_pending_model_post() {
+    if (!timing_.pending_model_post.valid || !turn_) {
+        timing_.pending_model_post.valid = false;
+        return;
+    }
+    const auto post = timing_.pending_model_post;
+    timing_.pending_model_post.valid = false;
+    const uint64_t stage_wait_us = post.stage_us >= post.recv_us ? post.stage_us - post.recv_us : 0;
+    const uint64_t post_wait_us =
+        post.snapshot.at_us >= post.stage_us ? post.snapshot.at_us - post.stage_us : 0;
+    transport_.diagnostics().record(
+        "wifi model_owner turn=%llu call=%llu kind=%s bytes=%zu recv_us=%llu "
+        "stage_us=%llu post_us=%llu stage_wait_us=%llu post_wait_us=%llu\n",
+        static_cast<unsigned long long>(turn_), static_cast<unsigned long long>(post.call),
+        post.kind, post.bytes, static_cast<unsigned long long>(post.recv_us),
+        static_cast<unsigned long long>(post.stage_us),
+        static_cast<unsigned long long>(post.snapshot.at_us),
+        static_cast<unsigned long long>(stage_wait_us),
+        static_cast<unsigned long long>(post_wait_us));
+    emit_phase_trace("model_result_posted", post.snapshot);
+}
+// Emits deferred model_result_posted, the 6 publication segments, the summary, and answer_saved
+// strictly outside the measured publication window using their original timestamps and I/O counts.
+void Chat::flush_publication_diagnostics() {
+    timing_.flush_ready = false;
+    if (!turn_) {
+        timing_.pending_model_post.valid = false;
+        timing_.pending_answer_saved.valid = false;
+        return;
+    }
+    flush_pending_model_post();
+    if (!timing_.publication_emitted && timing_.publication.segment_count() > 0U) {
+        timing_.publication_emitted = true;
+        timing_.publication.emit_report(&transport_.diagnostics(),
+                                        [](void *ctx, const char *line, size_t) {
+                                            static_cast<DiagnosticLog *>(ctx)->record("%s", line);
+                                        });
+    }
+    if (timing_.pending_answer_saved.valid) {
+        const auto saved = timing_.pending_answer_saved;
+        timing_.pending_answer_saved.valid = false;
+        emit_phase_trace("answer_saved", saved.snapshot);
+    }
+}
+// Sampling-only callback: never formats or writes to stdout inside the publication window.
+void Chat::on_publication_stage(void *ctx, uint64_t goal, uint64_t task,
+                                ayni::runtime::conversation::PublicationStage stage) {
+    auto &self = *static_cast<Chat *>(ctx);
+    if (!self.turn_ || !self.host_) {
+        return;
+    }
+    const auto at_us = uint64_t(esp_timer_get_time());
+    const auto metrics = self.host_->storage_metrics();
+    static_cast<void>(self.timing_.publication.record_stage(goal, task, stage, at_us, metrics));
 }
 void Chat::status(uint64_t id, const char *message) {
     if (!std::strncmp(message, "registration ", 13) ||
@@ -579,6 +690,7 @@ void Chat::publish_model() {
         result.status = AYNI_OK;
         result.effect = AYNI_CALL_EFFECT_COMPLETE;
         const auto *store = bodies_.store();
+        const bool staged_now = !model_body_.id;
         const auto stored =
             model_body_.id ? AYNI_OK
                            : store->stage(store->context, call_,
@@ -597,6 +709,9 @@ void Chat::publish_model() {
             model_failure_.effect = AYNI_CALL_EFFECT_UNKNOWN;
             model_ = ModelState::failed;
             return;
+        }
+        if (staged_now) {
+            timing_.model_staged_us = uint64_t(esp_timer_get_time());
         }
         result.body = model_body_;
         result.tool_call_count = model_tool_count_;
@@ -619,8 +734,27 @@ void Chat::publish_model() {
         }
     }
     if (ayni_provider_post(completion_, &result) == AYNI_OK) {
+        const auto posted_us = uint64_t(esp_timer_get_time());
+        const uint64_t posted_call = call_;
+        const size_t posted_bytes = model_answer_.size();
+        const char *posted_kind = model_ == ModelState::text    ? "text"
+                                  : model_ == ModelState::tools ? "tools"
+                                                                : "fail";
+        const uint64_t recv_us =
+            timing_.model_received_call == posted_call ? timing_.model_received_us : posted_us;
+        const uint64_t stage_us =
+            timing_.model_received_call == posted_call && timing_.model_staged_us
+                ? timing_.model_staged_us
+                : recv_us;
+        if (turn_) {
+            // Sample only: defer stdout/log formatting until after the publication window
+            // (or until the next model request on multi-round tool turns).
+            const auto snapshot = capture_phase_snapshot(posted_us);
+            timing_.pending_model_post = {true,    posted_call, posted_kind, posted_bytes,
+                                          recv_us, stage_us,    snapshot};
+            timing_.publication.mark_model_posted(posted_us, snapshot.storage);
+        }
         model_body_ = {}; // The successful post transfers the reference to Core.
-        trace("model_result_posted");
         model_ = ModelState::idle;
         completion_ = nullptr;
         call_ = deadline_ = 0;
@@ -747,6 +881,9 @@ void Chat::incoming(const Packet &p) {
     }
     if ((p.kind == Kind::model_result || p.kind == Kind::model_error) &&
         model_ == ModelState::waiting && p.id == call_) {
+        timing_.model_received_call = p.id;
+        timing_.model_received_us = uint64_t(esp_timer_get_time());
+        timing_.model_staged_us = 0;
         model_ = ModelState::failed;
         if (p.kind == Kind::model_error && p.size == model_result_header_bytes) {
             model_failure_ = read_model_result_header(p.body.data());
@@ -807,6 +944,8 @@ void Chat::incoming(const Packet &p) {
         turn_ = p.id;
         turn_started_ = uint64_t(esp_timer_get_time());
         timing_ = {};
+        timing_.phase_started_us = turn_started_;
+        timing_.publication.reset(turn_);
         timing_.storage = host_->storage_metrics();
         model_requests_ = 0;
         reply_intent_ = ReplyIntent::present;
@@ -815,7 +954,7 @@ void Chat::incoming(const Packet &p) {
         turn_state_ = Turn::input;
         progress_ = true;
         status(turn_, "accepted");
-        trace("accepted");
+        trace("accepted", turn_started_);
     } else if (p.kind == Kind::cancel && turn_state_ == Turn::answer) {
         reply_end_ = "turn failed/cancelled; answer retained; no automatic retry";
         turn_state_ = Turn::reply_done;
@@ -1128,6 +1267,9 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
         rc = converse(info);
         if (turn_) {
             timing_.conversation_us += uint64_t(esp_timer_get_time()) - started;
+            if (timing_.flush_ready) {
+                flush_publication_diagnostics();
+            }
         }
     }
     again = progress_;
@@ -1271,6 +1413,7 @@ ayni_status_t Chat::prepare_history(const ayni_kernel_info_v1 &info) {
             }};
         config.unfinished = ayni::runtime::conversation::UnfinishedTurn::discard;
         config.persistence = ayni::strategies::Persistence::background;
+        config.observer = {this, on_publication_stage};
         rc = history_.configure(config);
         if (rc != AYNI_OK) {
             return rc;
@@ -1368,11 +1511,9 @@ void Chat::end_turn(const char *message) {
         bodies_.collect(probe_record_id, {}); // No diagnostic checkpoint becomes chat history.
     }
     probe_.reset();
-    trace_latency("terminal");
-    transport_.diagnostics().record(
-        "wifi turn model_requests=%lu elapsed_ms=%llu\n",
-        static_cast<unsigned long>(model_requests_),
-        static_cast<unsigned long long>((uint64_t(esp_timer_get_time()) - turn_started_) / 1000));
+    const auto ended_snapshot = capture_phase_snapshot();
+    flush_publication_diagnostics();
+    emit_phase_trace("terminal", ended_snapshot);
     input_.clear();
     answer_.clear();
     reply_voice_.reset();
@@ -1647,9 +1788,13 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
             end_turn("turn failed: saved answer unavailable");
             return AYNI_OK;
         }
+        const auto saved_us = uint64_t(esp_timer_get_time());
         turn_state_ = Turn::answer;
-        trace("answer_saved");
-        reply_deadline_ = uint64_t(esp_timer_get_time()) + presentation_wait_us;
+        // Sample endpoint only; emit after present_reply() hands the answer to the UI queue.
+        const auto snapshot = capture_phase_snapshot(saved_us);
+        static_cast<void>(timing_.publication.record_answer_saved(saved_us, snapshot.storage));
+        timing_.pending_answer_saved = {true, snapshot};
+        reply_deadline_ = saved_us + presentation_wait_us;
         goal_ = 0; // The completed task has no further device work.
     }
     if (turn_state_ == Turn::answer || turn_state_ == Turn::speaking ||
@@ -1688,6 +1833,9 @@ ayni_status_t Chat::present_reply() {
                 turn_state_ = Turn::reply_done;
             }
             progress_ = true;
+        }
+        if (turn_state_ != Turn::answer) {
+            timing_.flush_ready = true;
         }
     }
     if (turn_state_ == Turn::speaking) {

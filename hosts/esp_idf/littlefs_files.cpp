@@ -413,7 +413,12 @@ int LittleFiles::free_bytes(uint64_t &bytes) const {
     if (!space_.needs_measurement() && space_.available(bytes)) {
         return 0;
     }
-    const auto used = lfs_fs_size(&filesystem_);
+    lfs_ssize_t used = 0;
+    {
+        FileTimer timer(metrics_.space_measure_us);
+        ++metrics_.space_measure_calls;
+        used = lfs_fs_size(&filesystem_);
+    }
     if (used < 0) {
         space_.invalidate();
         return cause(used);

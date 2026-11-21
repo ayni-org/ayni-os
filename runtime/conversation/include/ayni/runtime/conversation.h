@@ -29,6 +29,21 @@ struct TurnResult {
     ayni_reason_t reason = AYNI_REASON_NONE; // Original public reason, NONE without detail.
     bool published = false; // True only after the exact publication ACK became durable.
 };
+// Publication boundaries emitted once per publication in actual path order:
+// background runs checkpoint_ready -> publish_durable; direct/reopen runs publish_durable ->
+// checkpoint_ready; both then run record_saved -> collected -> context_ready.
+enum class PublicationStage {
+    checkpoint_ready, // Completed durable Task checkpoint copied into publication candidate.
+    publish_durable,  // Core CONTEXT_PUBLISH anchor became durable.
+    record_saved,     // New outer conversation record write succeeded and was adopted.
+    collected,        // Superseded scope body/manifest cleanup completed.
+    context_ready     // Exact CONTEXT_ACK became durable and context returned to IDLE/usable.
+};
+// Optional owner-only diagnostic callback. Never mutates Session or reenters Session.
+struct PublicationObserver {
+    void *context = nullptr;
+    void (*on_stage)(void *context, uint64_t goal, uint64_t task, PublicationStage stage) = nullptr;
+};
 struct Config {
     ayni_kernel_t *kernel = nullptr; // Borrowed through shutdown/Host join.
     uint64_t session = 0;            // Bound owner's MANAGEMENT session this boot.
@@ -41,6 +56,7 @@ struct Config {
     Commands commands;
     UnfinishedTurn unfinished = UnfinishedTurn::retain;
     strategies::Persistence persistence = strategies::Persistence::durable;
+    PublicationObserver observer{}; // Optional; null disables publication stage callbacks.
 };
 // Caller places this bounded object in suitable RAM (it contains large records).
 // Owner-thread, no reentry. poll performs bounded public-API/queue work, never waits.
@@ -144,6 +160,7 @@ class Session {
     ayni_status_t publish(const ayni_context_info_v1 &);
     ayni_status_t erase(const ayni_context_info_v1 &);
     ayni_status_t input();
+    void observe_publication(uint64_t task, PublicationStage stage) const;
     struct Confirmation {
         uint64_t generation = 0, revision = 0; // Privacy/source versions; zero before admission.
         std::array<strategies::BodyRef, 4> roots{}; // Exact immutable source graph.
@@ -161,6 +178,7 @@ class Session {
     uint64_t context_id_ = 0;         // Stable public anchor identity after configure.
     uint64_t value_version_ = 0;      // AYFV CAS version, independent of context generation.
     uint64_t goal_ = 0;               // Current/last turn Goal; retained until next accepted turn.
+    uint64_t publish_observed_task_ = 0; // Task whose direct publish_durable already fired; 0 none.
     strategies::ConversationRecord current_{}, candidate_{}; // Adopt only proven versions.
     strategies::Encoded file_{}, parameters_{}; // Worker-exclusive file lane; owner parameter lane.
     std::string input_;                         // Accepted user text until its body is durable.
