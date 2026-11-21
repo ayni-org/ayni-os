@@ -204,12 +204,28 @@ void Host::Storage::serve(const Queued &queued) {
     metrics_.max_queue_us = std::max(metrics_.max_queue_us, started - queued.submitted_us);
     metrics_.max_io_us = std::max(metrics_.max_io_us, served - started);
     metrics_.max_space_us = std::max(metrics_.max_space_us, refreshed - served);
+    const auto service_us = served - started;
     if (const auto *core = std::get_if<Request>(&queued.work.value)) {
         if (core->port == Request::Port::append || core->port == Request::Port::append_group) {
-            metrics_.append_us += served - started;
+            ++metrics_.append_calls;
+            metrics_.append_us += service_us;
         }
-    } else {
-        metrics_.value_us += served - started;
+    } else if (const auto *value = std::get_if<storage::FileValueRequest>(&queued.work.value)) {
+        metrics_.value_us += service_us;
+        switch (value->kind) {
+        case storage::FileValueRequest::Kind::read:
+            ++metrics_.value_read_calls;
+            metrics_.value_read_us += service_us;
+            break;
+        case storage::FileValueRequest::Kind::write:
+            ++metrics_.value_write_calls;
+            metrics_.value_write_us += service_us;
+            break;
+        case storage::FileValueRequest::Kind::remove:
+            ++metrics_.value_remove_calls;
+            metrics_.value_remove_us += service_us;
+            break;
+        }
     }
     metrics_.scan_frames = log_.append_scan_frames();
     metrics_.files = file_metrics;
