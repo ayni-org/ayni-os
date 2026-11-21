@@ -44,6 +44,18 @@ class Host::Storage {
         return result;
     }
 
+    uint64_t append_durable_us(uint64_t seq) {
+        portENTER_CRITICAL(&mutex_);
+        uint64_t at_us = 0;
+        for (const auto &append : recent_appends_) {
+            if (append.first && seq >= append.first && seq <= append.last) {
+                at_us = std::max(at_us, append.at_us);
+            }
+        }
+        portEXIT_CRITICAL(&mutex_);
+        return at_us;
+    }
+
   private:
     ayni_submit_result_t enqueue(const WorkItem &request);
     static void run(void *ctx);
@@ -58,6 +70,11 @@ class Host::Storage {
     };
     void serve(const Queued &queued);
     std::array<Queued, Host::request_capacity_limit> requests_{};
+    struct Appended {
+        uint64_t first = 0, last = 0, at_us = 0; // Successful consecutive journal group.
+    };
+    std::array<Appended, Host::request_capacity_limit> recent_appends_{};
+    size_t next_append_ = 0;
     StorageMetrics metrics_{}; // Published copies only; guarded by mutex_, never read live files.
     uint32_t capacity_ = 0, head_ = 0, count_ = 0;
     enum class State { closed, running, draining };
@@ -208,6 +225,12 @@ void Host::Storage::serve(const Queued &queued) {
         if (core->port == Request::Port::append || core->port == Request::Port::append_group) {
             ++metrics_.append_calls;
             metrics_.append_us += service_us;
+            if (std::get<storage::CoreCompleted>(result.value).result.outcome == AYNI_WRITE_OK) {
+                const auto count = core->port == Request::Port::append ? 1U : core->batch_count;
+                recent_appends_[next_append_] = {core->commit_seq, core->commit_seq + count - 1U,
+                                                 served};
+                next_append_ = (next_append_ + 1U) % recent_appends_.size();
+            }
         }
     } else if (const auto *value = std::get_if<storage::FileValueRequest>(&queued.work.value)) {
         metrics_.record_value(*value, std::get<storage::ValueCompleted>(result.value).result,
@@ -288,6 +311,9 @@ storage::FileValuePort Host::value_store() {
 }
 StorageMetrics Host::storage_metrics() const {
     return storage_ ? storage_->metrics() : StorageMetrics{};
+}
+uint64_t Host::append_durable_us(uint64_t seq) const {
+    return storage_ ? storage_->append_durable_us(seq) : 0;
 }
 ayni_submit_result_t Host::submit_value(void *context, const storage::FileValueRequest *request) {
     auto *storage = static_cast<Host *>(context)->storage_;

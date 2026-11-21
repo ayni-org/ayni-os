@@ -631,9 +631,15 @@ ayni_status_t Session::erase(const ayni_context_info_v1 &anchor) {
     phase_ = Phase::save;
     return AYNI_OK;
 }
+ayni_status_t Session::poll() {
+    return poll_step(nullptr);
+}
 // Each invocation performs one queue operation or one public state transition.
 // No owner text escapes until both the file and the exact Core ACK are durable.
-ayni_status_t Session::poll() {
+ayni_status_t Session::poll_step(bool *again) {
+    if (again) {
+        *again = false;
+    }
     if (config_.bodies.progress) {
         // Idle Sessions must also advance queued body cleanup after ordinary backpressure.
         static_cast<void>(config_.bodies.progress(config_.bodies.context, 0));
@@ -690,6 +696,7 @@ ayni_status_t Session::poll() {
         phase_ != Phase::saving) {
         phase_ = Phase::erase;
     }
+    const auto previous = phase_;
     switch (phase_) {
     case Phase::load:
     case Phase::loading:
@@ -762,6 +769,9 @@ ayni_status_t Session::poll() {
             status = command(AYNI_INTENT_CONTEXT_ACK, anchor).status;
             if (status == AYNI_OK) {
                 phase_ = Phase::acknowledged;
+                if (save_ == Save::publication && config_.observer.on_ack) {
+                    config_.observer.on_ack(config_.observer.context, PublicationAck::submitted, 0);
+                }
             }
         }
         break;
@@ -772,6 +782,10 @@ ayni_status_t Session::poll() {
             if (save_ == Save::publication) {
                 if (result_) {
                     result_->published = true;
+                }
+                if (config_.observer.on_ack) {
+                    config_.observer.on_ack(config_.observer.context, PublicationAck::durable,
+                                            anchor.commit_seq);
                 }
                 publish_observed_task_ = 0;
                 observe_publication(result_ ? result_->task : 0, PublicationStage::context_ready);
@@ -787,6 +801,12 @@ ayni_status_t Session::poll() {
     default:
         status = AYNI_INVALID_STATE;
         break;
+    }
+    if (again && status == AYNI_OK && phase_ != previous) {
+        // A new local transition gets one retry. An unchanged phase waits for its actual
+        // completion, capacity or durable prefix instead of polling the owner busy.
+        *again =
+            phase_ == Phase::collect || phase_ == Phase::collecting || phase_ == Phase::acknowledge;
     }
     // Core owns Task holds, including owner-recoverable authority/model overlays.
     // Report their status without detaching from the original Task; polling after

@@ -34,6 +34,7 @@ class Chat {
     // report; again is set when this tick changed state the step has not seen yet.
     ayni_status_t tick(ayni_step_report_v1 &report, bool &again);
     void incoming(const Packet &);
+    void record_owner_wait(uint64_t entered_us, uint64_t exited_us);
     void stop_outputs() {
         reply_voice_.set_accepting(false);
         speaker_.set_accepting(false);
@@ -74,6 +75,9 @@ class Chat {
     void publish_model();
     static void on_publication_stage(void *, uint64_t goal, uint64_t task,
                                      ayni::runtime::conversation::PublicationStage);
+    static void on_publication_ack(void *, ayni::runtime::conversation::PublicationAck,
+                                   uint64_t commit_seq);
+    void emit_publication_ack();
     struct PhaseSnapshot {
         uint64_t at_us = 0;
         uint64_t step_calls = 0, step_us = 0, max_step_us = 0, conversation_us = 0;
@@ -164,6 +168,14 @@ class Chat {
         uint64_t phase_started_us = 0;
         uint64_t model_received_call = 0, model_received_us = 0, model_staged_us = 0;
         PublicationTimeline publication{};
+        struct Ack {
+            uint64_t collected_us = 0, submitted_us = 0, durable_us = 0, ready_us = 0;
+            uint64_t commit_seq = 0;
+            struct Wait {
+                uint64_t entered_us = 0, exited_us = 0, total_us = 0;
+                uint32_t count = 0;
+            } before_ack, after_ack;
+        } ack;
         PendingModelPost pending_model_post{};
         PendingAnswerSaved pending_answer_saved{};
         bool flush_ready = false; // Set after answer_saved is sampled and answer handed to UI.

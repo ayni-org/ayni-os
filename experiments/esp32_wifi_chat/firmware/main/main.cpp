@@ -125,13 +125,21 @@ void *owner(void *) {
         }
         if (!wait_us) {
             if (now - burst_at >= burst_us) {
+                const auto wait_entered = uint64_t(esp_timer_get_time());
                 vTaskDelay(1);
                 burst_at = uint64_t(esp_timer_get_time());
+                if (configured && !failed) {
+                    chat->record_owner_wait(wait_entered, burst_at);
+                }
             }
             continue;
         }
+        const auto wait_entered = uint64_t(esp_timer_get_time());
         wifichat::wait_for_wake(wait_us);
         burst_at = uint64_t(esp_timer_get_time());
+        if (configured && !failed) {
+            chat->record_owner_wait(wait_entered, burst_at);
+        }
     }
 }
 } // namespace

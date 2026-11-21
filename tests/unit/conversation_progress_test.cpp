@@ -234,7 +234,7 @@ class ConversationProgress : public testing::Test {
                 return false;
             }
             if (bound) {
-                const auto polled = session.poll();
+                const auto polled = session.poll_with_progress(session_again);
                 if (polled != AYNI_OK && polled != AYNI_BUSY && polled != AYNI_NOT_READY) {
                     ADD_FAILURE() << "session=" << polled;
                     return false;
@@ -432,10 +432,41 @@ class ConversationProgress : public testing::Test {
     void *arena = nullptr;
     conversation::Session session;
     ObservedBodies observed;
-    bool bound = false;
+    bool bound = false, session_again = false;
     std::map<ayni_intent_kind_t, uint32_t> commands;
     std::vector<StageEvent> stage_events;
 };
+// C-SDK-009: the owner needs no unrelated wake to submit ACK; the exact durable commit
+// still gates the result even when the storage worker completes it later.
+TEST_F(ConversationProgress, cleanup_requests_one_local_tick_before_waiting_for_ack_storage) {
+    using Stage = conversation::PublicationStage;
+    ASSERT_EQ(session.begin(text("publish with idle owner")), AYNI_OK);
+    ASSERT_TRUE(until(
+        [&] { return !stage_events.empty() && stage_events.back().stage == Stage::collected; }));
+    EXPECT_TRUE(session_again);
+    ASSERT_EQ(commands[AYNI_INTENT_CONTEXT_ACK], 0U);
+
+    const auto before_ack = host.now_us();
+    ASSERT_EQ(session.poll_with_progress(session_again), AYNI_OK);
+    EXPECT_EQ(host.now_us(), before_ack);
+    EXPECT_EQ(commands[AYNI_INTENT_CONTEXT_ACK], 1U);
+    EXPECT_FALSE(session_again);
+    ASSERT_EQ(profile.tick(), AYNI_OK);
+    conversation::TurnResult result;
+    EXPECT_FALSE(session.take_result(result));
+
+    constexpr uint64_t storage_delay_us = 42000;
+    host.advance_us(storage_delay_us);
+    ASSERT_EQ(session.poll_with_progress(session_again), AYNI_OK);
+    EXPECT_FALSE(session_again);
+    EXPECT_FALSE(session.take_result(result));
+    EXPECT_EQ(stage_events.back().stage, Stage::collected);
+    ASSERT_GT(host.complete_storage(), 0U);
+    ASSERT_TRUE(until([&] { return session.take_result(result); }));
+    ASSERT_TRUE(result.published);
+    EXPECT_EQ(stage_events.back().stage, Stage::context_ready);
+    EXPECT_GE(stage_events.back().at_us - before_ack, storage_delay_us);
+}
 TEST_F(ConversationProgress, background_publication_reuses_dependencies_and_waits_for_exact_ack) {
     ASSERT_EQ(session.begin(text("sum")), AYNI_OK);
     wait_completed_task();

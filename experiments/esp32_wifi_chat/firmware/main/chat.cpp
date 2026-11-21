@@ -186,6 +186,7 @@ void Chat::flush_publication_diagnostics() {
     flush_pending_model_post();
     if (!timing_.publication_emitted && timing_.publication.segment_count() > 0U) {
         timing_.publication_emitted = true;
+        emit_publication_ack();
         timing_.publication.emit_report(&transport_.diagnostics(),
                                         [](void *ctx, const char *line, size_t) {
                                             static_cast<DiagnosticLog *>(ctx)->record("%s", line);
@@ -205,8 +206,61 @@ void Chat::on_publication_stage(void *ctx, uint64_t goal, uint64_t task,
         return;
     }
     const auto at_us = uint64_t(esp_timer_get_time());
+    using Stage = ayni::runtime::conversation::PublicationStage;
+    auto &ack = self.timing_.ack;
+    if (stage == Stage::collected) {
+        ack.collected_us = at_us;
+    } else if (stage == Stage::context_ready) {
+        ack.ready_us = at_us;
+    }
     const auto metrics = self.host_->storage_metrics();
     static_cast<void>(self.timing_.publication.record_stage(goal, task, stage, at_us, metrics));
+}
+void Chat::on_publication_ack(void *ctx, ayni::runtime::conversation::PublicationAck event,
+                              uint64_t commit_seq) {
+    auto &self = *static_cast<Chat *>(ctx);
+    if (!self.turn_ || !self.host_) {
+        return;
+    }
+    auto &ack = self.timing_.ack;
+    if (event == ayni::runtime::conversation::PublicationAck::submitted) {
+        ack.submitted_us = uint64_t(esp_timer_get_time());
+    } else {
+        ack.commit_seq = commit_seq;
+        ack.durable_us = self.host_->append_durable_us(commit_seq);
+    }
+}
+void Chat::record_owner_wait(uint64_t entered_us, uint64_t exited_us) {
+    auto &ack = timing_.ack;
+    if (!turn_ || !ack.collected_us || ack.ready_us) {
+        return;
+    }
+    auto &wait = ack.submitted_us ? ack.after_ack : ack.before_ack;
+    if (!wait.count++) {
+        wait.entered_us = entered_us;
+    }
+    wait.exited_us = exited_us;
+    wait.total_us += exited_us - entered_us;
+}
+void Chat::emit_publication_ack() {
+    const auto &ack = timing_.ack;
+    if (!ack.collected_us) {
+        return;
+    }
+    const auto n = [](uint64_t us) { return static_cast<unsigned long long>(us); };
+    auto &log = transport_.diagnostics();
+    log.record("wifi pub_ack turn=%llu seq=%llu collected_us=%llu submitted_us=%llu "
+               "durable_us=%llu ready_us=%llu\n",
+               n(turn_), n(ack.commit_seq), n(ack.collected_us), n(ack.submitted_us),
+               n(ack.durable_us), n(ack.ready_us));
+    const auto report = [&](const char *phase, const TurnTiming::Ack::Wait &wait) {
+        log.record("wifi pub_wait turn=%llu phase=%s count=%lu enter_us=%llu exit_us=%llu "
+                   "wait_us=%llu\n",
+                   n(turn_), phase, static_cast<unsigned long>(wait.count), n(wait.entered_us),
+                   n(wait.exited_us), n(wait.total_us));
+    };
+    report("before_ack", ack.before_ack);
+    report("after_ack", ack.after_ack);
 }
 void Chat::status(uint64_t id, const char *message) {
     if (!std::strncmp(message, "registration ", 13) ||
@@ -1413,7 +1467,7 @@ ayni_status_t Chat::prepare_history(const ayni_kernel_info_v1 &info) {
             }};
         config.unfinished = ayni::runtime::conversation::UnfinishedTurn::discard;
         config.persistence = ayni::strategies::Persistence::background;
-        config.observer = {this, on_publication_stage};
+        config.observer = {this, on_publication_stage, on_publication_ack};
         rc = history_.configure(config);
         if (rc != AYNI_OK) {
             return rc;
@@ -1429,7 +1483,9 @@ ayni_status_t Chat::prepare_history(const ayni_kernel_info_v1 &info) {
             return cancelled;
         }
     }
-    rc = history_.poll();
+    bool session_again = false;
+    rc = history_.poll_with_progress(session_again);
+    progress_ = progress_ || session_again;
     if (rc != AYNI_OK && rc != AYNI_BUSY && !history_.held()) {
         status(turn_, "conversation store failed; no answer shown");
         return rc;
