@@ -21,8 +21,10 @@ class Api {
         Packet input{}, output{};
         ToolOutline outline; // Optional metadata only, generated before the decoded Answer dies.
         uint32_t generation = 0;
-        int64_t deadline = 0;     // Monotonic microseconds, includes local queue wait.
-        uint8_t *audio = nullptr; // ASR ownership transfers only after successful submit.
+        int64_t deadline = 0;          // Monotonic microseconds, includes local queue wait.
+        uint64_t http_complete_us = 0; // Monotonic microseconds when HTTP response finished.
+        uint64_t done_enqueued_us = 0; // Monotonic microseconds right before posting to done_.
+        uint8_t *audio = nullptr;      // ASR ownership transfers only after successful submit.
         size_t audio_bytes = 0;
         uint8_t *response = nullptr; // Worker allocation; result owns until release.
         size_t response_bytes = 0;

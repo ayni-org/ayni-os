@@ -5,6 +5,7 @@
 #include "reply_voice.h"
 #include "speaker.h"
 #include "transport.h"
+#include "turn_diagnostics.h"
 #include <array>
 #include <ayni/authority.h>
 #include <ayni/ayni.hpp>
@@ -71,8 +72,10 @@ class Chat {
     void wait_for(const char *phase, const char *label, ayni_status_t);
     void status(uint64_t, const char *);
     void publish_model();
-    void trace(const char *phase); // Fixed phase/timing metadata only.
-    void trace_latency(const char *phase);
+    static void on_publication_stage(void *, uint64_t goal, uint64_t task,
+                                     ayni::runtime::conversation::PublicationStage);
+    void trace(const char *phase, uint64_t at_us = 0); // Fixed phase/timing metadata only.
+    void trace_latency(const char *phase, uint64_t at_us = 0);
     void diagnostics();
     Transport &transport_;
     Speaker speaker_;
@@ -132,10 +135,13 @@ class Chat {
         uint64_t next_trace_us = 0;  // Monotonic microseconds, only valid with phase.
     } preparation_wait_;
     uint64_t turn_started_ = 0;
-    // Owner-only per-turn wall time. Step/conversation work may overlap storage on its worker;
+    // Owner-only per-turn wall time. step_us is ayni_step() wall time (includes preemption);
     // storage snapshots are cumulative completed work, sampled as deltas at phase boundaries.
     struct TurnTiming {
         uint64_t step_calls = 0, step_us = 0, max_step_us = 0, conversation_us = 0;
+        uint64_t phase_started_us = 0;
+        uint64_t model_received_call = 0, model_received_us = 0, model_staged_us = 0;
+        PublicationTimeline publication{};
         ayni::hosts::esp_idf::StorageMetrics storage;
     } timing_;
     uint64_t reply_deadline_ = 0; // Deadline for final-text queue admission only.

@@ -172,6 +172,8 @@ bool Api::submit(Request kind, uint64_t id, const void *data, size_t bytes, uint
     job.error.fill(0);
     job.generation = generation_.load(std::memory_order_acquire);
     job.deadline = esp_timer_get_time() + request_budget_us(kind);
+    job.http_complete_us = 0;
+    job.done_enqueued_us = 0;
     job.audio = audio;
     job.audio_bytes = audio_bytes;
     if (bytes) {
@@ -202,6 +204,8 @@ void Api::release(Job *job) {
     std::fill(job->input.body.begin(), job->input.body.end(), 0);
     std::fill(job->output.body.begin(), job->output.body.end(), 0);
     job->outline.clear();
+    job->http_complete_us = 0;
+    job->done_enqueued_us = 0;
     xQueueSend(free_, &index, 0);
 }
 void *Api::work(void *context) {
@@ -246,6 +250,7 @@ void *Api::work(void *context) {
             heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
             heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
         // Every queued slot reserves one result slot, so this cannot block on UI work.
+        job.done_enqueued_us = uint64_t(esp_timer_get_time());
         xQueueSend(self.done_, &index, portMAX_DELAY);
         self.outstanding_.fetch_sub(1, std::memory_order_acq_rel);
     }
@@ -672,6 +677,7 @@ void Api::model(Job &job, const char *url) {
             options.api == ayni::providers::model_protocol::Api::responses
                 ? R"({"status":"completed","output":[{"type":"message","id":"diagnostic","role":"assistant","status":"completed","content":[{"type":"output_text","text":"local diagnostic only"}]}]})"
                 : R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"local diagnostic only"}}]})";
+        job.http_complete_us = uint64_t(esp_timer_get_time());
         job.ok = decode_model(response, tools_allowed, job.output, options, &job.outline);
         transport_->diagnostics().record("wifi probe template_only=1 no_model_http=1 status=%ld\n",
                                          long(job.ok ? AYNI_OK : AYNI_INVALID_ARGUMENT));
@@ -722,10 +728,14 @@ void Api::model(Job &job, const char *url) {
     job.output.size = 0; // From here a transport interruption is UNKNOWN.
     if (http(job, url, "application/json", nullptr, 0, json.data, size, nullptr, 0, response_limit,
              nullptr, nullptr, stream.get())) {
+        job.http_complete_us = uint64_t(esp_timer_get_time());
         if (stream) {
             transport_->diagnostics().record(
-                "wifi model_stream http_complete=1 wire_bytes=%zu buffer_limit=%zu\n",
-                job.response_bytes, stream_buffer_limit);
+                "wifi model_stream call=%llu http_complete=1 at_us=%llu wire_bytes=%zu "
+                "buffer_limit=%zu\n",
+                static_cast<unsigned long long>(job.input.id),
+                static_cast<unsigned long long>(job.http_complete_us), job.response_bytes,
+                stream_buffer_limit);
             auto answer = std::unique_ptr<ayni::providers::model_protocol::Answer>(
                 new (std::nothrow) ayni::providers::model_protocol::Answer{});
             if (answer) {
