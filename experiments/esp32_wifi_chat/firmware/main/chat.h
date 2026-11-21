@@ -74,8 +74,30 @@ class Chat {
     void publish_model();
     static void on_publication_stage(void *, uint64_t goal, uint64_t task,
                                      ayni::runtime::conversation::PublicationStage);
+    struct PhaseSnapshot {
+        uint64_t at_us = 0;
+        uint64_t step_calls = 0, step_us = 0, max_step_us = 0, conversation_us = 0;
+        uint32_t model_requests = 0;
+        ayni::hosts::esp_idf::StorageMetrics storage{};
+    };
+    struct PendingModelPost {
+        bool valid = false;
+        uint64_t call = 0;
+        const char *kind = "fail"; // Static literal only: "text", "tools", or "fail".
+        size_t bytes = 0;
+        uint64_t recv_us = 0, stage_us = 0;
+        PhaseSnapshot snapshot{};
+    };
+    struct PendingAnswerSaved {
+        bool valid = false;
+        PhaseSnapshot snapshot{};
+    };
+    PhaseSnapshot capture_phase_snapshot(uint64_t at_us = 0) const;
+    void emit_phase_trace(const char *phase, const PhaseSnapshot &snapshot);
+    void flush_pending_model_post();
+    void flush_publication_diagnostics();
     void trace(const char *phase, uint64_t at_us = 0); // Fixed phase/timing metadata only.
-    void trace_latency(const char *phase, uint64_t at_us = 0);
+    void trace_latency(const char *phase, const PhaseSnapshot &snapshot);
     void diagnostics();
     Transport &transport_;
     Speaker speaker_;
@@ -142,6 +164,10 @@ class Chat {
         uint64_t phase_started_us = 0;
         uint64_t model_received_call = 0, model_received_us = 0, model_staged_us = 0;
         PublicationTimeline publication{};
+        PendingModelPost pending_model_post{};
+        PendingAnswerSaved pending_answer_saved{};
+        bool flush_ready = false; // Set after answer_saved is sampled and answer handed to UI.
+        bool publication_emitted = false;
         ayni::hosts::esp_idf::StorageMetrics storage;
     } timing_;
     uint64_t reply_deadline_ = 0; // Deadline for final-text queue admission only.
