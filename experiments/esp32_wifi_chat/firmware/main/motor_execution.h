@@ -38,6 +38,7 @@ class MotorExecution {
         ayni_provider_completion_t *completion = nullptr;
         ayni_execution_permit_v1 permit{};
         MotorCommand command{};
+        uint64_t call = 0;           // Core Call identity, used only for timing correlation.
         uint64_t last_sample_us = 0; // Local capture time, telemetry only; zero before sample.
         Phase phase = Phase::prepared;
         Effect effect = Effect::none;
@@ -90,6 +91,7 @@ class MotorExecution {
     static ayni_status_t status_port(void *, ayni_attempt_ref_v1, uint64_t,
                                      ayni_executor_completion_t *);
     void trace(const char *, ayni_status_t);
+    void trace_handoff(const char *phase, uint64_t call, uint64_t at_us);
     ayni_status_t queue(const PortRequest &);
     ayni_status_t serve(PortRequest &);
     ayni_status_t challenge(const ayni_permit_epochs_v1 &, ayni_executor_nonce_v1 &);

@@ -73,6 +73,8 @@ class Chat {
     void wait_for(const char *phase, const char *label, ayni_status_t);
     void status(uint64_t, const char *);
     void publish_model();
+    void trace_tool_window(uint64_t next_call, uint64_t requested_us);
+    void emit_tool_decisions();
     static void on_publication_stage(void *, uint64_t goal, uint64_t task,
                                      ayni::runtime::conversation::PublicationStage);
     static void on_publication_ack(void *, ayni::runtime::conversation::PublicationAck,
@@ -164,11 +166,19 @@ class Chat {
     uint64_t turn_started_ = 0;
     // Owner-only per-turn wall time. step_us is ayni_step() wall time (includes preemption);
     // storage snapshots are cumulative completed work, sampled as deltas at phase boundaries.
+    static constexpr uint32_t step_units = 32;
     struct TurnTiming {
         uint64_t step_calls = 0, step_us = 0, max_step_us = 0, conversation_us = 0;
         uint64_t phase_started_us = 0;
         uint64_t model_received_call = 0, model_received_us = 0, model_staged_us = 0;
         ModelDeliveryTiming model_delivery{};
+        struct ToolDecision {
+            uint64_t task = 0, at_us = 0;
+            uint32_t key_size = 0;
+            std::array<char, AYNI_CATALOG_ID_MAX_BYTES> key{};
+        };
+        std::array<ToolDecision, step_units> tool_decisions{};
+        size_t tool_decision_count = 0; // Filled only during this owner step.
         PublicationTimeline publication{};
         struct Ack {
             uint64_t collected_us = 0, submitted_us = 0, durable_us = 0, ready_us = 0;

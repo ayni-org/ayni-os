@@ -18,7 +18,7 @@
 namespace wifichat {
 namespace {
 constexpr uint64_t probe_record_id = UINT64_C(0x43545850524f4245);
-constexpr uint32_t version = 1, step_units = 32, step_us = 4000;
+constexpr uint32_t version = 1, step_us = 4000;
 constexpr uint64_t presentation_wait_us = UINT64_C(120) * 1000000;
 constexpr uint64_t principal = 1;
 constexpr char chat_type[] = "wifi.chat", probe_type[] = "wifi.context-probe";
@@ -667,7 +667,17 @@ ayni_status_t Chat::configure_strategy() {
 ayni_status_t Chat::decide(void *ctx, const ayni_task_snapshot_v1 *snapshot,
                            ayni_policy_output_v1 *output) {
     auto &self = *static_cast<Chat *>(ctx);
-    return self.inner_.decide(self.inner_.ctx, snapshot, output);
+    const auto result = self.inner_.decide(self.inner_.ctx, snapshot, output);
+    if (result == AYNI_OK && self.turn_ && output->intent_count &&
+        output->intents[0].kind == AYNI_POLICY_REQUEST_CALL &&
+        self.timing_.tool_decision_count < self.timing_.tool_decisions.size()) {
+        const auto &intent = output->intents[0];
+        auto &decision = self.timing_.tool_decisions[self.timing_.tool_decision_count++];
+        const auto key_size = std::min(intent.step_key_size, uint32_t(sizeof(intent.step_key)));
+        decision = {snapshot->task_id, uint64_t(esp_timer_get_time()), key_size, {}};
+        std::copy_n(intent.step_key, decision.key_size, decision.key.data());
+    }
+    return result;
 }
 // This interactive deployment starts a fresh session: until restored work is cancelled and
 // readiness announced, and again once teardown began, no Task is admitted to decide.
@@ -726,7 +736,9 @@ ayni_submit_result_t Chat::submit_model(void *ctx, const ayni_provider_request_v
     self.model_failure_ = {};
     self.model_ = ModelState::waiting;
     ++self.model_requests_;
-    self.trace("model_requested");
+    const auto requested = uint64_t(esp_timer_get_time());
+    self.trace_tool_window(request->logical_call_id, requested);
+    self.trace("model_requested", requested);
     return AYNI_SUBMIT_ACCEPTED;
 }
 ayni_submit_result_t Chat::cancel_model(void *ctx, ayni_attempt_ref_v1 attempt) {
@@ -740,6 +752,34 @@ ayni_submit_result_t Chat::cancel_model(void *ctx, ayni_attempt_ref_v1 attempt) 
         wake_owner(); // Inside ayni_step: the next tick posts the result without waiting.
     }
     return AYNI_SUBMIT_ACCEPTED;
+}
+void Chat::trace_tool_window(uint64_t next_call, uint64_t requested_us) {
+    const auto &proposal = timing_.pending_model_post;
+    if (!turn_ || !proposal.valid || std::strcmp(proposal.kind, "tools") != 0 || !host_) {
+        return;
+    }
+    const auto io = StoragePhaseDelta::between(proposal.snapshot.storage, host_->storage_metrics(),
+                                               requested_us - proposal.snapshot.at_us);
+    using Role = ayni::hosts::storage::FileValueRole;
+    const auto &chunks = io.values[static_cast<size_t>(Role::body_chunk)];
+    const auto &manifests = io.values[static_cast<size_t>(Role::owner_manifest)];
+    const auto n = [](uint64_t value) { return static_cast<unsigned long long>(value); };
+    transport_.diagnostics().record(
+        "wifi tool_window turn=%llu model_call=%llu next_call=%llu proposed_us=%llu "
+        "next_us=%llu chunks_write=%llu/%llu manifests_write=%llu/%llu append=%llu/%llu\n",
+        n(turn_), n(proposal.call), n(next_call), n(proposal.snapshot.at_us), n(requested_us),
+        n(chunks.write.calls), n(chunks.write.service_us), n(manifests.write.calls),
+        n(manifests.write.service_us), n(io.append_calls), n(io.append_us));
+}
+void Chat::emit_tool_decisions() {
+    for (size_t i = 0; i < timing_.tool_decision_count; ++i) {
+        const auto &decision = timing_.tool_decisions[i];
+        const auto n = [](uint64_t value) { return static_cast<unsigned long long>(value); };
+        transport_.diagnostics().record(
+            "wifi tool_decision turn=%llu task=%llu step=%.*s ready_us=%llu\n", n(turn_),
+            n(decision.task), int(decision.key_size), decision.key.data(), n(decision.at_us));
+    }
+    timing_.tool_decision_count = 0;
 }
 void Chat::publish_model() {
     if (model_ == ModelState::waiting && uint64_t(esp_timer_get_time()) >= deadline_) {
@@ -1246,6 +1286,7 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
             ++timing_.step_calls;
             timing_.step_us += elapsed;
             timing_.max_step_us = std::max(timing_.max_step_us, elapsed);
+            emit_tool_decisions();
         }
         if (rc == AYNI_OK) {
             rc = ayni_get_kernel_info(kernel_, &info);
