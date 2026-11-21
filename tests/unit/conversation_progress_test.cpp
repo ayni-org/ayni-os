@@ -48,6 +48,8 @@ class Values {
 struct ObservedBodies {
     enum class Pressure { none, after_success, observed };
     Pressure pressure = Pressure::none;
+    uint32_t collect_busy_remaining = 0;
+    uint32_t collect_busy_observed = 0;
     const ayni_body_store_v1 *original = nullptr;
     BodyCollection collection;
     std::map<std::string, uint32_t> staged;
@@ -153,6 +155,11 @@ class ConversationProgress : public testing::Test {
         };
         collection.collected = [](void *ctx, uint64_t scope) {
             auto &s = *static_cast<ObservedBodies *>(ctx);
+            if (s.collect_busy_remaining > 0) {
+                --s.collect_busy_remaining;
+                ++s.collect_busy_observed;
+                return AYNI_BUSY;
+            }
             const auto status = s.collection.collected(s.collection.context, scope);
             if (status == AYNI_OK && s.queue_unrelated && !s.unrelated.id) {
                 constexpr uint64_t other_scope = UINT64_C(0xfeed);
@@ -175,7 +182,8 @@ class ConversationProgress : public testing::Test {
                                      collection,
                                      {this, command},
                                      conversation::UnfinishedTurn::discard,
-                                     persistence}),
+                                     persistence,
+                                     {this, on_publication_stage}}),
                   AYNI_OK);
         bound = true;
         ASSERT_TRUE(until([&] { return session.ready(); }));
@@ -228,6 +236,15 @@ class ConversationProgress : public testing::Test {
             AYNI_OK);
         return anchor;
     }
+    struct StageEvent {
+        uint64_t goal = 0, task = 0, at_us = 0;
+        conversation::PublicationStage stage;
+    };
+    static void on_publication_stage(void *ctx, uint64_t goal, uint64_t task,
+                                     conversation::PublicationStage stage) {
+        auto &self = *static_cast<ConversationProgress *>(ctx);
+        self.stage_events.push_back({goal, task, self.host.now_us(), stage});
+    }
     static ayni::Submission command(void *ctx, ayni_intent_kind_t kind, const void *body,
                                     uint32_t revision) {
         auto &self = *static_cast<ConversationProgress *>(ctx);
@@ -236,6 +253,78 @@ class ConversationProgress : public testing::Test {
             ++self.commands[kind];
         }
         return accepted;
+    }
+    void verify_publication_timeline(
+        const std::array<conversation::PublicationStage, 5> &expected_order) {
+        // Seed identical initial history so the measured turn replaces an existing graph.
+        ASSERT_EQ(session.begin(text("seed initial turn")), AYNI_OK);
+        conversation::TurnResult seed;
+        ASSERT_TRUE(until([&] { return session.take_result(seed); }));
+        ASSERT_TRUE(seed.published);
+        ASSERT_EQ(session.record()->round_count, 1U);
+
+        stage_events.clear();
+        observed.confirmed.clear();
+        observed.pressure = ObservedBodies::Pressure::after_success;
+        observed.collect_busy_remaining = 3;
+        observed.collect_busy_observed = 0;
+
+        ASSERT_EQ(session.begin(text("fixed normal text turn")), AYNI_OK);
+        uint64_t model_posted_us = 0;
+        ASSERT_TRUE(until([&] {
+            if (!session.latest_goal() || session.latest_goal() == seed.goal) {
+                return false;
+            }
+            uint64_t calls[16]{};
+            uint32_t count = 0;
+            if (ayni_list_objects(profile.kernel(), AYNI_OBJECT_CALL, calls, 16, &count) !=
+                AYNI_OK) {
+                return false;
+            }
+            auto goal = ayni::initialized<ayni_goal_info_v1>();
+            if (ayni_get_goal(profile.kernel(), session.latest_goal(), &goal) != AYNI_OK ||
+                !goal.last_task_id) {
+                return false;
+            }
+            for (uint32_t at = 0; at < count; ++at) {
+                auto call = ayni::initialized<ayni_call_info_v1>();
+                if (ayni_get_call(profile.kernel(), calls[at], &call) == AYNI_OK &&
+                    call.task_id == goal.last_task_id && call.outcome == AYNI_CALL_COMPLETED) {
+                    model_posted_us = host.now_us();
+                    return true;
+                }
+            }
+            return false;
+        }));
+        EXPECT_TRUE(stage_events.empty());
+        conversation::TurnResult result;
+        ASSERT_TRUE(until([&] { return session.take_result(result); }));
+        ASSERT_TRUE(result.published);
+        ASSERT_NE(result.goal, 0U);
+        ASSERT_NE(result.task, 0U);
+        std::string answer;
+        ASSERT_TRUE(until([&] {
+            return ayni::strategies::Conversation::latest_answer(
+                       *profile.bodies(), *session.record(), answer) == AYNI_OK;
+        }));
+        const uint64_t answer_saved_us = host.now_us();
+        EXPECT_FALSE(answer.empty());
+        EXPECT_EQ(observed.pressure, ObservedBodies::Pressure::observed);
+        EXPECT_EQ(observed.collect_busy_observed, 3U);
+
+        ASSERT_EQ(stage_events.size(), expected_order.size());
+        uint64_t prev = model_posted_us, sum_us = 0;
+        for (size_t at = 0; at < expected_order.size(); ++at) {
+            EXPECT_EQ(stage_events[at].goal, result.goal);
+            EXPECT_EQ(stage_events[at].task, result.task);
+            EXPECT_EQ(stage_events[at].stage, expected_order[at]);
+            EXPECT_GE(stage_events[at].at_us, prev);
+            sum_us += stage_events[at].at_us - prev;
+            prev = stage_events[at].at_us;
+        }
+        EXPECT_GE(answer_saved_us, prev);
+        sum_us += answer_saved_us - prev;
+        EXPECT_EQ(sum_us, answer_saved_us - model_posted_us);
     }
     void wait_completed_task() {
         ASSERT_TRUE(until([&] {
@@ -262,6 +351,7 @@ class ConversationProgress : public testing::Test {
     ObservedBodies observed;
     bool bound = false;
     std::map<ayni_intent_kind_t, uint32_t> commands;
+    std::vector<StageEvent> stage_events;
 };
 TEST_F(ConversationProgress, background_publication_reuses_dependencies_and_waits_for_exact_ack) {
     ASSERT_EQ(session.begin(text("sum")), AYNI_OK);
@@ -395,6 +485,20 @@ TEST_F(ConversationProgress, asynchronous_collection_requires_scoped_completion)
     config.bodies = collection;
     config.commands = {this, command};
     EXPECT_EQ(unconfigured.configure(config), AYNI_INVALID_ARGUMENT);
+}
+// C-SDK-009: background publication observes each boundary once in actual async order with retries.
+TEST_F(ConversationProgress,
+       background_publication_emits_ordered_unique_milestones_with_additive_segments) {
+    using Stage = conversation::PublicationStage;
+    verify_publication_timeline({Stage::checkpoint_ready, Stage::publish_durable,
+                                 Stage::record_saved, Stage::collected, Stage::context_ready});
+}
+// C-SDK-009: durable publication preserves the direct path's publish_durable -> checkpoint order.
+TEST_F(DurableConversationProgress,
+       durable_publication_preserves_direct_order_and_additive_segments) {
+    using Stage = conversation::PublicationStage;
+    verify_publication_timeline({Stage::publish_durable, Stage::checkpoint_ready,
+                                 Stage::record_saved, Stage::collected, Stage::context_ready});
 }
 
 class ScopedBodyCleanup : public testing::Test {

@@ -91,6 +91,11 @@ void Session::complete(void *context, const hosts::storage::FileValueResult &res
     self.answer_ = result;
     self.completed_.store(true, std::memory_order_release);
 }
+void Session::observe_publication(uint64_t task, PublicationStage stage) const {
+    if (config_.observer.on_stage) {
+        config_.observer.on_stage(config_.observer.context, goal_, task, stage);
+    }
+}
 Submission Session::command(ayni_intent_kind_t kind, const ayni_context_info_v1 &anchor,
                             uint64_t task, ayni_context_action_t action, uint64_t turn_id) {
     const ayni_context_command_v1 body{sizeof(body),      action, 0,      context_id_,
@@ -360,6 +365,10 @@ ayni_status_t Session::saved(const ayni_context_info_v1 &anchor) {
     if (save_ == Save::discard) {
         end_request_ = EndRequest::none;
     }
+    if (save_ == Save::publication) {
+        observe_publication(result_ ? result_->task : anchor.pending_task_id,
+                            PublicationStage::record_saved);
+    }
     return AYNI_OK;
 }
 ayni_status_t Session::begin(ayni_string_v1 user, uint64_t memory_id) {
@@ -492,6 +501,7 @@ ayni_status_t Session::turn(const ayni_context_info_v1 &anchor, uint64_t durable
             }
             result_ = TurnResult{goal_, task.task_id, AYNI_OK, AYNI_REASON_NONE, false};
             phase_ = Phase::prepare_publication;
+            observe_publication(task.task_id, PublicationStage::checkpoint_ready);
             return AYNI_OK;
         }
         result_ = TurnResult{goal_, task.task_id, AYNI_OK, AYNI_REASON_NONE, false};
@@ -527,7 +537,12 @@ ayni_status_t Session::publish(const ayni_context_info_v1 &anchor) {
     if (anchor.pending_action != AYNI_CONTEXT_PUBLISH || !anchor.pending_task_id) {
         return AYNI_NOT_READY;
     }
-    if (phase_ == Phase::publish) {
+    const bool direct = phase_ == Phase::publish;
+    if (direct) {
+        if (publish_observed_task_ != anchor.pending_task_id) {
+            publish_observed_task_ = anchor.pending_task_id;
+            observe_publication(anchor.pending_task_id, PublicationStage::publish_durable);
+        }
         // Normal reopen has no in-memory candidate; reconstruct it once from the
         // completed durable checkpoint, never resume the Task (C-SDK-009).
         const auto copied = ayni_copy_task_checkpoint(
@@ -549,6 +564,8 @@ ayni_status_t Session::publish(const ayni_context_info_v1 &anchor) {
     }
     save_ = Save::publication;
     phase_ = Phase::save;
+    observe_publication(anchor.pending_task_id, direct ? PublicationStage::checkpoint_ready
+                                                       : PublicationStage::publish_durable);
     return AYNI_OK;
 }
 ayni_status_t Session::forget(ayni_context_action_t action, uint64_t turn_id) {
@@ -730,6 +747,10 @@ ayni_status_t Session::poll() {
             phase_ = save_ == Save::discard    ? Phase::ready
                      : save_ == Save::retained ? Phase::terminal
                                                : Phase::acknowledge;
+            if (save_ == Save::publication) {
+                observe_publication(result_ ? result_->task : anchor.pending_task_id,
+                                    PublicationStage::collected);
+            }
         }
         break;
     case Phase::acknowledge:
@@ -750,6 +771,8 @@ ayni_status_t Session::poll() {
                 if (result_) {
                     result_->published = true;
                 }
+                publish_observed_task_ = 0;
+                observe_publication(result_ ? result_->task : 0, PublicationStage::context_ready);
             }
             end_request_ = EndRequest::none;
         }
