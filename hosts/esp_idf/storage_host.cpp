@@ -210,6 +210,8 @@ void Host::Storage::serve(const Queued &queued) {
             metrics_.append_us += service_us;
         }
     } else if (const auto *value = std::get_if<storage::FileValueRequest>(&queued.work.value)) {
+        metrics_.record_value(*value, std::get<storage::ValueCompleted>(result.value).result,
+                              service_us, refreshed - queued.submitted_us);
         metrics_.value_us += service_us;
         switch (value->kind) {
         case storage::FileValueRequest::Kind::read:

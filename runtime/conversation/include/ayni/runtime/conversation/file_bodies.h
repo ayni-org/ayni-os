@@ -75,6 +75,7 @@ class FileBodies {
         std::vector<Release>
             releases;            // Bounded ownership-removal fences, including cold manifests.
         uint64_t generation = 0; // Last confirmed manifest CAS generation; zero if absent.
+        uint32_t saved_manifest_bytes = 0; // Last observed durable image size, zero if absent.
         uint64_t revision = 0, saved_revision = 0; // Owner changes vs confirmed manifest.
         uint32_t chunk = 0;                        // Next payload chunk to load/write/remove.
         bool manifest_loaded = false;

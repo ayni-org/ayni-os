@@ -2,6 +2,7 @@
 #include "configuration.h"
 #include "diagnostic_log.h"
 #include "turn_diagnostics.h"
+#include <algorithm>
 #include <ayni/ayni.hpp>
 #include <ayni/commands.hpp>
 #include <ayni/context.h>
@@ -102,6 +103,7 @@ class QueuedValueStore {
             metrics_.files.space_measure_us += measure_us;
         }
         const auto before_post = host_.now_us();
+        metrics_.record_value(r, result, service_us, before_post - item.submitted_us);
         r.complete(r.context, result);
         metrics_.post_us += host_.now_us() - before_post;
     }
@@ -722,6 +724,63 @@ EndToEndSample run_fixed_text_turn(const EndToEndOptions &opts) {
     return out;
 }
 
+// C-HVAL-009: chunk/manifest I/O remains identifiable when one payload has two owners.
+TEST(TurnDiagnostics, ValueRolesAccountForShortMultichunkAndSharedBody) {
+    using ayni::hosts::storage::FileValueRole;
+    const auto index = [](FileValueRole role) { return static_cast<size_t>(role); };
+    ayni::hosts::sim::Host host(1000);
+    QueuedValueStore values(host);
+    ayni::runtime::FileBodies bodies;
+    ASSERT_EQ(bodies.configure(values.port(), 32U * 1024U), AYNI_OK);
+    const auto *port = bodies.store();
+    const auto drain = [&] {
+        for (size_t i = 0; i < 64 && !bodies.idle(); ++i) {
+            ayni::runtime::FileBodies::progress(&bodies, 0);
+            host.advance_us(1000); // Accepted requests wait for a worker opportunity.
+            values.advance();
+        }
+        EXPECT_TRUE(bodies.idle());
+    };
+    const auto persist = [&](uint64_t scope, const std::string &value, ayni_body_ref_v1 &ref) {
+        EXPECT_EQ(port->stage(port->context, scope,
+                              {reinterpret_cast<const uint8_t *>(value.data()),
+                               static_cast<uint32_t>(value.size())},
+                              &ref),
+                  AYNI_OK);
+        EXPECT_EQ(port->confirm(port->context, &ref), AYNI_NOT_READY);
+        drain();
+        EXPECT_EQ(port->confirm(port->context, &ref), AYNI_OK);
+    };
+    ayni_body_ref_v1 small{}, large{}, shared{};
+    persist(1, "short", small);
+    constexpr uint32_t cross_chunk_bytes = 4097;
+    persist(2, std::string(cross_chunk_bytes, 'x'), large);
+    ASSERT_EQ(port->share(port->context, 3, &small, &shared), AYNI_OK);
+    EXPECT_EQ(port->confirm(port->context, &shared), AYNI_NOT_READY);
+    drain();
+    const auto chunk = index(FileValueRole::body_chunk);
+    const auto manifest = index(FileValueRole::owner_manifest);
+    const auto before = values.metrics();
+    EXPECT_EQ(before.values[chunk].write.calls, 3U);
+    EXPECT_EQ(before.values[chunk].write.bytes, 5U + cross_chunk_bytes);
+    EXPECT_EQ(before.values[manifest].write.calls, 3U);
+    EXPECT_GT(before.values[manifest].write.completion_us,
+              before.values[manifest].write.service_us);
+    port->release(port->context, &small);
+    drain();
+    EXPECT_EQ(values.metrics().values[chunk].remove.calls, 0U);
+    EXPECT_EQ(values.metrics().values[manifest].write.calls, 4U);
+    port->release(port->context, &shared);
+    port->release(port->context, &large);
+    drain();
+    const auto cleanup = wifichat::StoragePhaseDelta::between(before, values.metrics(), 0);
+    EXPECT_EQ(cleanup.values[chunk].remove.calls, 3U);
+    EXPECT_EQ(cleanup.values[chunk].remove.bytes, 5U + cross_chunk_bytes);
+    EXPECT_EQ(cleanup.values[manifest].remove.calls, 2U);
+    EXPECT_GT(cleanup.values[manifest].remove.bytes, 0U);
+    EXPECT_EQ(cleanup.value_remove_calls, 5U);
+}
+
 TEST(TurnDiagnostics, PublicationTimelineAsyncOrderRecordsEachBoundaryOnceAndSumsToTotal) {
     wifichat::PublicationTimeline timeline;
     timeline.reset(77);
@@ -940,6 +999,25 @@ TEST(TurnDiagnostics, FixedTextTurnBackgroundPathCorrelatesUniqueBoundariesAndSu
     base_opts.persistence = ayni::strategies::Persistence::background;
     const auto base = run_fixed_text_turn(base_opts);
     expect_additive_summary(base.summary);
+    using RoleMetrics = ayni::hosts::esp_idf::ValueRoleMetrics;
+    using Operation = ayni::hosts::esp_idf::ValueOperationMetrics;
+    for (const auto member : {&RoleMetrics::read, &RoleMetrics::write, &RoleMetrics::remove}) {
+        for (size_t role = 0; role < base.summary.total.values.size(); ++role) {
+            Operation sum{};
+            for (size_t i = 0; i < base.summary.segment_count; ++i) {
+                const auto &part = base.summary.segments[i].io.values[role].*member;
+                sum.calls += part.calls;
+                sum.bytes += part.bytes;
+                sum.service_us += part.service_us;
+                sum.completion_us += part.completion_us;
+            }
+            const auto &total = base.summary.total.values[role].*member;
+            EXPECT_EQ(sum.calls, total.calls);
+            EXPECT_EQ(sum.bytes, total.bytes);
+            EXPECT_EQ(sum.service_us, total.service_us);
+            EXPECT_EQ(sum.completion_us, total.completion_us);
+        }
+    }
     EXPECT_EQ(base.summary.order, Order::async);
     EXPECT_EQ(base.summary.turn, 2U);
     EXPECT_NE(base.summary.goal, 0U);
@@ -954,7 +1032,14 @@ TEST(TurnDiagnostics, FixedTextTurnBackgroundPathCorrelatesUniqueBoundariesAndSu
     EXPECT_EQ(*base.collect_hit_stage, Stage::record_saved);
     EXPECT_GE(base.summary.segments[2].io.value_write_calls, 1U); // publish_durable -> record_saved
     EXPECT_GE(base.summary.segments[3].io.value_remove_calls, 1U); // record_saved -> collected
-    ASSERT_EQ(base.emitted_lines.size(), 7U);                      // 6 segments + 1 summary.
+    EXPECT_EQ(std::count_if(base.emitted_lines.begin(), base.emitted_lines.end(),
+                            [](const auto &line) { return line.rfind("wifi pub ", 0) == 0; }),
+              6);
+    EXPECT_NE(std::find_if(base.emitted_lines.begin(), base.emitted_lines.end(),
+                           [](const auto &line) {
+                               return line.find("role=conversation_root") != std::string::npos;
+                           }),
+              base.emitted_lines.end());
 
     // Known-wait attribution: inject +70 ms in confirm (seg 1) and +110 ms in collect (seg 3).
     EndToEndOptions delayed_opts = base_opts;
@@ -1164,7 +1249,7 @@ TEST(TurnDiagnostics, DeferredOutputProducesIdenticalSamplesUnderInstantAndSlowL
     EXPECT_GE(fast.first_log_emit_us, fast.answer_saved_us);
     EXPECT_GE(slow.first_log_emit_us, slow.answer_saved_us);
     EXPECT_EQ(fast.emitted_lines, slow.emitted_lines);
-    ASSERT_EQ(slow.emitted_lines.size(), 7U);
+    ASSERT_GT(slow.emitted_lines.size(), 7U);
     for (const auto &line : slow.emitted_lines) {
         EXPECT_NE(line.find("turn=2 "), std::string::npos) << line;
         EXPECT_LT(line.size(), wifichat::DiagnosticLog::line_bytes) << line;

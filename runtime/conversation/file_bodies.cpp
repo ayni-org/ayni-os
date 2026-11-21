@@ -541,6 +541,8 @@ bool FileBodies::prepare(uint64_t id, Entry &entry) {
     request.key = {base_, id};
     request.priority = FileValueRequest::Priority::background;
     request.complete = complete;
+    using Role = hosts::storage::FileValueRole;
+    request.role = Role::owner_manifest;
     if (!entry.manifest_loaded) {
         pending.operation = Operation::manifest_read;
         pending.buffer.resize(manifest_bytes);
@@ -548,9 +550,15 @@ bool FileBodies::prepare(uint64_t id, Entry &entry) {
         pending.operation = Operation::remove;
         request.kind = FileValueRequest::Kind::remove;
         if (entry.chunk < chunks(entry.size)) {
+            request.role = Role::body_chunk;
             request.key.owner_instance_id += 1U + entry.chunk;
+            request.logical_remove_bytes =
+                std::min(chunk_bytes, entry.size - entry.chunk * chunk_bytes);
+        } else {
+            request.logical_remove_bytes = entry.saved_manifest_bytes;
         }
     } else if (entry.state == State::writing || entry.state == State::loading) {
+        request.role = Role::body_chunk;
         const auto at = entry.chunk * chunk_bytes;
         request.size = std::min(chunk_bytes, entry.size - at);
         request.key.owner_instance_id += 1U + entry.chunk;
@@ -643,6 +651,7 @@ void FileBodies::complete(void *context, const FileValueResult &result) noexcept
         } else {
             entry.manifest_loaded = true;
             entry.generation = missing ? 0 : result.generation;
+            entry.saved_manifest_bytes = missing ? 0 : result.size;
             // Merge local references into the durable owner set; repeated staging is idempotent.
             for (const auto &owner : entry.additions) {
                 if (std::none_of(entry.owners.begin(), entry.owners.end(),
@@ -679,6 +688,7 @@ void FileBodies::complete(void *context, const FileValueResult &result) noexcept
         }
     } else if (pending->operation == Operation::manifest_write) {
         entry.generation = result.generation;
+        entry.saved_manifest_bytes = pending->request.size;
         entry.saved_revision = pending->revision;
         self.retire_releases(entry);
     } else if (pending->operation == Operation::remove) {

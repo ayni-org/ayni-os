@@ -107,6 +107,7 @@ Submission Session::command(ayni_intent_kind_t kind, const ayni_context_info_v1 
 ayni_status_t Session::load(const ayni_context_info_v1 &anchor) {
     if (phase_ == Phase::load) {
         FileValueRequest request;
+        request.role = hosts::storage::FileValueRole::conversation_root;
         request.key = {config_.owner_instance, context_id_};
         request.buffer = file_.bytes.data();
         request.size = static_cast<uint32_t>(file_.bytes.size());
@@ -317,6 +318,7 @@ ayni_status_t Session::save() {
     }
     FileValueRequest request;
     request.kind = FileValueRequest::Kind::write;
+    request.role = hosts::storage::FileValueRole::conversation_root;
     request.key = {config_.owner_instance, context_id_};
     request.previous_generation = value_version_;
     request.generation = value_version_ + 1;

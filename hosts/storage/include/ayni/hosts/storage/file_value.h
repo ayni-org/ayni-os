@@ -26,6 +26,8 @@ struct FileValueResult {
 // Callback runs once on the storage worker, must not block/reenter Host or owner-only Core APIs; it
 // cannot throw. Completion context lives through Host close/join. No cancellation; close drains
 // accepted work.
+// Caller-supplied role for storage diagnostics. It has no effect on the operation.
+enum class FileValueRole { other, body_chunk, owner_manifest, conversation_root, count };
 struct FileValueRequest {
     // Remove deletes the named value, OK also when none exists; it carries no CAS (ADR-0096).
     enum class Kind { read, write, remove } kind = Kind::read;
@@ -39,6 +41,8 @@ struct FileValueRequest {
     uint32_t size = 0;             // Payload bytes or read capacity, at most file_value_bytes_max.
     void *context = nullptr;
     void (*complete)(void *, const FileValueResult &) noexcept = nullptr;
+    FileValueRole role = FileValueRole::other;
+    uint32_t logical_remove_bytes = 0; // Known target size for diagnostics; zero if unavailable.
 };
 // Copied asynchronous port. Uses the same bounded Host queue and pending-space accounting
 // as Core requests. Unavailable/closed/full/invalid submissions are rejected without retention.
