@@ -410,8 +410,18 @@ int LittleFiles::free_bytes(uint64_t &bytes) const {
     if (volume_state_ != VolumeState::mounted) {
         return unavailable();
     }
-    if (!space_.needs_measurement() && space_.available(bytes)) {
-        return 0;
+    if (!space_.available(bytes)) {
+        const auto error = measure_space();
+        if (error != 0) {
+            return error;
+        }
+        static_cast<void>(space_.available(bytes));
+    }
+    return 0;
+}
+int LittleFiles::measure_space() const {
+    if (volume_state_ != VolumeState::mounted) {
+        return unavailable();
     }
     lfs_ssize_t used = 0;
     {
@@ -425,9 +435,8 @@ int LittleFiles::free_bytes(uint64_t &bytes) const {
     }
     constexpr uint32_t metadata_reserve_blocks = 2;
     const uint64_t unavailable = static_cast<uint64_t>(used) + metadata_reserve_blocks;
-    bytes =
-        unavailable < config_.block_count ? (config_.block_count - unavailable) * block_bytes : 0;
-    space_.measured(bytes);
+    space_.measured(
+        unavailable < config_.block_count ? (config_.block_count - unavailable) * block_bytes : 0);
     return 0;
 }
 int LittleFiles::read_block(const lfs_config *config, lfs_block_t block, lfs_off_t offset,

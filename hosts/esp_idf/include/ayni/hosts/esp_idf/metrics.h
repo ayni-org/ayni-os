@@ -44,6 +44,8 @@ struct StorageMetrics {
     uint64_t value_write_calls = 0, value_write_us = 0;
     uint64_t value_remove_calls = 0, value_remove_us = 0;
     uint64_t idle_space_us = 0, idle_refreshes = 0;
+    uint64_t foreground_measures = 0, foreground_measure_us = 0;
+    uint64_t idle_measures = 0, idle_measure_us = 0;
     uint64_t max_queue_us = 0, max_io_us = 0, max_space_us = 0;
     FileIoMetrics files;
     ValueIoMetrics values;

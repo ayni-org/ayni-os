@@ -23,6 +23,8 @@ struct StoragePhaseDelta {
     uint64_t file_read_calls = 0, file_read_bytes = 0;
     uint64_t file_read_us = 0, file_write_us = 0, file_sync_us = 0;
     uint64_t lfs_size_calls = 0, lfs_size_us = 0;
+    uint64_t foreground_measures = 0, foreground_measure_us = 0;
+    uint64_t idle_measures = 0, idle_measure_us = 0;
     ayni::hosts::esp_idf::ValueIoMetrics values{};
 
     static StoragePhaseDelta between(const ayni::hosts::esp_idf::StorageMetrics &before,
@@ -53,6 +55,10 @@ struct StoragePhaseDelta {
         d.file_sync_us = after.files.sync_us - before.files.sync_us;
         d.lfs_size_calls = after.files.space_measure_calls - before.files.space_measure_calls;
         d.lfs_size_us = after.files.space_measure_us - before.files.space_measure_us;
+        d.foreground_measures = after.foreground_measures - before.foreground_measures;
+        d.foreground_measure_us = after.foreground_measure_us - before.foreground_measure_us;
+        d.idle_measures = after.idle_measures - before.idle_measures;
+        d.idle_measure_us = after.idle_measure_us - before.idle_measure_us;
         for (size_t i = 0; i < d.values.size(); ++i) {
             d.values[i] = after.values[i].since(before.values[i]);
         }
@@ -318,8 +324,10 @@ class PublicationTimeline {
                 emit(ctx, line, static_cast<size_t>(written));
             }
             emit_values(i, seg.io, ctx, emit);
+            emit_space(i + 1U, seg.io, ctx, emit);
         }
         const StoragePhaseDelta total = total_delta();
+        emit_space(0, total, ctx, emit);
         const int written = format_summary(turn_, goal_, task_, order_, complete(), total, longest,
                                            line, sizeof(line));
         if (written > 0 && static_cast<size_t>(written) < sizeof(line)) {
@@ -333,6 +341,25 @@ class PublicationTimeline {
     Order order() const { return order_; }
 
   private:
+    // Segment zero reports the whole model-result-to-answer window.
+    void emit_space(size_t segment, const StoragePhaseDelta &io, void *ctx,
+                    void (*emit)(void *, const char *, size_t)) const {
+        if (!(io.foreground_measures || io.idle_measures)) {
+            return;
+        }
+        const auto n = [](uint64_t value) { return static_cast<unsigned long long>(value); };
+        char line[report_line_capacity];
+        const auto written =
+            std::snprintf(line, sizeof(line),
+                          "wifi pub_space turn=%llu seg=%zu foreground=%llu/%llu "
+                          "idle=%llu/%llu\n",
+                          n(turn_), segment, n(io.foreground_measures), n(io.foreground_measure_us),
+                          n(io.idle_measures), n(io.idle_measure_us));
+        if (written > 0 && static_cast<size_t>(written) < sizeof(line)) {
+            emit(ctx, line, static_cast<size_t>(written));
+        }
+    }
+
     void emit_values(size_t segment, const StoragePhaseDelta &io, void *ctx,
                      void (*emit)(void *, const char *, size_t)) const {
         constexpr std::array roles{"other", "body_chunk", "owner_manifest", "conversation_root"};
