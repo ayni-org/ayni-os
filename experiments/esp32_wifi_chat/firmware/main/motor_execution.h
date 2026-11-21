@@ -22,6 +22,7 @@ class MotorExecution {
     ayni_submit_result_t submit(const ayni_provider_request_v1 *, ayni_provider_completion_t *);
     ayni_submit_result_t cancel(ayni_attempt_ref_v1);
     ayni_status_t advance();
+    uint64_t latest_dispatch() const { return latest_dispatch_; } // Owner thread only.
     void receive(Kind, uint64_t, const uint8_t *, size_t);
     void set_accepting(bool accepting) { accepting_.store(accepting, std::memory_order_release); }
     void request_stop();
@@ -30,6 +31,7 @@ class MotorExecution {
     bool close();
 
   private:
+    uint64_t latest_dispatch_ = 0; // Last Provider acceptance on the Core owner.
     enum class Mode { disarmed, armed, latched, closed };
     enum class Phase { prepared, running, result };
     enum class Effect { none, possible, partial, complete };

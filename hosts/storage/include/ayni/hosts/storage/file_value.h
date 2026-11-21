@@ -20,14 +20,14 @@ struct FileValueResult {
     uint64_t generation = 0;
     uint32_t size = 0;
 };
+// Caller-supplied role for storage diagnostics. It has no effect on the operation.
+enum class FileValueRole { other, body_chunk, owner_manifest, conversation_root, count };
 // Owner-thread submission. Metadata is copied; write input stays immutable/alive and
 // read output stays exclusively worker-owned until completion. Value generation is
 // its own CAS version, independent of Core context generation/turn identity.
 // Callback runs once on the storage worker, must not block/reenter Host or owner-only Core APIs; it
 // cannot throw. Completion context lives through Host close/join. No cancellation; close drains
 // accepted work.
-// Caller-supplied role for storage diagnostics. It has no effect on the operation.
-enum class FileValueRole { other, body_chunk, owner_manifest, conversation_root, count };
 struct FileValueRequest {
     // Remove deletes the named value, OK also when none exists; it carries no CAS (ADR-0096).
     enum class Kind { read, write, remove } kind = Kind::read;

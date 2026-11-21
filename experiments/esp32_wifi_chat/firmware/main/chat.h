@@ -69,12 +69,14 @@ class Chat {
     ayni_status_t converse(const ayni_kernel_info_v1 &);
     ayni_status_t present_reply();
     void finish_voice(ayni_status_t);
+    static void on_voice_stage(void *, ReplyVoice::Event, uint64_t goal, size_t offset,
+                               size_t bytes);
     void end_turn(const char *);
     void wait_for(const char *phase, const char *label, ayni_status_t);
     void status(uint64_t, const char *);
     void publish_model();
     void trace_tool_window(uint64_t next_call, uint64_t requested_us);
-    void emit_tool_decisions();
+    void emit_tool_decisions(uint64_t durable_seq);
     static void on_publication_stage(void *, uint64_t goal, uint64_t task,
                                      ayni::runtime::conversation::PublicationStage);
     static void on_publication_ack(void *, ayni::runtime::conversation::PublicationAck,
@@ -98,6 +100,7 @@ class Chat {
     struct PendingAnswerSaved {
         bool valid = false;
         PhaseSnapshot snapshot{};
+        size_t internal_min_free = 0, psram_min_free = 0;
     };
     PhaseSnapshot capture_phase_snapshot(uint64_t at_us = 0) const;
     void emit_phase_trace(const char *phase, const PhaseSnapshot &snapshot);
@@ -170,6 +173,9 @@ class Chat {
     struct TurnTiming {
         uint64_t step_calls = 0, step_us = 0, max_step_us = 0, conversation_us = 0;
         uint64_t phase_started_us = 0;
+        struct SpaceBaseline {
+            uint64_t foreground = 0, foreground_us = 0, idle = 0, idle_us = 0;
+        } accepted_space;
         uint64_t model_received_call = 0, model_received_us = 0, model_staged_us = 0;
         ModelDeliveryTiming model_delivery{};
         struct ToolDecision {
@@ -178,6 +184,7 @@ class Chat {
             std::array<char, AYNI_CATALOG_ID_MAX_BYTES> key{};
         };
         std::array<ToolDecision, step_units> tool_decisions{};
+        uint64_t last_motor_dispatch = 0;
         size_t tool_decision_count = 0; // Filled only during this owner step.
         PublicationTimeline publication{};
         struct Ack {

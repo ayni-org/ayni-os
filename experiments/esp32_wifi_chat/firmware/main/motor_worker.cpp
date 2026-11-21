@@ -131,6 +131,7 @@ ayni_submit_result_t MotorExecution::submit(const ayni_provider_request_v1 *requ
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     // Core calls this Provider only after its dispatch barrier is already durable.
+    latest_dispatch_ = start.call;
     trace_handoff("dispatch", start.call, dispatched);
     return AYNI_SUBMIT_ACCEPTED;
 }

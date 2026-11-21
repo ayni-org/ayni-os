@@ -122,13 +122,14 @@ ayni_submit_result_t Provider::submit(void *context, const ayni_provider_request
     if (self.service_ == Service::tools) {
         model::Reader reader(messages);
         model::Message message;
-        constexpr uint32_t many_sums = 8;
+        constexpr uint32_t three_sums = 3, many_sums = 8;
         uint32_t requested = 0, completed = 0;
         while (reader.next(message)) {
             if (message.role == model::Role::user) {
-                requested = same(message.text, text("sum"))         ? 1U
-                            : same(message.text, text("many sums")) ? many_sums
-                                                                    : 0U;
+                requested = same(message.text, text("sum"))          ? 1U
+                            : same(message.text, text("three sums")) ? three_sums
+                            : same(message.text, text("many sums"))  ? many_sums
+                                                                     : 0U;
                 completed = 0;
             } else if (message.role == model::Role::tool) {
                 if (completed < requested) {
