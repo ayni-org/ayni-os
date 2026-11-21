@@ -343,6 +343,7 @@ ayni_status_t Speaker::begin_speech(uint64_t id, std::string_view text) {
     pcm_.attach(storage);
     portEXIT_CRITICAL(&mutex_);
     if (transport_.send(Kind::speech_request, id, text.data(), text.size())) {
+        trace_audio("dispatch", id);
         return AYNI_OK;
     }
     portENTER_CRITICAL(&mutex_);
@@ -406,9 +407,11 @@ AudioWrite Speaker::append_audio(uint64_t call, uint32_t offset, const uint8_t *
 // contended/oversized capture is counted as dropped by the existing RAM diagnostic lane.
 void Speaker::trace_audio(const char *phase, uint64_t call, uint32_t samples, int error) {
     std::array<char, 160> line{};
-    const auto size = std::snprintf(
-        line.data(), line.size(), "wifi speaker phase=%s call=%llu samples=%lu error=%d\n", phase,
-        static_cast<unsigned long long>(call), static_cast<unsigned long>(samples), error);
+    const auto size =
+        std::snprintf(line.data(), line.size(),
+                      "wifi speaker phase=%s call=%llu samples=%lu error=%d at_us=%llu\n", phase,
+                      static_cast<unsigned long long>(call), static_cast<unsigned long>(samples),
+                      error, static_cast<unsigned long long>(esp_timer_get_time()));
     if (size > 0 && size_t(size) < line.size()) {
         transport_.diagnostics().capture({line.data(), size_t(size)});
     }

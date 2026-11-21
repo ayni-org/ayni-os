@@ -1,3 +1,4 @@
+#include "speech_profile.h"
 #include "speech_text.h"
 #include <ayni/ayni.h>
 #include <gtest/gtest.h>
@@ -81,4 +82,32 @@ TEST(SpeechText, PacksSentenceThenWordBoundariesWithinTheSpeakerByteLimit) {
         offset += count;
     }
     EXPECT_EQ(offset, answer.size());
+}
+
+// ADR-0101: compare the same Chinese presentation with today's limit and a shorter sentence cap.
+TEST(SpeechText, ShorterChineseSentenceChunksPreserveAllTextAndOrder) {
+    constexpr size_t short_limit = 384, sentences = 9;
+    const std::string line = "这是同一份长中文回答，用于逐句核对朗读顺序、字数以及分段边界。";
+    std::string answer;
+    for (size_t i = 0; i < sentences; ++i) {
+        answer += line;
+    }
+    ASSERT_LT(answer.size(), SpeechProfile::text_bytes);
+    ASSERT_GT(answer.size(), short_limit);
+    EXPECT_EQ(speech_chunk_bytes(answer, SpeechProfile::text_bytes), answer.size());
+    std::string replay;
+    size_t requests = 0;
+    while (replay.size() < answer.size()) {
+        const auto tail = std::string_view(answer).substr(replay.size());
+        const auto bytes = speech_chunk_bytes(tail, short_limit);
+        ASSERT_GT(bytes, 0U);
+        ASSERT_LE(bytes, short_limit);
+        const auto part = tail.substr(0, bytes);
+        EXPECT_EQ(bytes % line.size(), 0U);
+        EXPECT_EQ(ayni_validate_utf8({part.data(), uint32_t(part.size())}), AYNI_OK);
+        replay += part;
+        ++requests;
+    }
+    EXPECT_EQ(requests, 3U);
+    EXPECT_EQ(replay, answer);
 }

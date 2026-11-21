@@ -99,7 +99,12 @@ ayni_status_t ReplyVoice::decide(void *context, const ayni_task_snapshot_v1 *sna
         return rc;
     }
     const auto delegate = rules.describe();
-    return delegate.decide(delegate.ctx, snapshot, output);
+    const auto decided = delegate.decide(delegate.ctx, snapshot, output);
+    if (decided == AYNI_OK && output->intent_count &&
+        output->intents[0].kind == AYNI_POLICY_REQUEST_CALL) {
+        self.emit(Event::call_decided, snapshot->goal_id, ref.size);
+    }
+    return decided;
 }
 ayni_status_t ReplyVoice::begin(std::string answer, const ayni_context_info_v1 &source) {
     if (active()) {
@@ -117,7 +122,13 @@ ayni_status_t ReplyVoice::begin(std::string answer, const ayni_context_info_v1 &
     }
     source_ =
         Source{source.context_id, source.owner_instance_id, source.generation, source.revision};
+    emit(Event::text_ready, 0, text_.view().size());
     return AYNI_OK;
+}
+void ReplyVoice::emit(Event event, uint64_t goal, size_t bytes) const {
+    if (observer_.on_event) {
+        observer_.on_event(observer_.context, event, goal, offset_, bytes);
+    }
 }
 void ReplyVoice::reset() {
     if (body_.id && bodies_) {
@@ -162,6 +173,7 @@ ayni_status_t ReplyVoice::prepare_chunk(ayni_kernel_t *kernel, ayni::CommandClie
         if (stored != AYNI_OK) {
             return stored;
         }
+        emit(Event::chunk_durable, 0, *chunk_);
     }
     // Every segment must retain the original answer's basis, not capture a newly cleared
     // or replaced Context as fresh authority for the old in-memory text (C-MEM-005).
@@ -198,6 +210,7 @@ ayni_status_t ReplyVoice::prepare_chunk(ayni_kernel_t *kernel, ayni::CommandClie
     const auto accepted = commands.submit(AYNI_INTENT_GOAL_CREATE, &body);
     if (accepted.status == AYNI_OK) {
         goal_ = accepted.result.object.id;
+        emit(Event::goal_accepted, goal_, *chunk_);
         return AYNI_BUSY;
     }
     return accepted.status;

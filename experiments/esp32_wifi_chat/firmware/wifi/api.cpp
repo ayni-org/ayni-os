@@ -893,6 +893,7 @@ void Api::speech(Job &job, const char *url) {
         return true;
     };
     auto *stream = new (storage.data) SpeechStream(sink, &delivery);
+    const auto started = uint64_t(esp_timer_get_time());
     job.ok = http(job, url, "application/json", nullptr, 0, request_body_.data(), size, nullptr, 0,
                   SpeechStream::max_pcm_bytes + wav_overhead_limit, nullptr, stream);
     if (job.ok) {
@@ -906,6 +907,9 @@ void Api::speech(Job &job, const char *url) {
                       : stream->error() == 2 ? "语音生成预算耗尽；部分播放停止，未重播"
                                              : "语音生成流异常；部分播放停止，未重播");
     }
+    const auto finished = uint64_t(esp_timer_get_time());
+    const auto generation_error = stream->error();
+    const auto pcm_bytes = stream->received();
     stream->~SpeechStream();
     if (!job.ok) {
         transport_->post(Kind::audio_error, job.input.id, nullptr, 0);
@@ -913,6 +917,15 @@ void Api::speech(Job &job, const char *url) {
             std::snprintf(job.error.data(), job.error.size(), "语音流中断；已播放部分不会重试");
         }
     }
+    const auto characters = std::count_if(input.begin(), input.end(),
+                                          [](uint8_t byte) { return (byte & 0xc0) != 0x80; });
+    const auto n = [](uint64_t value) { return static_cast<unsigned long long>(value); };
+    transport_->diagnostics().record(
+        "wifi tts_segment call=%llu api_begin_us=%llu api_end_us=%llu bytes=%zu "
+        "characters=%zu pcm_bytes=%lu server_error=%lu complete=%u\n",
+        n(job.input.id), n(started), n(finished), input.size(), size_t(characters),
+        static_cast<unsigned long>(pcm_bytes), static_cast<unsigned long>(generation_error),
+        unsigned(job.ok));
 }
 void Api::recognize(Job &job, const char *url) {
     CaptureReader capture;
