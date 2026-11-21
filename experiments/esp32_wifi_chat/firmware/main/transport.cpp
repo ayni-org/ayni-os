@@ -43,11 +43,25 @@ bool Transport::send(Kind kind, uint64_t id, const void *body, size_t bytes) {
 }
 bool Transport::receive(Packet &out) {
     uint32_t slot = 0;
+    // Older ordinary control keeps its ordering, but a best-effort outline may not
+    // overtake the authoritative result that makes it eligible for presentation.
+    if (xQueuePeek(input_, &slot, 0) != pdTRUE || packets_[slot].kind == Kind::tool_outline) {
+        if (model_.receive(out)) {
+            return true;
+        }
+    }
     if (xQueueReceive(input_, &slot, 0) != pdTRUE) {
-        return false;
+        return model_.receive(out);
     }
     out = packets_[slot];
     xQueueSend(free_, &slot, 0);
+    return true;
+}
+bool Transport::post_model(const Packet &packet, ModelDeliveryTiming timing) {
+    if (!model_.post(packet, timing)) {
+        return false;
+    }
+    wake_owner();
     return true;
 }
 bool Transport::take_output(Packet &out) {

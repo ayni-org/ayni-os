@@ -681,42 +681,38 @@ void Runtime::results() {
             if (active_model_ == job->input.id) {
                 clear_preview();
             }
-            if (job->ok || (job->output.kind == Kind::model_error &&
-                            job->output.size == model_result_header_bytes)) {
-                if (!transport_.post(job->output.kind, job->input.id, job->output.body.data(),
-                                     job->output.size)) {
-                    message("模型结果提交失败，将按超时收尾");
-                } else if (job->ok && job->outline.size) {
-                    // Best-effort metadata follows the accepted result, so it cannot occupy
-                    // the queue slot needed by the authoritative model completion.
-                    transport_.post(Kind::tool_outline, job->input.id, job->outline.bytes.data(),
-                                    job->outline.size);
+            if (job->request == Request::template_capture) {
+                if (job->ok || (job->output.kind == Kind::model_error &&
+                                job->output.size == model_result_header_bytes)) {
+                    if (!transport_.post(job->output.kind, job->input.id, job->output.body.data(),
+                                         job->output.size)) {
+                        message("模型结果提交失败，将按超时收尾");
+                    } else if (job->ok && job->outline.size) {
+                        transport_.post(Kind::tool_outline, job->input.id,
+                                        job->outline.bytes.data(), job->outline.size);
+                    }
+                } else {
+                    transport_.post(Kind::model_error, job->input.id, nullptr, 0);
+                    message(job->error.data());
                 }
-            } else {
-                transport_.post(Kind::model_error, job->input.id, nullptr, 0);
-                message(job->error.data());
             }
-            const auto post_ui_us = uint64_t(esp_timer_get_time());
             uint64_t frame_wait_us = 0;
-            const auto overlap = last_frame_.classify(job->done_enqueued_us, frame_wait_us);
-            const uint64_t pack_us =
-                job->http_complete_us && job->done_enqueued_us >= job->http_complete_us
-                    ? job->done_enqueued_us - job->http_complete_us
-                    : 0;
-            const uint64_t ui_wait_us =
-                job->done_enqueued_us && ui_dequeued_us >= job->done_enqueued_us
-                    ? ui_dequeued_us - job->done_enqueued_us
-                    : 0;
+            const auto overlap = last_frame_.classify(job->ready_us, frame_wait_us);
+            const uint64_t pack_us = job->http_complete_us && job->ready_us >= job->http_complete_us
+                                         ? job->ready_us - job->http_complete_us
+                                         : 0;
+            const uint64_t ui_wait_us = job->ready_us && ui_dequeued_us >= job->ready_us
+                                            ? ui_dequeued_us - job->ready_us
+                                            : 0;
             transport_.diagnostics().record(
-                "wifi model_handoff turn=%llu call=%llu ok=%u http_us=%llu done_us=%llu ui_us=%llu "
-                "post_ui_us=%llu pack_us=%llu ui_wait_us=%llu draw_us=%llu..%llu "
+                "wifi model_ui turn=%llu call=%llu ok=%u http_us=%llu ready_us=%llu ui_us=%llu "
+                "pack_us=%llu ui_wait_us=%llu draw_us=%llu..%llu "
                 "paint_us=%llu..%llu ui_frame=%s frame_wait_us=%llu\n",
                 static_cast<unsigned long long>(turn_),
                 static_cast<unsigned long long>(job->input.id), unsigned(job->ok),
                 static_cast<unsigned long long>(job->http_complete_us),
-                static_cast<unsigned long long>(job->done_enqueued_us),
+                static_cast<unsigned long long>(job->ready_us),
                 static_cast<unsigned long long>(ui_dequeued_us),
-                static_cast<unsigned long long>(post_ui_us),
                 static_cast<unsigned long long>(pack_us),
                 static_cast<unsigned long long>(ui_wait_us),
                 static_cast<unsigned long long>(last_frame_.draw_begin_us),

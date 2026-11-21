@@ -76,12 +76,18 @@ enum class Kind : uint8_t {
     voice_reply_setting = 43,    // Desired automatic speech mode; explicit tools stay available.
     voice_reply_state = 44       // Owner acknowledgement of a live preference update.
 };
+// Populated on API-worker model deliveries only. Zero generation identifies the template route.
+struct ModelDeliveryTiming {
+    uint32_t generation = 0;
+    uint64_t http_complete_us = 0, ready_us = 0;
+};
 // A bounded in-process lane; network protocols are owned by their adapters.
 struct Packet {
     Kind kind{};
     uint64_t id = 0;
     uint32_t size = 0;
     std::array<uint8_t, tx_bytes> body{};
+    ModelDeliveryTiming model{};
 };
 inline uint32_t get32(const uint8_t *p) {
     return uint32_t(p[0]) | (uint32_t(p[1]) << 8U) | (uint32_t(p[2]) << 16U) |

@@ -1,6 +1,7 @@
 #pragma once
 #include "diagnostic_log.h"
 #include "display.h"
+#include "model_handoff.h"
 #include "protocol.h"
 #include "speech_profile.h"
 #include <array>
@@ -18,6 +19,10 @@ class Transport {
     DiagnosticLog &diagnostics() { return diagnostics_; }
     bool send(Kind, uint64_t, const void *, size_t);
     bool receive(Packet &);
+    // Only the API worker publishes real model completions. Success copies all payload bytes.
+    bool post_model(const Packet &, ModelDeliveryTiming);
+    uint32_t api_generation() const { return model_.generation(); }
+    void cancel_api_jobs() { model_.cancel(); }
     AudioWrite append_audio(uint64_t, uint32_t, const uint8_t *, size_t);
     // In-process backend boundary. Both queues copy and return immediately; only
     // a backend worker calls post/take_output. Audio retains the Speaker's lock.
@@ -43,6 +48,7 @@ class Transport {
   private:
     DiagnosticLog diagnostics_;
     Display display_;
+    ModelHandoff model_;
     std::atomic<bool> motor_active_{false};
     std::atomic<bool> motor_stop_{false};    // Stop bypasses bounded message queues.
     std::atomic<bool> motor_disable_{false}; // Ordinary disarm also bypasses queue capacity.

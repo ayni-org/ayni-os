@@ -138,7 +138,7 @@ bool Api::initialize(const Settings &settings, Transport &transport) {
 }
 bool Api::take_preview(ModelPreview &out) {
     if (previews_ && xQueueReceive(previews_, &out, 0) == pdTRUE &&
-        out.generation == generation_.load(std::memory_order_acquire)) {
+        out.generation == transport_->api_generation()) {
         return true;
     }
     std::fill(out.text.begin(), out.text.end(), 0);
@@ -147,7 +147,7 @@ bool Api::take_preview(ModelPreview &out) {
     return false;
 }
 bool Api::current(const Job &job) const {
-    return job.generation == generation_.load(std::memory_order_acquire) &&
+    return job.generation == transport_->api_generation() &&
            !(job.request == Request::speech &&
              job.input.id == speech_cancel_.load(std::memory_order_acquire));
 }
@@ -170,10 +170,10 @@ bool Api::submit(Request kind, uint64_t id, const void *data, size_t bytes, uint
     job.outline.clear();
     job.ok = false;
     job.error.fill(0);
-    job.generation = generation_.load(std::memory_order_acquire);
+    job.generation = transport_->api_generation();
     job.deadline = esp_timer_get_time() + request_budget_us(kind);
     job.http_complete_us = 0;
-    job.done_enqueued_us = 0;
+    job.ready_us = 0;
     job.audio = audio;
     job.audio_bytes = audio_bytes;
     if (bytes) {
@@ -205,7 +205,7 @@ void Api::release(Job *job) {
     std::fill(job->output.body.begin(), job->output.body.end(), 0);
     job->outline.clear();
     job->http_complete_us = 0;
-    job->done_enqueued_us = 0;
+    job->ready_us = 0;
     xQueueSend(free_, &index, 0);
 }
 void *Api::work(void *context) {
@@ -222,12 +222,20 @@ void *Api::work(void *context) {
             static_cast<unsigned long long>(job.input.id),
             static_cast<long long>(
                 (esp_timer_get_time() - job.deadline + request_budget_us(job.request)) / 1000));
+        if (job.request == Request::model) {
+            // Before perform, rejection is local and has no remote effect.
+            model_failure(job.output, AYNI_NOT_READY, AYNI_REASON_NONE, AYNI_CALL_EFFECT_NONE);
+        }
         if (self.current(job)) {
             if (esp_timer_get_time() < job.deadline) {
                 self.perform(job);
             } else {
                 std::snprintf(job.error.data(), job.error.size(), "请求排队超时，未发出");
             }
+        }
+        job.ready_us = uint64_t(esp_timer_get_time());
+        if (job.request == Request::model) {
+            self.deliver_model(job);
         }
         // Request metadata only; never print transcripts, generated audio or keys.
         self.transport_->diagnostics().record(
@@ -250,9 +258,26 @@ void *Api::work(void *context) {
             heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
             heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
         // Every queued slot reserves one result slot, so this cannot block on UI work.
-        job.done_enqueued_us = uint64_t(esp_timer_get_time());
         xQueueSend(self.done_, &index, portMAX_DELAY);
         self.outstanding_.fetch_sub(1, std::memory_order_acq_rel);
+    }
+}
+void Api::deliver_model(const Job &job) {
+    const ModelDeliveryTiming timing{job.generation, job.http_complete_us, job.ready_us};
+    while (current(job)) {
+        if (transport_->post_model(job.output, timing)) {
+            if (job.ok && job.outline.size && current(job)) {
+                transport_->post(Kind::tool_outline, job.input.id, job.outline.bytes.data(),
+                                 job.outline.size);
+            }
+            return;
+        }
+        // A previous Call may still occupy the reserved lane. Retain this Job until
+        // delivery or generation/deadline retirement. Ordinary queue capacity is independent.
+        if (esp_timer_get_time() >= job.deadline) {
+            return;
+        }
+        vTaskDelay(1);
     }
 }
 bool Api::http(Job &job, const char *url, const char *content_type, const void *prefix,

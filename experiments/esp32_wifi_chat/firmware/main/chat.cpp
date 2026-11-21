@@ -172,6 +172,17 @@ void Chat::flush_pending_model_post() {
         static_cast<unsigned long long>(post.snapshot.at_us),
         static_cast<unsigned long long>(stage_wait_us),
         static_cast<unsigned long long>(post_wait_us));
+    if (post.delivery.ready_us) {
+        const auto n = [](uint64_t us) { return static_cast<unsigned long long>(us); };
+        const auto http = post.delivery.http_complete_us;
+        const auto ready = post.delivery.ready_us;
+        transport_.diagnostics().record(
+            "wifi model_delivery turn=%llu call=%llu http_us=%llu ready_us=%llu recv_us=%llu "
+            "post_us=%llu pack_us=%llu delivery_us=%llu owner_us=%llu\n",
+            n(turn_), n(post.call), n(http), n(ready), n(post.recv_us), n(post.snapshot.at_us),
+            n(http && ready >= http ? ready - http : 0), n(post.recv_us - ready),
+            n(post.snapshot.at_us - post.recv_us));
+    }
     emit_phase_trace("model_result_posted", post.snapshot);
 }
 // Emits deferred model_result_posted, the 6 publication segments, the summary, and answer_saved
@@ -804,8 +815,11 @@ void Chat::publish_model() {
             // Sample only: defer stdout/log formatting until after the publication window
             // (or until the next model request on multi-round tool turns).
             const auto snapshot = capture_phase_snapshot(posted_us);
+            const auto delivery = timing_.model_received_call == posted_call
+                                      ? timing_.model_delivery
+                                      : ModelDeliveryTiming{};
             timing_.pending_model_post = {true,    posted_call, posted_kind, posted_bytes,
-                                          recv_us, stage_us,    snapshot};
+                                          recv_us, stage_us,    delivery,    snapshot};
             timing_.publication.mark_model_posted(posted_us, snapshot.storage);
         }
         model_body_ = {}; // The successful post transfers the reference to Core.
@@ -933,8 +947,9 @@ void Chat::incoming(const Packet &p) {
         motor_.execution().receive(p.kind, p.id, p.body.data(), p.size);
         return;
     }
-    if ((p.kind == Kind::model_result || p.kind == Kind::model_error) &&
-        model_ == ModelState::waiting && p.id == call_) {
+    if (model_ == ModelState::waiting &&
+        matches_model_delivery(p, call_, transport_.api_generation())) {
+        timing_.model_delivery = p.model;
         timing_.model_received_call = p.id;
         timing_.model_received_us = uint64_t(esp_timer_get_time());
         timing_.model_staged_us = 0;

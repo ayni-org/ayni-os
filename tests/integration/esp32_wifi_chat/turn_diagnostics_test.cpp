@@ -1,6 +1,7 @@
 // Diagnostic breakdown checks for ESP32 Wi-Fi Chat publication, model handoff and storage metrics.
 #include "configuration.h"
 #include "diagnostic_log.h"
+#include "model_handoff.h"
 #include "turn_diagnostics.h"
 #include <algorithm>
 #include <ayni/ayni.hpp>
@@ -16,6 +17,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <future>
 #include <gtest/gtest.h>
 #include <map>
 #include <numeric>
@@ -722,6 +724,70 @@ EndToEndSample run_fixed_text_turn(const EndToEndOptions &opts) {
     }));
     EXPECT_EQ(kernel.close(), AYNI_OK);
     return out;
+}
+
+// The UI task holds a frame and every ordinary lane slot. The model worker still
+// copies its packet into the lane the owner consumes, before the UI frame may finish.
+TEST(TurnDiagnostics, OwnerReceivesModelWhileUiFrameAndOrdinaryQueueAreBlocked) {
+    using namespace wifichat;
+    ModelHandoff lane;
+    std::promise<void> frame_entered, allow_paint_end;
+    auto frame_gate = allow_paint_end.get_future();
+    auto frame = std::async(std::launch::async, [&] {
+        std::array<Kind, packet_slots> ordinary_queue;
+        ordinary_queue.fill(Kind::status);
+        frame_entered.set_value();
+        frame_gate.wait();
+        return ordinary_queue.size();
+    });
+    frame_entered.get_future().wait();
+    Packet source{}, received{};
+    source.id = 41;
+    source.kind = Kind::model_result;
+    source.size = 1;
+    source.body[0] = 0x7f;
+    const ModelDeliveryTiming timing{lane.generation(), 60, 75};
+    auto model = std::async(std::launch::async, [&] { return lane.post(source, timing); });
+    const bool posted = model.get();
+    const bool delivered = lane.receive(received);
+    EXPECT_EQ(frame.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout);
+    allow_paint_end.set_value();
+
+    ASSERT_TRUE(posted);
+    ASSERT_TRUE(delivered);
+    EXPECT_EQ(received.body[0], 0x7f);
+    EXPECT_EQ(received.model.ready_us, 75U);
+    EXPECT_TRUE(matches_model_delivery(received, 41, lane.generation()));
+    EXPECT_FALSE(matches_model_delivery(received, 42, lane.generation()));
+    EXPECT_FALSE(lane.receive(received));
+}
+TEST(TurnDiagnostics, ModelHandoffRetainsClassifiedFailureAndRejectsCancelledGenerations) {
+    using namespace wifichat;
+    ModelHandoff lane;
+    Packet old{}, next{}, received{};
+    old.id = 11;
+    old.kind = Kind::model_result;
+    const ModelDeliveryTiming old_generation{lane.generation(), 0, 10};
+    ASSERT_TRUE(lane.post(old, old_generation));
+    lane.cancel();
+    EXPECT_FALSE(lane.post(old, old_generation));
+
+    next.id = 12;
+    next.kind = Kind::model_error;
+    next.size = model_result_header_bytes;
+    auto failure = initialized<ayni_provider_result_v1>();
+    failure.outcome = AYNI_CALL_FAILED;
+    failure.status = AYNI_NOT_READY;
+    failure.effect = AYNI_CALL_EFFECT_NONE;
+    write_model_result_header(next.body.data(), failure);
+    const ModelDeliveryTiming next_generation{lane.generation(), 0, 30};
+    EXPECT_FALSE(lane.post(next, next_generation)); // The worker still owns next's bytes.
+    EXPECT_FALSE(lane.receive(received));           // Retire the older occupied packet.
+    ASSERT_TRUE(lane.post(next, next_generation));
+    ASSERT_TRUE(lane.receive(received));
+    EXPECT_TRUE(matches_model_delivery(received, next.id, lane.generation()));
+    EXPECT_EQ(read_model_result_header(received.body.data()).status, AYNI_NOT_READY);
+    EXPECT_FALSE(lane.receive(received));
 }
 
 // C-HVAL-009: chunk/manifest I/O remains identifiable when one payload has two owners.

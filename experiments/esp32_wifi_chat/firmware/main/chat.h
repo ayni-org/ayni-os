@@ -90,6 +90,7 @@ class Chat {
         const char *kind = "fail"; // Static literal only: "text", "tools", or "fail".
         size_t bytes = 0;
         uint64_t recv_us = 0, stage_us = 0;
+        ModelDeliveryTiming delivery{};
         PhaseSnapshot snapshot{};
     };
     struct PendingAnswerSaved {
@@ -167,6 +168,7 @@ class Chat {
         uint64_t step_calls = 0, step_us = 0, max_step_us = 0, conversation_us = 0;
         uint64_t phase_started_us = 0;
         uint64_t model_received_call = 0, model_received_us = 0, model_staged_us = 0;
+        ModelDeliveryTiming model_delivery{};
         PublicationTimeline publication{};
         struct Ack {
             uint64_t collected_us = 0, submitted_us = 0, durable_us = 0, ready_us = 0;
