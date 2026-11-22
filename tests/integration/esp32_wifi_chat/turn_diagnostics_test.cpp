@@ -859,6 +859,33 @@ TEST(TurnDiagnostics, ToolStorageWindowKeepsInterCallGapSeparateAndDetectsOverwr
     EXPECT_FALSE(incomplete.collect(10, 60, output, 0, 3, read));
 }
 
+TEST(TurnDiagnostics, ToolStorageWindowRejectsCursorFromOutsideEitherBoundary) {
+    using namespace wifichat;
+    using ayni::hosts::esp_idf::StorageWorkHistory;
+    using Sample = ToolIoWindow::Sample;
+    StorageWorkHistory history;
+    const OutputIntervals output{{{41, 20, 40}}};
+    constexpr uint64_t from_us = 10, to_us = 60;
+    const auto read = [&](uint64_t i, Sample &sample) { return history.read(i, sample); };
+    history.record({from_us - 1, 0, 3, Sample::Kind::append});
+    history.record({from_us, 0, 2, Sample::Kind::append});
+    history.record({50, 0, 4, Sample::Kind::write});
+    history.record({to_us, 0, 5, Sample::Kind::write});
+    constexpr uint64_t first = 1, next = 4;
+    // Model the worker finishing after owner sampled the end time but before reading a
+    // separate completion cursor. A coherent cursor still stops at the previous write.
+    history.record({to_us + 1, 0, 6, Sample::Kind::write});
+    ToolIoWindow coherent;
+    ASSERT_TRUE(coherent.collect(from_us, to_us, output, first, next, read));
+    EXPECT_EQ(coherent.parts[ToolIoWindow::before].append.count, 1U);
+    EXPECT_EQ(coherent.parts[ToolIoWindow::after].write.count, 2U);
+    EXPECT_EQ(coherent.parts[ToolIoWindow::after].write.us, 9U);
+    ToolIoWindow late_end_cursor;
+    EXPECT_FALSE(late_end_cursor.collect(from_us, to_us, output, first, next + 1, read));
+    ToolIoWindow early_start_cursor;
+    EXPECT_FALSE(early_start_cursor.collect(from_us, to_us, output, first - 1, next, read));
+}
+
 // C-HVAL-009: chunk/manifest I/O remains identifiable when one payload has two owners.
 TEST(TurnDiagnostics, ValueRolesAccountForShortMultichunkAndSharedBody) {
     using ayni::hosts::storage::FileValueRole;

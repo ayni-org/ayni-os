@@ -59,17 +59,18 @@ uint32_t model_input_bytes(ayni_string_v1 destination) {
     ayni_value_v1 value{};
     return shape.finish(value) == AYNI_OK ? ayni::encoded_bytes(value) : 0U;
 }
-Chat::PhaseSnapshot Chat::capture_phase_snapshot(uint64_t at_us) const {
+Chat::PhaseSnapshot Chat::capture_phase_snapshot() const {
     PhaseSnapshot snapshot{};
-    snapshot.at_us = at_us ? at_us : uint64_t(esp_timer_get_time());
+    if (host_) {
+        snapshot.storage = host_->storage_metrics(snapshot.at_us);
+    } else {
+        snapshot.at_us = uint64_t(esp_timer_get_time());
+    }
     snapshot.step_calls = timing_.step_calls;
     snapshot.step_us = timing_.step_us;
     snapshot.max_step_us = timing_.max_step_us;
     snapshot.conversation_us = timing_.conversation_us;
     snapshot.model_requests = model_requests_;
-    if (host_) {
-        snapshot.storage = host_->storage_metrics();
-    }
     return snapshot;
 }
 void Chat::emit_phase_trace(const char *phase, const PhaseSnapshot &snapshot) {
@@ -86,11 +87,10 @@ void Chat::emit_phase_trace(const char *phase, const PhaseSnapshot &snapshot) {
         static_cast<unsigned long long>(snapshot.at_us));
     trace_latency(phase, snapshot);
 }
-void Chat::trace(const char *phase, uint64_t at_us) {
+void Chat::trace(const char *phase, const PhaseSnapshot &snapshot) {
     if (!turn_) {
         return;
     }
-    const auto snapshot = capture_phase_snapshot(at_us);
     // Multi-round tool turns emit an earlier model_result_posted before the next model_requested.
     if (timing_.pending_model_post.valid && !timing_.publication.has_session_stage()) {
         flush_pending_model_post();
@@ -225,7 +225,8 @@ void Chat::on_publication_stage(void *ctx, uint64_t goal, uint64_t task,
     if (!self.turn_ || !self.host_) {
         return;
     }
-    const auto at_us = uint64_t(esp_timer_get_time());
+    uint64_t at_us = 0;
+    const auto metrics = self.host_->storage_metrics(at_us);
     using Stage = ayni::runtime::conversation::PublicationStage;
     auto &ack = self.timing_.ack;
     if (stage == Stage::collected) {
@@ -233,7 +234,6 @@ void Chat::on_publication_stage(void *ctx, uint64_t goal, uint64_t task,
     } else if (stage == Stage::context_ready) {
         ack.ready_us = at_us;
     }
-    const auto metrics = self.host_->storage_metrics();
     static_cast<void>(self.timing_.publication.record_stage(goal, task, stage, at_us, metrics));
 }
 void Chat::on_publication_ack(void *ctx, ayni::runtime::conversation::PublicationAck event,
@@ -745,7 +745,7 @@ ayni_submit_result_t Chat::submit_model(void *ctx, const ayni_provider_request_v
     self.model_failure_ = {};
     self.model_ = ModelState::waiting;
     ++self.model_requests_;
-    const auto requested = uint64_t(esp_timer_get_time());
+    const auto requested = self.capture_phase_snapshot();
     self.trace_tool_window(request->logical_call_id, requested);
     self.trace("model_requested", requested);
     return AYNI_SUBMIT_ACCEPTED;
@@ -762,14 +762,14 @@ ayni_submit_result_t Chat::cancel_model(void *ctx, ayni_attempt_ref_v1 attempt) 
     }
     return AYNI_SUBMIT_ACCEPTED;
 }
-void Chat::trace_tool_window(uint64_t next_call, uint64_t requested_us) {
+void Chat::trace_tool_window(uint64_t next_call, const PhaseSnapshot &requested) {
     const auto &proposal = timing_.pending_model_post;
     if (!turn_ || !proposal.valid || std::strcmp(proposal.kind, "tools") != 0 || !host_) {
         return;
     }
-    const auto current = host_->storage_metrics();
-    const auto io = StoragePhaseDelta::between(proposal.snapshot.storage, current,
-                                               requested_us - proposal.snapshot.at_us);
+    const auto &posted = proposal.snapshot;
+    const auto io = StoragePhaseDelta::between(posted.storage, requested.storage,
+                                               requested.at_us - posted.at_us);
     using Role = ayni::hosts::storage::FileValueRole;
     const auto &chunks = io.values[static_cast<size_t>(Role::body_chunk)];
     const auto &manifests = io.values[static_cast<size_t>(Role::owner_manifest)];
@@ -777,11 +777,11 @@ void Chat::trace_tool_window(uint64_t next_call, uint64_t requested_us) {
     transport_.diagnostics().record(
         "wifi tool_window turn=%llu model_call=%llu next_call=%llu proposed_us=%llu "
         "next_us=%llu chunks_write=%llu/%llu manifests_write=%llu/%llu append=%llu/%llu\n",
-        n(turn_), n(proposal.call), n(next_call), n(proposal.snapshot.at_us), n(requested_us),
+        n(turn_), n(proposal.call), n(next_call), n(posted.at_us), n(requested.at_us),
         n(chunks.write.calls), n(chunks.write.service_us), n(manifests.write.calls),
         n(manifests.write.service_us), n(io.append_calls), n(io.append_us));
-    trace_tool_io(proposal.call, next_call, proposal.snapshot.at_us, requested_us,
-                  proposal.snapshot.storage.completed, current.completed);
+    trace_tool_io(proposal.call, next_call, posted.at_us, requested.at_us, posted.storage.completed,
+                  requested.storage.completed);
 }
 void Chat::trace_tool_io(uint64_t model_call, uint64_t next_call, uint64_t from_us, uint64_t to_us,
                          uint64_t first, uint64_t next) {
@@ -904,28 +904,21 @@ void Chat::publish_model() {
         }
     }
     if (ayni_provider_post(completion_, &result) == AYNI_OK) {
-        const auto posted_us = uint64_t(esp_timer_get_time());
-        const uint64_t posted_call = call_;
-        const size_t posted_bytes = model_answer_.size();
-        const char *posted_kind = model_ == ModelState::text    ? "text"
-                                  : model_ == ModelState::tools ? "tools"
-                                                                : "fail";
-        const uint64_t recv_us =
-            timing_.model_received_call == posted_call ? timing_.model_received_us : posted_us;
-        const uint64_t stage_us =
-            timing_.model_received_call == posted_call && timing_.model_staged_us
-                ? timing_.model_staged_us
-                : recv_us;
         if (turn_) {
             // Sample only: defer stdout/log formatting until after the publication window
             // (or until the next model request on multi-round tool turns).
-            const auto snapshot = capture_phase_snapshot(posted_us);
-            const auto delivery = timing_.model_received_call == posted_call
-                                      ? timing_.model_delivery
-                                      : ModelDeliveryTiming{};
-            timing_.pending_model_post = {true,    posted_call, posted_kind, posted_bytes,
-                                          recv_us, stage_us,    delivery,    snapshot};
-            timing_.publication.mark_model_posted(posted_us, snapshot.storage);
+            const auto snapshot = capture_phase_snapshot();
+            const bool received = timing_.model_received_call == call_;
+            const auto recv_us = received ? timing_.model_received_us : snapshot.at_us;
+            const auto stage_us =
+                received && timing_.model_staged_us ? timing_.model_staged_us : recv_us;
+            const auto delivery = received ? timing_.model_delivery : ModelDeliveryTiming{};
+            const char *kind = model_ == ModelState::text    ? "text"
+                               : model_ == ModelState::tools ? "tools"
+                                                             : "fail";
+            timing_.pending_model_post = {true,    call_,    kind,     model_answer_.size(),
+                                          recv_us, stage_us, delivery, snapshot};
+            timing_.publication.mark_model_posted(snapshot.at_us, snapshot.storage);
         }
         model_body_ = {}; // The successful post transfers the reference to Core.
         model_ = ModelState::idle;
@@ -1116,23 +1109,24 @@ void Chat::incoming(const Packet &p) {
             input_.assign(reinterpret_cast<const char *>(p.body.data()), p.size);
         }
         turn_ = p.id;
-        turn_started_ = uint64_t(esp_timer_get_time());
         timing_ = {};
+        model_requests_ = 0;
+        const auto accepted = capture_phase_snapshot();
+        turn_started_ = accepted.at_us;
         timing_.phase_started_us = turn_started_;
         timing_.publication.reset(turn_);
         timing_.last_motor_dispatch = motor_.execution().latest_dispatch();
-        timing_.storage = host_->storage_metrics();
+        timing_.storage = accepted.storage;
         timing_.accepted_space = {timing_.storage.foreground_measures,
                                   timing_.storage.foreground_measure_us,
                                   timing_.storage.idle_measures, timing_.storage.idle_measure_us};
-        model_requests_ = 0;
         reply_intent_ = ReplyIntent::present;
         hold_reported_ = false;
         preparation_wait_ = {};
         turn_state_ = Turn::input;
         progress_ = true;
         status(turn_, "accepted");
-        trace("accepted", turn_started_);
+        trace("accepted", accepted);
     } else if (p.kind == Kind::cancel && turn_state_ == Turn::answer) {
         reply_end_ = "turn failed/cancelled; answer retained; no automatic retry";
         turn_state_ = Turn::reply_done;
@@ -1970,15 +1964,15 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
             end_turn("turn failed: saved answer unavailable");
             return AYNI_OK;
         }
-        const auto saved_us = uint64_t(esp_timer_get_time());
-        turn_state_ = Turn::answer;
         // Sample now; report after text presentation and any automatic speech terminate.
-        const auto snapshot = capture_phase_snapshot(saved_us);
-        static_cast<void>(timing_.publication.record_answer_saved(saved_us, snapshot.storage));
+        const auto snapshot = capture_phase_snapshot();
+        turn_state_ = Turn::answer;
+        static_cast<void>(
+            timing_.publication.record_answer_saved(snapshot.at_us, snapshot.storage));
         timing_.pending_answer_saved = {
             true, snapshot, heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
             heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)};
-        reply_deadline_ = saved_us + presentation_wait_us;
+        reply_deadline_ = snapshot.at_us + presentation_wait_us;
         goal_ = 0; // The completed task has no further device work.
     }
     if (turn_state_ == Turn::answer || turn_state_ == Turn::speaking ||

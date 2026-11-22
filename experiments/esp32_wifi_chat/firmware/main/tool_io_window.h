@@ -46,8 +46,9 @@ struct ToolIoWindow {
     };
     std::array<Part, phase_count> parts{};
 
-    // Request identities bound the same delta as StorageMetrics::completed. At a motor
-    // timestamp, a completion exactly at start belongs to active and at stop to after.
+    // Coherent endpoint snapshots delimit the cursor range [first, next). The cursor
+    // breaks ties at endpoints with the same microsecond as a completion. At a motor
+    // timestamp a completion exactly at start belongs to active and at stop to after.
     template <class Read>
     bool collect(uint64_t from_us, uint64_t to_us, const OutputIntervals &output, uint64_t first,
                  uint64_t next, Read read) {
@@ -73,7 +74,7 @@ struct ToolIoWindow {
         parts[count ? after : before].wall_us += to_us - previous_stop;
         for (auto i = first; i < next; ++i) {
             Sample sample;
-            if (!read(i, sample)) {
+            if (!read(i, sample) || sample.at_us < from_us || sample.at_us > to_us) {
                 return false;
             }
             Phase phase = before;

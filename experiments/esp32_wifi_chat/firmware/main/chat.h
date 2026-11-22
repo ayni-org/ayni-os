@@ -75,7 +75,6 @@ class Chat {
     void wait_for(const char *phase, const char *label, ayni_status_t);
     void status(uint64_t, const char *);
     void publish_model();
-    void trace_tool_window(uint64_t next_call, uint64_t requested_us);
     void trace_tool_io(uint64_t model_call, uint64_t next_call, uint64_t from_us, uint64_t to_us,
                        uint64_t first, uint64_t next);
     void emit_tool_decisions(uint64_t durable_seq);
@@ -85,7 +84,7 @@ class Chat {
                                    uint64_t commit_seq);
     void emit_publication_ack();
     struct PhaseSnapshot {
-        uint64_t at_us = 0;
+        uint64_t at_us = 0; // Monotonic microseconds sampled with the storage counters.
         uint64_t step_calls = 0, step_us = 0, max_step_us = 0, conversation_us = 0;
         uint32_t model_requests = 0;
         ayni::hosts::esp_idf::StorageMetrics storage{};
@@ -104,11 +103,12 @@ class Chat {
         PhaseSnapshot snapshot{};
         size_t internal_min_free = 0, psram_min_free = 0;
     };
-    PhaseSnapshot capture_phase_snapshot(uint64_t at_us = 0) const;
+    PhaseSnapshot capture_phase_snapshot() const;
+    void trace_tool_window(uint64_t next_call, const PhaseSnapshot &requested);
     void emit_phase_trace(const char *phase, const PhaseSnapshot &snapshot);
     void flush_pending_model_post();
     void flush_publication_diagnostics();
-    void trace(const char *phase, uint64_t at_us = 0); // Fixed phase/timing metadata only.
+    void trace(const char *phase, const PhaseSnapshot &snapshot);
     void trace_latency(const char *phase, const PhaseSnapshot &snapshot);
     void diagnostics();
     Transport &transport_;

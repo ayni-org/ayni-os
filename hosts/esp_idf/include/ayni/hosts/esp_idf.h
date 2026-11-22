@@ -77,6 +77,9 @@ class Host {
     // Request counters are published before the completion becomes visible.
     // Close/reopen starts new counters; a closed Host returns a zero snapshot.
     StorageMetrics storage_metrics() const;
+    // Sample the ESP monotonic clock and counters under the worker's publication lock.
+    // Completions with the same microsecond are ordered by the completed-request cursor.
+    StorageMetrics storage_metrics(uint64_t &at_us) const;
     bool read_storage_work(uint64_t index, StorageWorkSample &sample) const;
     // Worker timestamp of a recent successful append containing seq, or zero on a cache miss.
     uint64_t append_durable_us(uint64_t seq) const;

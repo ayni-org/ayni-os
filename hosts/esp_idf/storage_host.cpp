@@ -41,8 +41,11 @@ class Host::Storage {
     uint32_t stack_free_bytes() const {
         return worker_ ? uxTaskGetStackHighWaterMark(worker_) : final_stack_free_;
     }
-    StorageMetrics metrics() {
+    StorageMetrics metrics(uint64_t *at_us = nullptr) {
         portENTER_CRITICAL(&mutex_);
+        if (at_us) {
+            *at_us = static_cast<uint64_t>(esp_timer_get_time());
+        }
         const auto result = metrics_;
         portEXIT_CRITICAL(&mutex_);
         return result;
@@ -366,6 +369,13 @@ storage::FileValuePort Host::value_store() {
 }
 StorageMetrics Host::storage_metrics() const {
     return storage_ ? storage_->metrics() : StorageMetrics{};
+}
+StorageMetrics Host::storage_metrics(uint64_t &at_us) const {
+    if (storage_) {
+        return storage_->metrics(&at_us);
+    }
+    at_us = static_cast<uint64_t>(esp_timer_get_time());
+    return {};
 }
 bool Host::read_storage_work(uint64_t index, StorageWorkSample &sample) const {
     return storage_ && storage_->read_work(index, sample);
