@@ -464,7 +464,9 @@ bool CallRuntime::call_ready(uint32_t at, uint64_t now_us, uint64_t durable_seq,
         }
         return false;
     }
-    if (active->stage == Stage::queued && choice && choice->call_id == id.call_id) {
+    // A replacement Grant can be valid but still await its durable binding (C-COMMIT-007).
+    if (active->stage == Stage::queued && authority.status == AYNI_OK && choice &&
+        choice->call_id == id.call_id) {
         return true;
     }
     if ((active->stage == Stage::prepared ||
