@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <iterator>
 #include <limits>
+#include <utility>
 namespace ayni::strategies {
 struct ToolLoop::Cache {
     struct Saved {
@@ -433,6 +434,7 @@ ayni_status_t revalidate(Workspace &workspace, Turn &turn, const ToolLoopConfig 
         turn.phase = TurnPhase::initial;
         turn.tool_index = 0;
         turn.proposals.reset();
+        turn.waiting_tool_budget.reset();
         turn.result_source = {};
         turn.result_projection.reset();
         turn.result_summary = {};
@@ -830,9 +832,19 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
     }
     auto &response = reply.text;
     ToolBudget budget;
-    status = current_tool_budget(config, turn, proposal.protocol_id, budget);
-    if (status != AYNI_OK) {
-        return status;
+    // Only the built-in projection with fixed discovery tools is stable across
+    // decisions. Each result and authority check above still uses the current snapshot.
+    const bool fixed_projection = !config.projection.context_writer && turn.definitions.empty();
+    auto measured = std::exchange(turn.waiting_tool_budget, std::nullopt);
+    if (fixed_projection && measured && measured->model_call == model.logical_call_id &&
+        measured->tool_index == turn.tool_index &&
+        equal(config.model.text, view(measured->instructions))) {
+        budget = {measured->tokens, proposal.protocol_id, config.projection};
+    } else {
+        status = current_tool_budget(config, turn, proposal.protocol_id, budget);
+        if (status != AYNI_OK) {
+            return status;
+        }
     }
     ReplyBuffer scratch{reply_bytes(budget.tokens), {}};
     if (call_status == AYNI_NOT_FOUND) {
@@ -841,7 +853,15 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
         status = native_function(workspace, proposal, config, snapshot, turn, key, output, scratch,
                                  budget, reply, requested);
         if (requested) {
-            return save(turn, config, output);
+            status = save(turn, config, output);
+            if (status == AYNI_OK && fixed_projection) {
+                turn.waiting_tool_budget = Turn::WaitingToolBudget{
+                    model.logical_call_id, turn.tool_index, budget.tokens,
+                    config.model.text.size
+                        ? std::string(config.model.text.data, config.model.text.size)
+                        : std::string{}};
+            }
+            return status;
         }
     } else if (call_status == AYNI_OK) {
         if (call.mode == AYNI_CALL_MODE_MANAGED) {
