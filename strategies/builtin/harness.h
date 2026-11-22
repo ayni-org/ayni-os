@@ -78,6 +78,21 @@ struct NativeArguments {
     }
 };
 
+// Closed envelope of ayni_call_capability, shared by admission and operation controls.
+enum CapabilityField {
+    binding_field,
+    version_field,
+    arguments_field,
+    operation_field,
+    reference_field,
+    after_field,
+    timeout_field
+};
+inline bool read_capability_arguments(const ayni_tool_call_v1 &call, NativeArguments &args) {
+    return args.read(call, {"binding_id", "binding_version", "arguments", "operation",
+                            "operation_ref", "after", "timeout_ms"});
+}
+
 struct ToolBudget {
     uint64_t tokens = UINT64_MAX; // Estimated remaining input tokens; MAX disables token limiting.
     ayni_string_v1 protocol_id{}; // Current opaque ID, counted with the matching reply envelope.
@@ -137,10 +152,10 @@ ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &pro
                               char *buffer, uint32_t capacity, ToolBudget budget, ToolReply &,
                               bool &requested);
 // Handles read/wait/cancel/close; start/invoke remain ordinary normalized business admission.
-ayni_status_t native_operation(Workspace &workspace, const ayni_tool_call_v1 &,
+ayni_status_t native_operation(Workspace &workspace, const NativeArguments &, ayni_string_v1,
                                const ToolLoopConfig &, const ayni_task_snapshot_v1 &,
                                ayni_string_v1, ayni_policy_output_v1 &, char *, uint32_t,
-                               ToolReply &, bool &, bool &);
+                               ToolReply &, bool &);
 // Render an original operation and optionally its known terminal result.
 ayni_status_t operation_result(Workspace &workspace, const ayni_operation_info_v1 &,
                                const ToolLoopConfig &, const ayni_task_snapshot_v1 &,

@@ -297,14 +297,21 @@ ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &pro
                               bool &requested) {
     auto &response = reply.text;
     requested = false;
-    bool handled = false;
-    const auto operation_status =
-        native_operation(workspace, proposal, config, snapshot, step, output, buffer, capacity,
-                         reply, requested, handled);
-    if (handled) {
-        return operation_status;
-    }
     NativeArguments args;
+    const bool capability = named(proposal.function_name, model::call_function);
+    ayni_string_v1 operation{};
+    if (capability) {
+        if (!read_capability_arguments(proposal, args)) {
+            return native_error(AYNI_INVALID_ARGUMENT, "Invalid operation envelope.", buffer,
+                                capacity, response);
+        }
+        if (args.positions[operation_field] != UINT32_MAX &&
+            (!args.string(operation_field, operation) ||
+             (!named(operation, "invoke") && !named(operation, "start")))) {
+            return native_operation(workspace, args, operation, config, snapshot, step, output,
+                                    buffer, capacity, reply, requested);
+        }
+    }
     json::Writer out(buffer, capacity);
     ayni_status_t status = AYNI_NOT_FOUND;
     if (named(proposal.function_name, model::list_function)) {
@@ -314,35 +321,30 @@ ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &pro
         if (status == AYNI_OK) {
             return AYNI_OK;
         }
-    } else if (named(proposal.function_name, model::inspect_function) ||
-               named(proposal.function_name, model::call_function) ||
+    } else if (named(proposal.function_name, model::inspect_function) || capability ||
                named(proposal.function_name, model::shell_function)) {
         const bool shell = named(proposal.function_name, model::shell_function);
-        const bool call = named(proposal.function_name, model::call_function) || shell;
+        const bool call = capability || shell;
         ayni_string_v1 binding{};
         uint32_t version = 0;
-        constexpr uint32_t operation_field = 3;
-        bool valid = shell ? args.read(proposal, {"command"})
-                           : args.read(proposal,
-                                       {"binding_id", "binding_version", "arguments", "operation"});
-        uint32_t mode = AYNI_CALL_MODE_FOREGROUND;
+        const uint32_t mode =
+            named(operation, "start") ? AYNI_CALL_MODE_MANAGED : AYNI_CALL_MODE_FOREGROUND;
+        bool valid = false;
         if (shell) {
             binding = config.shell.binding_id;
             version = config.shell.binding_version;
-            valid = valid && args.count == 1U;
+            valid = args.read(proposal, {"command"}) && args.count == 1U;
         } else {
-            const bool explicit_operation = args.positions[operation_field] != UINT32_MAX;
-            ayni_string_v1 operation{};
-            if (explicit_operation) {
-                valid = valid && call && args.string(operation_field, operation) &&
-                        (named(operation, "invoke") || named(operation, "start"));
-                if (named(operation, "start")) {
-                    mode = AYNI_CALL_MODE_MANAGED;
-                }
+            valid = (capability || args.read(proposal, {"binding_id", "binding_version"})) &&
+                    args.string(binding_field, binding) && valid_id(binding) &&
+                    args.integer(version_field, version) && version;
+            if (capability) {
+                constexpr uint32_t invoke_fields = 3;
+                valid = valid && args.positions[arguments_field] != UINT32_MAX &&
+                        args.count == invoke_fields + (operation.size ? 1U : 0U);
+            } else {
+                valid = valid && args.count == 2U;
             }
-            valid = valid && args.string(0, binding) && valid_id(binding) &&
-                    args.integer(1, version) && version &&
-                    args.count == (call ? 3U : 2U) + (explicit_operation ? 1U : 0U);
         }
         ayni_capability_detail_v1 detail{};
         detail.struct_size = sizeof(detail);
@@ -362,7 +364,8 @@ ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &pro
             if (shell) {
                 args.positions[0] = 0;
             }
-            status = invoke(workspace, args, shell ? 0U : 2U, detail, step, output, mode);
+            status =
+                invoke(workspace, args, shell ? 0U : arguments_field, detail, step, output, mode);
             if (status == AYNI_OK) {
                 requested = true;
                 return AYNI_OK;

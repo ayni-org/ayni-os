@@ -3,19 +3,6 @@
 #include <ayni/call_result_json.hpp>
 namespace ayni::strategies::detail {
 namespace {
-enum Field {
-    operation_field,
-    reference_field,
-    after_field,
-    timeout_field,
-    binding_field,
-    version_field,
-    arguments_field
-};
-bool read_arguments(const ayni_tool_call_v1 &call, NativeArguments &args) {
-    return args.read(call, {"operation", "operation_ref", "after", "timeout_ms", "binding_id",
-                            "binding_version", "arguments"});
-}
 bool name(ayni_string_v1 value, std::string_view expected) {
     return equal(value, view(expected));
 }
@@ -74,7 +61,7 @@ ayni_status_t operation_source(const ayni_tool_call_v1 &proposal,
     NativeArguments args;
     ayni_operation_ref_v1 reference{};
     ayni_operation_info_v1 info{};
-    if (!read_arguments(proposal, args)) {
+    if (!read_capability_arguments(proposal, args)) {
         return AYNI_INVALID_ARGUMENT;
     }
     const auto status = target(args, snapshot, reference, info);
@@ -113,31 +100,12 @@ ayni_status_t operation_result(Workspace &workspace, const ayni_operation_info_v
 
 // Controls stage one intent; a committed control only reads back, so retries cannot
 // reopen/re-cancel.
-ayni_status_t native_operation(Workspace &workspace, const ayni_tool_call_v1 &proposal,
-                               const ToolLoopConfig &config, const ayni_task_snapshot_v1 &snapshot,
-                               ayni_string_v1 step, ayni_policy_output_v1 &output, char *buffer,
-                               uint32_t capacity, ToolReply &reply, bool &requested,
-                               bool &handled) {
+ayni_status_t native_operation(Workspace &workspace, const NativeArguments &args,
+                               ayni_string_v1 operation, const ToolLoopConfig &config,
+                               const ayni_task_snapshot_v1 &snapshot, ayni_string_v1 step,
+                               ayni_policy_output_v1 &output, char *buffer, uint32_t capacity,
+                               ToolReply &reply, bool &requested) {
     auto &response = reply.text;
-    handled = false;
-    if (!name(proposal.function_name, model::call_function)) {
-        return AYNI_OK;
-    }
-    NativeArguments args;
-    ayni_string_v1 operation{};
-    if (!read_arguments(proposal, args)) {
-        handled = true;
-        return native_error(AYNI_INVALID_ARGUMENT, "Invalid operation envelope.", buffer, capacity,
-                            response);
-    }
-    if (args.positions[operation_field] == UINT32_MAX) {
-        return AYNI_OK;
-    }
-    if (args.string(operation_field, operation) &&
-        (name(operation, "start") || name(operation, "invoke"))) {
-        return AYNI_OK;
-    }
-    handled = true;
     const bool wait = name(operation, "wait");
     const bool read = name(operation, "read");
     const bool cancel = name(operation, "cancel");
