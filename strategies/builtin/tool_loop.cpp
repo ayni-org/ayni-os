@@ -834,13 +834,12 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
     if (status != AYNI_OK) {
         return status;
     }
-    const uint32_t capacity = reply_bytes(budget.tokens);
-    std::string scratch(capacity, '\0');
+    ReplyBuffer scratch{reply_bytes(budget.tokens), {}};
     if (call_status == AYNI_NOT_FOUND) {
         // request copies arguments while normalize scratch is live. Only successful
         // acceptance gets a waiting checkpoint; refusal becomes a local tool response.
-        status = native_function(workspace, proposal, config, snapshot, turn, key, output,
-                                 scratch.data(), capacity, budget, reply, requested);
+        status = native_function(workspace, proposal, config, snapshot, turn, key, output, scratch,
+                                 budget, reply, requested);
         if (requested) {
             return save(turn, config, output);
         }
@@ -854,14 +853,14 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
                          ? snapshot.operation(snapshot.call_context, &reference, &info)
                          : AYNI_UNSUPPORTED;
             if (status == AYNI_OK) {
-                status = operation_result(workspace, info, config, snapshot, output, scratch.data(),
-                                          capacity, reply);
+                status =
+                    operation_result(workspace, info, config, snapshot, output, scratch, reply);
             }
         } else {
-            status = native_result(workspace, reply.call, scratch.data(), capacity, response);
+            status = native_result(workspace, reply.call, scratch, response);
         }
     } else if (call_status == AYNI_EXPIRED && call.logical_call_id) {
-        json::Writer unavailable(scratch.data(), capacity);
+        json::Writer unavailable(scratch.data(), scratch.capacity);
         json::write_call_unavailable(unavailable, call);
         size_t bytes = 0;
         status = unavailable.finish(bytes) ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;

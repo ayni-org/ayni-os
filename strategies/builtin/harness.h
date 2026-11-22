@@ -102,6 +102,17 @@ struct ToolBudget {
     }
     bool fits(ayni_string_v1 reply) const { return measure(reply) <= tokens; }
 };
+// Owns rendering bytes through history append. Successful requests never obtain the buffer.
+struct ReplyBuffer {
+    uint32_t capacity;
+    std::string bytes;
+    char *data() {
+        if (bytes.empty()) {
+            bytes.resize(capacity);
+        }
+        return bytes.data();
+    }
+};
 // Reply and optional original result. Owns resolved bytes through final
 // budget/retention handling; a zero Call ID means metadata/local response only.
 struct ToolReply {
@@ -149,17 +160,16 @@ ayni_status_t preload_tools(Workspace &, const ayni_task_snapshot_v1 &, std::str
 ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &proposal,
                               const ToolLoopConfig &config, const ayni_task_snapshot_v1 &snapshot,
                               Turn &turn, ayni_string_v1 step, ayni_policy_output_v1 &output,
-                              char *buffer, uint32_t capacity, ToolBudget budget, ToolReply &,
-                              bool &requested);
+                              ReplyBuffer &, ToolBudget budget, ToolReply &, bool &requested);
 // Handles read/wait/cancel/close; start/invoke remain ordinary normalized business admission.
 ayni_status_t native_operation(Workspace &workspace, const NativeArguments &, ayni_string_v1,
                                const ToolLoopConfig &, const ayni_task_snapshot_v1 &,
-                               ayni_string_v1, ayni_policy_output_v1 &, char *, uint32_t,
-                               ToolReply &, bool &);
+                               ayni_string_v1, ayni_policy_output_v1 &, ReplyBuffer &, ToolReply &,
+                               bool &);
 // Render an original operation and optionally its known terminal result.
 ayni_status_t operation_result(Workspace &workspace, const ayni_operation_info_v1 &,
                                const ToolLoopConfig &, const ayni_task_snapshot_v1 &,
-                               ayni_policy_output_v1 &, char *, uint32_t, ToolReply &,
+                               ayni_policy_output_v1 &, ReplyBuffer &, ToolReply &,
                                ayni_status_t = AYNI_OK);
 // Stable tool processing steps are distinct from the target's business completion.
 bool step_committed(const ayni_task_snapshot_v1 &, ayni_string_v1);
@@ -168,10 +178,10 @@ ayni_status_t operation_source(const ayni_tool_call_v1 &, const ayni_task_snapsh
                                ayni_task_call_result_v1 &);
 // Serialize original known result proof and outcome, retaining UNKNOWN as a hold.
 ayni_status_t native_result(Workspace &workspace, const ayni_task_call_result_v1 &result,
-                            char *buffer, uint32_t capacity, ayni_string_v1 &response);
+                            ReplyBuffer &, ayni_string_v1 &response);
 // Normal harness errors never claim a failed or unknown business action.
-ayni_status_t native_error(ayni_status_t status, std::string_view message, char *buffer,
-                           uint32_t capacity, ayni_string_v1 &response);
+ayni_status_t native_error(ayni_status_t status, std::string_view message, ReplyBuffer &,
+                           ayni_string_v1 &response);
 // Chunk only the result body; the final reply keeps the original action facts.
 ayni_status_t summarize_result(Workspace &workspace, Turn &, const ToolLoopConfig &,
                                const ayni_task_snapshot_v1 &, ayni_policy_output_v1 &,
