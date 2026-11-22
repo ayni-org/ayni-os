@@ -80,7 +80,9 @@ class ResourceAdmissionTest : public ::testing::Test {
     }
     bool acquire(uint64_t call, uint64_t now) {
         ResourceClaim claim{};
-        const bool accepted = admission.acquire(call, now, claim);
+        auto on_wait = WaitAction::wait;
+        const bool accepted = admission.acquire(call, now, claim, on_wait) ==
+                              ResourceAdmission::Acquisition::acquired;
         if (accepted) {
             claims[call] = claim;
         }
@@ -195,7 +197,18 @@ TEST_F(ResourceAdmissionTest,
     EXPECT_TRUE(selected.expired);
     EXPECT_EQ(selected.on_wait, WaitAction::pause);
     EXPECT_EQ(selected.waited_us, 20U);
-    EXPECT_FALSE(acquire(1, 30));
+    ResourceClaim untouched{99, 1};
+    auto on_wait = WaitAction::wait;
+    const auto before = admission.info(0).used;
+    EXPECT_EQ(admission.acquire(2, 30, untouched, on_wait),
+              ResourceAdmission::Acquisition::not_selected);
+    EXPECT_EQ(on_wait, WaitAction::wait);
+    EXPECT_EQ(admission.acquire(1, 30, untouched, on_wait),
+              ResourceAdmission::Acquisition::expired);
+    EXPECT_EQ(on_wait, WaitAction::pause);
+    EXPECT_EQ(untouched.call_id, 99U);
+    EXPECT_EQ(untouched.generation, 1U);
+    EXPECT_EQ(admission.info(0).used, before);
     EXPECT_EQ(admission.size(), 2U);
     ASSERT_TRUE(admission.remove_waiter(1, 30));
     EXPECT_EQ(admission.next_deadline_us(), no_deadline);

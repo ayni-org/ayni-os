@@ -1,6 +1,7 @@
 #include "workspace_fixture.h"
 // Normal public ABI call scenarios, C-CALL-002/012, C-COMMIT-007 and ADR-0045.
 // Sim storage timing is explicit; no fault injection or restart campaign.
+#include "goal_reauthorization_request.h"
 #include "journal_test_support.h"
 #include "kernel/service/command/command_records.h"
 #include "snapshot_test_support.h"
@@ -1568,6 +1569,100 @@ TEST_F(ManagedCall, single_append_host_keeps_acceptance_as_the_only_new_fact) {
     EXPECT_TRUE(pending.empty());
 }
 
+// C-RES-002/004: a queued older Call gets the available claim before a fresh decision.
+TEST_F(ManagedCall, older_resource_waiter_prepares_before_newly_admitted_call) {
+    auto &node = work.node();
+    const auto slot = text("model.slot");
+    ASSERT_EQ(ayni_set_resource_health(work.kernel(), slot, AYNI_RESOURCE_OFFLINE), AYNI_OK);
+    const auto older_task = ready_task(create(agent_b));
+    ASSERT_NE(older_task, 0U);
+    node.step(1);
+    const auto older = work.task(older_task).logical_call_id;
+    ASSERT_NE(older, 0U);
+    ASSERT_EQ(call_info(older).phase, AYNI_CALL_QUEUED);
+    const auto fresh_task = ready_task(create(agent_a));
+    ASSERT_NE(fresh_task, 0U);
+    ASSERT_EQ(ayni_set_resource_health(work.kernel(), slot, AYNI_RESOURCE_ONLINE), AYNI_OK);
+
+    CallAppendGroup append(node);
+    node.step();
+    const auto fresh = work.task(fresh_task).logical_call_id;
+    ASSERT_NE(fresh, 0U);
+    EXPECT_EQ(call_info(older).phase, AYNI_CALL_DISPATCHING);
+    EXPECT_EQ(call_info(fresh).phase, AYNI_CALL_QUEUED);
+    EXPECT_LT(call_info(older).requires_seq, call_info(fresh).requires_seq);
+    EXPECT_TRUE(pending.empty());
+}
+
+class QueuedReauthorization : public ManagedCall, public ::testing::WithParamInterface<bool> {};
+
+// C-COMMIT-007: queued progress waits for the binding; a stop remains visible while waiting.
+TEST_P(QueuedReauthorization, queued_call_wakes_for_durability_or_stop) {
+    auto &node = work.node();
+    const ayni_grant_create_v1 replacement{sizeof(replacement),
+                                           1,
+                                           text("echo"),
+                                           work.instance(agent_a),
+                                           0,
+                                           AYNI_GRANT_PERMANENT,
+                                           0,
+                                           0,
+                                           {sizeof(ayni_scope_v1), 0, nullptr}};
+    auto intent = work.intent(AYNI_INTENT_GRANT_CREATE, &replacement);
+    intent.command_id = ++command;
+    const auto grant = work.submit(intent);
+    ASSERT_EQ(grant.status, AYNI_OK);
+    pump(4);
+
+    const auto goal = create();
+    const auto task = ready_task(goal);
+    ASSERT_NE(task, 0U);
+    node.step(1); // Admit the Call but leave its resource request queued.
+    const auto call = work.task(task).logical_call_id;
+    ASSERT_NE(call, 0U);
+    ASSERT_EQ(call_info(call).phase, AYNI_CALL_QUEUED);
+    ASSERT_EQ(node.sim().complete_storage(), 1U);
+    node.step(1);
+    const ayni_grant_revoke_v1 revoke{sizeof(revoke), 0, grants[0]};
+    intent = work.intent(AYNI_INTENT_GRANT_REVOKE, &revoke, 1);
+    intent.command_id = ++command;
+    ASSERT_EQ(work.submit(intent).status, AYNI_OK);
+    node.sim().advance_us(10000);
+    node.step(1); // Apply revocation without running ordinary calls or goal cleanup.
+    ASSERT_EQ(node.sim().complete_storage(), 1U);
+    node.step(1); // Consume only the storage ACK.
+
+    ReauthorizationRequest request(work.kernel(), goal);
+    intent = work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = ++command;
+    const auto rebound = work.submit(intent);
+    ASSERT_EQ(rebound.status, AYNI_OK);
+    node.sim().advance_us(10000);
+    auto report = node.step();
+    EXPECT_LT(report.durable_seq, rebound.result.commit_seq);
+    EXPECT_EQ(report.more_ready, 0U);
+    EXPECT_EQ(call_info(call).phase, AYNI_CALL_QUEUED);
+    EXPECT_TRUE(pending.empty());
+    ASSERT_EQ(node.sim().pending_storage(), 1U);
+    if (GetParam()) {
+        const ayni_task_target_v1 target{sizeof(target), 0, task};
+        intent = work.intent(AYNI_INTENT_TASK_CANCEL, &target, work.task(task).revision);
+        intent.command_id = ++command;
+        ASSERT_EQ(work.submit(intent).status, AYNI_OK);
+        EXPECT_EQ(node.step(1).items_done, 1U);
+        EXPECT_EQ(call_info(call).outcome, AYNI_CALL_CANCELLED);
+        EXPECT_EQ(call_info(call).effect, AYNI_CALL_EFFECT_NONE);
+        EXPECT_TRUE(pending.empty());
+        return;
+    }
+    EXPECT_EQ(node.sim().complete_storage(), 1U);
+    pump(8);
+    ASSERT_EQ(pending.size(), 1U);
+    EXPECT_EQ(pending.front().call, call);
+}
+
+INSTANTIATE_TEST_SUITE_P(ResumeOrStop, QueuedReauthorization, ::testing::Bool());
+
 TEST_F(ManagedCall, preparation_yields_when_policy_spends_the_time_budget) {
     const auto task = ready_task(create());
     ASSERT_NE(task, 0U);
@@ -1617,26 +1712,21 @@ TEST_F(ManagedCall, dispatch_waits_for_its_persisted_barrier) {
 }
 
 TEST_F(ManagedCall, revocation_after_preparation_prevents_provider_submission) {
-    const auto goal = create();
+    const auto task = ready_task(create());
+    ASSERT_NE(task, 0U);
     uint64_t call = 0;
-    for (unsigned round = 0; round < 80; ++round) {
-        work.node().sim().complete_storage();
-        work.node().sim().advance_us(10000);
-        work.node().step(1);
-        const auto task = work.goal(goal).last_task_id;
-        if (task != 0U) {
-            call = work.task(task).logical_call_id;
-        }
-        if (call != 0U && call_info(call).phase == AYNI_CALL_DISPATCHING) {
-            break;
-        }
+    {
+        CallAppendGroup append(work.node());
+        work.node().step();
+        call = work.task(task).logical_call_id;
+        ASSERT_NE(call, 0U);
+        ASSERT_EQ(call_info(call).phase, AYNI_CALL_DISPATCHING);
+        ASSERT_EQ(append.batches.size(), 3U);
+        const ayni_grant_revoke_v1 revoke{sizeof(revoke), 0, grants[0]};
+        auto intent = work.intent(AYNI_INTENT_GRANT_REVOKE, &revoke, 1);
+        intent.command_id = ++command;
+        ASSERT_EQ(work.submit(intent).status, AYNI_OK);
     }
-    ASSERT_NE(call, 0U);
-    ASSERT_EQ(call_info(call).phase, AYNI_CALL_DISPATCHING);
-    const ayni_grant_revoke_v1 revoke{sizeof(revoke), 0, grants[0]};
-    auto intent = work.intent(AYNI_INTENT_GRANT_REVOKE, &revoke, 1);
-    intent.command_id = ++command;
-    ASSERT_EQ(work.submit(intent).status, AYNI_OK);
     pump(16);
     EXPECT_TRUE(pending.empty());
     EXPECT_EQ(call_info(call).outcome, AYNI_CALL_CANCELLED);

@@ -47,9 +47,11 @@ ayni_call_outcome_t outcome(ProviderMessageKind kind) {
 
 // Read never retires the delivery. Publication must succeed before acknowledge,
 // so journal backpressure cannot free a slot or lose a result body (C-CALL-012).
-CallRuntime::Advance CallRuntime::consume(uint64_t now_us, uint64_t durable_seq) {
-    const ReceiptScratch scratch{receipt_, limits_.result_bytes};
-    const ReceiptScratch normalized_scratch{normalized_, limits_.result_bytes};
+std::optional<CallRuntime::Advance> CallRuntime::consume(uint64_t now_us, uint64_t durable_seq) {
+    // The configured byte limit can be nonzero even when there is no receipt arena.
+    if (limits_.capacity == 0U) {
+        return std::nullopt;
+    }
     ProviderMessage message{};
     ProviderReceipt receipt{};
     uint32_t required = 0;
@@ -57,11 +59,14 @@ CallRuntime::Advance CallRuntime::consume(uint64_t now_us, uint64_t durable_seq)
     const auto read =
         mailbox_.read_next(receipt_, limits_.result_bytes, required, message, receipt, &blocked);
     if (read == AYNI_NOT_FOUND) {
-        return Advance::idle;
+        return std::nullopt;
     }
     if (read != AYNI_OK) {
         return Advance::internal;
     }
+    // read_next writes no payload on refusal or empty. Wipe both lanes after an actual copy.
+    const ReceiptScratch scratch{receipt_, limits_.result_bytes};
+    const ReceiptScratch normalized_scratch{normalized_, limits_.result_bytes};
     uint32_t index = 0;
     for (; index < limits_.capacity; ++index) {
         if (slots_[index].active && slots_[index].active->delivery &&
@@ -407,8 +412,8 @@ CallRuntime::CallReady CallRuntime::call_ready(uint32_t at, uint64_t now_us, uin
     }
     const auto &state = work_.calls.state(at);
     const auto &id = work_.calls.identity(at);
-    if (control_.stop_measured(id.call_id) && state.execution &&
-        !work::execution_stopped(*state.execution)) {
+    if (state.execution && !work::execution_stopped(*state.execution) &&
+        control_.stop_measured(id.call_id)) {
         return CallReady::other;
     }
     if (slots_[at].active && slots_[at].active->stage == Stage::retiring) {

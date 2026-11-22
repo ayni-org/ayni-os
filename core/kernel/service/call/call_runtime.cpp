@@ -167,9 +167,8 @@ CallRuntime::Advance CallRuntime::advance(uint64_t now_us, uint64_t durable_seq,
     if (mode == Mode::fenced || mode == Mode::closing) {
         return drain_transport(mode);
     }
-    const auto blocked = blocked_receipts();
-    if (mailbox_.has_pending(&blocked)) {
-        return consume(now_us, durable_seq);
+    if (const auto receipt = consume(now_us, durable_seq)) {
+        return *receipt;
     }
     uint32_t waiting_task = 0;
     if (mode == Mode::running && next_subscription_wakeup(now_us, durable_seq, waiting_task)) {
@@ -259,8 +258,8 @@ CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,
                                                uint64_t durable_seq, Mode mode) {
     const auto &id = work_.calls.identity(index);
     const auto &state = work_.calls.state(index);
-    if (control_.stop_measured(id.call_id) && state.execution &&
-        !work::execution_stopped(*state.execution)) {
+    if (state.execution && !work::execution_stopped(*state.execution) &&
+        control_.stop_measured(id.call_id)) {
         return control_.commit_stop(index);
     }
     uint32_t task_index = 0;
@@ -336,15 +335,14 @@ CallRuntime::Advance CallRuntime::progress_dispatch(uint32_t index, uint32_t tas
     auto &active = *slots_[index].active;
     const auto &state = work_.calls.state(index);
     if (active.stage == Stage::queued) {
-        resources::AdmissionChoice choice{};
-        if (!resources_.next(now_us, choice) || choice.call_id != active.call_id) {
+        auto on_wait = resources::WaitAction::wait;
+        const auto acquired = resources_.acquire(active.call_id, now_us, active.claim, on_wait);
+        using Acquisition = resources::ResourceAdmission::Acquisition;
+        if (acquired == Acquisition::not_selected) {
             return Advance::idle;
         }
-        if (choice.expired) {
-            return expire_wait(index, task_index, choice.on_wait, now_us);
-        }
-        if (!resources_.acquire(active.call_id, now_us, active.claim)) {
-            return Advance::internal;
+        if (acquired == Acquisition::expired) {
+            return expire_wait(index, task_index, on_wait, now_us);
         }
         active.stage = Stage::prepared;
         if (work_.calls.action(index) == nullptr &&

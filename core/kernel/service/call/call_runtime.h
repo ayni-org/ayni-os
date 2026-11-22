@@ -53,6 +53,7 @@ class CallRuntime {
     authority::GrantCheck check_proposal(uint32_t task_index, const ayni_policy_intent_v1 &intent,
                                          uint64_t now_us, uint64_t durable_seq,
                                          knowledge::MemoryDependencies &dependencies);
+    // A stale staged input asks the strategy to decide again without committing a hold.
     bool proposal_needs_redecision() const { return proposal_ && proposal_->redecide; }
     // Accepts one checked intent; writes the new stable ID only when it creates a Call.
     bool accept(uint32_t task_index, foundation::TransitionStamp stamp, uint64_t now_us,
@@ -63,6 +64,7 @@ class CallRuntime {
     struct AcceptedCalls {
         uint64_t first = 0; // First Call ID; zero if the pass created none.
         uint64_t last = 0;  // Last Call ID; zero iff first is zero.
+        // Extend in allocation order. Zero denotes a decision that created no Call.
         void include(uint64_t call) {
             if (call) {
                 if (!first) {
@@ -71,6 +73,7 @@ class CallRuntime {
                 last = call;
             }
         }
+        // Only used with a verified Call identity, never a reusable table slot.
         bool contains(uint64_t call) const { return first && first <= call && call <= last; }
     };
 
@@ -349,7 +352,8 @@ class CallRuntime {
     Advance
     cancel_transport(Delivery &delivery); // One shared cancel port contract, never a terminal.
     bool transport_ready(Mode mode) const;
-    Advance consume(uint64_t now_us, uint64_t durable_seq);
+    // Nullopt means the mailbox had no readable receipt; any other result owns this turn.
+    std::optional<Advance> consume(uint64_t now_us, uint64_t durable_seq);
     // apply_receipt, then any privacy discard; returns a body the result does not keep.
     ayni_status_t apply_delivery(uint32_t index, uint32_t task_index,
                                  const ProviderMessage &message, uint64_t durable_seq,

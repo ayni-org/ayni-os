@@ -92,10 +92,13 @@ authority::GrantCheck WorkModel::check_tool_authority(uint32_t task_index,
         !catalog::BindingRegistry::same_selection(id.binding(), catalogs.bindings.at(binding))) {
         return {AYNI_UNSUPPORTED_VERSION, AYNI_REASON_GRANT_CATALOG_CHANGED};
     }
+    // The source proof above already checked its own full Scope. An explicit
+    // replacement still has to cover that same ceiling (ADR-0085).
     if (!tool_policy_allows(task.goal_index, catalogs.bindings.at(binding)) ||
-        !grants.covers_saved_scope(selected, id.capability_id, id.capability_version,
-                                   calls.domain(source_call), grants.scope(source_grant),
-                                   calls.contract(source_call).business_contract)) {
+        (selected != source_grant &&
+         !grants.covers_saved_scope(selected, id.capability_id, id.capability_version,
+                                    calls.domain(source_call), grants.scope(source_grant),
+                                    calls.contract(source_call).business_contract))) {
         return {AYNI_DENIED, AYNI_REASON_GRANT_SCOPE};
     }
     const auto check = check_grant(selected, now_us, durable_seq, task.goal_id);

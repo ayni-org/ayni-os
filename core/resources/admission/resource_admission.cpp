@@ -223,32 +223,44 @@ AdmissionChoice ResourceAdmission::choice(uint32_t index, uint64_t now_us) const
             entry.deadline_us != no_deadline && entry.deadline_us <= now_us};
 }
 
-bool ResourceAdmission::next(uint64_t now_us, AdmissionChoice &out) const {
+uint32_t ResourceAdmission::select(uint64_t now_us) const {
     const auto overdue = expired(now_us);
     if (overdue != no_index) {
-        out = choice(overdue, now_us);
-        return true;
+        return overdue;
     }
     // Expiry consumes no resources; lower priorities may use resources that
     // no eligible higher-priority request can use (work-conserving selection).
     for (std::size_t priority = 0; priority < last_instance_.size(); ++priority) {
         const auto selected = eligible(static_cast<Priority>(priority));
         if (selected != no_index) {
-            out = choice(selected, now_us);
-            return true;
+            return selected;
         }
     }
-    return false;
+    return no_index;
+}
+
+bool ResourceAdmission::next(uint64_t now_us, AdmissionChoice &out) const {
+    const auto index = select(now_us);
+    if (index == no_index) {
+        return false;
+    }
+    out = choice(index, now_us);
+    return true;
 }
 
 // Reselect immediately before the all-or-none change. Reusing a logical call
 // still produces a different claim, fencing delayed release/stop confirmations.
-bool ResourceAdmission::acquire(uint64_t call_id, uint64_t now_us, ResourceClaim &out) {
-    AdmissionChoice selected{};
-    uint32_t index = 0;
-    if (!next(now_us, selected) || selected.expired || selected.call_id != call_id ||
-        !find(call_id, index)) {
-        return false;
+ResourceAdmission::Acquisition ResourceAdmission::acquire(uint64_t call_id, uint64_t now_us,
+                                                          ResourceClaim &claim,
+                                                          WaitAction &on_wait) {
+    const auto index = select(now_us);
+    if (index == no_index || requests_[index].request.call_id != call_id) {
+        return Acquisition::not_selected;
+    }
+    const auto selected = choice(index, now_us);
+    if (selected.expired) {
+        on_wait = selected.on_wait;
+        return Acquisition::expired;
     }
     auto &entry = requests_[index];
     for (uint32_t at = 0; at < entry.request.count; ++at) {
@@ -260,8 +272,8 @@ bool ResourceAdmission::acquire(uint64_t call_id, uint64_t now_us, ResourceClaim
     if (selected.waited_us > longest_wait_us_) {
         longest_wait_us_ = selected.waited_us;
     }
-    out = {call_id, entry.ticket};
-    return true;
+    claim = {call_id, entry.ticket};
+    return Acquisition::acquired;
 }
 
 bool ResourceAdmission::remove_waiter(uint64_t call_id, uint64_t now_us) {
