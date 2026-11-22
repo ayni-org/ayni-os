@@ -25,6 +25,7 @@
 #include <numeric>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -50,6 +51,8 @@ class QueuedValueStore {
         : host_(host), history_(history) {}
     ayni::hosts::storage::FileValuePort port() { return {this, submit}; }
     bool empty() const { return pending_.empty(); }
+    size_t pending() const { return pending_.size(); }
+    void refuse_next() { reject_next_ = true; }
     const StorageMetrics &metrics() const { return metrics_; }
 
     void advance() {
@@ -132,7 +135,7 @@ class QueuedValueStore {
     };
     static ayni_submit_result_t submit(void *ctx, const FileValueRequest *request) {
         auto &self = *static_cast<QueuedValueStore *>(ctx);
-        if (self.pending_.size() >= 8U) {
+        if (std::exchange(self.reject_next_, false) || self.pending_.size() >= 8U) {
             return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
         }
         self.pending_.push_back({*request, self.host_.now_us()});
@@ -144,6 +147,7 @@ class QueuedValueStore {
     std::deque<Queued> pending_;
     StorageMetrics metrics_{};
     uint32_t writes_since_measure_ = 0;
+    bool reject_next_ = false;
 };
 
 struct FixedTextModel {
@@ -887,6 +891,56 @@ TEST(TurnDiagnostics, ToolStorageWindowRejectsCursorFromOutsideEitherBoundary) {
     EXPECT_FALSE(early_start_cursor.collect(from_us, to_us, output, first - 1, next, read));
 }
 
+// ADR-0104: an idle scan stays valid until confirmation, cold read or ownership changes.
+TEST(TurnDiagnostics, IdleBodyProgressReopensForConfirmColdReadAndRelease) {
+    using FileBodies = ayni::runtime::FileBodies;
+    ayni::hosts::sim::Host host(1000);
+    QueuedValueStore values(host);
+    FileBodies stored, reopened;
+    ASSERT_EQ(stored.configure(values.port(), 32768U), AYNI_OK);
+    ASSERT_EQ(reopened.configure(values.port(), 32768U), AYNI_OK);
+    const std::string payload(4097, 'a');
+    const auto *port = stored.store();
+    ayni_body_ref_v1 ref{};
+    ASSERT_EQ(port->stage(port->context, 1,
+                          {reinterpret_cast<const uint8_t *>(payload.data()),
+                           static_cast<uint32_t>(payload.size())},
+                          &ref),
+              AYNI_OK);
+    for (unsigned tick = 0; tick < 3; ++tick) {
+        FileBodies::progress(&stored, 0);
+        EXPECT_TRUE(stored.idle());
+        EXPECT_TRUE(values.empty());
+    }
+    values.refuse_next();
+    EXPECT_EQ(port->confirm(port->context, &ref), AYNI_NOT_READY);
+    EXPECT_TRUE(values.empty());
+    const auto drain = [&](FileBodies &bodies, unsigned requests) {
+        for (unsigned at = 0; at < requests; ++at) {
+            FileBodies::progress(&bodies, 0);
+            FileBodies::progress(&bodies, 0);
+            ASSERT_EQ(values.pending(), 1U);
+            values.advance();
+        }
+        FileBodies::progress(&bodies, 0);
+        EXPECT_TRUE(values.empty());
+        EXPECT_TRUE(bodies.idle());
+    };
+    drain(stored, 4); // Manifest lookup, two payload chunks, then the owner manifest.
+    ASSERT_EQ(port->confirm(port->context, &ref), AYNI_OK);
+    FileBodies::progress(&reopened, 0);
+    const auto *cold = reopened.store();
+    std::vector<uint8_t> bytes(payload.size());
+    const auto size = static_cast<uint32_t>(bytes.size());
+    ASSERT_EQ(cold->read(cold->context, &ref, bytes.data(), size), AYNI_NOT_READY);
+    drain(reopened, 3); // Existing manifest followed by both payload chunks.
+    ASSERT_EQ(cold->read(cold->context, &ref, bytes.data(), size), AYNI_OK);
+    EXPECT_EQ(std::string(bytes.begin(), bytes.end()), payload);
+    cold->release(cold->context, &ref);
+    drain(reopened, 3); // Both chunks followed by removal of the manifest.
+    EXPECT_EQ(FileBodies::collected(&reopened, 1), AYNI_OK);
+}
+
 // C-HVAL-009: chunk/manifest I/O remains identifiable when one payload has two owners.
 TEST(TurnDiagnostics, ValueRolesAccountForShortMultichunkAndSharedBody) {
     using ayni::hosts::storage::FileValueRole;
@@ -1430,7 +1484,7 @@ TEST(TurnDiagnostics, FormattedReportLinesFitWithinDiagnosticLogSlot) {
         EXPECT_GT(length, 0);
         EXPECT_LT(static_cast<size_t>(length), sizeof(line));
         EXPECT_NE(std::string_view(line).find("kind=" + std::string(kind) +
-                                             " tool_count=" + std::to_string(count)),
+                                              " tool_count=" + std::to_string(count)),
                   std::string_view::npos);
     }
     wifichat::PublicationTimeline::Segment worst_seg{};

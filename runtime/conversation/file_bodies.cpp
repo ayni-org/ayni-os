@@ -35,6 +35,7 @@ ayni_status_t FileBodies::configure(hosts::storage::FileValuePort files, size_t 
     cache_limit_ = cache_bytes;
     base_ = base;
     owner_ = std::this_thread::get_id();
+    scan_needed_ = true;
     return AYNI_OK;
 }
 uint64_t FileBodies::identity(uint64_t scope, uint64_t digest) {
@@ -70,15 +71,13 @@ FileBodies::Entry *FileBodies::find(const ayni_body_ref_v1 &ref) {
     return &found->second;
 }
 FileBodies::Entry *FileBodies::metadata(const ayni_body_ref_v1 &ref) {
-    if (conflicting(ref)) {
-        return nullptr;
-    }
     auto *entry = find(ref);
     if (!entry && entries_.size() < entry_limit) {
         Entry pending;
         pending.digest = ref.digest;
         pending.size = ref.size;
         entry = &entries_.emplace(identity(0, ref.digest), std::move(pending)).first->second;
+        scan_needed_ = true;
     }
     return entry;
 }
@@ -100,6 +99,7 @@ ayni_status_t FileBodies::add_owner(Entry &entry, uint64_t scope, uint64_t id) {
     owners.push_back({scope, id});
     entry.temporary.push_back(id);
     ++entry.revision;
+    scan_needed_ = true;
     return AYNI_OK;
 }
 void FileBodies::drop_owner(Entry &entry, uint64_t id) {
@@ -119,9 +119,11 @@ void FileBodies::drop_owner(Entry &entry, uint64_t id) {
             return; // A refused release must never be acknowledged as completed cleanup.
         }
         entry.releases.push_back({id, std::nullopt});
+        scan_needed_ = true;
         release = std::prev(entry.releases.end());
     }
     if (entry.manifest_loaded && !release->revision) {
+        scan_needed_ = true;
         apply_release(entry, *release);
         retire_releases(entry);
     }
@@ -350,7 +352,10 @@ ayni_status_t FileBodies::confirm(void *context, const ayni_body_ref_v1 *ref) {
         if (!entry) {
             return AYNI_CAPACITY_EXCEEDED;
         }
-        entry->persist_requested = true;
+        if (!entry->persist_requested) {
+            entry->persist_requested = true;
+            self.scan_needed_ = true;
+        }
         entry->temporary.erase(
             std::remove(entry->temporary.begin(), entry->temporary.end(), ref->id),
             entry->temporary.end());
@@ -415,6 +420,7 @@ ayni_status_t FileBodies::read(void *context, const ayni_body_ref_v1 *ref, uint8
                 ref->size); // Reserve the entire accepted load before later I/O can allocate.
             entry =
                 &self.entries_.emplace(identity(0, ref->digest), std::move(loaded)).first->second;
+            self.scan_needed_ = true;
         }
         if (entry->state == State::failed) {
             return entry->failure;
@@ -426,6 +432,7 @@ ayni_status_t FileBodies::read(void *context, const ayni_body_ref_v1 *ref, uint8
             }
             entry->bytes.resize(entry->size);
             entry->load_payload = true;
+            self.scan_needed_ = true;
         }
         if (entry->manifest_loaded && !owns(*entry, ref->id)) {
             return AYNI_NOT_FOUND;
@@ -438,6 +445,7 @@ ayni_status_t FileBodies::read(void *context, const ayni_body_ref_v1 *ref, uint8
             entry->bytes.resize(entry->size);
             entry->state = State::loading;
             entry->chunk = 0;
+            self.scan_needed_ = true;
         }
         if ((entry->staged && owns(*entry, ref->id)) || entry->state == State::ready ||
             entry->state == State::durable) {
@@ -482,7 +490,7 @@ void FileBodies::release_temporary(void *context, const ayni_body_ref_v1 *ref) {
             if (entry->additions.empty()) {
                 self.entries_.erase(identity(0, ref->digest));
             }
-            return; // No files were written for these temporary owners.
+            return; // Removing RAM-only owners creates no persistence work.
         }
     }
     release(context, ref);
@@ -500,14 +508,7 @@ void FileBodies::release(void *context, const ayni_body_ref_v1 *ref) {
         if (self.conflicting(*ref)) {
             return;
         }
-        auto *entry = self.find(*ref);
-        if (!entry && self.entries_.size() < entry_limit) {
-            Entry loaded;
-            loaded.digest = ref->digest;
-            loaded.size = ref->size;
-            entry =
-                &self.entries_.emplace(identity(0, ref->digest), std::move(loaded)).first->second;
-        }
+        auto *entry = self.metadata(*ref);
         if (entry) {
             self.drop_owner(*entry, ref->id);
         } else {
@@ -609,7 +610,7 @@ void FileBodies::flush() {
     Pending *request = nullptr;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!pending_.empty() || failure_ != AYNI_OK) {
+        if (!scan_needed_ || !pending_.empty() || failure_ != AYNI_OK) {
             return;
         }
         for (auto &[id, entry] : entries_) {
@@ -618,6 +619,8 @@ void FileBodies::flush() {
                 break;
             }
         }
+        // A rejected submit retains work for the next owner tick.
+        scan_needed_ = request != nullptr;
     }
     if (request && files_.submit(files_.context, &request->request) != AYNI_SUBMIT_ACCEPTED) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -631,6 +634,8 @@ void FileBodies::complete(void *context, const FileValueResult &result) noexcept
     auto *pending = static_cast<Pending *>(context);
     auto &self = *pending->self;
     std::lock_guard<std::mutex> lock(self.mutex_);
+    // This borrow may have exposed the next chunk, manifest update or deletion.
+    self.scan_needed_ = true;
     auto &entry = self.entries_.at(pending->id);
     entry.pending = false;
     const bool missing =
