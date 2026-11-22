@@ -206,23 +206,34 @@ CallRuntime::Advance CallRuntime::prepare_accepted(const AcceptedCalls &accepted
         ready_before_calls(now_us, durable_seq, Mode::running)) {
         return Advance::idle;
     }
-    const auto candidate = next_accepted_preparation(accepted, now_us, durable_seq);
+    const auto selection_us = host_.monotonic_now_us(host_.ctx);
+    if (selection_us >= deadline_us) {
+        return Advance::idle;
+    }
+    const auto candidate = next_accepted_preparation(accepted, selection_us, durable_seq);
     if (!candidate) {
         return Advance::idle;
     }
-    const auto checked_us = host_.monotonic_now_us(host_.ctx);
-    resources::AdmissionChoice choice{};
-    const bool chosen = resources_.next(checked_us, choice);
     uint32_t task = 0;
-    if (checked_us >= deadline_us ||
-        call_ready(*candidate, checked_us, durable_seq, Mode::running,
-                   chosen ? &choice : nullptr) != CallReady::prepare ||
-        !work_.tasks.find(work_.calls.identity(*candidate).task_id, task)) {
+    if (!work_.tasks.find(work_.calls.identity(*candidate).task_id, task)) {
         return Advance::idle;
     }
+
+    // Use the same fresh time for readiness and the actual claim. A wait that
+    // expired during the scan belongs to the ordinary expiry lane (C-RES-005).
     const auto prepare_us = host_.monotonic_now_us(host_.ctx);
-    return prepare_us < deadline_us ? progress_dispatch(*candidate, task, checked_us, durable_seq)
-                                    : Advance::idle;
+    if (prepare_us >= deadline_us) {
+        return Advance::idle;
+    }
+    resources::AdmissionChoice choice{};
+    const bool chosen = resources_.next(prepare_us, choice);
+    if (chosen && choice.expired) {
+        return Advance::idle; // An overdue waiter takes precedence even over a prepared Call.
+    }
+    return call_ready(*candidate, prepare_us, durable_seq, Mode::running,
+                      chosen ? &choice : nullptr) == CallReady::prepare
+               ? progress_dispatch(*candidate, task, prepare_us, durable_seq)
+               : Advance::idle;
 }
 
 // Reuse ordinary readiness so stop, expire, dispatch and older work retain

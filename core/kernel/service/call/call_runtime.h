@@ -55,7 +55,8 @@ class CallRuntime {
                                          knowledge::MemoryDependencies &dependencies);
     // A stale staged input asks the strategy to decide again without committing a hold.
     bool proposal_needs_redecision() const { return proposal_ && proposal_->redecide; }
-    // Accepts one checked intent; writes the new stable ID only when it creates a Call.
+    // Accepts one checked intent. New Call identity, queue entry and Task state
+    // share its transition; writes the new stable ID only when it creates a Call.
     bool accept(uint32_t task_index, foundation::TransitionStamp stamp, uint64_t now_us,
                 uint64_t &accepted_call);
 

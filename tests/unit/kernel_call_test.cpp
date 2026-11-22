@@ -1594,6 +1594,65 @@ TEST_F(ManagedCall, older_resource_waiter_prepares_before_newly_admitted_call) {
     EXPECT_TRUE(pending.empty());
 }
 
+// White-box C-RES-005: the wait expires between the early selection and the claim.
+TEST_F(ManagedCall, preparation_leaves_wait_that_expires_during_selection_for_ordinary_step) {
+    using Runtime = ayni::kernel::CallRuntime;
+    auto &node = work.node();
+    const auto task = ready_task(create());
+    ASSERT_NE(task, 0U);
+    node.step(1);
+    const auto call = work.task(task).logical_call_id;
+    ASSERT_NE(call, 0U);
+    auto &calls = ayni::kernel::KernelTestProbe::calls(work.kernel());
+    const auto report = node.info();
+    const auto deadline = calls.next_deadline_us();
+    ASSERT_NE(deadline, UINT64_MAX);
+    ASSERT_GT(deadline - 2U, node.sim().now_us());
+    node.sim().advance_us(deadline - 2U - node.sim().now_us());
+    node.sim().advance_per_read_us(1);
+    const auto result = calls.prepare_accepted({call, call}, deadline + 10U, report.durable_seq);
+    node.sim().advance_per_read_us(0);
+    ASSERT_EQ(result, Runtime::Advance::idle);
+    EXPECT_EQ(call_info(call).phase, AYNI_CALL_QUEUED);
+    EXPECT_TRUE(pending.empty());
+    pump(4);
+    EXPECT_EQ(work.task(task).hold_reason, AYNI_REASON_RESOURCE_WAIT);
+    EXPECT_TRUE(pending.empty());
+}
+
+// White-box C-RES-005: a different wait expiring also defers an already prepared Call.
+TEST_F(ManagedCall, preparation_yields_to_a_different_waiter_expiring_during_selection) {
+    using Runtime = ayni::kernel::CallRuntime;
+    auto &node = work.node();
+    auto &calls = ayni::kernel::KernelTestProbe::calls(work.kernel());
+    const auto slot = text("model.slot");
+    ASSERT_EQ(ayni_set_resource_health(work.kernel(), slot, AYNI_RESOURCE_OFFLINE), AYNI_OK);
+    ASSERT_NE(ready_task(create()), 0U);
+    node.step(1);
+    const auto expiry = calls.next_deadline_us();
+    ASSERT_NE(expiry, UINT64_MAX);
+    const auto task = ready_task(create_profile("foreground", agent_b));
+    ASSERT_NE(task, 0U);
+    node.step(1);
+    const auto call = work.task(task).logical_call_id;
+    ASSERT_NE(call, 0U);
+    ASSERT_EQ(node.sim().complete_storage(), 1U);
+    node.step(1);
+    ASSERT_EQ(ayni_set_resource_health(work.kernel(), slot, AYNI_RESOURCE_ONLINE), AYNI_OK);
+    node.step(1);
+    ASSERT_EQ(call_info(call).phase, AYNI_CALL_PREPARED);
+
+    const auto durable = node.info().durable_seq;
+    ASSERT_GT(expiry - 2U, node.sim().now_us());
+    node.sim().advance_us(expiry - 2U - node.sim().now_us());
+    node.sim().advance_per_read_us(1);
+    const auto result = calls.prepare_accepted({call, call}, expiry + 10U, durable);
+    node.sim().advance_per_read_us(0);
+    EXPECT_EQ(result, Runtime::Advance::idle);
+    EXPECT_EQ(call_info(call).phase, AYNI_CALL_PREPARED);
+    EXPECT_TRUE(pending.empty());
+}
+
 class QueuedReauthorization : public ManagedCall, public ::testing::WithParamInterface<bool> {};
 
 // C-COMMIT-007: queued progress waits for the binding; a stop remains visible while waiting.
