@@ -214,25 +214,28 @@ CallRuntime::Advance CallRuntime::prepare_accepted(const AcceptedCalls &accepted
     if (!candidate) {
         return Advance::idle;
     }
-    uint32_t task = 0;
-    if (!work_.tasks.find(work_.calls.identity(*candidate).task_id, task)) {
-        return Advance::idle;
-    }
 
-    // Use the same fresh time for readiness and the actual claim. A wait that
-    // expired during the scan belongs to the ordinary expiry lane (C-RES-005).
+    // Control and ingress can become ready during the scan. The final sample
+    // gives both precedence over a journal-only transition (ADR-0052).
     const auto prepare_us = host_.monotonic_now_us(host_.ctx);
-    if (prepare_us >= deadline_us) {
+    if (prepare_us >= deadline_us || control_ready(prepare_us, durable_seq, Mode::running) ||
+        ready_before_calls(prepare_us, durable_seq, Mode::running)) {
         return Advance::idle;
     }
-    resources::AdmissionChoice choice{};
-    const bool chosen = resources_.next(prepare_us, choice);
-    if (chosen && choice.expired) {
-        return Advance::idle; // An overdue waiter takes precedence even over a prepared Call.
+    const auto ready = call_readiness(*candidate, prepare_us, durable_seq, Mode::running);
+    if (ready == CallReady::queued) {
+        auto &active = *slots_[*candidate].active;
+        auto on_wait = resources::WaitAction::wait;
+        // One arbitration at prepare_us. Selection changes and expired waits
+        // both yield to ordinary scheduling (C-RES-005).
+        const auto acquired = resources_.acquire(active.call_id, prepare_us, active.claim, on_wait);
+        return acquired == resources::ResourceAdmission::Acquisition::acquired
+                   ? record_preparation(*candidate)
+                   : Advance::idle;
     }
-    return call_ready(*candidate, prepare_us, durable_seq, Mode::running,
-                      chosen ? &choice : nullptr) == CallReady::prepare
-               ? progress_dispatch(*candidate, task, prepare_us, durable_seq)
+    // A Call that already has its claim still yields to any newly overdue waiter.
+    return ready == CallReady::prepared && prepare_us < resources_.next_deadline_us()
+               ? prepare_barrier(*candidate)
                : Advance::idle;
 }
 
@@ -249,14 +252,14 @@ std::optional<uint32_t> CallRuntime::next_accepted_preparation(const AcceptedCal
             continue;
         }
         const auto ready =
-            call_ready(at, now_us, durable_seq, Mode::running, chosen ? &choice : nullptr);
+            scheduled_readiness(at, now_us, durable_seq, Mode::running, chosen ? &choice : nullptr);
         if (ready == CallReady::idle) {
             continue;
         }
         if (ready == CallReady::other || !accepted.contains(work_.calls.identity(at).call_id)) {
             return std::nullopt;
         }
-        if (!candidate || slots_[at].active->stage == Stage::prepared) {
+        if (!candidate || ready == CallReady::prepared) {
             candidate = at;
         }
     }
@@ -344,7 +347,6 @@ CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,
 CallRuntime::Advance CallRuntime::progress_dispatch(uint32_t index, uint32_t task_index,
                                                     uint64_t now_us, uint64_t durable_seq) {
     auto &active = *slots_[index].active;
-    const auto &state = work_.calls.state(index);
     if (active.stage == Stage::queued) {
         auto on_wait = resources::WaitAction::wait;
         const auto acquired = resources_.acquire(active.call_id, now_us, active.claim, on_wait);
@@ -355,45 +357,57 @@ CallRuntime::Advance CallRuntime::progress_dispatch(uint32_t index, uint32_t tas
         if (acquired == Acquisition::expired) {
             return expire_wait(index, task_index, on_wait, now_us);
         }
-        active.stage = Stage::prepared;
-        if (work_.calls.action(index) == nullptr &&
-            work_.calls.prepare(index, {work_.ids.boot_epoch(), work_.transitions.next()}) !=
-                AYNI_OK) {
-            return Advance::internal;
-        }
-        return Advance::applied;
+        return record_preparation(index);
     }
     if (active.stage == Stage::prepared) {
-        if (mailbox_.in_flight() == limits_.capacity) {
-            return Advance::idle;
-        }
-        ayni_attempt_ref_v1 attempt{};
-        ProviderReservation reservation{};
-        if (!attempts_.next(work_.ids.boot_epoch(), attempt)) {
-            return Advance::attempt_exhausted;
-        }
-        // Only a TOOL_CALLS model attempt may post a list, within its own result bound.
-        const auto &contract = work_.calls.contract(index);
-        const uint32_t written_limit =
-            (contract.result_format == catalog::call_tool_calls_result_format ||
-             contract.result_format == catalog::call_value_result_format)
-                ? contract.result_text_limit
-                : 0U;
-        if (mailbox_.reserve(attempt, reservation, written_limit) != AYNI_OK) {
-            return Advance::internal;
-        }
-        if (work_.calls.begin_dispatch(
-                index, attempt, {work_.ids.boot_epoch(), work_.transitions.next()}) != AYNI_OK) {
-            static_cast<void>(mailbox_.withdraw(reservation));
-            return Advance::internal;
-        }
-        active.delivery = Delivery{reservation, nullptr, UINT64_MAX, Delivery::Cancel::none};
-        active.stage = Stage::barrier;
-        return Advance::applied;
+        return prepare_barrier(index);
     }
-    return active.stage == Stage::barrier && state.latest.transition.commit_seq <= durable_seq
+    return active.stage == Stage::barrier &&
+                   work_.calls.state(index).latest.transition.commit_seq <= durable_seq
                ? dispatch(index, task_index, now_us, durable_seq)
                : Advance::idle;
+}
+
+CallRuntime::Advance CallRuntime::record_preparation(uint32_t index) {
+    slots_[index].active->stage = Stage::prepared;
+    // A readmitted Call can retain its existing PREPARED fact (ADR-0045).
+    if (work_.calls.action(index) == nullptr &&
+        work_.calls.prepare(index, {work_.ids.boot_epoch(), work_.transitions.next()}) != AYNI_OK) {
+        return Advance::internal;
+    }
+    return Advance::applied;
+}
+
+// Reserve the exact delivery before journaling DISPATCHING. If publication
+// fails, withdraw the reservation before the Kernel enters restricted mode.
+CallRuntime::Advance CallRuntime::prepare_barrier(uint32_t index) {
+    if (mailbox_.in_flight() == limits_.capacity) {
+        return Advance::idle;
+    }
+    ayni_attempt_ref_v1 attempt{};
+    ProviderReservation reservation{};
+    if (!attempts_.next(work_.ids.boot_epoch(), attempt)) {
+        return Advance::attempt_exhausted;
+    }
+    // Only a TOOL_CALLS model attempt may post a list, within its own result bound.
+    const auto &contract = work_.calls.contract(index);
+    const uint32_t written_limit =
+        (contract.result_format == catalog::call_tool_calls_result_format ||
+         contract.result_format == catalog::call_value_result_format)
+            ? contract.result_text_limit
+            : 0U;
+    if (mailbox_.reserve(attempt, reservation, written_limit) != AYNI_OK) {
+        return Advance::internal;
+    }
+    if (work_.calls.begin_dispatch(index, attempt,
+                                   {work_.ids.boot_epoch(), work_.transitions.next()}) != AYNI_OK) {
+        static_cast<void>(mailbox_.withdraw(reservation));
+        return Advance::internal;
+    }
+    auto &active = *slots_[index].active;
+    active.delivery = Delivery{reservation, nullptr, UINT64_MAX, Delivery::Cancel::none};
+    active.stage = Stage::barrier;
+    return Advance::applied;
 }
 // Urgent output inhibition precedes journal admission. Routine polling alternates
 // with business work; an idle work turn yields to the Kernel's other work owners,

@@ -394,19 +394,31 @@ bool CallRuntime::calls_ready(uint64_t now_us, uint64_t durable_seq, Mode mode) 
     const bool resource_ready = resources_.next(now_us, choice);
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         if (work_.calls.occupied(at) &&
-            call_ready(at, now_us, durable_seq, mode, resource_ready ? &choice : nullptr) !=
-                CallReady::idle) {
+            scheduled_readiness(at, now_us, durable_seq, mode,
+                                resource_ready ? &choice : nullptr) != CallReady::idle) {
             return true;
         }
     }
     return false;
 }
 
+CallRuntime::CallReady
+CallRuntime::scheduled_readiness(uint32_t at, uint64_t now_us, uint64_t durable_seq, Mode mode,
+                                 const resources::AdmissionChoice *choice) const {
+    const auto ready = call_readiness(at, now_us, durable_seq, mode);
+    if (ready != CallReady::queued) {
+        return ready;
+    }
+    if (!choice || choice->call_id != work_.calls.identity(at).call_id) {
+        return CallReady::idle;
+    }
+    return choice->expired ? CallReady::other : CallReady::queued;
+}
+
 // One occupied slot projects its next lifecycle transition. PREPARED may enqueue
 // DISPATCHING immediately; only the final dispatch needs the durable prefix.
-CallRuntime::CallReady CallRuntime::call_ready(uint32_t at, uint64_t now_us, uint64_t durable_seq,
-                                               Mode mode,
-                                               const resources::AdmissionChoice *choice) const {
+CallRuntime::CallReady CallRuntime::call_readiness(uint32_t at, uint64_t now_us,
+                                                   uint64_t durable_seq, Mode mode) const {
     if (model_input_due(at, durable_seq)) {
         return CallReady::other;
     }
@@ -473,11 +485,11 @@ CallRuntime::CallReady CallRuntime::call_ready(uint32_t at, uint64_t now_us, uin
     if (authority.status != AYNI_OK) {
         return CallReady::idle;
     }
-    if (active->stage == Stage::queued && choice && choice->call_id == id.call_id) {
-        return choice->expired ? CallReady::other : CallReady::prepare;
+    if (active->stage == Stage::queued) {
+        return CallReady::queued;
     }
     if (active->stage == Stage::prepared && mailbox_.in_flight() != limits_.capacity) {
-        return CallReady::prepare;
+        return CallReady::prepared;
     }
     return active->stage == Stage::barrier && control_.issue_ready(at, now_us) &&
                    state.latest.transition.commit_seq <= durable_seq

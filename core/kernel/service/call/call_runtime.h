@@ -371,10 +371,13 @@ class CallRuntime {
     Advance end_query(uint32_t index, ayni_status_t status, ayni_reason_t reason);
     // Scan domain calls and their shared admission queue after reliable ingress.
     bool calls_ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const;
-    // Classifies one occupied slot; only prepare may run in the same-step append window.
-    enum class CallReady { idle, prepare, other };
-    CallReady call_ready(uint32_t index, uint64_t now_us, uint64_t durable_seq, Mode mode,
-                         const resources::AdmissionChoice *choice) const;
+    // Classifies an occupied slot. Queued still needs arbitration; prepared only needs a barrier.
+    enum class CallReady { idle, queued, prepared, other };
+    CallReady call_readiness(uint32_t index, uint64_t now_us, uint64_t durable_seq,
+                             Mode mode) const;
+    // Read-only scheduling projection against this scan's resource choice.
+    CallReady scheduled_readiness(uint32_t index, uint64_t now_us, uint64_t durable_seq, Mode mode,
+                                  const resources::AdmissionChoice *choice) const;
     // Pending releases, readable receipts and subscription wakeups precede call scheduling.
     bool ready_before_calls(uint64_t now_us, uint64_t durable_seq, Mode mode) const;
     // Pick one new Call to prepare only if no older or higher-priority Call can advance.
@@ -385,6 +388,10 @@ class CallRuntime {
                          Mode mode);
     Advance progress_dispatch(uint32_t index, uint32_t task_index, uint64_t now_us,
                               uint64_t durable_seq);
+    // Records PREPARED after the exact claim has been acquired.
+    Advance record_preparation(uint32_t index);
+    // Reserves a delivery and records DISPATCHING without submitting it to the Provider.
+    Advance prepare_barrier(uint32_t index);
     Advance stop(uint32_t index, uint32_t task_index, Mode mode, work::CallCancelCause cause);
     Advance dispatch(uint32_t index, uint32_t task_index, uint64_t now_us, uint64_t durable_seq);
     Advance expire_wait(uint32_t index, uint32_t task_index, resources::WaitAction action,
