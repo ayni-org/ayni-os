@@ -19,9 +19,12 @@ constexpr char log_file_name[] = "commit_log";
 // neither flash I/O nor completion delivery runs with that lock held.
 class Host::Storage {
   public:
-    Storage(Host &owner, bool initialize_blank)
-        : owner_(owner), files_(initialize_blank), log_(files_) {
+    Storage(Host &owner, bool initialize_blank, StorageWorkHistory *history)
+        : owner_(owner), files_(initialize_blank), log_(files_), history_(history) {
         done_ = xSemaphoreCreateBinaryStatic(&done_storage_);
+        if (history_) {
+            history_->reset();
+        }
     }
     ~Storage() {
         stop();
@@ -43,6 +46,12 @@ class Host::Storage {
         const auto result = metrics_;
         portEXIT_CRITICAL(&mutex_);
         return result;
+    }
+    bool read_work(uint64_t index, StorageWorkSample &sample) {
+        portENTER_CRITICAL(&mutex_);
+        const bool found = history_ && history_->read(index, sample);
+        portEXIT_CRITICAL(&mutex_);
+        return found;
     }
 
     uint64_t append_durable_us(uint64_t seq) {
@@ -67,6 +76,7 @@ class Host::Storage {
     LittleFiles files_;
     SpaceRefresh space_refresh_;
     storage::FileLog log_;
+    StorageWorkHistory *const history_;
     struct Queued {
         WorkItem work;
         uint64_t submitted_us = 0; // Monotonic enqueue attempt, used only for queue timing.
@@ -237,6 +247,8 @@ void Host::Storage::serve(const Queued &queued) {
     const auto queue_us = started - queued.submitted_us;
     const auto service_us = served - started;
     const auto space_us = refreshed - served;
+    StorageWorkSample sample{};
+    using Kind = StorageWorkSample::Kind;
     portENTER_CRITICAL(&mutex_);
     ++metrics_.completed;
     metrics_.queue_us += queue_us;
@@ -249,6 +261,7 @@ void Host::Storage::serve(const Queued &queued) {
         if (core->port == Request::Port::append || core->port == Request::Port::append_group) {
             ++metrics_.append_calls;
             metrics_.append_us += service_us;
+            sample.kind = Kind::append;
             if (std::get<storage::CoreCompleted>(result.value).result.outcome == AYNI_WRITE_OK) {
                 const auto count = core->port == Request::Port::append ? 1U : core->batch_count;
                 recent_appends_[next_append_] = {core->commit_seq, core->commit_seq + count - 1U,
@@ -257,19 +270,26 @@ void Host::Storage::serve(const Queued &queued) {
             }
         }
     } else if (const auto *value = std::get_if<storage::FileValueRequest>(&queued.work.value)) {
+        const auto role = static_cast<size_t>(value->role);
+        if (role < static_cast<size_t>(storage::FileValueRole::count)) {
+            sample.role = value->role;
+        }
         metrics_.record_value(*value, std::get<storage::ValueCompleted>(result.value).result,
                               service_us, refreshed - queued.submitted_us);
         metrics_.value_us += service_us;
         switch (value->kind) {
         case storage::FileValueRequest::Kind::read:
+            sample.kind = Kind::read;
             ++metrics_.value_read_calls;
             metrics_.value_read_us += service_us;
             break;
         case storage::FileValueRequest::Kind::write:
+            sample.kind = Kind::write;
             ++metrics_.value_write_calls;
             metrics_.value_write_us += service_us;
             break;
         case storage::FileValueRequest::Kind::remove:
+            sample.kind = Kind::remove;
             ++metrics_.value_remove_calls;
             metrics_.value_remove_us += service_us;
             break;
@@ -281,6 +301,12 @@ void Host::Storage::serve(const Queued &queued) {
     metrics_.foreground_measure_us +=
         file_metrics.space_measure_us - metrics_.files.space_measure_us;
     metrics_.files = file_metrics;
+    if (history_) {
+        sample.at_us = static_cast<uint64_t>(esp_timer_get_time());
+        sample.queue_us = queue_us;
+        sample.service_us = service_us;
+        history_->record(sample);
+    }
     portEXIT_CRITICAL(&mutex_);
     if (result.post()) {
         Host::wake(&owner_);
@@ -312,7 +338,8 @@ void Host::storage_memory_requirements(std::size_t &bytes, std::size_t &alignmen
     bytes = sizeof(Storage);
     alignment = alignof(Storage);
 }
-StorageOpen Host::open_storage(const char *label, uint32_t capacity, bool initialize_blank) {
+StorageOpen Host::open_storage(const char *label, uint32_t capacity, bool initialize_blank,
+                               StorageWorkHistory *history) {
     if (!label || !label[0] || capacity == 0 || capacity > request_capacity_limit) {
         return {StorageStatus::invalid_argument, 0};
     }
@@ -324,7 +351,7 @@ StorageOpen Host::open_storage(const char *label, uint32_t capacity, bool initia
     if (!memory) {
         return {StorageStatus::no_memory, 0};
     }
-    auto *candidate = new (memory) Storage(*this, initialize_blank);
+    auto *candidate = new (memory) Storage(*this, initialize_blank, history);
     const auto opened = candidate->open(label, capacity);
     if (opened.status == StorageStatus::ok) {
         storage_ = candidate;
@@ -339,6 +366,9 @@ storage::FileValuePort Host::value_store() {
 }
 StorageMetrics Host::storage_metrics() const {
     return storage_ ? storage_->metrics() : StorageMetrics{};
+}
+bool Host::read_storage_work(uint64_t index, StorageWorkSample &sample) const {
+    return storage_ && storage_->read_work(index, sample);
 }
 uint64_t Host::append_durable_us(uint64_t seq) const {
     return storage_ ? storage_->append_durable_us(seq) : 0;

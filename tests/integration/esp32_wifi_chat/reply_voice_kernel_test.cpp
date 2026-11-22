@@ -1,6 +1,7 @@
 #include "configuration.h"
 #include "reply_voice.h"
 #include "speech_profile.h"
+#include "turn_diagnostics.h"
 #include <ayni/authority.h>
 #include <ayni/context.h>
 #include <ayni/host_authority.h>
@@ -67,6 +68,7 @@ class ReplyVoiceKernel : public testing::Test {
     ayni::CommandClient commands;
     uint64_t session = 0, owner = 0, context_id = 0;
     uint32_t calls = 0, cancellations = 0;
+    uint64_t last_dispatch_us = 0;
     bool hold_audio = false, delayed_cancel = false;
     ayni_provider_completion_t *pending_audio = nullptr;
     ayni_attempt_ref_v1 audio_attempt{};
@@ -90,6 +92,7 @@ class ReplyVoiceKernel : public testing::Test {
         self.heard.append(value->value.text.data, value->value.text.size);
         self.segments.emplace_back(value->value.text.data, value->value.text.size);
         ++self.calls;
+        self.last_dispatch_us = self.host.now_us();
         if (self.hold_audio) {
             self.pending_audio = completion;
             self.audio_attempt = request->attempt;
@@ -265,6 +268,57 @@ class ReplyVoiceKernel : public testing::Test {
         speech.reset();
     }
 };
+TEST_F(ReplyVoiceKernel, DeferredPublicationOutputDoesNotMoveGoalAcceptanceOrProviderDispatch) {
+    using Event = wifichat::ReplyVoice::Event;
+    grant();
+    struct Sample {
+        ayni::hosts::sim::Host *host;
+        uint64_t goal_us = 0;
+    } sample{&host};
+    speech.observe({&sample, [](void *ctx, Event event, uint64_t, size_t, size_t) {
+                        auto &s = *static_cast<Sample *>(ctx);
+                        if (event == Event::goal_accepted) {
+                            s.goal_us = s.host->now_us();
+                        }
+                    }});
+    std::array<uint64_t, 2> baseline{};
+    constexpr uint64_t slow_output_us = 25000;
+    for (const auto delay : {uint64_t{0}, slow_output_us}) {
+        const auto saved_us = host.now_us();
+        wifichat::PublicationTimeline publication;
+        publication.mark_model_posted(saved_us - 10000, {});
+        ASSERT_TRUE(publication.record_answer_saved(saved_us, {}));
+        ASSERT_EQ(start("固定朗读启动检查"), AYNI_OK);
+        ayni_status_t result = AYNI_BUSY;
+        ASSERT_TRUE(until([&] { return (result = advance()) != AYNI_BUSY; }));
+        ASSERT_EQ(result, AYNI_OK);
+        const auto ended_us = host.now_us();
+        struct Sink {
+            ayni::hosts::sim::Host *host;
+            uint64_t delay;
+            uint32_t lines = 0;
+        } sink{&host, delay};
+        // Production drains publication diagnostics at the admitted turn terminal, after
+        // ReplyVoice has settled. Artificially time that same publication formatter here.
+        publication.emit_report(&sink, [](void *ctx, const char *, size_t) {
+            auto &s = *static_cast<Sink *>(ctx);
+            ++s.lines;
+            s.host->advance_us(s.delay);
+        });
+        EXPECT_GT(sink.lines, 0U);
+        EXPECT_EQ(host.now_us() - ended_us, delay * sink.lines);
+        ASSERT_GE(sample.goal_us, saved_us);
+        ASSERT_GE(last_dispatch_us, sample.goal_us);
+        const std::array observed{sample.goal_us - saved_us, last_dispatch_us - saved_us};
+        if (!delay) {
+            baseline = observed;
+        } else {
+            EXPECT_EQ(observed, baseline);
+        }
+        speech.reset(); // Same cleanup as the owner after admitting the turn terminal.
+    }
+    EXPECT_EQ(calls, 2U);
+}
 // ADR-0096/0097: full UTF-8 replies use body-reference Goals and the existing authorized call.
 TEST_F(ReplyVoiceKernel, CompleteLongAnswerUsesBoundedUtf8ChunksWithoutModelRequests) {
     grant();

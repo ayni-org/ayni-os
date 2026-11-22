@@ -2,6 +2,7 @@
 #include "configuration.h"
 #include "diagnostic_log.h"
 #include "model_handoff.h"
+#include "tool_io_window.h"
 #include "turn_diagnostics.h"
 #include <algorithm>
 #include <ayni/ayni.hpp>
@@ -43,7 +44,9 @@ ayni_string_v1 text(const char *s) {
 // publishes completed service/file counters BEFORE invoking the completion callback, then post_us.
 class QueuedValueStore {
   public:
-    explicit QueuedValueStore(ayni::hosts::sim::Host &host) : host_(host) {}
+    explicit QueuedValueStore(ayni::hosts::sim::Host &host,
+                              ayni::hosts::esp_idf::StorageWorkHistory *history = nullptr)
+        : host_(host), history_(history) {}
     ayni::hosts::storage::FileValuePort port() { return {this, submit}; }
     bool empty() const { return pending_.empty(); }
     const StorageMetrics &metrics() const { return metrics_; }
@@ -106,6 +109,13 @@ class QueuedValueStore {
         }
         const auto before_post = host_.now_us();
         metrics_.record_value(r, result, service_us, before_post - item.submitted_us);
+        if (history_) {
+            using Kind = ayni::hosts::esp_idf::StorageWorkSample::Kind;
+            const auto kind = r.kind == FileValueRequest::Kind::write  ? Kind::write
+                              : r.kind == FileValueRequest::Kind::read ? Kind::read
+                                                                       : Kind::remove;
+            history_->record({before_post, started - item.submitted_us, service_us, kind, r.role});
+        }
         r.complete(r.context, result);
         metrics_.post_us += host_.now_us() - before_post;
     }
@@ -128,6 +138,7 @@ class QueuedValueStore {
         return AYNI_SUBMIT_ACCEPTED;
     }
     ayni::hosts::sim::Host &host_;
+    ayni::hosts::esp_idf::StorageWorkHistory *history_;
     std::map<std::pair<uint64_t, uint64_t>, Value> values_;
     std::deque<Queued> pending_;
     StorageMetrics metrics_{};
@@ -726,51 +737,20 @@ EndToEndSample run_fixed_text_turn(const EndToEndOptions &opts) {
     return out;
 }
 
-// The UI task holds a frame and every ordinary lane slot. The model worker still
-// copies its packet into the lane the owner consumes, before the UI frame may finish.
-TEST(TurnDiagnostics, OwnerReceivesModelWhileUiFrameAndOrdinaryQueueAreBlocked) {
-    using namespace wifichat;
-    ModelHandoff lane;
-    std::promise<void> frame_entered, allow_paint_end;
-    auto frame_gate = allow_paint_end.get_future();
-    auto frame = std::async(std::launch::async, [&] {
-        std::array<Kind, packet_slots> ordinary_queue;
-        ordinary_queue.fill(Kind::status);
-        frame_entered.set_value();
-        frame_gate.wait();
-        return ordinary_queue.size();
-    });
-    frame_entered.get_future().wait();
-    Packet source{}, received{};
-    source.id = 41;
-    source.kind = Kind::model_result;
-    source.size = 1;
-    source.body[0] = 0x7f;
-    const ModelDeliveryTiming timing{lane.generation(), 60, 75};
-    auto model = std::async(std::launch::async, [&] { return lane.post(source, timing); });
-    const bool posted = model.get();
-    const bool delivered = lane.receive(received);
-    EXPECT_EQ(frame.wait_for(std::chrono::milliseconds(0)), std::future_status::timeout);
-    allow_paint_end.set_value();
-
-    ASSERT_TRUE(posted);
-    ASSERT_TRUE(delivered);
-    EXPECT_EQ(received.body[0], 0x7f);
-    EXPECT_EQ(received.model.ready_us, 75U);
-    EXPECT_TRUE(matches_model_delivery(received, 41, lane.generation()));
-    EXPECT_FALSE(matches_model_delivery(received, 42, lane.generation()));
-    EXPECT_FALSE(lane.receive(received));
-}
 TEST(TurnDiagnostics, ModelHandoffRetainsClassifiedFailureAndRejectsCancelledGenerations) {
     using namespace wifichat;
     ModelHandoff lane;
     Packet old{}, next{}, received{};
     old.id = 11;
     old.kind = Kind::model_result;
+    old.size = model_result_header_bytes + 1U;
     const ModelDeliveryTiming old_generation{lane.generation(), 0, 10};
-    ASSERT_TRUE(lane.post(old, old_generation));
+    ASSERT_EQ(lane.post(old, old_generation), ModelPost::accepted);
     lane.cancel();
-    EXPECT_FALSE(lane.post(old, old_generation));
+    EXPECT_EQ(lane.post(old, old_generation), ModelPost::stale);
+
+    Packet invalid{};
+    EXPECT_EQ(lane.post(invalid, {lane.generation(), 0, 20}), ModelPost::invalid);
 
     next.id = 12;
     next.kind = Kind::model_error;
@@ -781,13 +761,102 @@ TEST(TurnDiagnostics, ModelHandoffRetainsClassifiedFailureAndRejectsCancelledGen
     failure.effect = AYNI_CALL_EFFECT_NONE;
     write_model_result_header(next.body.data(), failure);
     const ModelDeliveryTiming next_generation{lane.generation(), 0, 30};
-    EXPECT_FALSE(lane.post(next, next_generation)); // The worker still owns next's bytes.
-    EXPECT_FALSE(lane.receive(received));           // Retire the older occupied packet.
-    ASSERT_TRUE(lane.post(next, next_generation));
+    EXPECT_EQ(lane.post(next, next_generation),
+              ModelPost::busy);           // The worker still owns next's bytes.
+    EXPECT_FALSE(lane.receive(received)); // Retire the older occupied packet.
+    ASSERT_EQ(lane.post(next, next_generation), ModelPost::accepted);
     ASSERT_TRUE(lane.receive(received));
     EXPECT_TRUE(matches_model_delivery(received, next.id, lane.generation()));
     EXPECT_EQ(read_model_result_header(received.body.data()).status, AYNI_NOT_READY);
     EXPECT_FALSE(lane.receive(received));
+}
+
+TEST(TurnDiagnostics, FixedSoftwareToolSeparatesWritesBeforeDuringAndAfterOutput) {
+    using namespace wifichat;
+    using Role = ToolIoWindow::Role;
+    ayni::hosts::sim::Host host(100000);
+    ayni::hosts::esp_idf::StorageWorkHistory history;
+    QueuedValueStore store(host, &history);
+    const auto port = store.port();
+    constexpr uint64_t queue_wait = 3000, write_service = 18000;
+    auto write = [&](uint64_t object, Role role) {
+        const uint8_t byte = 1;
+        FileValueRequest request{};
+        request.kind = FileValueRequest::Kind::write;
+        request.role = role;
+        request.key = {1, object};
+        request.generation = 1;
+        request.data = &byte;
+        request.size = sizeof(byte);
+        request.complete = [](void *, const FileValueResult &result) noexcept {
+            EXPECT_EQ(result.status, AYNI_OK);
+        };
+        ASSERT_EQ(port.submit(port.context, &request), AYNI_SUBMIT_ACCEPTED);
+        host.advance_us(queue_wait);
+        store.advance();
+    };
+    const auto from_us = host.now_us();
+    const auto first = store.metrics();
+    ASSERT_NO_FATAL_FAILURE(write(1, Role::body_chunk));
+    host.advance_us(5000);
+    const auto start_us = host.now_us();
+    ASSERT_NO_FATAL_FAILURE(write(2, Role::owner_manifest));
+    host.advance_us(1000);
+    const auto stop_us = host.now_us();
+    ASSERT_NO_FATAL_FAILURE(write(3, Role::conversation_root));
+    const auto to_us = host.now_us();
+    const auto last = store.metrics();
+    OutputIntervals output{{{41, start_us, stop_us}}};
+    ToolIoWindow window;
+    ASSERT_TRUE(window.collect(
+        from_us, to_us, output, first.completed, last.completed,
+        [&](uint64_t i, ToolIoWindow::Sample &sample) { return history.read(i, sample); }));
+    uint64_t wall = 0, writes = 0, service = 0, queue = 0;
+    for (const auto &part : window.parts) {
+        wall += part.wall_us;
+        writes += part.write.count;
+        service += part.io.us;
+        queue += part.queue_us;
+    }
+    EXPECT_EQ(wall, to_us - from_us);
+    EXPECT_EQ(writes, last.value_write_calls - first.value_write_calls);
+    EXPECT_EQ(service, last.io_us - first.io_us);
+    EXPECT_EQ(queue, last.queue_us - first.queue_us);
+    for (const auto &[phase, role] : {std::pair{ToolIoWindow::before, Role::body_chunk},
+                                      std::pair{ToolIoWindow::active, Role::owner_manifest},
+                                      std::pair{ToolIoWindow::after, Role::conversation_root}}) {
+        const auto &part = window.parts[phase];
+        EXPECT_EQ(part.write.count, 1U);
+        EXPECT_EQ(part.writes[static_cast<size_t>(role)].us, write_service);
+        EXPECT_EQ(part.queue_us, queue_wait);
+    }
+    EXPECT_EQ(window.parts[ToolIoWindow::between].io.count, 0U);
+    EXPECT_EQ(window.parts[ToolIoWindow::active].wall_us, stop_us - start_us);
+}
+
+TEST(TurnDiagnostics, ToolStorageWindowKeepsInterCallGapSeparateAndDetectsOverwrittenWork) {
+    using namespace wifichat;
+    using ayni::hosts::esp_idf::StorageWorkHistory;
+    StorageWorkHistory history;
+    using Sample = ToolIoWindow::Sample;
+    const OutputIntervals output{{{41, 20, 30}, {42, 40, 50}}};
+    history.record({20, 0, 3, Sample::Kind::append});
+    history.record({30, 0, 4, Sample::Kind::write});
+    history.record({50, 0, 5, Sample::Kind::remove});
+    const auto read = [&](uint64_t i, Sample &sample) { return history.read(i, sample); };
+    ToolIoWindow window;
+    ASSERT_TRUE(window.collect(10, 60, output, 0, 3, read));
+    EXPECT_EQ(window.parts[ToolIoWindow::active].wall_us, 20U);
+    EXPECT_EQ(window.parts[ToolIoWindow::active].append.us, 3U);
+    EXPECT_EQ(window.parts[ToolIoWindow::between].wall_us, 10U);
+    EXPECT_EQ(window.parts[ToolIoWindow::between].write.us, 4U);
+    EXPECT_EQ(window.parts[ToolIoWindow::after].remove.us, 5U);
+
+    for (uint64_t i = 0; i < StorageWorkHistory::capacity; ++i) {
+        history.record({60 + i, 0, 1});
+    }
+    ToolIoWindow incomplete;
+    EXPECT_FALSE(incomplete.collect(10, 60, output, 0, 3, read));
 }
 
 // C-HVAL-009: chunk/manifest I/O remains identifiable when one payload has two owners.

@@ -2,6 +2,7 @@
 #include "configuration.h"
 #include "motor_contract.h"
 #include "synthetic_history.h"
+#include "tool_io_window.h"
 #include "wake.h"
 #include <algorithm>
 #include <ayni/bodies.h>
@@ -188,15 +189,13 @@ void Chat::flush_pending_model_post() {
 // Emits deferred model_result_posted, the 6 publication segments, the summary, and answer_saved
 // strictly outside the measured publication window using their original timestamps and I/O counts.
 void Chat::flush_publication_diagnostics() {
-    timing_.flush_ready = false;
     if (!turn_) {
         timing_.pending_model_post.valid = false;
         timing_.pending_answer_saved.valid = false;
         return;
     }
     flush_pending_model_post();
-    if (!timing_.publication_emitted && timing_.publication.segment_count() > 0U) {
-        timing_.publication_emitted = true;
+    if (timing_.publication.segment_count() > 0U) {
         emit_publication_ack();
         timing_.publication.emit_report(&transport_.diagnostics(),
                                         [](void *ctx, const char *line, size_t) {
@@ -313,7 +312,7 @@ ayni_status_t Chat::initialize(const ModelSelection &selection) {
     }
     host_ = new (host_memory) ayni::hosts::esp_idf::Host;
     static_assert(host_capacity <= ayni::hosts::esp_idf::Host::request_capacity_limit);
-    const auto opened = host_->open_storage("ayni", host_capacity, true);
+    const auto opened = host_->open_storage("ayni", host_capacity, true, &storage_history_);
     if (opened.status != ayni::hosts::esp_idf::StorageStatus::ok) {
         char error[96];
         std::snprintf(error, sizeof(error), "storage open=%u cause=%d", unsigned(opened.status),
@@ -768,7 +767,8 @@ void Chat::trace_tool_window(uint64_t next_call, uint64_t requested_us) {
     if (!turn_ || !proposal.valid || std::strcmp(proposal.kind, "tools") != 0 || !host_) {
         return;
     }
-    const auto io = StoragePhaseDelta::between(proposal.snapshot.storage, host_->storage_metrics(),
+    const auto current = host_->storage_metrics();
+    const auto io = StoragePhaseDelta::between(proposal.snapshot.storage, current,
                                                requested_us - proposal.snapshot.at_us);
     using Role = ayni::hosts::storage::FileValueRole;
     const auto &chunks = io.values[static_cast<size_t>(Role::body_chunk)];
@@ -780,6 +780,46 @@ void Chat::trace_tool_window(uint64_t next_call, uint64_t requested_us) {
         n(turn_), n(proposal.call), n(next_call), n(proposal.snapshot.at_us), n(requested_us),
         n(chunks.write.calls), n(chunks.write.service_us), n(manifests.write.calls),
         n(manifests.write.service_us), n(io.append_calls), n(io.append_us));
+    trace_tool_io(proposal.call, next_call, proposal.snapshot.at_us, requested_us,
+                  proposal.snapshot.storage.completed, current.completed);
+}
+void Chat::trace_tool_io(uint64_t model_call, uint64_t next_call, uint64_t from_us, uint64_t to_us,
+                         uint64_t first, uint64_t next) {
+    ToolIoWindow io;
+    OutputIntervals outputs{};
+    auto &log = transport_.diagnostics();
+    const auto n = [](uint64_t value) { return static_cast<unsigned long long>(value); };
+    if (!motor_.execution().output_intervals(from_us, to_us, outputs) ||
+        !io.collect(from_us, to_us, outputs, first, next,
+                    [this](uint64_t index, ToolIoWindow::Sample &sample) {
+                        return host_->read_storage_work(index, sample);
+                    })) {
+        log.record_ram("wifi tool_io turn=%llu model_call=%llu next_call=%llu complete=0\n",
+                       n(turn_), n(model_call), n(next_call));
+        return;
+    }
+    constexpr std::array phases{"before", "active", "between", "after"};
+    for (size_t i = 0; i < io.parts.size(); ++i) {
+        const auto &p = io.parts[i];
+        if (!p.wall_us && !p.io.count) {
+            continue;
+        }
+        using Role = ToolIoWindow::Role;
+        const auto &chunks = p.writes[static_cast<size_t>(Role::body_chunk)];
+        const auto &manifests = p.writes[static_cast<size_t>(Role::owner_manifest)];
+        const auto &roots = p.writes[static_cast<size_t>(Role::conversation_root)];
+        log.record_ram(
+            "wifi tool_io turn=%llu model_call=%llu next_call=%llu complete=1 phase=%s "
+            "wall_us=%llu queue_us=%llu io=%llu/%llu append=%llu/%llu read=%llu/%llu "
+            "write=%llu/%llu remove=%llu/%llu chunks_write=%llu/%llu manifests_write=%llu/%llu "
+            "roots_write=%llu/%llu\n",
+            n(turn_), n(model_call), n(next_call),
+            outputs[0].call ? phases[i] : "no_confirmed_output", n(p.wall_us), n(p.queue_us),
+            n(p.io.count), n(p.io.us), n(p.append.count), n(p.append.us), n(p.read.count),
+            n(p.read.us), n(p.write.count), n(p.write.us), n(p.remove.count), n(p.remove.us),
+            n(chunks.count), n(chunks.us), n(manifests.count), n(manifests.us), n(roots.count),
+            n(roots.us));
+    }
 }
 void Chat::emit_tool_decisions(uint64_t durable_seq) {
     for (size_t i = 0; i < timing_.tool_decision_count; ++i) {
@@ -1019,8 +1059,8 @@ void Chat::incoming(const Packet &p) {
         timing_.model_received_us = uint64_t(esp_timer_get_time());
         timing_.model_staged_us = 0;
         model_ = ModelState::failed;
-        if (p.kind == Kind::model_error && p.size == model_result_header_bytes) {
-            model_failure_ = read_model_result_header(p.body.data());
+        if (p.kind == Kind::model_error) {
+            model_failure_ = model_delivery_failure(p);
         }
         if (p.kind == Kind::model_result && p.size > model_result_header_bytes &&
             p.size <= tx_bytes) {
@@ -1408,9 +1448,6 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
         rc = converse(info);
         if (turn_) {
             timing_.conversation_us += uint64_t(esp_timer_get_time()) - started;
-            if (timing_.flush_ready) {
-                flush_publication_diagnostics();
-            }
         }
     }
     again = progress_;
@@ -1655,6 +1692,8 @@ void Chat::end_turn(const char *message) {
     }
     probe_.reset();
     const auto ended_snapshot = capture_phase_snapshot();
+    // The turn terminal has entered the UI queue. Drain the synchronous report
+    // here, outside automatic speech startup and playback.
     flush_publication_diagnostics();
     emit_phase_trace("terminal", ended_snapshot);
     input_.clear();
@@ -1933,7 +1972,7 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
         }
         const auto saved_us = uint64_t(esp_timer_get_time());
         turn_state_ = Turn::answer;
-        // Sample endpoint only; emit after present_reply() hands the answer to the UI queue.
+        // Sample now; report after text presentation and any automatic speech terminate.
         const auto snapshot = capture_phase_snapshot(saved_us);
         static_cast<void>(timing_.publication.record_answer_saved(saved_us, snapshot.storage));
         timing_.pending_answer_saved = {
@@ -1979,9 +2018,6 @@ ayni_status_t Chat::present_reply() {
                 turn_state_ = Turn::reply_done;
             }
             progress_ = true;
-        }
-        if (turn_state_ != Turn::answer) {
-            timing_.flush_ready = true;
         }
     }
     if (turn_state_ == Turn::speaking) {

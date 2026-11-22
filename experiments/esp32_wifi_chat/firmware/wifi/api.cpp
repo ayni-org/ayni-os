@@ -3,6 +3,7 @@
 #include "../main/speaker.h"
 #include "model_buffer.h"
 #include "model_codec.h"
+#include "model_delivery.h"
 #include "network_time.h"
 #include "response_limit.h"
 #include "speech_stream.h"
@@ -235,7 +236,12 @@ void *Api::work(void *context) {
         }
         job.ready_us = uint64_t(esp_timer_get_time());
         if (job.request == Request::model) {
-            self.deliver_model(job);
+            deliver_model_completion(*self.transport_,
+                                     {job.output,
+                                      job.outline,
+                                      {job.generation, job.http_complete_us, job.ready_us},
+                                      job.deadline,
+                                      job.ok});
         }
         // Request metadata only; never print transcripts, generated audio or keys.
         self.transport_->diagnostics().record(
@@ -260,24 +266,6 @@ void *Api::work(void *context) {
         // Every queued slot reserves one result slot, so this cannot block on UI work.
         xQueueSend(self.done_, &index, portMAX_DELAY);
         self.outstanding_.fetch_sub(1, std::memory_order_acq_rel);
-    }
-}
-void Api::deliver_model(const Job &job) {
-    const ModelDeliveryTiming timing{job.generation, job.http_complete_us, job.ready_us};
-    while (current(job)) {
-        if (transport_->post_model(job.output, timing)) {
-            if (job.ok && job.outline.size && current(job)) {
-                transport_->post(Kind::tool_outline, job.input.id, job.outline.bytes.data(),
-                                 job.outline.size);
-            }
-            return;
-        }
-        // A previous Call may still occupy the reserved lane. Retain this Job until
-        // delivery or generation/deadline retirement. Ordinary queue capacity is independent.
-        if (esp_timer_get_time() >= job.deadline) {
-            return;
-        }
-        vTaskDelay(1);
     }
 }
 bool Api::http(Job &job, const char *url, const char *content_type, const void *prefix,

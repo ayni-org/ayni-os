@@ -20,18 +20,17 @@ class DiagnosticLog {
         clock_ = clock;
     }
     void record(const char *format, ...) __attribute__((format(printf, 2, 3))) {
-        char text[line_bytes]{};
         va_list args;
         va_start(args, format);
-        const auto size = std::vsnprintf(text, sizeof(text), format, args);
+        write(stdout, format, args);
         va_end(args);
-        if (size <= 0 || size_t(size) >= sizeof(text)) {
-            dropped_.fetch_add(1, std::memory_order_relaxed);
-            return;
-        }
-        // Keep existing serial diagnostics as well as the explicit RAM capture.
-        std::fputs(text, stdout);
-        capture({text, size_t(size)});
+    }
+    // Bounded formatting and RAM capture for additional owner timing metadata.
+    void record_ram(const char *format, ...) __attribute__((format(printf, 2, 3))) {
+        va_list args;
+        va_start(args, format);
+        write(nullptr, format, args);
+        va_end(args);
     }
     // Control workers only copy a bounded preformatted diagnostic; no UART or network I/O.
     void capture(std::string_view text) {
@@ -94,6 +93,18 @@ class DiagnosticLog {
     }
 
   private:
+    void write(std::FILE *serial, const char *format, va_list args) {
+        char text[line_bytes]{};
+        const auto size = std::vsnprintf(text, sizeof(text), format, args);
+        if (size <= 0 || size_t(size) >= sizeof(text)) {
+            dropped_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        if (serial) {
+            std::fputs(text, serial);
+        }
+        capture({text, size_t(size)});
+    }
     struct Entry {
         uint64_t ms = 0;
         std::array<char, line_bytes> text{};

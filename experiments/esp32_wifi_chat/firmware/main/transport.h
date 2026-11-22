@@ -20,7 +20,7 @@ class Transport {
     bool send(Kind, uint64_t, const void *, size_t);
     bool receive(Packet &);
     // Only the API worker publishes real model completions. Success copies all payload bytes.
-    bool post_model(const Packet &, ModelDeliveryTiming);
+    ModelPost post_model(const Packet &, ModelDeliveryTiming);
     uint32_t api_generation() const { return model_.generation(); }
     void cancel_api_jobs() { model_.cancel(); }
     AudioWrite append_audio(uint64_t, uint32_t, const uint8_t *, size_t);

@@ -3,10 +3,14 @@
 include("${AYNI_ROOT}/cmake/AyniMarkdown.cmake")
 add_executable(ayni_esp32_chat_integration_tests
     configuration_test.cpp reply_voice_kernel_test.cpp speech_text_test.cpp
-    turn_diagnostics_test.cpp
+    turn_diagnostics_test.cpp model_delivery_test.cpp
+    "${AYNI_ROOT}/experiments/esp32_wifi_chat/firmware/main/transport.cpp"
+    "${AYNI_ROOT}/experiments/esp32_wifi_chat/firmware/wifi/model_delivery.cpp"
     "${AYNI_ROOT}/experiments/esp32_wifi_chat/firmware/main/reply_voice.cpp"
     "${AYNI_ROOT}/experiments/esp32_wifi_chat/firmware/main/speech_text.cpp")
 target_include_directories(ayni_esp32_chat_integration_tests PRIVATE
+    transport_shim
+    "${AYNI_ROOT}/tests/portability/esp_files/shim"
     "${AYNI_ROOT}/experiments/esp32_wifi_chat/firmware/main"
     "${AYNI_ROOT}/hosts/esp_idf/include")
 target_link_libraries(ayni_esp32_chat_integration_tests PRIVATE

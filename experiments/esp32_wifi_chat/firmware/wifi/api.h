@@ -56,7 +56,6 @@ class Api {
   private:
     static void *work(void *);
     void perform(Job &);
-    void deliver_model(const Job &);
     void model(Job &, const char *url);
     void speech(Job &, const char *url);
     void recognize(Job &, const char *url);

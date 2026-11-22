@@ -2,7 +2,7 @@ set(wifi_sources)
 set(wifi_dependencies)
 if(AYNI_WIFI_PROFILE)
     set(wifi_sources "../wifi/runtime.cpp" "../wifi/preferences.cpp" "../wifi/app_menu.cpp" "../wifi/reset_worker.cpp" "../wifi/canvas.cpp" "../wifi/settings.cpp"
-        "../wifi/touch.cpp" "../wifi/station.cpp" "../wifi/remote.cpp" "../wifi/api.cpp" "../wifi/model_codec.cpp" "../wifi/web_config.cpp" "../wifi/ota_update.cpp" "../wifi/settings_codec.cpp" "../wifi/capture.cpp" "../wifi/motor_panel.cpp")
+        "../wifi/touch.cpp" "../wifi/station.cpp" "../wifi/remote.cpp" "../wifi/api.cpp" "../wifi/model_delivery.cpp" "../wifi/model_codec.cpp" "../wifi/web_config.cpp" "../wifi/ota_update.cpp" "../wifi/settings_codec.cpp" "../wifi/capture.cpp" "../wifi/motor_panel.cpp")
     set(wifi_dependencies bt nvs_flash esp_wifi esp_netif esp_http_client mbedtls
         esp_driver_i2c nimble_central_utils esp_http_server app_update)
 endif()

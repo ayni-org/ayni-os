@@ -76,6 +76,8 @@ class Chat {
     void status(uint64_t, const char *);
     void publish_model();
     void trace_tool_window(uint64_t next_call, uint64_t requested_us);
+    void trace_tool_io(uint64_t model_call, uint64_t next_call, uint64_t from_us, uint64_t to_us,
+                       uint64_t first, uint64_t next);
     void emit_tool_decisions(uint64_t durable_seq);
     static void on_publication_stage(void *, uint64_t goal, uint64_t task,
                                      ayni::runtime::conversation::PublicationStage);
@@ -197,10 +199,9 @@ class Chat {
         } ack;
         PendingModelPost pending_model_post{};
         PendingAnswerSaved pending_answer_saved{};
-        bool flush_ready = false; // Set after answer_saved is sampled and answer handed to UI.
-        bool publication_emitted = false;
         ayni::hosts::esp_idf::StorageMetrics storage;
     } timing_;
+    ayni::hosts::esp_idf::StorageWorkHistory storage_history_; // PSRAM, borrowed until Host close.
     uint64_t reply_deadline_ = 0; // Deadline for final-text queue admission only.
     uint32_t model_requests_ = 0; // Metadata only, includes any context-compaction calls.
     ayni::strategies::Encoded parameters_{}; // Goal parameters, then the final checkpoint.
