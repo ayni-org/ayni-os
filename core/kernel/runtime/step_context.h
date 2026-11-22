@@ -25,6 +25,8 @@ struct StepContext {
 
     // Storage admission is separate; this only checks this call's remaining budget.
     bool available() const { return items_ < max_items && !out_of_time_; }
+    // Absolute cutoff for late optional work, which samples time even between applied items.
+    uint64_t cutoff_us() const { return work::time_after(started_us, max_time_us); }
     // Fresh monotonic sample for dispatch/authority checks, never a schedule frontier.
     uint64_t now_us() const { return clock_.now_us(); }
     // Count one applied item and observe elapsed time before another loop iteration.

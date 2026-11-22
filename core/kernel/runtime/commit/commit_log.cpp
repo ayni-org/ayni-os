@@ -25,6 +25,12 @@ bool CommitLog::has_room() const {
     return failure_ == AYNI_RESTRICTION_NONE && !retry_.retrying() && ring_.fits(batch_max_);
 }
 
+bool CommitLog::can_extend_group(uint64_t now_us) const {
+    uint32_t size = 0;
+    return host_.storage_append_many && completions_.has_free_slot() && wants_advance(now_us) &&
+           !ring_.peek(AYNI_STORAGE_APPEND_COUNT_MAX - 1U, size);
+}
+
 durability::BatchWriter CommitLog::begin() {
     return durability::BatchWriter(ring_.begin_batch(batch_max_), batch_max_,
                                    identity_of(next_seq_));

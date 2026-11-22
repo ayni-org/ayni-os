@@ -197,6 +197,62 @@ CallRuntime::Advance CallRuntime::advance(uint64_t now_us, uint64_t durable_seq,
     return Advance::idle;
 }
 
+// C-COMMIT-006: this pass may write PREPARED or DISPATCHING. Control and ordinary
+// Call work keep their own lanes, including the only path that can dispatch.
+CallRuntime::Advance CallRuntime::prepare_accepted(const AcceptedCalls &accepted,
+                                                   uint64_t deadline_us, uint64_t durable_seq) {
+    const auto now_us = host_.monotonic_now_us(host_.ctx);
+    if (now_us >= deadline_us || mailbox_.in_flight() == limits_.capacity ||
+        control_ready(now_us, durable_seq, Mode::running) ||
+        ready_before_calls(now_us, durable_seq, Mode::running)) {
+        return Advance::idle;
+    }
+    const auto candidate = next_accepted_preparation(accepted, now_us, durable_seq);
+    if (!candidate) {
+        return Advance::idle;
+    }
+    const auto checked_us = host_.monotonic_now_us(host_.ctx);
+    resources::AdmissionChoice choice{};
+    const bool chosen = resources_.next(checked_us, choice);
+    uint32_t task = 0;
+    if (checked_us >= deadline_us ||
+        call_ready(*candidate, checked_us, durable_seq, Mode::running,
+                   chosen ? &choice : nullptr) != CallReady::prepare ||
+        !work_.tasks.find(work_.calls.identity(*candidate).task_id, task)) {
+        return Advance::idle;
+    }
+    const auto prepare_us = host_.monotonic_now_us(host_.ctx);
+    return prepare_us < deadline_us ? progress_dispatch(*candidate, task, checked_us, durable_seq)
+                                    : Advance::idle;
+}
+
+// Reuse ordinary readiness so stop, expire, dispatch and older work retain
+// precedence. Among fresh Calls, finish a prepared Call before taking a new claim.
+std::optional<uint32_t> CallRuntime::next_accepted_preparation(const AcceptedCalls &accepted,
+                                                               uint64_t now_us,
+                                                               uint64_t durable_seq) const {
+    resources::AdmissionChoice choice{};
+    const bool chosen = resources_.next(now_us, choice);
+    std::optional<uint32_t> candidate;
+    for (uint32_t at = 0; at < limits_.capacity; ++at) {
+        if (!work_.calls.occupied(at)) {
+            continue;
+        }
+        const auto ready =
+            call_ready(at, now_us, durable_seq, Mode::running, chosen ? &choice : nullptr);
+        if (ready == CallReady::idle) {
+            continue;
+        }
+        if (ready == CallReady::other || !accepted.contains(work_.calls.identity(at).call_id)) {
+            return std::nullopt;
+        }
+        if (!candidate || slots_[at].active->stage == Stage::prepared) {
+            candidate = at;
+        }
+    }
+    return candidate;
+}
+
 // Cancellation intent is distinct from a terminal receipt. The Provider keeps
 // its delivery reservation until it reports a terminal, even if cancel refuses.
 CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,

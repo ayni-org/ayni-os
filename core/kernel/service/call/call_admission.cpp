@@ -586,7 +586,8 @@ CallRuntime::check_call_capacity(uint32_t task_index, const Proposal &proposal,
 
 // Exact capacity and identity preflights have succeeded. Any refusal here is an
 // internal invariant failure; no callback can intervene between check and apply.
-bool CallRuntime::accept(uint32_t task_index, foundation::TransitionStamp stamp, uint64_t now_us) {
+bool CallRuntime::accept(uint32_t task_index, foundation::TransitionStamp stamp, uint64_t now_us,
+                         uint64_t &accepted_call) {
     const auto &proposal = *proposal_;
     if (proposal.operation_index || proposal.wait_basis || proposal.subscription_index) {
         return accept_control(task_index, stamp, now_us);
@@ -644,6 +645,7 @@ bool CallRuntime::accept(uint32_t task_index, foundation::TransitionStamp stamp,
                                                  {identity.call_id, identity.authorization}, stamp);
     }
     proposal_.reset();
+    accepted_call = identity.call_id;
     return true;
 }
 

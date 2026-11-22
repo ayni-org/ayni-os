@@ -317,7 +317,8 @@ Verdict judge_proposal(Verdict verdict, const DecisionBuffer &decisions, uint32_
 DecisionResult publish_decision(WorkModel &model, DecisionBuffer &decisions, uint32_t index,
                                 const catalog::Strategy &strategy,
                                 const ayni_policy_output_v1 &output, Verdict verdict,
-                                CallRuntime &calls, OwnerClock clock, MemoryDecision &memory) {
+                                CallRuntime &calls, OwnerClock clock, MemoryDecision &memory,
+                                uint64_t &accepted_call) {
     if (verdict.kind == Verdict::Kind::redecide) {
         return DecisionResult::none;
     }
@@ -345,7 +346,7 @@ DecisionResult publish_decision(WorkModel &model, DecisionBuffer &decisions, uin
     case Verdict::Kind::call:
         record(model.tasks, index, decisions, output.intent_count, strategy, output.checkpoint_size,
                stamp);
-        if (!calls.accept(index, stamp, clock.now_us())) {
+        if (!calls.accept(index, stamp, clock.now_us(), accepted_call)) {
             return DecisionResult::internal;
         }
         break;
@@ -413,7 +414,8 @@ uint8_t *DecisionBuffer::load_checkpoint(ayni_bytes_v1 state, uint32_t capacity)
 
 DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t ready_before,
                            uint64_t now_us, uint64_t durable_seq, OwnerClock clock,
-                           CallRuntime &calls) {
+                           CallRuntime &calls, uint64_t &accepted_call) {
+    accepted_call = 0;
     uint32_t index = 0;
     const DecisionAdmission admission{model, durable_seq};
     if (!model.tasks.next_ready(ready_before, index, {&admission, admission_ready})) {
@@ -480,8 +482,8 @@ DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t
         verdict = judge_intents(decisions, output.intent_count, model, index);
     }
     verdict = judge_proposal(verdict, decisions, index, durable_seq, clock, calls, memory);
-    const auto result =
-        publish_decision(model, decisions, index, strategy, output, verdict, calls, clock, memory);
+    const auto result = publish_decision(model, decisions, index, strategy, output, verdict, calls,
+                                         clock, memory, accepted_call);
     decisions.scrub();
     calls.scrub_decision();
     return result;

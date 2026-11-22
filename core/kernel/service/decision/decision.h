@@ -92,7 +92,7 @@ enum class DecisionResult {
 }; // No work, one publication, or invariant failure.
 DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t ready_before,
                            uint64_t now_us, uint64_t durable_seq, OwnerClock clock,
-                           CallRuntime &calls);
+                           CallRuntime &calls, uint64_t &accepted_call);
 
 // Whether a task waits for a decision; the step reports it as more_ready.
 bool awaits_decision(const WorkModel &model, uint64_t durable_seq);

@@ -288,7 +288,9 @@ struct ayni_kernel {
     // Prioritize accepted controls, then bounded descendant cleanup.
     void apply_revocations(StepContext &progress);
     // Apply due work then decisions against this call's fixed frontiers.
-    void apply_ready_work(StepContext &progress);
+    ayni::kernel::CallRuntime::AcceptedCalls apply_ready_work(StepContext &progress);
+    // Give fresh Calls journal-only preparation after inputs and before the next append.
+    void prepare_accepted_calls(StepContext &, const ayni::kernel::CallRuntime::AcceptedCalls &);
     // Reliable results and cancellation precede fresh strategy requests.
     void apply_calls(StepContext &progress);
     // One mapping of Kernel/writer lifecycle to permitted call operations.
