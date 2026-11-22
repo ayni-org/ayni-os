@@ -79,17 +79,22 @@ TEST(DiagnosticLog, DeferredToolLinesReachRamOnceAndKeepTheirSamplesThroughSlowS
     EXPECT_NE(samples.find("\"dropped\":0"), std::string::npos);
 }
 
-// ADR-0097: when an undrained serial copy is overwritten the ring accounts for its loss.
-TEST(DiagnosticLog, OverwrittenDeferredLineKeepsCursorAndDropCounts) {
+// ADR-0097: HTTP cursor gaps depend on which RAM entries the reader has seen.
+TEST(DiagnosticLog, OverwrittenSerialCopyDoesNotCountAsRejectedRamCapture) {
     auto log = std::make_unique<wifichat::DiagnosticLog>();
     log->record_deferred("old deferred metadata\n");
+    const auto first = snapshot(*log, 0);
+    ASSERT_NE(first.find("old deferred metadata"), std::string::npos);
+    ASSERT_NE(first.find("\"next\":\"1\""), std::string::npos);
     for (size_t index = 0; index < wifichat::DiagnosticLog::slots; ++index) {
         log->capture("ordinary RAM metadata");
     }
     log->drain_serial([](const char *) { ADD_FAILURE() << "overwritten line reached serial"; });
-    const auto samples = snapshot(*log, 0);
-    EXPECT_NE(samples.find("\"lost\":1"), std::string::npos);
-    EXPECT_NE(samples.find("\"dropped\":1"), std::string::npos);
+    EXPECT_NE(snapshot(*log, 0).find("\"lost\":1"), std::string::npos);
+    const auto continued = snapshot(*log, 1);
+    EXPECT_NE(continued.find("\"lost\":0"), std::string::npos);
+    EXPECT_NE(continued.find("\"dropped\":0"), std::string::npos);
+    EXPECT_NE(continued.find("ordinary RAM metadata"), std::string::npos);
 }
 
 struct Scratch {

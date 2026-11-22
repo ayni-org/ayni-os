@@ -105,9 +105,8 @@ class DiagnosticLog {
             return;
         }
         const auto index = sequence_++ % slots;
-        if (serial_pending_[index]) {
-            dropped_.fetch_add(1, std::memory_order_relaxed);
-        }
+        // Reusing a ring slot also retires its serial copy. HTTP accounts for
+        // overwritten RAM entries through its own cursor.
         serial_pending_[index] = serial_pending;
         auto &entry = entries_[index];
         entry.ms = clock_ ? clock_() : 0;
