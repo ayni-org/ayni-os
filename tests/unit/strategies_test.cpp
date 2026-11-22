@@ -93,7 +93,7 @@ TEST_F(StrategiesFixture, long_answer_completes_and_is_retained_intact) {
 }
 TEST_F(StrategiesFixture, unknown_first_tool_blocks_later_tools_and_models) {
     const auto task = start();
-    propose(0);
+    propose(0, 3);
     ASSERT_EQ(pending.size(), 2U);
     post(1, {}, AYNI_CALL_ABANDONED, AYNI_RESULT_UNKNOWN);
     pump();
@@ -153,6 +153,42 @@ class BackgroundStrategies : public StrategiesFixture {
         };
     }
 };
+class BatchedForegroundTools : public BackgroundStrategies {
+  protected:
+    BatchedForegroundTools() { model_steps = &steps_seen; }
+    std::vector<std::string> steps_seen;
+};
+// ADR-0103: one fixed reply advances the ordered foreground group under the original IDs.
+TEST_F(BatchedForegroundTools, three_tools_keep_step_and_protocol_order_without_model_rounds) {
+    const auto task = start();
+    const auto model_call = work.task(task).logical_call_id;
+    ASSERT_NE(model_call, 0U);
+    const auto prefix = "fn." + std::to_string(model_call) + ".";
+    propose(0, 3);
+    for (uint32_t index = 0; index < 3; ++index) {
+        const auto at = index + 1U;
+        ASSERT_EQ(pending.size(), at + 1U);
+        ASSERT_EQ(steps_seen.size(), pending.size());
+        EXPECT_EQ(pending[at].capability, "echo");
+        EXPECT_EQ(steps_seen[at], prefix + std::to_string(index));
+        post(at, text("result"));
+        pump();
+    }
+    ASSERT_EQ(pending.size(), 5U);
+    EXPECT_EQ(pending.back().capability, "model");
+    const auto &prompt = pending.back().text;
+    size_t after = 0;
+    for (uint32_t index = 0; index < 3; ++index) {
+        const auto id = "\"tool_call_id\":\"fixture_0_" + std::to_string(index) + "\"";
+        const auto found = prompt.find(id, after);
+        ASSERT_NE(found, std::string::npos) << prompt;
+        after = found + id.size();
+    }
+    post(4, text("done"));
+    pump();
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+    EXPECT_EQ(work.task(task).model_calls_used, 2U);
+}
 class ReusedMessageBodies : public BackgroundStrategies {
   protected:
     static inline thread_local std::map<std::string, uint32_t> staged;

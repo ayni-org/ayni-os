@@ -15,6 +15,7 @@
 #include <ayni/runtime/conversation/file_bodies.h>
 #include <ayni/strategies/builtin.h>
 #include <ayni/values.hpp>
+#include <climits>
 #include <cstdio>
 #include <cstring>
 #include <deque>
@@ -1420,6 +1421,18 @@ TEST(TurnDiagnostics, DeferredOutputProducesIdenticalSamplesUnderInstantAndSlowL
 
 // Verify actual worst-case formatted lines fit within DiagnosticLog::line_bytes (384 bytes).
 TEST(TurnDiagnostics, FormattedReportLinesFitWithinDiagnosticLogSlot) {
+    for (const char *kind : {"tools", "text", "fail"}) {
+        const unsigned count = std::string_view(kind) == "tools" ? AYNI_CALL_TOOL_COUNT_MAX : 0U;
+        char line[wifichat::DiagnosticLog::line_bytes]{};
+        const int length = std::snprintf(line, sizeof(line), wifichat::model_owner_log_format,
+                                         ULLONG_MAX, ULLONG_MAX, kind, count, SIZE_MAX, ULLONG_MAX,
+                                         ULLONG_MAX, ULLONG_MAX, ULLONG_MAX, ULLONG_MAX);
+        EXPECT_GT(length, 0);
+        EXPECT_LT(static_cast<size_t>(length), sizeof(line));
+        EXPECT_NE(std::string_view(line).find("kind=" + std::string(kind) +
+                                             " tool_count=" + std::to_string(count)),
+                  std::string_view::npos);
+    }
     wifichat::PublicationTimeline::Segment worst_seg{};
     worst_seg.from = Boundary::model_result_posted;
     worst_seg.to = Boundary::checkpoint_ready;

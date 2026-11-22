@@ -33,7 +33,10 @@ constexpr uint64_t grant_count = sizeof(grant_capabilities) / sizeof(grant_capab
 // Deployment-neutral identity; tool protocol and authorization rules come from
 // the built-in ToolLoop, device details from the public capability directory.
 constexpr char instructions[] =
-    "你是Ayni，一个通用助手。根据用户的目标直接回答，或使用当前获准的能力完成请求。";
+    "你是Ayni，一个通用助手。根据用户的目标直接回答，或使用当前获准的能力完成请求。"
+    "用户明确要求多个动作，且每一步的参数和顺序都已确定时，在同一回复中按用户指定的顺序"
+    "提交这些工具调用。后一步的选择或参数依赖前一步的观测结果时，只提交当前可以确定的"
+    "步骤，收到结果后再决定其余步骤。";
 template <class T> T sized() {
     T out{};
     out.struct_size = sizeof(out);
@@ -165,10 +168,10 @@ void Chat::flush_pending_model_post() {
     const uint64_t post_wait_us =
         post.snapshot.at_us >= post.stage_us ? post.snapshot.at_us - post.stage_us : 0;
     transport_.diagnostics().record(
-        "wifi model_owner turn=%llu call=%llu kind=%s bytes=%zu recv_us=%llu "
-        "stage_us=%llu post_us=%llu stage_wait_us=%llu post_wait_us=%llu\n",
+        model_owner_log_format,
         static_cast<unsigned long long>(turn_), static_cast<unsigned long long>(post.call),
-        post.kind, post.bytes, static_cast<unsigned long long>(post.recv_us),
+        post.kind, static_cast<unsigned>(post.tool_count), post.bytes,
+        static_cast<unsigned long long>(post.recv_us),
         static_cast<unsigned long long>(post.stage_us),
         static_cast<unsigned long long>(post.snapshot.at_us),
         static_cast<unsigned long long>(stage_wait_us),
@@ -884,7 +887,7 @@ void Chat::publish_model() {
             timing_.model_staged_us = uint64_t(esp_timer_get_time());
         }
         result.body = model_body_;
-        result.tool_call_count = model_tool_count_;
+        result.tool_call_count = model_ == ModelState::tools ? model_tool_count_ : 0U;
         result.model_usage = model_usage_;
     } else {
         if (model_body_.id) {
@@ -916,8 +919,9 @@ void Chat::publish_model() {
             const char *kind = model_ == ModelState::text    ? "text"
                                : model_ == ModelState::tools ? "tools"
                                                              : "fail";
-            timing_.pending_model_post = {true,    call_,    kind,     model_answer_.size(),
-                                          recv_us, stage_us, delivery, snapshot};
+            timing_.pending_model_post = {true, call_, kind, result.tool_call_count,
+                                          model_answer_.size(), recv_us, stage_us, delivery,
+                                          snapshot};
             timing_.publication.mark_model_posted(snapshot.at_us, snapshot.storage);
         }
         model_body_ = {}; // The successful post transfers the reference to Core.

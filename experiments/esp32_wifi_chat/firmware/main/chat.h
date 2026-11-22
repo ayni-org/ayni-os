@@ -93,6 +93,7 @@ class Chat {
         bool valid = false;
         uint64_t call = 0;
         const char *kind = "fail"; // Static literal only: "text", "tools", or "fail".
+        uint32_t tool_count = 0;  // Count in this accepted post; text and failure have none.
         size_t bytes = 0;
         uint64_t recv_us = 0, stage_us = 0;
         ModelDeliveryTiming delivery{};

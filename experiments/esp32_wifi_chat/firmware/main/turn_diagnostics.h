@@ -10,6 +10,10 @@
 
 namespace wifichat {
 
+inline constexpr char model_owner_log_format[] =
+    "wifi model_owner turn=%llu call=%llu kind=%s tool_count=%u bytes=%zu recv_us=%llu "
+    "stage_us=%llu post_us=%llu stage_wait_us=%llu post_wait_us=%llu\n";
+
 // Per-phase deltas of ESP Host storage metrics. wall_us is the phase's wall clock; queue_us and
 // io_us sum across concurrent queued/served work items and therefore may overlap each other.
 struct StoragePhaseDelta {
