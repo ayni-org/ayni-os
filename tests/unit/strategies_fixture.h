@@ -115,7 +115,7 @@ class StrategiesFixture : public ::testing::Test {
             model_strategy.ctx = this;
             model_strategy.ready = [](void *context, uint64_t task) {
                 const auto inner = static_cast<StrategiesFixture *>(context)->loop.describe();
-                return inner.ready(inner.ctx, task);
+                return inner.ready ? inner.ready(inner.ctx, task) : 1U;
             };
             model_strategy.decide = [](void *context, const ayni_task_snapshot_v1 *snapshot,
                                        ayni_policy_output_v1 *output) {

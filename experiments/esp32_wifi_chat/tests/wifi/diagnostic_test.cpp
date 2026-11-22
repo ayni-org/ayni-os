@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <gtest/gtest.h>
 #include <memory>
+#include <vector>
 #include <yyjson.h>
 namespace {
 ayni_string_v1 text(std::string_view value) {
@@ -51,6 +52,46 @@ TEST(DiagnosticLog, EscapesMetadataAndCountsOversizedCaptureWithoutPublishingATr
     EXPECT_EQ(json.find(std::string(100, 'x')), std::string::npos);
     EXPECT_NE(snapshot(*log, 1).find("\"events\":[]"), std::string::npos);
 }
+// ADR-0097: serial delay and drain do not change the original RAM samples or cursor.
+TEST(DiagnosticLog, DeferredToolLinesReachRamOnceAndKeepTheirSamplesThroughSlowSerial) {
+    auto log = std::make_unique<wifichat::DiagnosticLog>();
+    static uint64_t now = 0;
+    log->initialize(7, [] { return now; });
+    now = 12;
+    log->record_deferred("wifi tool_decision turn=2 task=4 step=fn.8.0 ready_us=%u\n", 12001U);
+    now = 15;
+    log->record_deferred("wifi tool_dispatch_durable turn=2 call=9 seq=20 at_us=%u\n", 15002U);
+    const auto samples = snapshot(*log, 0);
+    std::vector<std::string> serial;
+    auto slow = [&](const char *line) {
+        now += 25;
+        serial.emplace_back(line);
+        EXPECT_EQ(snapshot(*log, 0), samples); // The sink runs outside the RAM lock.
+    };
+    log->drain_serial(slow);
+    log->drain_serial(slow);
+    ASSERT_EQ(serial.size(), 2U);
+    EXPECT_EQ(serial[0], "wifi tool_decision turn=2 task=4 step=fn.8.0 ready_us=12001\n");
+    EXPECT_EQ(serial[1], "wifi tool_dispatch_durable turn=2 call=9 seq=20 at_us=15002\n");
+    EXPECT_NE(samples.find("\"ms\":12"), std::string::npos);
+    EXPECT_NE(samples.find("\"ms\":15"), std::string::npos);
+    EXPECT_NE(samples.find("\"next\":\"2\""), std::string::npos);
+    EXPECT_NE(samples.find("\"dropped\":0"), std::string::npos);
+}
+
+// ADR-0097: when an undrained serial copy is overwritten the ring accounts for its loss.
+TEST(DiagnosticLog, OverwrittenDeferredLineKeepsCursorAndDropCounts) {
+    auto log = std::make_unique<wifichat::DiagnosticLog>();
+    log->record_deferred("old deferred metadata\n");
+    for (size_t index = 0; index < wifichat::DiagnosticLog::slots; ++index) {
+        log->capture("ordinary RAM metadata");
+    }
+    log->drain_serial([](const char *) { ADD_FAILURE() << "overwritten line reached serial"; });
+    const auto samples = snapshot(*log, 0);
+    EXPECT_NE(samples.find("\"lost\":1"), std::string::npos);
+    EXPECT_NE(samples.find("\"dropped\":1"), std::string::npos);
+}
+
 struct Scratch {
     static inline size_t limit = SIZE_MAX;
     static inline const uint8_t *last = nullptr;

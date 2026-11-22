@@ -168,22 +168,25 @@ TEST_F(BatchedForegroundTools, three_tools_keep_step_and_protocol_order_without_
     for (uint32_t index = 0; index < 3; ++index) {
         const auto at = index + 1U;
         ASSERT_EQ(pending.size(), at + 1U);
-        ASSERT_EQ(steps_seen.size(), pending.size());
+        ASSERT_EQ(steps_seen.size(), at);
         EXPECT_EQ(pending[at].capability, "echo");
-        EXPECT_EQ(steps_seen[at], prefix + std::to_string(index));
+        EXPECT_EQ(steps_seen[index], prefix + std::to_string(index));
         post(at, text("result"));
         pump();
     }
     ASSERT_EQ(pending.size(), 5U);
     EXPECT_EQ(pending.back().capability, "model");
     const auto &prompt = pending.back().text;
-    size_t after = 0;
-    for (uint32_t index = 0; index < 3; ++index) {
-        const auto id = "\"tool_call_id\":\"fixture_0_" + std::to_string(index) + "\"";
-        const auto found = prompt.find(id, after);
-        ASSERT_NE(found, std::string::npos) << prompt;
-        after = found + id.size();
+    ayni::model::Reader reader({prompt.data(), static_cast<uint32_t>(prompt.size())});
+    ayni::model::Message message;
+    uint32_t index = 0;
+    while (reader.next(message)) {
+        if (message.role == ayni::model::Role::tool) {
+            EXPECT_EQ(string_of(message.tool_id), "fixture_0_" + std::to_string(index++));
+        }
     }
+    EXPECT_TRUE(reader.finished());
+    EXPECT_EQ(index, 3U);
     post(4, text("done"));
     pump();
     EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);

@@ -167,15 +167,14 @@ void Chat::flush_pending_model_post() {
     const uint64_t stage_wait_us = post.stage_us >= post.recv_us ? post.stage_us - post.recv_us : 0;
     const uint64_t post_wait_us =
         post.snapshot.at_us >= post.stage_us ? post.snapshot.at_us - post.stage_us : 0;
-    transport_.diagnostics().record(
-        model_owner_log_format,
-        static_cast<unsigned long long>(turn_), static_cast<unsigned long long>(post.call),
-        post.kind, static_cast<unsigned>(post.tool_count), post.bytes,
-        static_cast<unsigned long long>(post.recv_us),
-        static_cast<unsigned long long>(post.stage_us),
-        static_cast<unsigned long long>(post.snapshot.at_us),
-        static_cast<unsigned long long>(stage_wait_us),
-        static_cast<unsigned long long>(post_wait_us));
+    transport_.diagnostics().record(model_owner_log_format, static_cast<unsigned long long>(turn_),
+                                    static_cast<unsigned long long>(post.call), post.kind,
+                                    static_cast<unsigned>(post.tool_count), post.bytes,
+                                    static_cast<unsigned long long>(post.recv_us),
+                                    static_cast<unsigned long long>(post.stage_us),
+                                    static_cast<unsigned long long>(post.snapshot.at_us),
+                                    static_cast<unsigned long long>(stage_wait_us),
+                                    static_cast<unsigned long long>(post_wait_us));
     if (post.delivery.ready_us) {
         const auto n = [](uint64_t us) { return static_cast<unsigned long long>(us); };
         const auto http = post.delivery.http_complete_us;
@@ -828,7 +827,7 @@ void Chat::emit_tool_decisions(uint64_t durable_seq) {
     for (size_t i = 0; i < timing_.tool_decision_count; ++i) {
         const auto &decision = timing_.tool_decisions[i];
         const auto n = [](uint64_t value) { return static_cast<unsigned long long>(value); };
-        transport_.diagnostics().record(
+        transport_.diagnostics().record_deferred(
             "wifi tool_decision turn=%llu task=%llu step=%.*s ready_us=%llu\n", n(turn_),
             n(decision.task), int(decision.key_size), decision.key.data(), n(decision.at_us));
     }
@@ -842,7 +841,7 @@ void Chat::emit_tool_decisions(uint64_t durable_seq) {
     if (ayni_get_call(kernel_, call, &info) == AYNI_OK && info.phase == AYNI_CALL_DISPATCHING &&
         info.requires_seq <= durable_seq) {
         const auto at_us = host_->append_durable_us(info.requires_seq);
-        transport_.diagnostics().record(
+        transport_.diagnostics().record_deferred(
             "wifi tool_dispatch_durable turn=%llu call=%llu seq=%llu at_us=%llu\n",
             static_cast<unsigned long long>(turn_), static_cast<unsigned long long>(call),
             static_cast<unsigned long long>(info.requires_seq),
@@ -919,9 +918,9 @@ void Chat::publish_model() {
             const char *kind = model_ == ModelState::text    ? "text"
                                : model_ == ModelState::tools ? "tools"
                                                              : "fail";
-            timing_.pending_model_post = {true, call_, kind, result.tool_call_count,
-                                          model_answer_.size(), recv_us, stage_us, delivery,
-                                          snapshot};
+            timing_.pending_model_post = {
+                true,     call_,    kind,    result.tool_call_count, model_answer_.size(), recv_us,
+                stage_us, delivery, snapshot};
             timing_.publication.mark_model_posted(snapshot.at_us, snapshot.storage);
         }
         model_body_ = {}; // The successful post transfers the reference to Core.
@@ -1694,6 +1693,7 @@ void Chat::end_turn(const char *message) {
     // here, outside automatic speech startup and playback.
     flush_publication_diagnostics();
     emit_phase_trace("terminal", ended_snapshot);
+    transport_.diagnostics().drain_serial([](const char *line) { std::fputs(line, stdout); });
     input_.clear();
     answer_.clear();
     reply_voice_.reset();
