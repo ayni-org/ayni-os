@@ -372,10 +372,9 @@ ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &pro
         } else if (status == AYNI_OK) {
             // Shell's complete command object is itself the business input.
             if (shell) {
-                args.positions[0] = 0;
+                args.positions[arguments_field] = 0;
             }
-            status =
-                invoke(workspace, args, shell ? 0U : arguments_field, detail, step, output, mode);
+            status = invoke(workspace, args, arguments_field, detail, step, output, mode);
             if (status == AYNI_OK) {
                 requested = true;
                 return AYNI_OK;
