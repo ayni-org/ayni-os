@@ -42,6 +42,17 @@ class FileBodies {
     // Pure queue query: no worker borrow and all work drained, or blocked by a sticky failure.
     // Unconfirmed chat tails need no persistence. Always check status for a successful close.
     bool idle() const;
+    // Read-only snapshot of pending body-store work, matching idle()'s eligibility rules.
+    struct Backlog {
+        uint32_t entries = 0; // Entries with pending read, write, or delete/release work.
+        uint32_t writes =
+            0; // Confirmed entries awaiting manifest read, payload write, or manifest.
+        uint32_t staged = 0;    // Staged RAM-only entries not yet confirmed for persistence.
+        uint32_t deletes = 0;   // Entries awaiting deletion or pending release durability.
+        uint32_t reads = 0;     // Cold entries awaiting manifest or payload load.
+        bool in_flight = false; // True when a Host FileValueRequest is currently borrowed.
+    };
+    Backlog backlog() const;
     // Owner-thread pacing hint: defers purely background persistence and cleanup while resident
     // bytes stay at or below half of cache_limit_, leaving Host I/O uncontended for hot Core
     // commits. Foreground waiters (read/share/put/write returning NOT_READY) still advance.
@@ -116,6 +127,7 @@ class FileBodies {
     static uint64_t identity(uint64_t scope, uint64_t digest);
     static uint32_t chunks(uint32_t size);
     static bool owns(const Entry &, uint64_t id);
+    static bool entry_pending(const Entry &);
     static bool valid_ref(const ayni_body_ref_v1 *);
     ayni_status_t add_owner(Entry &, uint64_t scope, uint64_t id);
     void drop_owner(Entry &, uint64_t id);

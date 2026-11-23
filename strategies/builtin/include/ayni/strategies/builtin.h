@@ -214,6 +214,24 @@ struct TokenLimits {
 // as request-only tools. Neither mode changes Core authorization.
 enum class ToolExposure { discovery, preloaded };
 enum class Persistence { durable, background };
+// Metadata-only observation of one tool proposal outcome in a model batch. Never carries
+// arguments, tool output text, or private payloads, and must not block or reenter Core.
+struct ToolOutcome {
+    uint64_t task_id = 0;         // Active Task owning this tool batch.
+    uint64_t model_call = 0;      // Durable source model Call that proposed this batch.
+    uint32_t tool_index = 0;      // Zero-based proposal ordinal within model_call.
+    uint32_t tool_count = 0;      // Total proposals in model_call.
+    uint64_t logical_call_id = 0; // Business Call ID; zero for ToolLoop local responses/refusals.
+    ayni_call_outcome_t outcome = 0; // Zero for local responses; otherwise AYNI_CALL_*.
+    ayni_status_t status = AYNI_OK;  // Local refusal status, EXPIRED, or business Call status.
+    ayni_reason_t reason = AYNI_REASON_NONE; // Classified business Call cause; NONE locally.
+    ayni_call_effect_t effect = AYNI_CALL_EFFECT_NONE; // Business Call effect evidence.
+    bool local_refusal = false; // True when ToolLoop emitted a local error without a Call.
+};
+struct ToolObserver {
+    void *context = nullptr; // Borrowed through strategy destruction.
+    void (*on_tool)(void *context, const ToolOutcome &outcome) = nullptr;
+};
 struct ToolLoopConfig {
     Identity identity;
     Call model;
@@ -232,6 +250,7 @@ struct ToolLoopConfig {
     model::ReplyEncoding reply_encoding = model::ReplyEncoding::text; // Main Provider encoding.
     model::ReplyEncoding summary_reply_encoding = model::ReplyEncoding::text; // Summary encoding.
     model::Projection projection{}; // Actual wire context, including tools and continuation.
+    ToolObserver tool_observer{};   // Optional metadata-only tool outcome observer.
 };
 class ToolLoop {
   public:

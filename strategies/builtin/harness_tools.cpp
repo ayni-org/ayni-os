@@ -281,7 +281,7 @@ ayni_status_t invoke(Workspace &workspace, const NativeArguments &args, uint32_t
 }
 } // namespace
 ayni_status_t native_error(ayni_status_t status, std::string_view message, ReplyBuffer &scratch,
-                           ayni_string_v1 &response) {
+                           ToolReply &reply) {
     auto *buffer = scratch.data();
     const auto capacity = scratch.capacity;
     json::Writer out(buffer, capacity);
@@ -290,7 +290,11 @@ ayni_status_t native_error(ayni_status_t status, std::string_view message, Reply
     out.raw(",\"message\":");
     out.string(message);
     out.raw("}}");
-    return done(out, buffer, response) ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
+    if (!done(out, buffer, reply.text)) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    reply.local_error = status;
+    return AYNI_OK;
 }
 ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &proposal,
                               const ToolLoopConfig &config, const ayni_task_snapshot_v1 &snapshot,
@@ -305,7 +309,7 @@ ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &pro
     if (capability) {
         if (!read_capability_arguments(proposal, args)) {
             return native_error(AYNI_INVALID_ARGUMENT, "Invalid operation envelope.", scratch,
-                                response);
+                                reply);
         }
         if (args.positions[operation_field] != UINT32_MAX &&
             (!args.string(operation_field, operation) ||
@@ -387,7 +391,7 @@ ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &pro
     return native_error(status,
                         "Function unavailable, invalid arguments, stale cursor, or explicit "
                         "resource limit. No business Call was accepted.",
-                        scratch, response);
+                        scratch, reply);
 }
 ayni_status_t native_result(Workspace &workspace, const ayni_task_call_result_v1 &result,
                             ReplyBuffer &scratch, ayni_string_v1 &response) {

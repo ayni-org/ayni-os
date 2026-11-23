@@ -821,6 +821,32 @@ uint32_t reply_bytes(uint64_t tokens) {
 }
 } // namespace detail
 namespace {
+void notify_tool_outcome(const ToolLoopConfig &config, const ayni_task_snapshot_v1 &snapshot,
+                         const ayni_task_call_result_v1 &model, uint32_t tool_index,
+                         const ayni_task_call_result_v1 &call, ayni_status_t call_status,
+                         const ToolReply &reply, ayni_status_t fallback_status = AYNI_OK) {
+    if (!config.tool_observer.on_tool) {
+        return;
+    }
+    const bool local = call.logical_call_id == 0U;
+    ToolOutcome observed{};
+    observed.task_id = snapshot.task_id;
+    observed.model_call = model.logical_call_id;
+    observed.tool_index = tool_index;
+    observed.tool_count = model.tool_call_count;
+    observed.logical_call_id = call.logical_call_id;
+    observed.local_refusal = local && (reply.local_error != AYNI_OK || fallback_status != AYNI_OK);
+    if (local) {
+        observed.status = reply.local_error != AYNI_OK ? reply.local_error : fallback_status;
+    } else {
+        observed.outcome = call.outcome;
+        observed.status =
+            call_status == AYNI_EXPIRED && call.status == AYNI_OK ? AYNI_EXPIRED : call.status;
+        observed.reason = call.reason;
+        observed.effect = call.effect;
+    }
+    config.tool_observer.on_tool(config.tool_observer.context, observed);
+}
 // One source Model Call and proposal ordinal own each progress key. Opaque IDs
 // appear only in standard assistant/tool messages and never select execution facts.
 ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &config,
@@ -923,14 +949,21 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
     // One final decision for unary and managed results, including rendering overflow.
     // Only actual retained results may enter the shared summary path.
     if (status != AYNI_OK && status != AYNI_CAPACITY_EXCEEDED) {
+        if (status == AYNI_RESULT_UNKNOWN && call.logical_call_id) {
+            notify_tool_outcome(config, snapshot, model, turn.tool_index, call, call_status, reply);
+        }
         return status;
     }
     if (status == AYNI_OK && !reply.measured) {
         reply.measured = budget.measure_estimate(response);
     }
     if (status == AYNI_CAPACITY_EXCEEDED || reply.measured->tokens > budget.tokens) {
-        return reply.call.logical_call_id ? begin_result_summary(config, turn, reply.call, output)
-                                          : AYNI_CAPACITY_EXCEEDED;
+        if (!reply.call.logical_call_id) {
+            notify_tool_outcome(config, snapshot, model, turn.tool_index, call, call_status, reply,
+                                AYNI_CAPACITY_EXCEEDED);
+            return AYNI_CAPACITY_EXCEEDED;
+        }
+        return begin_result_summary(config, turn, reply.call, output);
     }
     status = capture_disclosure(turn, snapshot);
     if (status != AYNI_OK) {
@@ -950,6 +983,7 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
     if (status != AYNI_OK) {
         return status;
     }
+    const uint32_t completed_index = turn.tool_index;
     ++turn.tool_index;
     if (stable_projection && turn.tool_index < model.tool_call_count &&
         base_characters <= UINT64_MAX - reply.measured->characters) {
@@ -959,8 +993,13 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
     // A local response has no Call row. Its matching progress and checkpoint are one batch.
     if (!call.logical_call_id && !step_committed(snapshot, key)) {
         requested = true;
-        return progress(turn, config, snapshot, key, output);
+        status = progress(turn, config, snapshot, key, output);
+        if (status == AYNI_OK) {
+            notify_tool_outcome(config, snapshot, model, completed_index, call, call_status, reply);
+        }
+        return status;
     }
+    notify_tool_outcome(config, snapshot, model, completed_index, call, call_status, reply);
     return AYNI_OK;
 }
 // Native arguments render as JSON text in the standard assistant message.

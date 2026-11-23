@@ -78,7 +78,9 @@ class Chat {
     void publish_model();
     void trace_tool_io(uint64_t model_call, uint64_t next_call, uint64_t from_us, uint64_t to_us,
                        uint64_t first, uint64_t next);
-    void emit_tool_decisions(uint64_t durable_seq);
+    static void on_tool_outcome(void *, const ayni::strategies::ToolOutcome &);
+    void emit_tool_decisions(uint64_t durable_seq, uint64_t step_elapsed_us,
+                             const ayni_step_report_v1 &report);
     static void on_publication_stage(void *, uint64_t goal, uint64_t task,
                                      ayni::runtime::conversation::PublicationStage);
     static void on_publication_ack(void *, ayni::runtime::conversation::PublicationAck,
@@ -183,14 +185,30 @@ class Chat {
         uint64_t model_received_call = 0, model_received_us = 0, model_staged_us = 0;
         ModelDeliveryTiming model_delivery{};
         struct ToolDecision {
-            uint64_t task = 0, at_us = 0;
+            uint64_t task = 0, at_us = 0, decide_us = 0;
+            ayni_policy_intent_kind_t kind = AYNI_POLICY_REQUEST_CALL;
             uint32_t key_size = 0;
             std::array<char, AYNI_CATALOG_ID_MAX_BYTES> key{};
         };
+        struct ToolFailure {
+            uint64_t model_call = 0, logical_call_id = 0;
+            uint32_t tool_index = 0, tool_count = 0;
+            ayni_call_outcome_t outcome = 0;
+            ayni_status_t status = AYNI_OK;
+            ayni_reason_t reason = AYNI_REASON_NONE;
+            ayni_call_effect_t effect = AYNI_CALL_EFFECT_NONE;
+            bool local_refusal = false;
+        };
         std::array<ToolDecision, step_units> tool_decisions{};
+        std::array<ToolFailure, step_units> tool_failures{};
         uint64_t last_motor_dispatch = 0;
         size_t tool_decision_count = 0; // Filled only during this owner step.
+        size_t tool_failure_count = 0;  // Filled only during this owner step.
         PublicationTimeline publication{};
+        struct PublishBacklog {
+            bool has_start = false, has_end = false;
+            ayni::runtime::FileBodies::Backlog start{}, end{};
+        } pub_backlog;
         struct Ack {
             uint64_t collected_us = 0, submitted_us = 0, durable_us = 0, ready_us = 0;
             uint64_t commit_seq = 0;

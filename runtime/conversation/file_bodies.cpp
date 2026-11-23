@@ -805,6 +805,13 @@ ayni_status_t FileBodies::collected(void *context, uint64_t scope) {
     }
     return AYNI_OK;
 }
+bool FileBodies::entry_pending(const Entry &entry) {
+    return entry.state != State::failed &&
+           (entry.persist_requested || !entry.staged || entry.deleting ||
+            !entry.releases.empty()) &&
+           (!entry.manifest_loaded || entry.deleting || entry.state == State::writing ||
+            entry.state == State::loading || entry.saved_revision != entry.revision);
+}
 bool FileBodies::idle() const {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!pending_.empty()) {
@@ -814,15 +821,36 @@ bool FileBodies::idle() const {
         return true; // flush refuses new I/O; explicit disposal may report the error after join.
     }
     for (const auto &[id, entry] : entries_) {
-        if (entry.state != State::failed &&
-            (entry.persist_requested || !entry.staged || entry.deleting ||
-             !entry.releases.empty()) &&
-            (!entry.manifest_loaded || entry.deleting || entry.state == State::writing ||
-             entry.state == State::loading || entry.saved_revision != entry.revision)) {
+        if (entry_pending(entry)) {
             return false;
         }
     }
     return true;
+}
+FileBodies::Backlog FileBodies::backlog() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    Backlog out{};
+    out.in_flight = !pending_.empty();
+    for (const auto &[id, entry] : entries_) {
+        if (!entry_pending(entry)) {
+            if (entry.staged && !entry.persist_requested && !entry.deleting &&
+                entry.releases.empty() && entry.state != State::durable &&
+                entry.state != State::failed) {
+                ++out.staged;
+            }
+            continue;
+        }
+        ++out.entries;
+        if (entry.deleting || !entry.releases.empty()) {
+            ++out.deletes;
+        } else if (entry.load_payload || entry.state == State::loading ||
+                   (!entry.staged && !entry.persist_requested)) {
+            ++out.reads;
+        } else {
+            ++out.writes;
+        }
+    }
+    return out;
 }
 void FileBodies::set_background_writes_paused(bool paused) {
     if (std::this_thread::get_id() != owner_) {

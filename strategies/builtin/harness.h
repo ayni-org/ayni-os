@@ -122,6 +122,8 @@ struct ToolReply {
     std::string owned; // Resolved original bytes; call views borrow this string.
     std::optional<model::TokenEstimate>
         measured; // Selected local candidate cost; absent until measured.
+    ayni_status_t local_error =
+        AYNI_OK; // Non-OK only when ToolLoop rendered a local refusal without a business Call.
 };
 // Current pending tool reply budget, including the real API projection, definitions and
 // protected continuation. Shared by raw results and completed result summaries.
@@ -183,7 +185,7 @@ ayni_status_t native_result(Workspace &workspace, const ayni_task_call_result_v1
                             ReplyBuffer &, ayni_string_v1 &response);
 // Normal harness errors never claim a failed or unknown business action.
 ayni_status_t native_error(ayni_status_t status, std::string_view message, ReplyBuffer &,
-                           ayni_string_v1 &response);
+                           ToolReply &reply);
 // Chunk only the result body; the final reply keeps the original action facts.
 ayni_status_t summarize_result(Workspace &workspace, Turn &, const ToolLoopConfig &,
                                const ayni_task_snapshot_v1 &, ayni_policy_output_v1 &,

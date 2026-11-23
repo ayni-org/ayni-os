@@ -37,9 +37,13 @@ constexpr uint64_t grant_count = sizeof(grant_capabilities) / sizeof(grant_capab
 // the built-in ToolLoop, device details from the public capability directory.
 constexpr char instructions[] =
     "你是Ayni，一个通用助手。根据用户的目标直接回答，或使用当前获准的能力完成请求。"
-    "用户明确要求多个动作，且每一步的参数和顺序都已确定时，在同一回复中按用户指定的顺序"
-    "提交这些工具调用。后一步的选择或参数依赖前一步的观测结果时，只提交当前可以确定的"
-    "步骤，收到结果后再决定其余步骤。";
+    "在同一回复中使用默认 operation=\"invoke\"（或省略 operation）提交多个工具调用时，"
+    "设备会按提交顺序逐个执行完前一步再执行下一步，不会并发争抢电机；每一步仍会独立校验"
+    "参数、权限与当前状态。用户明确要求多个动作且每一步的参数和顺序都已确定时，在同一回复中"
+    "按顺序一次性提交这些 invoke 调用，不要拆成多轮；顺序动作不要使用 operation=\"start\"，"
+    "动作之间也不要调用 motor.stop（motor.stop 会锁存停止，需重启恢复）。"
+    "后一步的选择或参数依赖前一步的观测结果时，只提交当前可以确定的步骤，收到结果后再决定其余步骤"
+    "。";
 template <class T> T sized() {
     T out{};
     out.struct_size = sizeof(out);
@@ -202,6 +206,21 @@ void Chat::flush_publication_diagnostics() {
     flush_pending_model_post();
     if (timing_.publication.segment_count() > 0U) {
         emit_publication_ack();
+        if (timing_.pub_backlog.has_start) {
+            const auto &b = timing_.pub_backlog.start;
+            const auto &e = timing_.pub_backlog.end;
+            transport_.diagnostics().record(
+                "wifi pub_backlog turn=%llu before_pub=%lu/%lu/%lu/%lu/%lu/%u "
+                "after_pub=%lu/%lu/%lu/%lu/%lu/%u\n",
+                static_cast<unsigned long long>(turn_), static_cast<unsigned long>(b.entries),
+                static_cast<unsigned long>(b.writes), static_cast<unsigned long>(b.staged),
+                static_cast<unsigned long>(b.deletes), static_cast<unsigned long>(b.reads),
+                b.in_flight ? 1U : 0U, static_cast<unsigned long>(e.entries),
+                static_cast<unsigned long>(e.writes), static_cast<unsigned long>(e.staged),
+                static_cast<unsigned long>(e.deletes), static_cast<unsigned long>(e.reads),
+                e.in_flight ? 1U : 0U);
+            timing_.pub_backlog = {};
+        }
         timing_.publication.emit_report(&transport_.diagnostics(),
                                         [](void *ctx, const char *line, size_t) {
                                             static_cast<DiagnosticLog *>(ctx)->record("%s", line);
@@ -234,7 +253,13 @@ void Chat::on_publication_stage(void *ctx, uint64_t goal, uint64_t task,
     const auto metrics = self.host_->storage_metrics(at_us);
     using Stage = ayni::runtime::conversation::PublicationStage;
     auto &ack = self.timing_.ack;
-    if (stage == Stage::collected) {
+    if (stage == Stage::checkpoint_ready && !self.timing_.pub_backlog.has_start) {
+        self.timing_.pub_backlog.start = self.bodies_.backlog();
+        self.timing_.pub_backlog.has_start = true;
+    } else if (stage == Stage::publish_durable && !self.timing_.pub_backlog.has_end) {
+        self.timing_.pub_backlog.end = self.bodies_.backlog();
+        self.timing_.pub_backlog.has_end = true;
+    } else if (stage == Stage::collected) {
         ack.collected_us = at_us;
     } else if (stage == Stage::context_ready) {
         ack.ready_us = at_us;
@@ -635,6 +660,7 @@ ayni_status_t Chat::configure_strategy() {
     protocol_options_.chat_token_limit = selection_.chat_token_limit;
     protocol_options_.reply_encoding = ayni::model::ReplyEncoding::framed;
     config.projection = ayni::providers::model_protocol::Protocol::projection(protocol_options_);
+    config.tool_observer = {this, on_tool_outcome};
     auto status = loop_.configure(config, &workspace_);
     if (status != AYNI_OK) {
         return status;
@@ -678,17 +704,39 @@ ayni_status_t Chat::configure_strategy() {
     }
     return status;
 }
+void Chat::on_tool_outcome(void *ctx, const ayni::strategies::ToolOutcome &outcome) {
+    auto &self = *static_cast<Chat *>(ctx);
+    if (!self.turn_) {
+        return;
+    }
+    const bool failed = outcome.local_refusal ||
+                        (outcome.logical_call_id != 0U &&
+                         ((outcome.outcome != 0U && outcome.outcome != AYNI_CALL_COMPLETED) ||
+                          outcome.status != AYNI_OK));
+    if (!failed || self.timing_.tool_failure_count >= self.timing_.tool_failures.size()) {
+        return;
+    }
+    self.timing_.tool_failures[self.timing_.tool_failure_count++] = {
+        outcome.model_call, outcome.logical_call_id, outcome.tool_index,
+        outcome.tool_count, outcome.outcome,         outcome.status,
+        outcome.reason,     outcome.effect,          outcome.local_refusal};
+}
 ayni_status_t Chat::decide(void *ctx, const ayni_task_snapshot_v1 *snapshot,
                            ayni_policy_output_v1 *output) {
     auto &self = *static_cast<Chat *>(ctx);
+    const auto started_us = uint64_t(esp_timer_get_time());
     const auto result = self.inner_.decide(self.inner_.ctx, snapshot, output);
+    const auto finished_us = uint64_t(esp_timer_get_time());
     if (result == AYNI_OK && self.turn_ && output->intent_count &&
-        output->intents[0].kind == AYNI_POLICY_REQUEST_CALL &&
+        (output->intents[0].kind == AYNI_POLICY_REQUEST_CALL ||
+         output->intents[0].kind == AYNI_POLICY_REQUEST_MODEL ||
+         output->intents[0].kind == AYNI_POLICY_REPORT_PROGRESS) &&
         self.timing_.tool_decision_count < self.timing_.tool_decisions.size()) {
         const auto &intent = output->intents[0];
         auto &decision = self.timing_.tool_decisions[self.timing_.tool_decision_count++];
         const auto key_size = std::min(intent.step_key_size, uint32_t(sizeof(intent.step_key)));
-        decision = {snapshot->task_id, uint64_t(esp_timer_get_time()), key_size, {}};
+        decision = {snapshot->task_id, finished_us, finished_us - started_us,
+                    intent.kind,       key_size,    {}};
         std::copy_n(intent.step_key, decision.key_size, decision.key.data());
     }
     return result;
@@ -826,13 +874,46 @@ void Chat::trace_tool_io(uint64_t model_call, uint64_t next_call, uint64_t from_
             n(roots.us));
     }
 }
-void Chat::emit_tool_decisions(uint64_t durable_seq) {
+void Chat::emit_tool_decisions(uint64_t durable_seq, uint64_t step_elapsed_us,
+                               const ayni_step_report_v1 &report) {
+    const auto n = [](uint64_t value) { return static_cast<unsigned long long>(value); };
+    for (size_t i = 0; i < timing_.tool_failure_count; ++i) {
+        const auto &failure = timing_.tool_failures[i];
+        transport_.diagnostics().record_deferred(
+            "wifi tool_failure turn=%llu model_call=%llu item=%u/%u stage=%s call=%llu "
+            "outcome=%lu status=%ld reason=%lu effect=%lu\n",
+            n(turn_), n(failure.model_call), unsigned(failure.tool_index),
+            unsigned(failure.tool_count), failure.local_refusal ? "local_refusal" : "provider",
+            n(failure.logical_call_id), static_cast<unsigned long>(failure.outcome),
+            long(failure.status), static_cast<unsigned long>(failure.reason),
+            static_cast<unsigned long>(failure.effect));
+    }
+    timing_.tool_failure_count = 0;
     for (size_t i = 0; i < timing_.tool_decision_count; ++i) {
         const auto &decision = timing_.tool_decisions[i];
-        const auto n = [](uint64_t value) { return static_cast<unsigned long long>(value); };
+        uint64_t call_id = 0;
+        ayni_call_phase_t phase = 0;
+        ayni_call_wait_t wait_reason = 0;
+        if (decision.kind == AYNI_POLICY_REQUEST_CALL ||
+            decision.kind == AYNI_POLICY_REQUEST_MODEL) {
+            auto task = sized<ayni_task_info_v1>();
+            if (ayni_get_task(kernel_, decision.task, &task) == AYNI_OK && task.logical_call_id) {
+                call_id = task.logical_call_id;
+                auto call = sized<ayni_call_info_v1>();
+                if (ayni_get_call(kernel_, call_id, &call) == AYNI_OK) {
+                    phase = call.phase;
+                    wait_reason = call.wait_reason;
+                }
+            }
+        }
         transport_.diagnostics().record_deferred(
-            "wifi tool_decision turn=%llu task=%llu step=%.*s ready_us=%llu\n", n(turn_),
-            n(decision.task), int(decision.key_size), decision.key.data(), n(decision.at_us));
+            "wifi tool_decision turn=%llu task=%llu kind=%lu step=%.*s ready_us=%llu "
+            "decide_us=%llu step_us=%llu items=%lu more=%lu call=%llu phase=%lu wait=%lu\n",
+            n(turn_), n(decision.task), static_cast<unsigned long>(decision.kind),
+            int(decision.key_size), decision.key.data(), n(decision.at_us), n(decision.decide_us),
+            n(step_elapsed_us), static_cast<unsigned long>(report.items_done),
+            static_cast<unsigned long>(report.more_ready), n(call_id),
+            static_cast<unsigned long>(phase), static_cast<unsigned long>(wait_reason));
     }
     timing_.tool_decision_count = 0;
     const auto call = motor_.execution().latest_dispatch();
@@ -1404,8 +1485,8 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
     if (rc == AYNI_OK && info.lifecycle != AYNI_LIFECYCLE_STOPPED) {
         const auto started = uint64_t(esp_timer_get_time());
         rc = ayni_step(kernel_, step_units, step_us, &report);
+        const auto elapsed = uint64_t(esp_timer_get_time()) - started;
         if (turn_) {
-            const auto elapsed = uint64_t(esp_timer_get_time()) - started;
             ++timing_.step_calls;
             timing_.step_us += elapsed;
             timing_.max_step_us = std::max(timing_.max_step_us, elapsed);
@@ -1413,7 +1494,7 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
         if (rc == AYNI_OK) {
             rc = ayni_get_kernel_info(kernel_, &info);
             if (rc == AYNI_OK && turn_) {
-                emit_tool_decisions(info.durable_seq);
+                emit_tool_decisions(info.durable_seq, elapsed, report);
             }
         }
     }

@@ -421,11 +421,30 @@ TEST(WifiReply, BackgroundWritePauseDefersIoUntilResumedWithoutBlockingForegroun
     ASSERT_EQ(bodies.trim_cache(), AYNI_OK);
     files.submissions = 0;
 
+    const auto idle_backlog = bodies.backlog();
+    EXPECT_EQ(idle_backlog.entries, 0U);
+    EXPECT_EQ(idle_backlog.writes, 0U);
+    EXPECT_EQ(idle_backlog.staged, 0U);
+    EXPECT_EQ(idle_backlog.deletes, 0U);
+    EXPECT_EQ(idle_backlog.reads, 0U);
+    EXPECT_FALSE(idle_backlog.in_flight);
+
     bodies.set_background_writes_paused(true);
     const uint8_t bg_bytes[] = "bg_one";
     ayni_body_ref_v1 bg_ref{};
     ASSERT_EQ(port->stage(port->context, 2, {bg_bytes, 6}, &bg_ref), AYNI_OK);
+    const auto staged_backlog = bodies.backlog();
+    EXPECT_EQ(staged_backlog.entries, 0U);
+    EXPECT_EQ(staged_backlog.writes, 0U);
+    EXPECT_EQ(staged_backlog.staged, 1U);
     EXPECT_EQ(port->confirm(port->context, &bg_ref), AYNI_NOT_READY);
+    const auto paused_backlog = bodies.backlog();
+    EXPECT_EQ(paused_backlog.entries, 1U);
+    EXPECT_EQ(paused_backlog.writes, 1U);
+    EXPECT_EQ(paused_backlog.staged, 0U);
+    EXPECT_EQ(paused_backlog.deletes, 0U);
+    EXPECT_EQ(paused_backlog.reads, 0U);
+    EXPECT_FALSE(paused_backlog.in_flight);
     EXPECT_EQ(ayni::runtime::FileBodies::progress(&bodies, 0), 1U);
     EXPECT_EQ(ayni::runtime::FileBodies::ready(&bodies, 0), 0U);
     EXPECT_FALSE(bodies.idle());
@@ -477,6 +496,10 @@ TEST(WifiReply, BackgroundWritePauseDefersIoUntilResumedWithoutBlockingForegroun
     EXPECT_EQ(files.submissions, 0U);
     bodies.set_background_writes_paused(false);
     drain(bodies);
+    const auto drained_backlog = bodies.backlog();
+    EXPECT_EQ(drained_backlog.entries, 0U);
+    EXPECT_EQ(drained_backlog.writes, 0U);
+    EXPECT_EQ(drained_backlog.staged, 0U);
     EXPECT_EQ(port->confirm(port->context, &bg2_ref), AYNI_OK);
     EXPECT_GT(files.submissions, 0U);
 }

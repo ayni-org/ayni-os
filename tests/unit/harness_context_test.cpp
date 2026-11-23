@@ -670,4 +670,80 @@ TEST_F(SmallResultBudget, SummaryEnvelopeStillObeysThePerToolResultBudget) {
               1);
     expect_original(original);
 }
+
+class ToolObserverHarness : public StrategiesFixture {
+  protected:
+    std::vector<policies::ToolOutcome> observed;
+    ToolObserverHarness() {
+        configure_loop = [this](policies::ToolLoopConfig &config) {
+            config.tool_observer = {this, [](void *ctx, const policies::ToolOutcome &outcome) {
+                                        static_cast<ToolObserverHarness *>(ctx)->observed.push_back(
+                                            outcome);
+                                    }};
+        };
+    }
+};
+
+// ToolObserver reports both ToolLoop local refusals (no Core Call ID) and Provider Call outcomes
+// with exact source model_call and batch item indices.
+TEST_F(ToolObserverHarness, reports_local_refusals_and_provider_failures_with_batch_indices) {
+    const auto task = start("chat", "run batch");
+    ASSERT_EQ(pending.size(), 1U);
+    ayni_argument_node_v1 arg{};
+    arg.kind = AYNI_ARGUMENT_STRING;
+    arg.subtree_end = 1;
+    arg.value.text = text("hello");
+    const ayni_arguments_v1 input{&arg, 1};
+    FunctionProposal refused(text("missing.tool"), input, text("p0"));
+    FunctionProposal ok_call(text("echo"), input, text("p1"));
+    FunctionProposal denied_call(text("echo"), input, text("p2"));
+    std::array<ayni_tool_call_v1, 3> batch{refused.call(), ok_call.call(), denied_call.call()};
+    post(0, {}, AYNI_CALL_COMPLETED, AYNI_OK, batch.data(), static_cast<uint32_t>(batch.size()));
+    pump();
+
+    // Item 0 refused locally with no Core Call; item 1 was submitted to the echo Provider.
+    ASSERT_EQ(observed.size(), 1U);
+    EXPECT_EQ(observed[0].task_id, task);
+    EXPECT_NE(observed[0].model_call, 0U);
+    EXPECT_EQ(observed[0].tool_index, 0U);
+    EXPECT_EQ(observed[0].tool_count, 3U);
+    EXPECT_EQ(observed[0].logical_call_id, 0U);
+    EXPECT_TRUE(observed[0].local_refusal);
+    EXPECT_EQ(observed[0].status, AYNI_NOT_FOUND);
+
+    ASSERT_EQ(pending.size(), 2U);
+    ASSERT_EQ(pending[1].capability, "echo");
+    post(1, text("ok"));
+    pump();
+
+    ASSERT_EQ(observed.size(), 2U);
+    EXPECT_EQ(observed[1].model_call, observed[0].model_call);
+    EXPECT_EQ(observed[1].tool_index, 1U);
+    EXPECT_EQ(observed[1].tool_count, 3U);
+    EXPECT_NE(observed[1].logical_call_id, 0U);
+    EXPECT_FALSE(observed[1].local_refusal);
+    EXPECT_EQ(observed[1].outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(observed[1].status, AYNI_OK);
+
+    ASSERT_EQ(pending.size(), 3U);
+    ASSERT_EQ(pending[2].capability, "echo");
+    post(2, {}, AYNI_CALL_FAILED, AYNI_DENIED);
+    pump();
+
+    ASSERT_EQ(observed.size(), 3U);
+    EXPECT_EQ(observed[2].model_call, observed[0].model_call);
+    EXPECT_EQ(observed[2].tool_index, 2U);
+    EXPECT_EQ(observed[2].tool_count, 3U);
+    EXPECT_NE(observed[2].logical_call_id, 0U);
+    EXPECT_NE(observed[2].logical_call_id, observed[1].logical_call_id);
+    EXPECT_FALSE(observed[2].local_refusal);
+    EXPECT_EQ(observed[2].outcome, AYNI_CALL_FAILED);
+    EXPECT_EQ(observed[2].status, AYNI_DENIED);
+
+    ASSERT_EQ(pending.size(), 4U);
+    ASSERT_EQ(pending[3].capability, "model");
+    post(3, text("Done."));
+    pump();
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+}
 } // namespace

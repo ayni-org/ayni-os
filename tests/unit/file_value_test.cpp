@@ -491,6 +491,13 @@ TEST_F(FileBodies, background_write_pause_defers_io_until_resumed_without_blocki
 
     // Pause background writes: staged+confirmed small bodies submit zero I/O while RAM <= half.
     counted.submitted.store(0U, std::memory_order_relaxed);
+    const auto idle_backlog = bodies.backlog();
+    EXPECT_EQ(idle_backlog.entries, 0U);
+    EXPECT_EQ(idle_backlog.writes, 0U);
+    EXPECT_EQ(idle_backlog.staged, 0U);
+    EXPECT_EQ(idle_backlog.deletes, 0U);
+    EXPECT_EQ(idle_backlog.reads, 0U);
+    EXPECT_FALSE(idle_backlog.in_flight);
     bodies.set_background_writes_paused(true);
     const std::string bg_one = "bg_one";
     ayni_body_ref_v1 bg_ref{};
@@ -499,7 +506,18 @@ TEST_F(FileBodies, background_write_pause_defers_io_until_resumed_without_blocki
                             static_cast<uint32_t>(bg_one.size())},
                            &bg_ref),
               AYNI_OK);
+    const auto staged_backlog = bodies.backlog();
+    EXPECT_EQ(staged_backlog.entries, 0U);
+    EXPECT_EQ(staged_backlog.writes, 0U);
+    EXPECT_EQ(staged_backlog.staged, 1U);
     EXPECT_EQ(store->confirm(store->context, &bg_ref), AYNI_NOT_READY);
+    const auto paused_backlog = bodies.backlog();
+    EXPECT_EQ(paused_backlog.entries, 1U);
+    EXPECT_EQ(paused_backlog.writes, 1U);
+    EXPECT_EQ(paused_backlog.staged, 0U);
+    EXPECT_EQ(paused_backlog.deletes, 0U);
+    EXPECT_EQ(paused_backlog.reads, 0U);
+    EXPECT_FALSE(paused_backlog.in_flight);
     EXPECT_EQ(ayni::runtime::FileBodies::progress(&bodies, 0), 1U);
     EXPECT_EQ(ayni::runtime::FileBodies::ready(&bodies, 0), 0U);
     EXPECT_FALSE(bodies.idle());
@@ -565,6 +583,10 @@ TEST_F(FileBodies, background_write_pause_defers_io_until_resumed_without_blocki
     bodies.set_background_writes_paused(false);
     ASSERT_TRUE(until([&] { return ayni::runtime::FileBodies::ready(&bodies, 0) != 0U; }));
     EXPECT_TRUE(bodies.idle());
+    const auto drained_backlog = bodies.backlog();
+    EXPECT_EQ(drained_backlog.entries, 0U);
+    EXPECT_EQ(drained_backlog.writes, 0U);
+    EXPECT_EQ(drained_backlog.staged, 0U);
     EXPECT_EQ(store->confirm(store->context, &bg_two_ref), AYNI_OK);
     EXPECT_GT(counted.submitted.load(std::memory_order_relaxed), 0U);
     host.close_storage();
