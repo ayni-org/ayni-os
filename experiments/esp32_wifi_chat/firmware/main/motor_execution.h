@@ -24,6 +24,8 @@ class MotorExecution {
     ayni_submit_result_t cancel(ayni_attempt_ref_v1);
     ayni_status_t advance();
     uint64_t latest_dispatch() const { return latest_dispatch_; } // Owner thread only.
+    // Any-thread read of the estimated active PWM completion time (monotonic us); zero when idle.
+    uint64_t expected_stop_us() const { return expected_stop_us_.load(std::memory_order_acquire); }
     // Owner reads the control worker's fixed-size output intervals for a model window.
     bool output_intervals(uint64_t from_us, uint64_t to_us, OutputIntervals &);
     void receive(Kind, uint64_t, const uint8_t *, size_t);
@@ -130,6 +132,7 @@ class MotorExecution {
     std::atomic<bool> accepting_{false}, local_stop_{false}, inbox_open_{false}, closing_{false},
         worker_stopped_{false};
     std::atomic<uint64_t> heartbeat_capture_{0};
+    std::atomic<uint64_t> expected_stop_us_{0}; // Worker writes; owner reads for write pacing.
     std::atomic<ayni_status_t> worker_error_{AYNI_OK};
     std::atomic<uint32_t> snapshot_{motor_percent_max};
     portMUX_TYPE output_mutex_ = portMUX_INITIALIZER_UNLOCKED;

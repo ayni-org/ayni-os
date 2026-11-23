@@ -8,6 +8,7 @@ class Motor {
   public:
     explicit Motor(Transport &transport) : transport_(transport), execution_(transport) {}
     MotorExecution &execution() { return execution_; }
+    const MotorExecution &execution() const { return execution_; }
     ayni_status_t configure(ayni_kernel_t *);
 
   private:

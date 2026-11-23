@@ -1,5 +1,6 @@
 #include "harness.h"
 #include "protocol.h"
+#include "write_pacing.h"
 #include <algorithm>
 #include <ayni/model_messages.hpp>
 #include <ayni/runtime/conversation/file_bodies.h>
@@ -502,4 +503,64 @@ TEST(WifiReply, BackgroundWritePauseDefersIoUntilResumedWithoutBlockingForegroun
     EXPECT_EQ(drained_backlog.staged, 0U);
     EXPECT_EQ(port->confirm(port->context, &bg2_ref), AYNI_OK);
     EXPECT_GT(files.submissions, 0U);
+}
+
+TEST(WifiReply, WritePacingUnpausesOnlyWithinMotorGuardHeadroom) {
+    // Background write pacing distinguishes hot Core transitions and HTTP waits from active motor
+    // runs with > motor_write_guard_us remaining, and always unpauses on stalled or terminal work.
+    using wifichat::motor_write_guard_us;
+    using wifichat::should_pause_background_writes;
+    using wifichat::WritePacingInput;
+    constexpr uint64_t now = 10000000;
+
+    EXPECT_TRUE(
+        should_pause_background_writes({AYNI_TASK_READY, false, 0, AYNI_CALL_WAIT_NONE, now, 0}));
+    EXPECT_TRUE(
+        should_pause_background_writes({AYNI_TASK_RUNNING, false, 0, AYNI_CALL_WAIT_NONE, now, 0}));
+    EXPECT_TRUE(should_pause_background_writes(
+        {AYNI_TASK_RUNNING, true, 0, AYNI_CALL_WAIT_NONE, now, now + 3000000}));
+    EXPECT_TRUE(should_pause_background_writes(
+        {AYNI_TASK_RUNNING, true, 0, AYNI_CALL_WAIT_DURABILITY, now, now + 3000000}));
+    EXPECT_TRUE(should_pause_background_writes(
+        {AYNI_TASK_RUNNING, true, AYNI_CALL_COMPLETED, AYNI_CALL_WAIT_DURABILITY, now, 0}));
+    EXPECT_FALSE(should_pause_background_writes(
+        {AYNI_TASK_RUNNING, true, AYNI_CALL_COMPLETED, AYNI_CALL_WAIT_NONE, now, 0}));
+
+    // Provider wait: unpauses ONLY when active motor stop time exceeds now + motor_write_guard_us.
+    EXPECT_TRUE(should_pause_background_writes(
+        {AYNI_TASK_RUNNING, true, 0, AYNI_CALL_WAIT_PROVIDER, now, 0}));
+    EXPECT_FALSE(
+        should_pause_background_writes({AYNI_TASK_RUNNING, true, 0, AYNI_CALL_WAIT_PROVIDER, now,
+                                        now + motor_write_guard_us + 1}));
+    EXPECT_TRUE(should_pause_background_writes(
+        {AYNI_TASK_RUNNING, true, 0, AYNI_CALL_WAIT_PROVIDER, now, now + motor_write_guard_us}));
+    EXPECT_TRUE(should_pause_background_writes(
+        {AYNI_TASK_RUNNING, true, 0, AYNI_CALL_WAIT_PROVIDER, now, now + 500000}));
+    EXPECT_TRUE(should_pause_background_writes(
+        {AYNI_TASK_RUNNING, true, 0, AYNI_CALL_WAIT_PROVIDER, now, now}));
+
+    // Stalled resources never hold background writes paused.
+    for (const ayni_call_wait_t wait :
+         {AYNI_CALL_WAIT_OFFLINE, AYNI_CALL_WAIT_QUARANTINED, AYNI_CALL_WAIT_OCCUPIED}) {
+        EXPECT_FALSE(should_pause_background_writes({AYNI_TASK_RUNNING, true, 0, wait, now, 0}));
+    }
+
+    // Managed WAITING tasks pause on durability/HTTP/guard band and unpause with motor headroom.
+    EXPECT_FALSE(
+        should_pause_background_writes({AYNI_TASK_WAITING, false, 0, AYNI_CALL_WAIT_NONE, now, 0}));
+    EXPECT_TRUE(should_pause_background_writes(
+        {AYNI_TASK_WAITING, true, 0, AYNI_CALL_WAIT_DURABILITY, now, 0}));
+    EXPECT_FALSE(
+        should_pause_background_writes({AYNI_TASK_WAITING, true, 0, AYNI_CALL_WAIT_PROVIDER, now,
+                                        now + motor_write_guard_us + 1000}));
+    EXPECT_TRUE(should_pause_background_writes(
+        {AYNI_TASK_WAITING, true, 0, AYNI_CALL_WAIT_PROVIDER, now, now + motor_write_guard_us}));
+
+    // Terminal or held Tasks always unpause immediately.
+    for (const ayni_task_lifecycle_t state :
+         {AYNI_TASK_COMPLETED, AYNI_TASK_PAUSED, AYNI_TASK_FAILED, AYNI_TASK_CANCELLED,
+          AYNI_TASK_EXPIRED}) {
+        EXPECT_FALSE(
+            should_pause_background_writes({state, true, 0, AYNI_CALL_WAIT_DURABILITY, now, 0}));
+    }
 }

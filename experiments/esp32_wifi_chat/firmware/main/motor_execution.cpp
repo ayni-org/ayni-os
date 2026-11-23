@@ -306,6 +306,7 @@ ayni_status_t MotorExecution::sample() {
     return rc;
 }
 ayni_status_t MotorExecution::stop_output() {
+    expected_stop_us_.store(0, std::memory_order_release);
     ayni_status_t stopped = AYNI_OK;
     if (gate_ && current_permit_) {
         stopped = ayni_control_stop(gate_, current_permit_, now());
@@ -505,6 +506,9 @@ ayni_status_t MotorExecution::advance_pending() {
             } else {
                 p.phase = Phase::running;
                 const auto started_us = now();
+                expected_stop_us_.store(started_us + uint64_t(p.command.duration_ms) * 1000ULL,
+                                        std::memory_order_release);
+                wake_owner(); // Let the owner re-evaluate the motor background-write window now.
                 mark_output_start(p.call, started_us);
                 trace_handoff("output_started", p.call, started_us);
                 trace("pwm-started", AYNI_OK);
@@ -593,6 +597,7 @@ bool MotorExecution::close_owner() {
     }
     heap_caps_free(gate_memory_);
     gate_memory_ = nullptr;
+    expected_stop_us_.store(0, std::memory_order_release);
     mode_ = Mode::closed;
     return true;
 }

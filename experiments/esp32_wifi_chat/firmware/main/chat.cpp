@@ -4,6 +4,7 @@
 #include "synthetic_history.h"
 #include "tool_io_window.h"
 #include "wake.h"
+#include "write_pacing.h"
 #include <algorithm>
 #include <ayni/bodies.h>
 #include <ayni/host_authority.h>
@@ -1394,9 +1395,10 @@ void Chat::diagnostics() {
         status(0, "session metadata exceeded diagnostic capacity");
     }
 }
-// Pause non-blocking FileBodies persistence/cleanup only while the active chat turn is in a
-// transient Core/decision/dispatch-barrier transition, never while waiting on a Provider
-// (HTTP model or physical output), held, terminal, forgetting, or closing.
+// Pause non-blocking FileBodies persistence/cleanup during hot Core/decision/dispatch-barrier
+// transitions, HTTP Provider waits, and the pre-stop guard band of active motor procedures.
+// Unpauses during active motor runs with remaining time > motor_write_guard_us, and immediately
+// on stalled resources, terminal/held Tasks, forgetting, or closing.
 bool Chat::hot_tool_transition() const {
     if (!kernel_ || closing_ != Closing::open || forget_ != Forget::none ||
         turn_state_ != Turn::running || probe_.has_value()) {
@@ -1414,32 +1416,48 @@ bool Chat::hot_tool_transition() const {
     if (ayni_get_task(kernel_, goal.last_task_id, &task) != AYNI_OK) {
         return false;
     }
-    if (task.lifecycle == AYNI_TASK_READY || task.lifecycle == AYNI_TASK_RUNNING) {
-        return true;
-    }
-    if (task.lifecycle != AYNI_TASK_WAITING) {
-        return false;
-    }
-    uint64_t ids[call_slots]{};
-    uint32_t count = 0;
-    if (ayni_list_objects(kernel_, AYNI_OBJECT_CALL, ids, call_slots, &count) != AYNI_OK) {
-        return false;
-    }
-    for (uint32_t at = 0; at < count; ++at) {
+    WritePacingInput in{};
+    in.task_lifecycle = task.lifecycle;
+    in.now_us = uint64_t(esp_timer_get_time());
+    in.motor_expected_stop_us = motor_.execution().expected_stop_us();
+    if (task.lifecycle == AYNI_TASK_RUNNING && task.logical_call_id) {
         auto call = sized<ayni_call_info_v1>();
-        if (ayni_get_call(kernel_, ids[at], &call) != AYNI_OK || call.task_id != task.task_id) {
-            continue;
+        if (ayni_get_call(kernel_, task.logical_call_id, &call) == AYNI_OK) {
+            in.has_active_call = true;
+            in.call_outcome = call.outcome;
+            in.call_wait = call.wait_reason;
         }
-        const bool pending_transition =
-            call.outcome == 0U && (call.wait_reason == AYNI_CALL_WAIT_NONE ||
-                                   call.wait_reason == AYNI_CALL_WAIT_DURABILITY);
-        const bool completion_durability =
-            call.outcome != 0U && call.wait_reason == AYNI_CALL_WAIT_DURABILITY;
-        if (pending_transition || completion_durability) {
-            return true;
+    } else if (task.lifecycle == AYNI_TASK_WAITING) {
+        uint64_t ids[call_slots]{};
+        uint32_t count = 0;
+        if (ayni_list_objects(kernel_, AYNI_OBJECT_CALL, ids, call_slots, &count) == AYNI_OK) {
+            for (uint32_t at = 0; at < count; ++at) {
+                auto call = sized<ayni_call_info_v1>();
+                if (ayni_get_call(kernel_, ids[at], &call) != AYNI_OK ||
+                    call.task_id != task.task_id) {
+                    continue;
+                }
+                const bool pending_transition =
+                    call.outcome == 0U && (call.wait_reason == AYNI_CALL_WAIT_NONE ||
+                                           call.wait_reason == AYNI_CALL_WAIT_DURABILITY);
+                const bool completion_durability =
+                    call.outcome != 0U && call.wait_reason == AYNI_CALL_WAIT_DURABILITY;
+                if (pending_transition || completion_durability) {
+                    in.has_active_call = true;
+                    in.call_outcome = call.outcome;
+                    in.call_wait = call.wait_reason;
+                    break;
+                }
+                if (call.outcome == 0U && call.wait_reason == AYNI_CALL_WAIT_PROVIDER &&
+                    !in.has_active_call) {
+                    in.has_active_call = true;
+                    in.call_outcome = call.outcome;
+                    in.call_wait = call.wait_reason;
+                }
+            }
         }
     }
-    return false;
+    return should_pause_background_writes(in);
 }
 ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
     again = progress_ = false;
