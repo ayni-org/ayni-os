@@ -10,6 +10,12 @@ namespace wifichat {
 // and Core's call ledger. Saved conversation text remains independent of playback success.
 class ReplyVoice {
   public:
+    enum class Event { text_ready, chunk_durable, goal_accepted, call_decided };
+    struct Observer {
+        void *context = nullptr;
+        void (*on_event)(void *, Event, uint64_t goal, size_t offset, size_t bytes) = nullptr;
+    };
+    void observe(Observer observer) { observer_ = observer; }
     static constexpr uint32_t version = 1;
     static constexpr const char *type_id = "wifi.reply.voice";
     ayni_strategy_v1 strategy(const ayni_body_store_v1 *);
@@ -34,6 +40,8 @@ class ReplyVoice {
     static ayni_status_t requirements(void *, ayni_bytes_v1, const ayni_goal_requirement_sink_v1 *);
     // Owned rendered speech, never logged or moved while a chunk is borrowed.
     // The saved Markdown answer remains unchanged.
+    void emit(Event, uint64_t goal, size_t bytes) const;
+    Observer observer_{};
     SpeechText text_;
     const ayni_body_store_v1 *bodies_ = nullptr; // Borrowed stable port through Core/Host close.
     ayni_body_ref_v1 body_{}; // Current durable chunk, released only after its Goal ends.

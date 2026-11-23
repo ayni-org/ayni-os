@@ -78,21 +78,17 @@ class DecisionBuffer {
     uint32_t memory_bytes_;     // Immutable candidate span, zero when disabled.
 };
 
-// Has the strategy of the task READY longest among those READY since before
-// commit_seq ready_before decide it, as one item and transition; now_us is
-// the start of the step, and the task's authority is checked at clock's
-// reading before and after decide. calls stages, checks and accepts a call
-// the strategy proposes. Returns false, calling nothing, when no such task
-// is left. Every goal type with tasks names a strategy that ayni_start
-// resolved.
 enum class DecisionResult {
     none,
     applied,
     internal
 }; // No work, one publication, or invariant failure.
+// Runs the strategy of the longest READY Task before ready_before. now_us is
+// the fixed step time; the owner clock checks authority before and after the callback.
+// Each applied decision owns one transition. accepted_call is zero unless a Call was created.
 DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t ready_before,
                            uint64_t now_us, uint64_t durable_seq, OwnerClock clock,
-                           CallRuntime &calls);
+                           CallRuntime &calls, uint64_t &accepted_call);
 
 // Whether a task waits for a decision; the step reports it as more_ready.
 bool awaits_decision(const WorkModel &model, uint64_t durable_seq);

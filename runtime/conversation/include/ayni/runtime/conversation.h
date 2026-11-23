@@ -39,10 +39,14 @@ enum class PublicationStage {
     collected,        // Superseded scope body/manifest cleanup completed.
     context_ready     // Exact CONTEXT_ACK became durable and context returned to IDLE/usable.
 };
+enum class PublicationAck { submitted, durable };
 // Optional owner-only diagnostic callback. Never mutates Session or reenters Session.
 struct PublicationObserver {
     void *context = nullptr;
     void (*on_stage)(void *context, uint64_t goal, uint64_t task, PublicationStage stage) = nullptr;
+    // Submitted has no sequence until the accepted ACK is applied. Durable names the exact
+    // context transition and runs before notifying context_ready.
+    void (*on_ack)(void *context, PublicationAck, uint64_t commit_seq) = nullptr;
 };
 struct Config {
     ayni_kernel_t *kernel = nullptr; // Borrowed through shutdown/Host join.
@@ -74,6 +78,8 @@ class Session {
     // through the public API, resolve with owner authority, then continue polling.
     // Bridge file/version errors are sticky. BUSY is ordinary queue backpressure.
     ayni_status_t poll();
+    // again is reset each call and set for a newly runnable local cleanup/ACK transition.
+    ayni_status_t poll_with_progress(bool &again) { return poll_step(&again); }
     // OK copies input. Durable mode saves its draft before admission; background mode stages
     // it and starts the Goal while saving proceeds. One turn at a time per Session.
     // Completion is ready() with a new last_round; the final answer crosses Core ACK durability.
@@ -137,6 +143,7 @@ class Session {
         failed
     };
     enum class Save { initialize, draft, publication, erasure, retained, discard };
+    ayni_status_t poll_step(bool *again);
     static void complete(void *, const hosts::storage::FileValueResult &) noexcept;
     ayni_status_t context(ayni_context_info_v1 &) const;
     ayni_status_t intake(ayni_context_info_v1 &) const;

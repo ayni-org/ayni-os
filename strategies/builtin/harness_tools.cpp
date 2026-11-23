@@ -280,8 +280,10 @@ ayni_status_t invoke(Workspace &workspace, const NativeArguments &args, uint32_t
         });
 }
 } // namespace
-ayni_status_t native_error(ayni_status_t status, std::string_view message, char *buffer,
-                           uint32_t capacity, ayni_string_v1 &response) {
+ayni_status_t native_error(ayni_status_t status, std::string_view message, ReplyBuffer &scratch,
+                           ayni_string_v1 &response) {
+    auto *buffer = scratch.data();
+    const auto capacity = scratch.capacity;
     json::Writer out(buffer, capacity);
     out.raw("{\"error\":{\"status\":");
     out.number(status);
@@ -293,56 +295,57 @@ ayni_status_t native_error(ayni_status_t status, std::string_view message, char 
 ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &proposal,
                               const ToolLoopConfig &config, const ayni_task_snapshot_v1 &snapshot,
                               Turn &turn, ayni_string_v1 step, ayni_policy_output_v1 &output,
-                              char *buffer, uint32_t capacity, ToolBudget budget, ToolReply &reply,
+                              ReplyBuffer &scratch, ToolBudget budget, ToolReply &reply,
                               bool &requested) {
     auto &response = reply.text;
     requested = false;
-    bool handled = false;
-    const auto operation_status =
-        native_operation(workspace, proposal, config, snapshot, step, output, buffer, capacity,
-                         reply, requested, handled);
-    if (handled) {
-        return operation_status;
-    }
     NativeArguments args;
-    json::Writer out(buffer, capacity);
+    const bool capability = named(proposal.function_name, model::call_function);
+    ayni_string_v1 operation{};
+    if (capability) {
+        if (!read_capability_arguments(proposal, args)) {
+            return native_error(AYNI_INVALID_ARGUMENT, "Invalid operation envelope.", scratch,
+                                response);
+        }
+        if (args.positions[operation_field] != UINT32_MAX &&
+            (!args.string(operation_field, operation) ||
+             (!named(operation, "invoke") && !named(operation, "start")))) {
+            return native_operation(workspace, args, operation, config, snapshot, step, output,
+                                    scratch, reply, requested);
+        }
+    }
     ayni_status_t status = AYNI_NOT_FOUND;
     if (named(proposal.function_name, model::list_function)) {
         status = args.read(proposal, {"cursor", "limit"})
-                     ? list(args, snapshot, turn, buffer, capacity, budget, reply)
+                     ? list(args, snapshot, turn, scratch.data(), scratch.capacity, budget, reply)
                      : AYNI_INVALID_ARGUMENT;
         if (status == AYNI_OK) {
             return AYNI_OK;
         }
-    } else if (named(proposal.function_name, model::inspect_function) ||
-               named(proposal.function_name, model::call_function) ||
+    } else if (named(proposal.function_name, model::inspect_function) || capability ||
                named(proposal.function_name, model::shell_function)) {
         const bool shell = named(proposal.function_name, model::shell_function);
-        const bool call = named(proposal.function_name, model::call_function) || shell;
+        const bool call = capability || shell;
         ayni_string_v1 binding{};
         uint32_t version = 0;
-        constexpr uint32_t operation_field = 3;
-        bool valid = shell ? args.read(proposal, {"command"})
-                           : args.read(proposal,
-                                       {"binding_id", "binding_version", "arguments", "operation"});
-        uint32_t mode = AYNI_CALL_MODE_FOREGROUND;
+        const uint32_t mode =
+            named(operation, "start") ? AYNI_CALL_MODE_MANAGED : AYNI_CALL_MODE_FOREGROUND;
+        bool valid = false;
         if (shell) {
             binding = config.shell.binding_id;
             version = config.shell.binding_version;
-            valid = valid && args.count == 1U;
+            valid = args.read(proposal, {"command"}) && args.count == 1U;
         } else {
-            const bool explicit_operation = args.positions[operation_field] != UINT32_MAX;
-            ayni_string_v1 operation{};
-            if (explicit_operation) {
-                valid = valid && call && args.string(operation_field, operation) &&
-                        (named(operation, "invoke") || named(operation, "start"));
-                if (named(operation, "start")) {
-                    mode = AYNI_CALL_MODE_MANAGED;
-                }
+            valid = (capability || args.read(proposal, {"binding_id", "binding_version"})) &&
+                    args.string(binding_field, binding) && valid_id(binding) &&
+                    args.integer(version_field, version) && version;
+            if (capability) {
+                constexpr uint32_t invoke_fields = 3;
+                valid = valid && args.positions[arguments_field] != UINT32_MAX &&
+                        args.count == invoke_fields + (operation.size ? 1U : 0U);
+            } else {
+                valid = valid && args.count == 2U;
             }
-            valid = valid && args.string(0, binding) && valid_id(binding) &&
-                    args.integer(1, version) && version &&
-                    args.count == (call ? 3U : 2U) + (explicit_operation ? 1U : 0U);
         }
         ayni_capability_detail_v1 detail{};
         detail.struct_size = sizeof(detail);
@@ -356,24 +359,26 @@ ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &pro
             status = AYNI_NOT_FOUND;
         }
         if (status == AYNI_OK && !call) {
+            auto *buffer = scratch.data();
+            json::Writer out(buffer, scratch.capacity);
             status = inspect(workspace, detail, out);
+            if (status == AYNI_OK && done(out, buffer, response)) {
+                const auto tokens = budget.measure(response);
+                if (tokens <= budget.tokens) {
+                    reply.measured = tokens;
+                    return AYNI_OK;
+                }
+            }
         } else if (status == AYNI_OK) {
             // Shell's complete command object is itself the business input.
             if (shell) {
-                args.positions[0] = 0;
+                args.positions[arguments_field] = 0;
             }
-            status = invoke(workspace, args, shell ? 0U : 2U, detail, step, output, mode);
+            status = invoke(workspace, args, arguments_field, detail, step, output, mode);
             if (status == AYNI_OK) {
                 requested = true;
                 return AYNI_OK;
             }
-        }
-    }
-    if (status == AYNI_OK && done(out, buffer, response)) {
-        const auto tokens = budget.measure(response);
-        if (tokens <= budget.tokens) {
-            reply.measured = tokens;
-            return AYNI_OK;
         }
     }
     if (status == AYNI_OK) {
@@ -382,10 +387,10 @@ ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &pro
     return native_error(status,
                         "Function unavailable, invalid arguments, stale cursor, or explicit "
                         "resource limit. No business Call was accepted.",
-                        buffer, capacity, response);
+                        scratch, response);
 }
 ayni_status_t native_result(Workspace &workspace, const ayni_task_call_result_v1 &result,
-                            char *buffer, uint32_t capacity, ayni_string_v1 &response) {
+                            ReplyBuffer &scratch, ayni_string_v1 &response) {
     if (!result.outcome) {
         return AYNI_BUSY;
     }
@@ -393,7 +398,8 @@ ayni_status_t native_result(Workspace &workspace, const ayni_task_call_result_v1
         result.effect == AYNI_CALL_EFFECT_UNKNOWN) {
         return AYNI_RESULT_UNKNOWN;
     }
-    json::Writer out(buffer, capacity);
+    auto *buffer = scratch.data();
+    json::Writer out(buffer, scratch.capacity);
     const auto status = ::ayni::detail::with_workspace(
         workspace, json::call_result_workspace_requirements, [&](const ayni_workspace_v1 *region) {
             return json::write_call_result(region, out, result);

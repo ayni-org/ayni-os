@@ -3,6 +3,7 @@
 #include "../main/speaker.h"
 #include "model_buffer.h"
 #include "model_codec.h"
+#include "model_delivery.h"
 #include "network_time.h"
 #include "response_limit.h"
 #include "speech_stream.h"
@@ -138,7 +139,7 @@ bool Api::initialize(const Settings &settings, Transport &transport) {
 }
 bool Api::take_preview(ModelPreview &out) {
     if (previews_ && xQueueReceive(previews_, &out, 0) == pdTRUE &&
-        out.generation == generation_.load(std::memory_order_acquire)) {
+        out.generation == transport_->api_generation()) {
         return true;
     }
     std::fill(out.text.begin(), out.text.end(), 0);
@@ -147,7 +148,7 @@ bool Api::take_preview(ModelPreview &out) {
     return false;
 }
 bool Api::current(const Job &job) const {
-    return job.generation == generation_.load(std::memory_order_acquire) &&
+    return job.generation == transport_->api_generation() &&
            !(job.request == Request::speech &&
              job.input.id == speech_cancel_.load(std::memory_order_acquire));
 }
@@ -170,10 +171,10 @@ bool Api::submit(Request kind, uint64_t id, const void *data, size_t bytes, uint
     job.outline.clear();
     job.ok = false;
     job.error.fill(0);
-    job.generation = generation_.load(std::memory_order_acquire);
+    job.generation = transport_->api_generation();
     job.deadline = esp_timer_get_time() + request_budget_us(kind);
     job.http_complete_us = 0;
-    job.done_enqueued_us = 0;
+    job.ready_us = 0;
     job.audio = audio;
     job.audio_bytes = audio_bytes;
     if (bytes) {
@@ -205,7 +206,7 @@ void Api::release(Job *job) {
     std::fill(job->output.body.begin(), job->output.body.end(), 0);
     job->outline.clear();
     job->http_complete_us = 0;
-    job->done_enqueued_us = 0;
+    job->ready_us = 0;
     xQueueSend(free_, &index, 0);
 }
 void *Api::work(void *context) {
@@ -222,12 +223,25 @@ void *Api::work(void *context) {
             static_cast<unsigned long long>(job.input.id),
             static_cast<long long>(
                 (esp_timer_get_time() - job.deadline + request_budget_us(job.request)) / 1000));
+        if (job.request == Request::model) {
+            // Before perform, rejection is local and has no remote effect.
+            model_failure(job.output, AYNI_NOT_READY, AYNI_REASON_NONE, AYNI_CALL_EFFECT_NONE);
+        }
         if (self.current(job)) {
             if (esp_timer_get_time() < job.deadline) {
                 self.perform(job);
             } else {
                 std::snprintf(job.error.data(), job.error.size(), "请求排队超时，未发出");
             }
+        }
+        job.ready_us = uint64_t(esp_timer_get_time());
+        if (job.request == Request::model) {
+            deliver_model_completion(*self.transport_,
+                                     {job.output,
+                                      job.outline,
+                                      {job.generation, job.http_complete_us, job.ready_us},
+                                      job.deadline,
+                                      job.ok});
         }
         // Request metadata only; never print transcripts, generated audio or keys.
         self.transport_->diagnostics().record(
@@ -250,7 +264,6 @@ void *Api::work(void *context) {
             heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
             heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
         // Every queued slot reserves one result slot, so this cannot block on UI work.
-        job.done_enqueued_us = uint64_t(esp_timer_get_time());
         xQueueSend(self.done_, &index, portMAX_DELAY);
         self.outstanding_.fetch_sub(1, std::memory_order_acq_rel);
     }
@@ -868,6 +881,7 @@ void Api::speech(Job &job, const char *url) {
         return true;
     };
     auto *stream = new (storage.data) SpeechStream(sink, &delivery);
+    const auto started = uint64_t(esp_timer_get_time());
     job.ok = http(job, url, "application/json", nullptr, 0, request_body_.data(), size, nullptr, 0,
                   SpeechStream::max_pcm_bytes + wav_overhead_limit, nullptr, stream);
     if (job.ok) {
@@ -881,6 +895,9 @@ void Api::speech(Job &job, const char *url) {
                       : stream->error() == 2 ? "语音生成预算耗尽；部分播放停止，未重播"
                                              : "语音生成流异常；部分播放停止，未重播");
     }
+    const auto finished = uint64_t(esp_timer_get_time());
+    const auto generation_error = stream->error();
+    const auto pcm_bytes = stream->received();
     stream->~SpeechStream();
     if (!job.ok) {
         transport_->post(Kind::audio_error, job.input.id, nullptr, 0);
@@ -888,6 +905,15 @@ void Api::speech(Job &job, const char *url) {
             std::snprintf(job.error.data(), job.error.size(), "语音流中断；已播放部分不会重试");
         }
     }
+    const auto characters = std::count_if(input.begin(), input.end(),
+                                          [](uint8_t byte) { return (byte & 0xc0) != 0x80; });
+    const auto n = [](uint64_t value) { return static_cast<unsigned long long>(value); };
+    transport_->diagnostics().record(
+        "wifi tts_segment call=%llu api_begin_us=%llu api_end_us=%llu bytes=%zu "
+        "characters=%zu pcm_bytes=%lu server_error=%lu complete=%u\n",
+        n(job.input.id), n(started), n(finished), input.size(), size_t(characters),
+        static_cast<unsigned long>(pcm_bytes), static_cast<unsigned long>(generation_error),
+        unsigned(job.ok));
 }
 void Api::recognize(Job &job, const char *url) {
     CaptureReader capture;

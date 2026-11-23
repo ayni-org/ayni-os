@@ -25,6 +25,7 @@ class StrategiesFixture : public ::testing::Test {
         bool ended = false;
     };
     std::function<void(policies::ToolLoopConfig &)> configure_loop;
+    std::vector<std::string> *model_steps = nullptr;
     bool action_tool = false;
     bool software_tools = false;
     ayni::providers::software::WorkProvider software;
@@ -110,6 +111,25 @@ class StrategiesFixture : public ::testing::Test {
         ASSERT_EQ(ayni_register_agent(kernel, &agent), AYNI_OK);
         ASSERT_EQ(ayni_register_strategy(kernel, &rules_desc), AYNI_OK);
         auto model_strategy = loop.describe();
+        if (model_steps) {
+            model_strategy.ctx = this;
+            model_strategy.ready = [](void *context, uint64_t task) {
+                const auto inner = static_cast<StrategiesFixture *>(context)->loop.describe();
+                return inner.ready ? inner.ready(inner.ctx, task) : 1U;
+            };
+            model_strategy.decide = [](void *context, const ayni_task_snapshot_v1 *snapshot,
+                                       ayni_policy_output_v1 *output) {
+                auto &self = *static_cast<StrategiesFixture *>(context);
+                const auto inner = self.loop.describe();
+                const auto status = inner.decide(inner.ctx, snapshot, output);
+                if (status == AYNI_OK && output->intent_count &&
+                    output->intents[0].kind == AYNI_POLICY_REQUEST_CALL) {
+                    const auto &intent = output->intents[0];
+                    self.model_steps->emplace_back(intent.step_key, intent.step_key_size);
+                }
+                return status;
+            };
+        }
         ASSERT_EQ(ayni_register_strategy(kernel, &model_strategy), AYNI_OK);
         const ayni_resource_desc_v1 resource{
             sizeof(resource), AYNI_RESOURCE_SHARED, text("model.slot"), 1, 0, 0, 0, nullptr, {}};

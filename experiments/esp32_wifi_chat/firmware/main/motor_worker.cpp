@@ -123,9 +123,17 @@ ayni_submit_result_t MotorExecution::submit(const ayni_provider_request_v1 *requ
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     start.attempt = request->attempt;
+    start.call = request->logical_call_id;
     start.completion = completion;
     start.permit = *request->execution_permit;
-    return send(message) ? AYNI_SUBMIT_ACCEPTED : AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    const auto dispatched = uint64_t(esp_timer_get_time());
+    if (!send(message)) {
+        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    }
+    // Core calls this Provider only after its dispatch barrier is already durable.
+    latest_dispatch_ = start.call;
+    trace_handoff("dispatch", start.call, dispatched);
+    return AYNI_SUBMIT_ACCEPTED;
 }
 ayni_submit_result_t MotorExecution::cancel(ayni_attempt_ref_v1 attempt) {
     Message message{};

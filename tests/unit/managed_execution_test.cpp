@@ -3,8 +3,10 @@
 // ADR-0052: executor answers held, lost or late through the Mock's link. No
 // power loss, Provider transport failure or restart campaign.
 #include "kernel_test_probe.h"
+#include "text_business_fixture.h"
 #include "work/call/call_records.h"
 #include "work_node.h"
+#include <ayni/providers/mock.h>
 #include <ayni/providers/mock_execution.h>
 #include <ayni/scenes.h>
 namespace {
@@ -780,6 +782,163 @@ TEST_F(ManagedExecution, call_deadline_stops_session_independently_of_lease_rene
     EXPECT_EQ(executor.renewals(), renewed);
     EXPECT_EQ(execution().phase, AYNI_EXECUTION_STOPPED);
 }
+
+class PreparationStopsExecution : public ManagedExecution {
+  protected:
+    void SetUp() override {
+        ManagedExecution::SetUp();
+        namespace mock = ayni::providers::mock;
+        mock::Config settings;
+        settings.service = mock::Service::action;
+        settings.text_max_bytes = 64;
+        ASSERT_EQ(presentation.configure(settings), AYNI_OK);
+        auto &config = work.node().config();
+        ++config.call_capability_capacity;
+        ++config.provider_capacity;
+        ++config.binding_capacity;
+        ++config.resource_capacity;
+        ++config.goal_type_capacity;
+        work.node().on_create([this](auto *kernel) {
+            register_profile(kernel);
+            register_presentation(kernel);
+        });
+        const auto turn = work.strategy().answer;
+        work.strategy().answer = [turn](const auto &snapshot, auto &output) {
+            if (string_of(snapshot.goal_type_id) != "present") {
+                return turn(snapshot, output);
+            }
+            const TextValue body(text("display"));
+            const ayni_call_request_v1 request{sizeof(request), AYNI_POLICY_REQUEST_CALL,  1,  0,
+                                               text("display"), text("present.binding"),   {}, {},
+                                               body.view(),     AYNI_CALL_MODE_FOREGROUND, 0};
+            return output.request_call(output.call_context, &request);
+        };
+    }
+
+    void register_presentation(ayni_kernel_t *kernel) {
+        const ayni_capability_desc_v1 authority{
+            sizeof(authority), 1, text("mock.present"), 0, 0, nullptr};
+        ASSERT_EQ(ayni_register_capability(kernel, &authority), AYNI_OK);
+        const ayni_resource_desc_v1 resource{sizeof(resource),
+                                             AYNI_RESOURCE_SHARED,
+                                             text("presentation.slot"),
+                                             1,
+                                             0,
+                                             0,
+                                             0,
+                                             nullptr,
+                                             {}};
+        ASSERT_EQ(ayni_register_resource(kernel, &resource), AYNI_OK);
+        ayni_provider_v1 ports{};
+        ASSERT_EQ(presentation.describe(ports), AYNI_OK);
+        ASSERT_EQ(ayni_register_call_capability(kernel, ports.capabilities), AYNI_OK);
+        ASSERT_EQ(ayni_register_provider(kernel, &ports), AYNI_OK);
+        const ayni_binding_v1 binding{sizeof(binding),
+                                      1,
+                                      text("present.binding"),
+                                      authority.capability_id,
+                                      1,
+                                      1,
+                                      ports.provider_id,
+                                      ports.endpoint_id,
+                                      {},
+                                      0,
+                                      0,
+                                      nullptr};
+        ASSERT_EQ(ayni_register_binding(kernel, &binding), AYNI_OK);
+        auto goal_type = goal_type_desc("present", 1);
+        goal_type.export_requirements = [](void *, ayni_bytes_v1,
+                                           const ayni_goal_requirement_sink_v1 *sink) {
+            const ayni_goal_requirement_v1 required{
+                sizeof(required), 1, text("mock.present"), {sizeof(ayni_scope_v1), 0, nullptr}};
+            return sink->emit(sink->ctx, &required);
+        };
+        ASSERT_EQ(ayni_register_goal_type(kernel, &goal_type), AYNI_OK);
+    }
+
+    uint64_t present() {
+        const ayni_grant_create_v1 grant{sizeof(grant),
+                                         1,
+                                         text("mock.present"),
+                                         work.instance(agent_b),
+                                         0,
+                                         AYNI_GRANT_PERMANENT,
+                                         0,
+                                         0,
+                                         {sizeof(ayni_scope_v1), 0, nullptr}};
+        auto intent = work.intent(AYNI_INTENT_GRANT_CREATE, &grant);
+        intent.command_id = ++command;
+        EXPECT_EQ(work.submit(intent).status, AYNI_OK);
+        pump(4);
+        const auto goal = work.create(
+            WorkNode::create_body(work.instance(agent_b), 0, "present", 1, {}, AYNI_TRIGGER_ONCE));
+        EXPECT_EQ(goal.status, AYNI_OK);
+        pump(6);
+        const auto task = work.goal(goal.result.object.id).last_task_id;
+        return task ? work.task(task).logical_call_id : 0;
+    }
+
+    ayni::providers::mock::Provider presentation;
+};
+
+// White-box ADR-0050/0052: an active Call's deadline falls between selection and preparation.
+TEST_F(PreparationStopsExecution, newly_due_stop_precedes_preparing_a_call_on_another_resource) {
+    using ayni::kernel::CallRuntime;
+    using ayni::kernel::KernelTestProbe;
+    constexpr uint32_t timeout_ms = 200;
+    constexpr uint64_t samples_before_deadline = 2;
+    start(AYNI_FORM_SESSION, 60, StopConfirmation::automatic, timeout_ms);
+    auto &node = work.node();
+    create();
+    wait_submission();
+    const uint64_t stop_at = node.sim().now_us() + uint64_t{timeout_ms} * 1000U;
+    const auto fresh = present();
+    ASSERT_NE(fresh, 0U);
+    const auto before_stop = stop_at - samples_before_deadline;
+    ASSERT_LT(node.sim().now_us(), before_stop);
+    while (node.sim().now_us() + tick_us < before_stop) {
+        pump(1);
+    }
+
+    node.sim().advance_us(before_stop - node.sim().now_us());
+    now = node.sim().now_us();
+    auto &calls = KernelTestProbe::calls(work.kernel());
+    // Let the ordinary step settle each ready poll lane at the same time.
+    for (unsigned pass = 0; pass < 8; ++pass) {
+        node.sim().complete_storage();
+        node.step();
+        if (!calls.control_ready(before_stop, node.info().durable_seq,
+                                 CallRuntime::Mode::running)) {
+            break;
+        }
+    }
+    ASSERT_EQ(
+        ayni_set_resource_health(work.kernel(), text("presentation.slot"), AYNI_RESOURCE_ONLINE),
+        AYNI_OK);
+    const auto durable = node.info().durable_seq;
+    ASSERT_FALSE(calls.control_ready(stop_at - 1U, durable, CallRuntime::Mode::running));
+    ASSERT_TRUE(calls.control_ready(stop_at, durable, CallRuntime::Mode::running));
+    ASSERT_TRUE(calls.ready(stop_at - 1U, durable, CallRuntime::Mode::running));
+    ASSERT_EQ(node.sim().now_us(), before_stop);
+    const auto next_seq = KernelTestProbe::work(work.kernel()).transitions.next_commit_seq();
+    node.sim().advance_per_read_us(1);
+    const auto result = calls.prepare_accepted({fresh, fresh}, stop_at + tick_us, durable);
+    node.sim().advance_per_read_us(0);
+    now = node.sim().now_us();
+    EXPECT_GE(now, stop_at);
+    ASSERT_EQ(result, CallRuntime::Advance::idle);
+    EXPECT_EQ(KernelTestProbe::work(work.kernel()).transitions.next_commit_seq(), next_seq);
+
+    node.step(1);
+    EXPECT_EQ(gate().phase, AYNI_CONTROL_STOPPING);
+    auto info = ayni_call_info_v1{};
+    info.struct_size = sizeof(info);
+    ASSERT_EQ(ayni_get_call(work.kernel(), fresh, &info), AYNI_OK);
+    EXPECT_EQ(info.phase, AYNI_CALL_QUEUED);
+    EXPECT_EQ(presentation.pending(), 0U);
+    EXPECT_EQ(presentation.executions(), 0U);
+}
+
 // ADR-0050: one-item steps must make business progress even at every poll deadline.
 TEST_F(ManagedExecution, one_item_steps_share_routine_polling_with_terminal_processing) {
     start(AYNI_FORM_SESSION, 8);

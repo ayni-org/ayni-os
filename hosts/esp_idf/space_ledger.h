@@ -39,14 +39,25 @@ class SpaceLedger {
         bytes = budget_->free_bytes > debit ? budget_->free_bytes - debit : 0;
         return true;
     }
-    // Reconcile bounded accumulated debt or a low-space mutation. Unchanged full volumes
-    // retain a valid zero estimate, rather than rescanning on every idle tick.
-    bool needs_measurement() const {
+    enum class Reconciliation { clean, routine, urgent };
+
+    // The Host supplies other accepted reservations. Without fresh blocks to reconcile, a
+    // current zero lower bound stays valid and does not cause repeated traversals.
+    Reconciliation reconciliation(uint64_t reserved = 0) const {
         uint64_t bytes = 0;
-        return !available(bytes) ||
-               (budget_->count != 0 &&
-                (bytes < reconciliation_bytes ||
-                 uint64_t(budget_->count) * block_bytes >= reconciliation_bytes));
+        if (!available(bytes)) {
+            return Reconciliation::urgent;
+        }
+        if (!budget_->count) {
+            return Reconciliation::clean;
+        }
+        if (budget_->count == tracked_blocks || bytes <= reserved ||
+            bytes - reserved < reconciliation_bytes) {
+            return Reconciliation::urgent;
+        }
+        return uint64_t(budget_->count) * block_bytes >= reconciliation_bytes
+                   ? Reconciliation::routine
+                   : Reconciliation::clean;
     }
 
   private:
@@ -56,6 +67,31 @@ class SpaceLedger {
         uint32_t count = 0; // Initialized prefix of blocks, each distinct since measurement.
     };
     std::optional<Budget> budget_; // None until measured, or after tracking capacity is exhausted.
+};
+// One worker-owned deadline, measured from the first service boundary with routine debt.
+class SpaceRefresh {
+  public:
+    static constexpr uint64_t max_deferral_us = 1000000;
+
+    bool measure(SpaceLedger::Reconciliation need, uint64_t now_us, bool quiet) {
+        using Need = SpaceLedger::Reconciliation;
+        if (need != Need::routine) {
+            due_since_.reset();
+            return need == Need::urgent;
+        }
+        if (!due_since_) {
+            due_since_ = now_us;
+        }
+        if (!quiet && now_us - *due_since_ < max_deferral_us) {
+            return false;
+        }
+        due_since_.reset();
+        return true;
+    }
+    bool pending() const { return due_since_.has_value(); }
+
+  private:
+    std::optional<uint64_t> due_since_;
 };
 } // namespace ayni::hosts::esp_idf
 #endif

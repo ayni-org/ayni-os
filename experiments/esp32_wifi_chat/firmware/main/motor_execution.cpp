@@ -64,6 +64,47 @@ ayni_executor_v1 MotorExecution::ports() {
             stop_port,
             status_port};
 }
+void MotorExecution::mark_output_start(uint64_t call, uint64_t at_us) {
+    portENTER_CRITICAL(&output_mutex_);
+    auto &slot = output_intervals_[output_count_++ % output_intervals_.size()];
+    last_overwritten_stop_us_ = slot.stop_us;
+    slot = {call, at_us, 0};
+    portEXIT_CRITICAL(&output_mutex_);
+}
+void MotorExecution::mark_output_stop(uint64_t call, uint64_t at_us) {
+    portENTER_CRITICAL(&output_mutex_);
+    if (output_count_) {
+        auto &slot = output_intervals_[(output_count_ - 1U) % output_intervals_.size()];
+        if (slot.call == call && !slot.stop_us) {
+            slot.stop_us = at_us;
+        }
+    }
+    portEXIT_CRITICAL(&output_mutex_);
+}
+bool MotorExecution::output_intervals(uint64_t from_us, uint64_t to_us, OutputIntervals &out) {
+    portENTER_CRITICAL(&output_mutex_);
+    const auto retained = std::min<uint64_t>(output_count_, output_intervals_.size());
+    size_t count = 0;
+    bool complete = last_overwritten_stop_us_ <= from_us;
+    for (auto i = output_count_ - retained; i < output_count_; ++i) {
+        const auto &span = output_intervals_[i % output_intervals_.size()];
+        if (span.start_us < to_us && (!span.stop_us || span.stop_us > from_us)) {
+            out[count++] = span;
+            complete = complete && span.stop_us != 0;
+        }
+    }
+    portEXIT_CRITICAL(&output_mutex_);
+    return complete;
+}
+void MotorExecution::trace_handoff(const char *phase, uint64_t call, uint64_t at_us) {
+    std::array<char, 128> line{};
+    const auto written = std::snprintf(
+        line.data(), line.size(), "wifi motor_call call=%llu phase=%s at_us=%llu\n",
+        static_cast<unsigned long long>(call), phase, static_cast<unsigned long long>(at_us));
+    if (written > 0 && size_t(written) < line.size()) {
+        transport_.diagnostics().capture({line.data(), size_t(written)});
+    }
+}
 void MotorExecution::trace(const char *stage, ayni_status_t status) {
     ayni_control_info_v1 info{};
     info.struct_size = sizeof(info);
@@ -295,6 +336,8 @@ void MotorExecution::end(ayni_call_outcome_t outcome, ayni_status_t status) {
         p.status = AYNI_RESULT_UNKNOWN;
         return; // Keep the permit/resources; retry local disable, never invent STOPPED.
     }
+    const auto stopped_us = now();
+    mark_output_stop(p.call, stopped_us);
     // Exact local edge evidence can establish partial controller output after a known stop.
     // It does not measure wheel speed/position or repair an earlier UNKNOWN record.
     if (p.effect == Effect::possible) {
@@ -310,6 +353,7 @@ void MotorExecution::end(ayni_call_outcome_t outcome, ayni_status_t status) {
             p.effect = Effect::partial;
         }
     }
+    trace_handoff("output_stopped", p.call, stopped_us);
     p.phase = Phase::result; // Local output-stop fact ends a timed PWM procedure; target stays
                              // unverified.
 }
@@ -362,6 +406,9 @@ ayni_status_t MotorExecution::post_result() {
     }
     const auto posted = ayni_provider_post(p.completion, &result);
     if (posted == AYNI_OK || posted == AYNI_INVALID_STATE) {
+        if (posted == AYNI_OK) {
+            trace_handoff("result_posted", p.call, now());
+        }
         pending_.reset();
         publish_snapshot();
         terminal_notice_ = current_permit_;
@@ -457,6 +504,9 @@ ayni_status_t MotorExecution::advance_pending() {
                 end(AYNI_CALL_FAILED, AYNI_INTERNAL);
             } else {
                 p.phase = Phase::running;
+                const auto started_us = now();
+                mark_output_start(p.call, started_us);
+                trace_handoff("output_started", p.call, started_us);
                 trace("pwm-started", AYNI_OK);
             }
         }

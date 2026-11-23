@@ -1,7 +1,10 @@
 // Diagnostic breakdown checks for ESP32 Wi-Fi Chat publication, model handoff and storage metrics.
 #include "configuration.h"
 #include "diagnostic_log.h"
+#include "model_handoff.h"
+#include "tool_io_window.h"
 #include "turn_diagnostics.h"
+#include <algorithm>
 #include <ayni/ayni.hpp>
 #include <ayni/commands.hpp>
 #include <ayni/context.h>
@@ -12,14 +15,17 @@
 #include <ayni/runtime/conversation/file_bodies.h>
 #include <ayni/strategies/builtin.h>
 #include <ayni/values.hpp>
+#include <climits>
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <future>
 #include <gtest/gtest.h>
 #include <map>
 #include <numeric>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -40,9 +46,13 @@ ayni_string_v1 text(const char *s) {
 // publishes completed service/file counters BEFORE invoking the completion callback, then post_us.
 class QueuedValueStore {
   public:
-    explicit QueuedValueStore(ayni::hosts::sim::Host &host) : host_(host) {}
+    explicit QueuedValueStore(ayni::hosts::sim::Host &host,
+                              ayni::hosts::esp_idf::StorageWorkHistory *history = nullptr)
+        : host_(host), history_(history) {}
     ayni::hosts::storage::FileValuePort port() { return {this, submit}; }
     bool empty() const { return pending_.empty(); }
+    size_t pending() const { return pending_.size(); }
+    void refuse_next() { reject_next_ = true; }
     const StorageMetrics &metrics() const { return metrics_; }
 
     void advance() {
@@ -102,6 +112,14 @@ class QueuedValueStore {
             metrics_.files.space_measure_us += measure_us;
         }
         const auto before_post = host_.now_us();
+        metrics_.record_value(r, result, service_us, before_post - item.submitted_us);
+        if (history_) {
+            using Kind = ayni::hosts::esp_idf::StorageWorkSample::Kind;
+            const auto kind = r.kind == FileValueRequest::Kind::write  ? Kind::write
+                              : r.kind == FileValueRequest::Kind::read ? Kind::read
+                                                                       : Kind::remove;
+            history_->record({before_post, started - item.submitted_us, service_us, kind, r.role});
+        }
         r.complete(r.context, result);
         metrics_.post_us += host_.now_us() - before_post;
     }
@@ -117,17 +135,19 @@ class QueuedValueStore {
     };
     static ayni_submit_result_t submit(void *ctx, const FileValueRequest *request) {
         auto &self = *static_cast<QueuedValueStore *>(ctx);
-        if (self.pending_.size() >= 8U) {
+        if (std::exchange(self.reject_next_, false) || self.pending_.size() >= 8U) {
             return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
         }
         self.pending_.push_back({*request, self.host_.now_us()});
         return AYNI_SUBMIT_ACCEPTED;
     }
     ayni::hosts::sim::Host &host_;
+    ayni::hosts::esp_idf::StorageWorkHistory *history_;
     std::map<std::pair<uint64_t, uint64_t>, Value> values_;
     std::deque<Queued> pending_;
     StorageMetrics metrics_{};
     uint32_t writes_since_measure_ = 0;
+    bool reject_next_ = false;
 };
 
 struct FixedTextModel {
@@ -722,6 +742,262 @@ EndToEndSample run_fixed_text_turn(const EndToEndOptions &opts) {
     return out;
 }
 
+TEST(TurnDiagnostics, ModelHandoffRetainsClassifiedFailureAndRejectsCancelledGenerations) {
+    using namespace wifichat;
+    ModelHandoff lane;
+    Packet old{}, next{}, received{};
+    old.id = 11;
+    old.kind = Kind::model_result;
+    old.size = model_result_header_bytes + 1U;
+    const ModelDeliveryTiming old_generation{lane.generation(), 0, 10};
+    ASSERT_EQ(lane.post(old, old_generation), ModelPost::accepted);
+    lane.cancel();
+    EXPECT_EQ(lane.post(old, old_generation), ModelPost::stale);
+
+    Packet invalid{};
+    EXPECT_EQ(lane.post(invalid, {lane.generation(), 0, 20}), ModelPost::invalid);
+
+    next.id = 12;
+    next.kind = Kind::model_error;
+    next.size = model_result_header_bytes;
+    auto failure = initialized<ayni_provider_result_v1>();
+    failure.outcome = AYNI_CALL_FAILED;
+    failure.status = AYNI_NOT_READY;
+    failure.effect = AYNI_CALL_EFFECT_NONE;
+    write_model_result_header(next.body.data(), failure);
+    const ModelDeliveryTiming next_generation{lane.generation(), 0, 30};
+    EXPECT_EQ(lane.post(next, next_generation),
+              ModelPost::busy);           // The worker still owns next's bytes.
+    EXPECT_FALSE(lane.receive(received)); // Retire the older occupied packet.
+    ASSERT_EQ(lane.post(next, next_generation), ModelPost::accepted);
+    ASSERT_TRUE(lane.receive(received));
+    EXPECT_TRUE(matches_model_delivery(received, next.id, lane.generation()));
+    EXPECT_EQ(read_model_result_header(received.body.data()).status, AYNI_NOT_READY);
+    EXPECT_FALSE(lane.receive(received));
+}
+
+TEST(TurnDiagnostics, FixedSoftwareToolSeparatesWritesBeforeDuringAndAfterOutput) {
+    using namespace wifichat;
+    using Role = ToolIoWindow::Role;
+    ayni::hosts::sim::Host host(100000);
+    ayni::hosts::esp_idf::StorageWorkHistory history;
+    QueuedValueStore store(host, &history);
+    const auto port = store.port();
+    constexpr uint64_t queue_wait = 3000, write_service = 18000;
+    auto write = [&](uint64_t object, Role role) {
+        const uint8_t byte = 1;
+        FileValueRequest request{};
+        request.kind = FileValueRequest::Kind::write;
+        request.role = role;
+        request.key = {1, object};
+        request.generation = 1;
+        request.data = &byte;
+        request.size = sizeof(byte);
+        request.complete = [](void *, const FileValueResult &result) noexcept {
+            EXPECT_EQ(result.status, AYNI_OK);
+        };
+        ASSERT_EQ(port.submit(port.context, &request), AYNI_SUBMIT_ACCEPTED);
+        host.advance_us(queue_wait);
+        store.advance();
+    };
+    const auto from_us = host.now_us();
+    const auto first = store.metrics();
+    ASSERT_NO_FATAL_FAILURE(write(1, Role::body_chunk));
+    host.advance_us(5000);
+    const auto start_us = host.now_us();
+    ASSERT_NO_FATAL_FAILURE(write(2, Role::owner_manifest));
+    host.advance_us(1000);
+    const auto stop_us = host.now_us();
+    ASSERT_NO_FATAL_FAILURE(write(3, Role::conversation_root));
+    const auto to_us = host.now_us();
+    const auto last = store.metrics();
+    OutputIntervals output{{{41, start_us, stop_us}}};
+    ToolIoWindow window;
+    ASSERT_TRUE(window.collect(
+        from_us, to_us, output, first.completed, last.completed,
+        [&](uint64_t i, ToolIoWindow::Sample &sample) { return history.read(i, sample); }));
+    uint64_t wall = 0, writes = 0, service = 0, queue = 0;
+    for (const auto &part : window.parts) {
+        wall += part.wall_us;
+        writes += part.write.count;
+        service += part.io.us;
+        queue += part.queue_us;
+    }
+    EXPECT_EQ(wall, to_us - from_us);
+    EXPECT_EQ(writes, last.value_write_calls - first.value_write_calls);
+    EXPECT_EQ(service, last.io_us - first.io_us);
+    EXPECT_EQ(queue, last.queue_us - first.queue_us);
+    for (const auto &[phase, role] : {std::pair{ToolIoWindow::before, Role::body_chunk},
+                                      std::pair{ToolIoWindow::active, Role::owner_manifest},
+                                      std::pair{ToolIoWindow::after, Role::conversation_root}}) {
+        const auto &part = window.parts[phase];
+        EXPECT_EQ(part.write.count, 1U);
+        EXPECT_EQ(part.writes[static_cast<size_t>(role)].us, write_service);
+        EXPECT_EQ(part.queue_us, queue_wait);
+    }
+    EXPECT_EQ(window.parts[ToolIoWindow::between].io.count, 0U);
+    EXPECT_EQ(window.parts[ToolIoWindow::active].wall_us, stop_us - start_us);
+}
+
+TEST(TurnDiagnostics, ToolStorageWindowKeepsInterCallGapSeparateAndDetectsOverwrittenWork) {
+    using namespace wifichat;
+    using ayni::hosts::esp_idf::StorageWorkHistory;
+    StorageWorkHistory history;
+    using Sample = ToolIoWindow::Sample;
+    const OutputIntervals output{{{41, 20, 30}, {42, 40, 50}}};
+    history.record({20, 0, 3, Sample::Kind::append});
+    history.record({30, 0, 4, Sample::Kind::write});
+    history.record({50, 0, 5, Sample::Kind::remove});
+    const auto read = [&](uint64_t i, Sample &sample) { return history.read(i, sample); };
+    ToolIoWindow window;
+    ASSERT_TRUE(window.collect(10, 60, output, 0, 3, read));
+    EXPECT_EQ(window.parts[ToolIoWindow::active].wall_us, 20U);
+    EXPECT_EQ(window.parts[ToolIoWindow::active].append.us, 3U);
+    EXPECT_EQ(window.parts[ToolIoWindow::between].wall_us, 10U);
+    EXPECT_EQ(window.parts[ToolIoWindow::between].write.us, 4U);
+    EXPECT_EQ(window.parts[ToolIoWindow::after].remove.us, 5U);
+
+    for (uint64_t i = 0; i < StorageWorkHistory::capacity; ++i) {
+        history.record({60 + i, 0, 1});
+    }
+    ToolIoWindow incomplete;
+    EXPECT_FALSE(incomplete.collect(10, 60, output, 0, 3, read));
+}
+
+TEST(TurnDiagnostics, ToolStorageWindowRejectsCursorFromOutsideEitherBoundary) {
+    using namespace wifichat;
+    using ayni::hosts::esp_idf::StorageWorkHistory;
+    using Sample = ToolIoWindow::Sample;
+    StorageWorkHistory history;
+    const OutputIntervals output{{{41, 20, 40}}};
+    constexpr uint64_t from_us = 10, to_us = 60;
+    const auto read = [&](uint64_t i, Sample &sample) { return history.read(i, sample); };
+    history.record({from_us - 1, 0, 3, Sample::Kind::append});
+    history.record({from_us, 0, 2, Sample::Kind::append});
+    history.record({50, 0, 4, Sample::Kind::write});
+    history.record({to_us, 0, 5, Sample::Kind::write});
+    constexpr uint64_t first = 1, next = 4;
+    // Model the worker finishing after owner sampled the end time but before reading a
+    // separate completion cursor. A coherent cursor still stops at the previous write.
+    history.record({to_us + 1, 0, 6, Sample::Kind::write});
+    ToolIoWindow coherent;
+    ASSERT_TRUE(coherent.collect(from_us, to_us, output, first, next, read));
+    EXPECT_EQ(coherent.parts[ToolIoWindow::before].append.count, 1U);
+    EXPECT_EQ(coherent.parts[ToolIoWindow::after].write.count, 2U);
+    EXPECT_EQ(coherent.parts[ToolIoWindow::after].write.us, 9U);
+    ToolIoWindow late_end_cursor;
+    EXPECT_FALSE(late_end_cursor.collect(from_us, to_us, output, first, next + 1, read));
+    ToolIoWindow early_start_cursor;
+    EXPECT_FALSE(early_start_cursor.collect(from_us, to_us, output, first - 1, next, read));
+}
+
+// ADR-0104: an idle scan stays valid until confirmation, cold read or ownership changes.
+TEST(TurnDiagnostics, IdleBodyProgressReopensForConfirmColdReadAndRelease) {
+    using FileBodies = ayni::runtime::FileBodies;
+    ayni::hosts::sim::Host host(1000);
+    QueuedValueStore values(host);
+    FileBodies stored, reopened;
+    ASSERT_EQ(stored.configure(values.port(), 32768U), AYNI_OK);
+    ASSERT_EQ(reopened.configure(values.port(), 32768U), AYNI_OK);
+    const std::string payload(4097, 'a');
+    const auto *port = stored.store();
+    ayni_body_ref_v1 ref{};
+    ASSERT_EQ(port->stage(port->context, 1,
+                          {reinterpret_cast<const uint8_t *>(payload.data()),
+                           static_cast<uint32_t>(payload.size())},
+                          &ref),
+              AYNI_OK);
+    for (unsigned tick = 0; tick < 3; ++tick) {
+        FileBodies::progress(&stored, 0);
+        EXPECT_TRUE(stored.idle());
+        EXPECT_TRUE(values.empty());
+    }
+    values.refuse_next();
+    EXPECT_EQ(port->confirm(port->context, &ref), AYNI_NOT_READY);
+    EXPECT_TRUE(values.empty());
+    const auto drain = [&](FileBodies &bodies, unsigned requests) {
+        for (unsigned at = 0; at < requests; ++at) {
+            FileBodies::progress(&bodies, 0);
+            FileBodies::progress(&bodies, 0);
+            ASSERT_EQ(values.pending(), 1U);
+            values.advance();
+        }
+        FileBodies::progress(&bodies, 0);
+        EXPECT_TRUE(values.empty());
+        EXPECT_TRUE(bodies.idle());
+    };
+    drain(stored, 4); // Manifest lookup, two payload chunks, then the owner manifest.
+    ASSERT_EQ(port->confirm(port->context, &ref), AYNI_OK);
+    FileBodies::progress(&reopened, 0);
+    const auto *cold = reopened.store();
+    std::vector<uint8_t> bytes(payload.size());
+    const auto size = static_cast<uint32_t>(bytes.size());
+    ASSERT_EQ(cold->read(cold->context, &ref, bytes.data(), size), AYNI_NOT_READY);
+    drain(reopened, 3); // Existing manifest followed by both payload chunks.
+    ASSERT_EQ(cold->read(cold->context, &ref, bytes.data(), size), AYNI_OK);
+    EXPECT_EQ(std::string(bytes.begin(), bytes.end()), payload);
+    cold->release(cold->context, &ref);
+    drain(reopened, 3); // Both chunks followed by removal of the manifest.
+    EXPECT_EQ(FileBodies::collected(&reopened, 1), AYNI_OK);
+}
+
+// C-HVAL-009: chunk/manifest I/O remains identifiable when one payload has two owners.
+TEST(TurnDiagnostics, ValueRolesAccountForShortMultichunkAndSharedBody) {
+    using ayni::hosts::storage::FileValueRole;
+    const auto index = [](FileValueRole role) { return static_cast<size_t>(role); };
+    ayni::hosts::sim::Host host(1000);
+    QueuedValueStore values(host);
+    ayni::runtime::FileBodies bodies;
+    ASSERT_EQ(bodies.configure(values.port(), 32U * 1024U), AYNI_OK);
+    const auto *port = bodies.store();
+    const auto drain = [&] {
+        for (size_t i = 0; i < 64 && !bodies.idle(); ++i) {
+            ayni::runtime::FileBodies::progress(&bodies, 0);
+            host.advance_us(1000); // Accepted requests wait for a worker opportunity.
+            values.advance();
+        }
+        EXPECT_TRUE(bodies.idle());
+    };
+    const auto persist = [&](uint64_t scope, const std::string &value, ayni_body_ref_v1 &ref) {
+        EXPECT_EQ(port->stage(port->context, scope,
+                              {reinterpret_cast<const uint8_t *>(value.data()),
+                               static_cast<uint32_t>(value.size())},
+                              &ref),
+                  AYNI_OK);
+        EXPECT_EQ(port->confirm(port->context, &ref), AYNI_NOT_READY);
+        drain();
+        EXPECT_EQ(port->confirm(port->context, &ref), AYNI_OK);
+    };
+    ayni_body_ref_v1 small{}, large{}, shared{};
+    persist(1, "short", small);
+    constexpr uint32_t cross_chunk_bytes = 4097;
+    persist(2, std::string(cross_chunk_bytes, 'x'), large);
+    ASSERT_EQ(port->share(port->context, 3, &small, &shared), AYNI_OK);
+    EXPECT_EQ(port->confirm(port->context, &shared), AYNI_NOT_READY);
+    drain();
+    const auto chunk = index(FileValueRole::body_chunk);
+    const auto manifest = index(FileValueRole::owner_manifest);
+    const auto before = values.metrics();
+    EXPECT_EQ(before.values[chunk].write.calls, 3U);
+    EXPECT_EQ(before.values[chunk].write.bytes, 5U + cross_chunk_bytes);
+    EXPECT_EQ(before.values[manifest].write.calls, 3U);
+    EXPECT_GT(before.values[manifest].write.completion_us,
+              before.values[manifest].write.service_us);
+    port->release(port->context, &small);
+    drain();
+    EXPECT_EQ(values.metrics().values[chunk].remove.calls, 0U);
+    EXPECT_EQ(values.metrics().values[manifest].write.calls, 4U);
+    port->release(port->context, &shared);
+    port->release(port->context, &large);
+    drain();
+    const auto cleanup = wifichat::StoragePhaseDelta::between(before, values.metrics(), 0);
+    EXPECT_EQ(cleanup.values[chunk].remove.calls, 3U);
+    EXPECT_EQ(cleanup.values[chunk].remove.bytes, 5U + cross_chunk_bytes);
+    EXPECT_EQ(cleanup.values[manifest].remove.calls, 2U);
+    EXPECT_GT(cleanup.values[manifest].remove.bytes, 0U);
+    EXPECT_EQ(cleanup.value_remove_calls, 5U);
+}
+
 TEST(TurnDiagnostics, PublicationTimelineAsyncOrderRecordsEachBoundaryOnceAndSumsToTotal) {
     wifichat::PublicationTimeline timeline;
     timeline.reset(77);
@@ -940,6 +1216,25 @@ TEST(TurnDiagnostics, FixedTextTurnBackgroundPathCorrelatesUniqueBoundariesAndSu
     base_opts.persistence = ayni::strategies::Persistence::background;
     const auto base = run_fixed_text_turn(base_opts);
     expect_additive_summary(base.summary);
+    using RoleMetrics = ayni::hosts::esp_idf::ValueRoleMetrics;
+    using Operation = ayni::hosts::esp_idf::ValueOperationMetrics;
+    for (const auto member : {&RoleMetrics::read, &RoleMetrics::write, &RoleMetrics::remove}) {
+        for (size_t role = 0; role < base.summary.total.values.size(); ++role) {
+            Operation sum{};
+            for (size_t i = 0; i < base.summary.segment_count; ++i) {
+                const auto &part = base.summary.segments[i].io.values[role].*member;
+                sum.calls += part.calls;
+                sum.bytes += part.bytes;
+                sum.service_us += part.service_us;
+                sum.completion_us += part.completion_us;
+            }
+            const auto &total = base.summary.total.values[role].*member;
+            EXPECT_EQ(sum.calls, total.calls);
+            EXPECT_EQ(sum.bytes, total.bytes);
+            EXPECT_EQ(sum.service_us, total.service_us);
+            EXPECT_EQ(sum.completion_us, total.completion_us);
+        }
+    }
     EXPECT_EQ(base.summary.order, Order::async);
     EXPECT_EQ(base.summary.turn, 2U);
     EXPECT_NE(base.summary.goal, 0U);
@@ -954,7 +1249,14 @@ TEST(TurnDiagnostics, FixedTextTurnBackgroundPathCorrelatesUniqueBoundariesAndSu
     EXPECT_EQ(*base.collect_hit_stage, Stage::record_saved);
     EXPECT_GE(base.summary.segments[2].io.value_write_calls, 1U); // publish_durable -> record_saved
     EXPECT_GE(base.summary.segments[3].io.value_remove_calls, 1U); // record_saved -> collected
-    ASSERT_EQ(base.emitted_lines.size(), 7U);                      // 6 segments + 1 summary.
+    EXPECT_EQ(std::count_if(base.emitted_lines.begin(), base.emitted_lines.end(),
+                            [](const auto &line) { return line.rfind("wifi pub ", 0) == 0; }),
+              6);
+    EXPECT_NE(std::find_if(base.emitted_lines.begin(), base.emitted_lines.end(),
+                           [](const auto &line) {
+                               return line.find("role=conversation_root") != std::string::npos;
+                           }),
+              base.emitted_lines.end());
 
     // Known-wait attribution: inject +70 ms in confirm (seg 1) and +110 ms in collect (seg 3).
     EndToEndOptions delayed_opts = base_opts;
@@ -1164,7 +1466,7 @@ TEST(TurnDiagnostics, DeferredOutputProducesIdenticalSamplesUnderInstantAndSlowL
     EXPECT_GE(fast.first_log_emit_us, fast.answer_saved_us);
     EXPECT_GE(slow.first_log_emit_us, slow.answer_saved_us);
     EXPECT_EQ(fast.emitted_lines, slow.emitted_lines);
-    ASSERT_EQ(slow.emitted_lines.size(), 7U);
+    ASSERT_GT(slow.emitted_lines.size(), 7U);
     for (const auto &line : slow.emitted_lines) {
         EXPECT_NE(line.find("turn=2 "), std::string::npos) << line;
         EXPECT_LT(line.size(), wifichat::DiagnosticLog::line_bytes) << line;
@@ -1173,6 +1475,18 @@ TEST(TurnDiagnostics, DeferredOutputProducesIdenticalSamplesUnderInstantAndSlowL
 
 // Verify actual worst-case formatted lines fit within DiagnosticLog::line_bytes (384 bytes).
 TEST(TurnDiagnostics, FormattedReportLinesFitWithinDiagnosticLogSlot) {
+    for (const char *kind : {"tools", "text", "fail"}) {
+        const unsigned count = std::string_view(kind) == "tools" ? AYNI_CALL_TOOL_COUNT_MAX : 0U;
+        char line[wifichat::DiagnosticLog::line_bytes]{};
+        const int length = std::snprintf(line, sizeof(line), wifichat::model_owner_log_format,
+                                         ULLONG_MAX, ULLONG_MAX, kind, count, SIZE_MAX, ULLONG_MAX,
+                                         ULLONG_MAX, ULLONG_MAX, ULLONG_MAX, ULLONG_MAX);
+        EXPECT_GT(length, 0);
+        EXPECT_LT(static_cast<size_t>(length), sizeof(line));
+        EXPECT_NE(std::string_view(line).find("kind=" + std::string(kind) +
+                                              " tool_count=" + std::to_string(count)),
+                  std::string_view::npos);
+    }
     wifichat::PublicationTimeline::Segment worst_seg{};
     worst_seg.from = Boundary::model_result_posted;
     worst_seg.to = Boundary::checkpoint_ready;

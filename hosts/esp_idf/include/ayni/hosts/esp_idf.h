@@ -10,6 +10,7 @@
 #include <ayni/ayni.h>
 #include <ayni/host_clock.hpp>
 #include <ayni/hosts/esp_idf/metrics.h>
+#include <ayni/hosts/esp_idf/work_history.h>
 #include <ayni/hosts/storage/file_value.h>
 #include <cstddef>
 
@@ -59,8 +60,9 @@ class Host {
     // or existing VFS mount is refused. No external writer/mount may access the partition
     // during this lease. initialize_blank permits formatting entirely erased media only.
     // capacity is 1..16 queued requests; each accepted request completes exactly once.
+    // Optional diagnostic history is borrowed exclusively until close_storage().
     StorageOpen open_storage(const char *partition_label, uint32_t capacity,
-                             bool initialize_blank = false);
+                             bool initialize_blank = false, StorageWorkHistory *history = nullptr);
     // Owner after STOPPED/before destroy. Drains accepted work, joins/deletes the parked
     // worker, then unmounts. May block on flash I/O. Captured old ports reject after close.
     void close_storage();
@@ -72,9 +74,15 @@ class Host {
     // Last completed worker or current worker high-water free bytes; 0 before a worker ran.
     uint32_t worker_stack_free_bytes() const;
     // Owner only while open: bounded lock/copy, never performs I/O or resets counters.
-    // A completion may be visible just before its accounting snapshot is published.
+    // Request counters are published before the completion becomes visible.
     // Close/reopen starts new counters; a closed Host returns a zero snapshot.
     StorageMetrics storage_metrics() const;
+    // Sample the ESP monotonic clock and counters under the worker's publication lock.
+    // Completions with the same microsecond are ordered by the completed-request cursor.
+    StorageMetrics storage_metrics(uint64_t &at_us) const;
+    bool read_storage_work(uint64_t index, StorageWorkSample &sample) const;
+    // Worker timestamp of a recent successful append containing seq, or zero on a cache miss.
+    uint64_t append_durable_us(uint64_t seq) const;
     // Startup accounting for one internal-RAM Storage including queue, caches and worker stack.
     static void storage_memory_requirements(std::size_t &bytes, std::size_t &alignment);
     static constexpr uint32_t worker_stack_bytes = 24 * 1024;

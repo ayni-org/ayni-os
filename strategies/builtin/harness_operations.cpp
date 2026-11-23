@@ -3,19 +3,6 @@
 #include <ayni/call_result_json.hpp>
 namespace ayni::strategies::detail {
 namespace {
-enum Field {
-    operation_field,
-    reference_field,
-    after_field,
-    timeout_field,
-    binding_field,
-    version_field,
-    arguments_field
-};
-bool read_arguments(const ayni_tool_call_v1 &call, NativeArguments &args) {
-    return args.read(call, {"operation", "operation_ref", "after", "timeout_ms", "binding_id",
-                            "binding_version", "arguments"});
-}
 bool name(ayni_string_v1 value, std::string_view expected) {
     return equal(value, view(expected));
 }
@@ -74,7 +61,7 @@ ayni_status_t operation_source(const ayni_tool_call_v1 &proposal,
     NativeArguments args;
     ayni_operation_ref_v1 reference{};
     ayni_operation_info_v1 info{};
-    if (!read_arguments(proposal, args)) {
+    if (!read_capability_arguments(proposal, args)) {
         return AYNI_INVALID_ARGUMENT;
     }
     const auto status = target(args, snapshot, reference, info);
@@ -85,7 +72,7 @@ ayni_status_t operation_source(const ayni_tool_call_v1 &proposal,
 // Result summaries retain the original shared body/proof graph; no separate backend archive.
 ayni_status_t operation_result(Workspace &workspace, const ayni_operation_info_v1 &info,
                                const ToolLoopConfig &config, const ayni_task_snapshot_v1 &snapshot,
-                               ayni_policy_output_v1 &output, char *buffer, uint32_t capacity,
+                               ayni_policy_output_v1 &output, ReplyBuffer &scratch,
                                ToolReply &reply, ayni_status_t wait_status) {
     auto &original = reply.call;
     const ayni_task_call_result_v1 *body = nullptr;
@@ -108,36 +95,17 @@ ayni_status_t operation_result(Workspace &workspace, const ayni_operation_info_v
             original = {}; // Expired original has no body eligible for retention/summary.
         }
     }
-    return render(workspace, info, body, wait_status, buffer, capacity, reply.text);
+    return render(workspace, info, body, wait_status, scratch.data(), scratch.capacity, reply.text);
 }
 
 // Controls stage one intent; a committed control only reads back, so retries cannot
 // reopen/re-cancel.
-ayni_status_t native_operation(Workspace &workspace, const ayni_tool_call_v1 &proposal,
-                               const ToolLoopConfig &config, const ayni_task_snapshot_v1 &snapshot,
-                               ayni_string_v1 step, ayni_policy_output_v1 &output, char *buffer,
-                               uint32_t capacity, ToolReply &reply, bool &requested,
-                               bool &handled) {
+ayni_status_t native_operation(Workspace &workspace, const NativeArguments &args,
+                               ayni_string_v1 operation, const ToolLoopConfig &config,
+                               const ayni_task_snapshot_v1 &snapshot, ayni_string_v1 step,
+                               ayni_policy_output_v1 &output, ReplyBuffer &scratch,
+                               ToolReply &reply, bool &requested) {
     auto &response = reply.text;
-    handled = false;
-    if (!name(proposal.function_name, model::call_function)) {
-        return AYNI_OK;
-    }
-    NativeArguments args;
-    ayni_string_v1 operation{};
-    if (!read_arguments(proposal, args)) {
-        handled = true;
-        return native_error(AYNI_INVALID_ARGUMENT, "Invalid operation envelope.", buffer, capacity,
-                            response);
-    }
-    if (args.positions[operation_field] == UINT32_MAX) {
-        return AYNI_OK;
-    }
-    if (args.string(operation_field, operation) &&
-        (name(operation, "start") || name(operation, "invoke"))) {
-        return AYNI_OK;
-    }
-    handled = true;
     const bool wait = name(operation, "wait");
     const bool read = name(operation, "read");
     const bool cancel = name(operation, "cancel");
@@ -148,7 +116,7 @@ ayni_status_t native_operation(Workspace &workspace, const ayni_tool_call_v1 &pr
                                ? target(args, snapshot, reference, info)
                                : AYNI_INVALID_ARGUMENT;
     if (status != AYNI_OK) {
-        return native_error(status, "Operation unavailable or invalid arguments.", buffer, capacity,
+        return native_error(status, "Operation unavailable or invalid arguments.", scratch,
                             response);
     }
     ayni_operation_control_v1 control{};
@@ -162,8 +130,8 @@ ayni_status_t native_operation(Workspace &workspace, const ayni_tool_call_v1 &pr
         ayni_string_v1 after{};
         if (!args.string(after_field, after) || !operations::frontier(after, control.after) ||
             !args.integer(timeout_field, control.timeout_ms)) {
-            return native_error(AYNI_INVALID_ARGUMENT, "Invalid wait frontier or duration.", buffer,
-                                capacity, response);
+            return native_error(AYNI_INVALID_ARGUMENT, "Invalid wait frontier or duration.",
+                                scratch, response);
         }
     }
     if (!read && !step_committed(snapshot, step)) {
@@ -174,15 +142,14 @@ ayni_status_t native_operation(Workspace &workspace, const ayni_tool_call_v1 &pr
             return AYNI_OK;
         }
         if (status != AYNI_STALE || reference.operation_id != info.reference.operation_id) {
-            return native_error(status, "Control refused; execution facts are unchanged.", buffer,
-                                capacity, response);
+            return native_error(status, "Control refused; execution facts are unchanged.", scratch,
+                                response);
         }
     }
     const auto waited =
         wait && !info.call.outcome && ayni_operation_frontier_equal(&info.frontier, &control.after)
             ? AYNI_EXPIRED
             : AYNI_OK;
-    return operation_result(workspace, info, config, snapshot, output, buffer, capacity, reply,
-                            waited);
+    return operation_result(workspace, info, config, snapshot, output, scratch, reply, waited);
 }
 } // namespace ayni::strategies::detail

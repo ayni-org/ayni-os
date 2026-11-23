@@ -34,6 +34,7 @@ class Chat {
     // report; again is set when this tick changed state the step has not seen yet.
     ayni_status_t tick(ayni_step_report_v1 &report, bool &again);
     void incoming(const Packet &);
+    void record_owner_wait(uint64_t entered_us, uint64_t exited_us);
     void stop_outputs() {
         reply_voice_.set_accepting(false);
         speaker_.set_accepting(false);
@@ -68,14 +69,22 @@ class Chat {
     ayni_status_t converse(const ayni_kernel_info_v1 &);
     ayni_status_t present_reply();
     void finish_voice(ayni_status_t);
+    static void on_voice_stage(void *, ReplyVoice::Event, uint64_t goal, size_t offset,
+                               size_t bytes);
     void end_turn(const char *);
     void wait_for(const char *phase, const char *label, ayni_status_t);
     void status(uint64_t, const char *);
     void publish_model();
+    void trace_tool_io(uint64_t model_call, uint64_t next_call, uint64_t from_us, uint64_t to_us,
+                       uint64_t first, uint64_t next);
+    void emit_tool_decisions(uint64_t durable_seq);
     static void on_publication_stage(void *, uint64_t goal, uint64_t task,
                                      ayni::runtime::conversation::PublicationStage);
+    static void on_publication_ack(void *, ayni::runtime::conversation::PublicationAck,
+                                   uint64_t commit_seq);
+    void emit_publication_ack();
     struct PhaseSnapshot {
-        uint64_t at_us = 0;
+        uint64_t at_us = 0; // Monotonic microseconds sampled with the storage counters.
         uint64_t step_calls = 0, step_us = 0, max_step_us = 0, conversation_us = 0;
         uint32_t model_requests = 0;
         ayni::hosts::esp_idf::StorageMetrics storage{};
@@ -84,19 +93,23 @@ class Chat {
         bool valid = false;
         uint64_t call = 0;
         const char *kind = "fail"; // Static literal only: "text", "tools", or "fail".
+        uint32_t tool_count = 0;   // Count in this accepted post; text and failure have none.
         size_t bytes = 0;
         uint64_t recv_us = 0, stage_us = 0;
+        ModelDeliveryTiming delivery{};
         PhaseSnapshot snapshot{};
     };
     struct PendingAnswerSaved {
         bool valid = false;
         PhaseSnapshot snapshot{};
+        size_t internal_min_free = 0, psram_min_free = 0;
     };
-    PhaseSnapshot capture_phase_snapshot(uint64_t at_us = 0) const;
+    PhaseSnapshot capture_phase_snapshot() const;
+    void trace_tool_window(uint64_t next_call, const PhaseSnapshot &requested);
     void emit_phase_trace(const char *phase, const PhaseSnapshot &snapshot);
     void flush_pending_model_post();
     void flush_publication_diagnostics();
-    void trace(const char *phase, uint64_t at_us = 0); // Fixed phase/timing metadata only.
+    void trace(const char *phase, const PhaseSnapshot &snapshot);
     void trace_latency(const char *phase, const PhaseSnapshot &snapshot);
     void diagnostics();
     Transport &transport_;
@@ -159,17 +172,37 @@ class Chat {
     uint64_t turn_started_ = 0;
     // Owner-only per-turn wall time. step_us is ayni_step() wall time (includes preemption);
     // storage snapshots are cumulative completed work, sampled as deltas at phase boundaries.
+    static constexpr uint32_t step_units = 32;
     struct TurnTiming {
         uint64_t step_calls = 0, step_us = 0, max_step_us = 0, conversation_us = 0;
         uint64_t phase_started_us = 0;
+        struct SpaceBaseline {
+            uint64_t foreground = 0, foreground_us = 0, idle = 0, idle_us = 0;
+        } accepted_space;
         uint64_t model_received_call = 0, model_received_us = 0, model_staged_us = 0;
+        ModelDeliveryTiming model_delivery{};
+        struct ToolDecision {
+            uint64_t task = 0, at_us = 0;
+            uint32_t key_size = 0;
+            std::array<char, AYNI_CATALOG_ID_MAX_BYTES> key{};
+        };
+        std::array<ToolDecision, step_units> tool_decisions{};
+        uint64_t last_motor_dispatch = 0;
+        size_t tool_decision_count = 0; // Filled only during this owner step.
         PublicationTimeline publication{};
+        struct Ack {
+            uint64_t collected_us = 0, submitted_us = 0, durable_us = 0, ready_us = 0;
+            uint64_t commit_seq = 0;
+            struct Wait {
+                uint64_t entered_us = 0, exited_us = 0, total_us = 0;
+                uint32_t count = 0;
+            } before_ack, after_ack;
+        } ack;
         PendingModelPost pending_model_post{};
         PendingAnswerSaved pending_answer_saved{};
-        bool flush_ready = false; // Set after answer_saved is sampled and answer handed to UI.
-        bool publication_emitted = false;
         ayni::hosts::esp_idf::StorageMetrics storage;
     } timing_;
+    ayni::hosts::esp_idf::StorageWorkHistory storage_history_; // PSRAM, borrowed until Host close.
     uint64_t reply_deadline_ = 0; // Deadline for final-text queue admission only.
     uint32_t model_requests_ = 0; // Metadata only, includes any context-compaction calls.
     ayni::strategies::Encoded parameters_{}; // Goal parameters, then the final checkpoint.

@@ -156,12 +156,13 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
     if (!work.calendars.empty()) {
         work.refresh_calendars(calendar_clock(progress.started_us));
     }
-    apply_ready_work(progress);
+    const auto accepted = apply_ready_work(progress);
     if (!calls.refresh_live_gates(progress.now_us(), log.durable_seq(), call_mode())) {
         enter_restricted(AYNI_RESTRICTION_INTERNAL);
     }
     take_queued_inputs(progress);
     take_queued_observations(progress);
+    prepare_accepted_calls(progress, accepted);
     if (appends() && log.advance(progress.now_us())) {
         settle_log();
         if (!retire_durable_revocations()) {
@@ -264,7 +265,7 @@ void ayni_kernel::apply_calls(StepContext &progress) {
 
 // Preserve one schedule/READY frontier for this call so newly derived tasks
 // wait until the next decision pass, independent of a strategy's answers.
-void ayni_kernel::apply_ready_work(StepContext &progress) {
+ayni::kernel::CallRuntime::AcceptedCalls ayni_kernel::apply_ready_work(StepContext &progress) {
     // Due work is taken as of the start of the step, so one step sees one
     // schedule. It comes before events: a Host can keep the queue full, but
     // the due work at one time is finite, so neither starves the other.
@@ -272,6 +273,7 @@ void ayni_kernel::apply_ready_work(StepContext &progress) {
     // task derived in this step is decided in the next and a step does
     // finite work however the strategies answer. A transition that
     // journal() restricts on ends both loops: nothing after it is stored.
+    ayni::kernel::CallRuntime::AcceptedCalls accepted;
     if (lifecycle == AYNI_LIFECYCLE_RUNNING) {
         const uint64_t ready_before = work.transitions.next_commit_seq();
         while (lifecycle == AYNI_LIFECYCLE_RUNNING && progress.available() && has_room() &&
@@ -281,14 +283,31 @@ void ayni_kernel::apply_ready_work(StepContext &progress) {
                })) {
             progress.applied();
         }
+        uint64_t call_id = 0;
         while (lifecycle == AYNI_LIFECYCLE_RUNNING && progress.available() && has_room() &&
                run_transition([&] {
                    return ended(ayni::kernel::decide_next(
                        work, decisions, ready_before, progress.started_us, log.durable_seq(),
-                       {host.ctx, host.monotonic_now_us}, calls));
+                       {host.ctx, host.monotonic_now_us}, calls, call_id));
                })) {
+            accepted.include(call_id);
             progress.applied();
         }
+    }
+    return accepted;
+}
+
+void ayni_kernel::prepare_accepted_calls(StepContext &progress,
+                                         const ayni::kernel::CallRuntime::AcceptedCalls &accepted) {
+    // Append the available prefix immediately if optional preparation cannot fit or yield work.
+    while (accepted.first && lifecycle == AYNI_LIFECYCLE_RUNNING && progress.available() &&
+           has_room() && log.can_extend_group(progress.now_us()) &&
+           completions.posted_count() == 0 && !revocation_ready() &&
+           !work.authority_cleanup.ready() && !privacy_ready() && run_transition([&] {
+               return ended(
+                   calls.prepare_accepted(accepted, progress.cutoff_us(), log.durable_seq()));
+           })) {
+        progress.applied();
     }
 }
 

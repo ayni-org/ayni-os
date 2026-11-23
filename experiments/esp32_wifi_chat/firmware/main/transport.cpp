@@ -31,7 +31,7 @@ bool Transport::send(Kind kind, uint64_t id, const void *body, size_t bytes) {
     auto &packet = packets_[slot];
     packet.kind = kind;
     packet.id = id;
-    packet.size = bytes;
+    packet.size = static_cast<uint32_t>(bytes);
     if (bytes) {
         std::memcpy(packet.body.data(), body, bytes);
     }
@@ -43,12 +43,26 @@ bool Transport::send(Kind kind, uint64_t id, const void *body, size_t bytes) {
 }
 bool Transport::receive(Packet &out) {
     uint32_t slot = 0;
+    // Older ordinary control keeps its ordering, but a best-effort outline may not
+    // overtake the authoritative result that makes it eligible for presentation.
+    if (xQueuePeek(input_, &slot, 0) != pdTRUE || packets_[slot].kind == Kind::tool_outline) {
+        if (model_.receive(out)) {
+            return true;
+        }
+    }
     if (xQueueReceive(input_, &slot, 0) != pdTRUE) {
-        return false;
+        return model_.receive(out);
     }
     out = packets_[slot];
     xQueueSend(free_, &slot, 0);
     return true;
+}
+ModelPost Transport::post_model(const Packet &packet, ModelDeliveryTiming timing) {
+    const auto posted = model_.post(packet, timing);
+    if (posted == ModelPost::accepted) {
+        wake_owner();
+    }
+    return posted;
 }
 bool Transport::take_output(Packet &out) {
     uint32_t slot = 0;
@@ -84,7 +98,7 @@ bool Transport::post(Kind kind, uint64_t id, const void *body, size_t bytes) {
     auto &packet = packets_[slot];
     packet.kind = kind;
     packet.id = id;
-    packet.size = bytes;
+    packet.size = static_cast<uint32_t>(bytes);
     if (bytes) {
         std::memcpy(packet.body.data(), body, bytes);
     }

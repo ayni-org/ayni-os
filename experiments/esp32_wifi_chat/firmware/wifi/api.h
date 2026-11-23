@@ -12,7 +12,8 @@ namespace wifichat::wifi {
 class SpeechStream;
 enum class Request { model, speech, recognize, health, capacity, template_capture };
 // Three owned job slots, one worker. Queues contain indices, never large packets
-// or borrowed pointers. Results retain a slot until the UI explicitly releases it.
+// or borrowed pointers. A real model completion is copied to Transport by the worker.
+// The UI drains completion metadata and releases slots independently of owner delivery.
 class Api {
   public:
     static constexpr size_t slots = 3;
@@ -23,8 +24,8 @@ class Api {
         uint32_t generation = 0;
         int64_t deadline = 0;          // Monotonic microseconds, includes local queue wait.
         uint64_t http_complete_us = 0; // Monotonic microseconds when HTTP response finished.
-        uint64_t done_enqueued_us = 0; // Monotonic microseconds right before posting to done_.
-        uint8_t *audio = nullptr;      // ASR ownership transfers only after successful submit.
+        uint64_t ready_us = 0; // Encoded/classified result ready, before Transport or UI delivery.
+        uint8_t *audio = nullptr; // ASR ownership transfers only after successful submit.
         size_t audio_bytes = 0;
         uint8_t *response = nullptr; // Worker allocation; result owns until release.
         size_t response_bytes = 0;
@@ -44,7 +45,11 @@ class Api {
     bool idle() const { return outstanding_.load(std::memory_order_acquire) == 0; }
     Job *result();
     void release(Job *);
-    void cancel_all() { generation_.fetch_add(1, std::memory_order_acq_rel); }
+    void cancel_all() {
+        if (transport_) {
+            transport_->cancel_api_jobs();
+        }
+    }
     void cancel_speech(uint64_t id) { speech_cancel_.store(id, std::memory_order_release); }
     bool current(const Job &job) const;
 
@@ -68,7 +73,6 @@ class Api {
     QueueHandle_t free_ = nullptr, waiting_ = nullptr, done_ = nullptr, previews_ = nullptr;
     ModelPreview preview_snapshot_{}; // Worker-owned, latest snapshot queue never blocks.
     std::array<Job, slots> jobs_{};
-    std::atomic<uint32_t> generation_{1};
     std::atomic<uint32_t> outstanding_{0}; // Accepted jobs until worker I/O/borrows have ended.
     std::atomic<uint64_t> speech_cancel_{0};
     bool started_ = false; // Detached pthread has boot lifetime; settings remain frozen.

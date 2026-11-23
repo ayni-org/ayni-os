@@ -47,9 +47,11 @@ ayni_call_outcome_t outcome(ProviderMessageKind kind) {
 
 // Read never retires the delivery. Publication must succeed before acknowledge,
 // so journal backpressure cannot free a slot or lose a result body (C-CALL-012).
-CallRuntime::Advance CallRuntime::consume(uint64_t now_us, uint64_t durable_seq) {
-    const ReceiptScratch scratch{receipt_, limits_.result_bytes};
-    const ReceiptScratch normalized_scratch{normalized_, limits_.result_bytes};
+std::optional<CallRuntime::Advance> CallRuntime::consume(uint64_t now_us, uint64_t durable_seq) {
+    // The configured byte limit can be nonzero even when there is no receipt arena.
+    if (limits_.capacity == 0U) {
+        return std::nullopt;
+    }
     ProviderMessage message{};
     ProviderReceipt receipt{};
     uint32_t required = 0;
@@ -57,11 +59,14 @@ CallRuntime::Advance CallRuntime::consume(uint64_t now_us, uint64_t durable_seq)
     const auto read =
         mailbox_.read_next(receipt_, limits_.result_bytes, required, message, receipt, &blocked);
     if (read == AYNI_NOT_FOUND) {
-        return Advance::idle;
+        return std::nullopt;
     }
     if (read != AYNI_OK) {
         return Advance::internal;
     }
+    // read_next writes no payload on refusal or empty. Wipe both lanes after an actual copy.
+    const ReceiptScratch scratch{receipt_, limits_.result_bytes};
+    const ReceiptScratch normalized_scratch{normalized_, limits_.result_bytes};
     uint32_t index = 0;
     for (; index < limits_.capacity; ++index) {
         if (slots_[index].active && slots_[index].active->delivery &&
@@ -366,21 +371,20 @@ uint64_t CallRuntime::next_deadline_us() const {
 // Project only work that can advance now. A pending remote call alone must not
 // keep the owner spinning; completion wakeups or the next timer bring it back.
 bool CallRuntime::ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const {
+    if (mode == Mode::fenced || mode == Mode::closing) {
+        return work_.calls.release_due(durable_seq) || transport_ready(mode);
+    }
+    return ready_before_calls(now_us, durable_seq, mode) || calls_ready(now_us, durable_seq, mode);
+}
+
+bool CallRuntime::ready_before_calls(uint64_t now_us, uint64_t durable_seq, Mode mode) const {
     if (work_.calls.release_due(durable_seq)) {
         return true;
     }
-    if (mode == Mode::fenced || mode == Mode::closing) {
-        return transport_ready(mode);
-    }
     const auto blocked = blocked_receipts();
-    if (mailbox_.has_pending(&blocked)) {
-        return true;
-    }
     uint32_t waiting_task = 0;
-    if (mode == Mode::running && next_subscription_wakeup(now_us, durable_seq, waiting_task)) {
-        return true;
-    }
-    return calls_ready(now_us, durable_seq, mode);
+    return mailbox_.has_pending(&blocked) ||
+           (mode == Mode::running && next_subscription_wakeup(now_us, durable_seq, waiting_task));
 }
 
 // Match the ordinary Call progress lane, including retained background leases.
@@ -390,46 +394,60 @@ bool CallRuntime::calls_ready(uint64_t now_us, uint64_t durable_seq, Mode mode) 
     const bool resource_ready = resources_.next(now_us, choice);
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         if (work_.calls.occupied(at) &&
-            call_ready(at, now_us, durable_seq, mode, resource_ready ? &choice : nullptr)) {
+            scheduled_readiness(at, now_us, durable_seq, mode,
+                                resource_ready ? &choice : nullptr) != CallReady::idle) {
             return true;
         }
     }
     return false;
 }
 
+CallRuntime::CallReady
+CallRuntime::scheduled_readiness(uint32_t at, uint64_t now_us, uint64_t durable_seq, Mode mode,
+                                 const resources::AdmissionChoice *choice) const {
+    const auto ready = call_readiness(at, now_us, durable_seq, mode);
+    if (ready != CallReady::queued) {
+        return ready;
+    }
+    if (!choice || choice->call_id != work_.calls.identity(at).call_id) {
+        return CallReady::idle;
+    }
+    return choice->expired ? CallReady::other : CallReady::queued;
+}
+
 // One occupied slot projects its next lifecycle transition. PREPARED may enqueue
 // DISPATCHING immediately; only the final dispatch needs the durable prefix.
-bool CallRuntime::call_ready(uint32_t at, uint64_t now_us, uint64_t durable_seq, Mode mode,
-                             const resources::AdmissionChoice *choice) const {
+CallRuntime::CallReady CallRuntime::call_readiness(uint32_t at, uint64_t now_us,
+                                                   uint64_t durable_seq, Mode mode) const {
     if (model_input_due(at, durable_seq)) {
-        return true;
+        return CallReady::other;
     }
     const auto &state = work_.calls.state(at);
     const auto &id = work_.calls.identity(at);
-    if (control_.stop_measured(id.call_id) && state.execution &&
-        !work::execution_stopped(*state.execution)) {
-        return true;
+    if (state.execution && !work::execution_stopped(*state.execution) &&
+        control_.stop_measured(id.call_id)) {
+        return CallReady::other;
     }
     if (slots_[at].active && slots_[at].active->stage == Stage::retiring) {
-        return false;
+        return CallReady::idle;
     }
     uint32_t task_index = 0;
     if (!work_.tasks.find(id.task_id, task_index)) {
-        return true; // advance reports the invariant failure, instead of hiding it.
+        return CallReady::other; // advance reports the invariant failure, instead of hiding it.
     }
     const auto &task = work_.tasks.at(task_index);
     if (subscription_stop_pending(at) || subscription_reopen_ready(at, now_us, durable_seq, mode) ||
         subscription_renew_ready(at, now_us, durable_seq)) {
-        return true;
+        return CallReady::other;
     }
     if (state.outcome != 0U) {
         if (task.call.id == id.call_id && task.call.end != work::TaskCall::End::none) {
-            return mode != Mode::fenced;
+            return mode != Mode::fenced ? CallReady::other : CallReady::idle;
         }
         if (work_.calls.query_pending(at) && query_ready(at, now_us, durable_seq, mode)) {
-            return true;
+            return CallReady::other;
         }
-        return false;
+        return CallReady::idle;
     }
     const auto &active = slots_[at].active;
     if (!active) {
@@ -438,15 +456,15 @@ bool CallRuntime::call_ready(uint32_t at, uint64_t now_us, uint64_t durable_seq,
             task.call.end != work::TaskCall::End::none ||
             (state.attachment == work::CallAttachment::background &&
              task.lifecycle == AYNI_TASK_PAUSED)) {
-            return true;
+            return CallReady::other;
         }
         if (work::TaskTable::is_held(task) || task.lifecycle == AYNI_TASK_PAUSED) {
-            return false;
+            return CallReady::idle;
         }
         if (mode != Mode::fenced && resources_.has_room()) {
-            return true;
+            return CallReady::other;
         }
-        return false;
+        return CallReady::idle;
     }
     const auto authority = work_.check_task_authority(task_index, now_us, durable_seq);
     const bool stopping = (active->delivery && active->delivery->inhibition) ||
@@ -458,22 +476,25 @@ bool CallRuntime::call_ready(uint32_t at, uint64_t now_us, uint64_t durable_seq,
                           (authority.status != AYNI_OK && authority.status != AYNI_BUSY) ||
                           delivery_expired(at, now_us);
     if (stopping) {
-        if (submitted(active->stage) ? active->delivery->cancel == Delivery::Cancel::none
-                                     : mode != Mode::fenced) {
-            return true;
-        }
-        return false;
+        const bool actionable = submitted(active->stage)
+                                    ? active->delivery->cancel == Delivery::Cancel::none
+                                    : mode != Mode::fenced;
+        return actionable ? CallReady::other : CallReady::idle;
     }
-    if (active->stage == Stage::queued && choice && choice->call_id == id.call_id) {
-        return true;
+    // A replacement Grant can be valid but still await its durable binding (C-COMMIT-007).
+    if (authority.status != AYNI_OK) {
+        return CallReady::idle;
     }
-    if ((active->stage == Stage::prepared ||
-         (active->stage == Stage::barrier && control_.issue_ready(at, now_us) &&
-          state.latest.transition.commit_seq <= durable_seq)) &&
-        authority.status == AYNI_OK) {
-        return true;
+    if (active->stage == Stage::queued) {
+        return CallReady::queued;
     }
-    return false;
+    if (active->stage == Stage::prepared && mailbox_.in_flight() != limits_.capacity) {
+        return CallReady::prepared;
+    }
+    return active->stage == Stage::barrier && control_.issue_ready(at, now_us) &&
+                   state.latest.transition.commit_seq <= durable_seq
+               ? CallReady::other
+               : CallReady::idle;
 }
 
 } // namespace ayni::kernel

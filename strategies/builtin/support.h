@@ -7,6 +7,7 @@
 #include <initializer_list>
 #include <memory>
 #include <new>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -147,6 +148,16 @@ struct Turn {
     Prepared<ResultProjection>
         result_projection;       // Transient, never serialized or independently saved.
     PreparedProposals proposals; // Current source group; no authorization cache.
+    // Measurement from a successful request for this unchanged tool cursor. The
+    // decoded Turn's exact checkpoint match protects its history and usage inputs.
+    struct WaitingToolBudget {
+        uint64_t model_call;      // Original durable model result, which owns the protocol ID.
+        uint32_t tool_index;      // Selected proposal within that result.
+        uint64_t tokens;          // Successful remaining reply-token measurement.
+        std::string instructions; // Borrowed configuration text can change between decisions.
+    };
+    std::optional<WaitingToolBudget>
+        waiting_tool_budget; // Transient; never written to a checkpoint.
     bool done = false;
     struct Refs {
         BodyRef input{};

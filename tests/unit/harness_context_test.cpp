@@ -1,11 +1,153 @@
 #include "strategy_workspace_fixture.h"
 // ADR-0085: normal context-budget fallback and chunked result handling.
+#include "../../strategies/builtin/harness.h"
+#include "catalog/capability/field_domain.h"
 #include "strategies_fixture.h"
+#include "text_business_fixture.h"
 #include <ayni/ayni.hpp>
 #include <ayni/call_result_json.hpp>
 #include <memory>
 namespace {
 using namespace ayni::test;
+// White-box C-POLICY-013/ADR-0086: accepted invoke/start copy the normalized value
+// while the render buffer still owns zero bytes.
+TEST(ToolReplyStorage, successful_invoke_and_start_do_not_allocate_reply_bytes) {
+    using namespace ayni::strategies::detail;
+    using namespace ayni::catalog;
+    constexpr uint32_t limit = 128;
+    std::array<uint8_t, 1024> domain{}, proof{};
+    uint32_t domain_size = 0, proof_size = 0;
+    ASSERT_EQ(encode_domain(nullptr, 0, domain.data(), domain.size(), domain_size), AYNI_OK);
+    const ayni_bytes_v1 domain_view{domain.data(), domain_size};
+    const TextBusiness business(64, 64);
+    const CallContract execution{CallForm::action,
+                                 CallClass::tool,
+                                 0,
+                                 CallIdempotency::idempotent,
+                                 QueryAuthority::none,
+                                 CancelMode::request,
+                                 0,
+                                 1000,
+                                 AYNI_CALL_INPUT_VALUE,
+                                 AYNI_CALL_RESULT_TEXT,
+                                 limit,
+                                 limit,
+                                 0,
+                                 {}};
+    ASSERT_EQ(encode_business(codec_workspace(), domain_view, execution, business.definition,
+                              proof.data(), proof.size(), proof_size),
+              AYNI_OK);
+    auto detail = ayni::initialized<ayni_capability_detail_v1>();
+    detail.info.binding_id = text("echo");
+    detail.info.binding_version = 1;
+    detail.info.form = AYNI_CALL_ACTION;
+    detail.original_domain = domain_view;
+    detail.business_contract = {proof.data(), proof_size};
+    auto snapshot = ayni::initialized<ayni_task_snapshot_v1>();
+    snapshot.call_context = &detail;
+    snapshot.inspect_capability = [](const void *ctx, ayni_string_v1, uint32_t,
+                                     ayni_capability_detail_v1 *out) {
+        *out = *static_cast<const ayni_capability_detail_v1 *>(ctx);
+        return AYNI_OK;
+    };
+    uint32_t accepted_mode = 0;
+    auto output = ayni::initialized<ayni_policy_output_v1>();
+    output.call_context = &accepted_mode;
+    output.request_call = [](void *ctx, const ayni_call_request_v1 *call) {
+        EXPECT_EQ(call->value.node_count, 1U);
+        EXPECT_EQ(call->value.nodes[0].kind, AYNI_VALUE_TEXT);
+        EXPECT_EQ(string_of(call->value.nodes[0].value.text), "body");
+        *static_cast<uint32_t *>(ctx) = call->mode;
+        return AYNI_OK;
+    };
+    const auto *region = loop_workspace();
+    Workspace workspace(region->data, region->byte_capacity);
+    Turn turn;
+    for (const char *operation : {"", "invoke", "start"}) {
+        std::array<ayni_argument_node_v1, 5> fields{};
+        const std::array<const char *, 4> names{"binding_id", "binding_version", "arguments",
+                                                "operation"};
+        const std::array<const char *, 4> values{"echo", "1", "body", operation};
+        fields[0].kind = AYNI_ARGUMENT_OBJECT;
+        const auto count = static_cast<uint32_t>(fields.size() - (*operation ? 0U : 1U));
+        fields[0].subtree_end = count;
+        for (uint32_t index = 0; index + 1U < count; ++index) {
+            auto &field = fields[index + 1U];
+            field.kind = index == 1U ? AYNI_ARGUMENT_NUMBER : AYNI_ARGUMENT_STRING;
+            field.subtree_end = index + 2U;
+            field.name = text(names[index]);
+            field.value.text = text(values[index]);
+        }
+        ayni_tool_call_v1 proposal = ayni::initialized<ayni_tool_call_v1>();
+        proposal.function_name = text("ayni_call_capability");
+        proposal.input_kind = AYNI_TOOL_INPUT_ARGUMENTS;
+        proposal.input.arguments = {fields.data(), count};
+        ToolBudget budget{4096, text("protocol_id"), {}};
+        ReplyBuffer buffer{reply_bytes(budget.tokens), {}};
+        ToolReply reply;
+        bool requested = false;
+        ASSERT_EQ(native_function(workspace, proposal, {}, snapshot, turn, text("fn.1.0"), output,
+                                  buffer, budget, reply, requested),
+                  AYNI_OK);
+        EXPECT_TRUE(requested);
+        const auto expected = std::string_view(operation) == "start" ? AYNI_CALL_MODE_MANAGED
+                                                                     : AYNI_CALL_MODE_FOREGROUND;
+        EXPECT_EQ(accepted_mode, expected);
+        EXPECT_TRUE(buffer.bytes.empty());
+    }
+}
+
+// C-OP-003/ADR-0086: the shared parser admits only the fields for the selected operation.
+TEST(ToolReplyStorage, malformed_or_mixed_envelopes_render_a_local_refusal) {
+    using namespace ayni::strategies::detail;
+    const auto *region = loop_workspace();
+    Workspace workspace(region->data, region->byte_capacity);
+    const ToolBudget budget{4096, text("protocol_id"), {}};
+    const auto string_field = [](const char *name, const char *value, uint32_t end) {
+        ayni_argument_node_v1 node{};
+        node.kind = AYNI_ARGUMENT_STRING;
+        node.subtree_end = end;
+        node.name = text(name);
+        node.value.text = text(value);
+        return node;
+    };
+    std::array<ayni_argument_node_v1, 5> fields{};
+    fields[0].kind = AYNI_ARGUMENT_OBJECT;
+    fields[0].subtree_end = static_cast<uint32_t>(fields.size());
+    fields[1] = string_field("binding_id", "echo", 2);
+    fields[2] = string_field("binding_version", "1", 3);
+    fields[2].kind = AYNI_ARGUMENT_NUMBER;
+    fields[3] = string_field("operation", "invoke", 4);
+    // Each final field is either from another branch, unknown, a duplicate, or wrong type.
+    for (const char *field : {"operation_ref", "unknown", "operation", "arguments"}) {
+        SCOPED_TRACE(field);
+        fields[4] = string_field(field, "o1:3:4:5", 5);
+        auto proposal = ayni::initialized<ayni_tool_call_v1>();
+        proposal.function_name = text("ayni_call_capability");
+        proposal.input_kind = AYNI_TOOL_INPUT_ARGUMENTS;
+        proposal.input.arguments = {fields.data(), static_cast<uint32_t>(fields.size())};
+        auto snapshot = ayni::initialized<ayni_task_snapshot_v1>();
+        snapshot.inspect_capability = [](const void *, ayni_string_v1, uint32_t,
+                                         ayni_capability_detail_v1 *) {
+            ADD_FAILURE() << "invalid envelope reached the capability directory";
+            return AYNI_INTERNAL;
+        };
+        if (std::string_view(field) == "arguments") {
+            fields[2].kind = AYNI_ARGUMENT_STRING;
+        }
+        auto output = ayni::initialized<ayni_policy_output_v1>();
+        Turn turn;
+        ToolReply reply;
+        ReplyBuffer buffer{reply_bytes(budget.tokens), {}};
+        bool requested = false;
+        ASSERT_EQ(native_function(workspace, proposal, {}, snapshot, turn, text("fn.1.0"), output,
+                                  buffer, budget, reply, requested),
+                  AYNI_OK);
+        EXPECT_FALSE(requested);
+        EXPECT_NE(string_of(reply.text).find("\"status\":-1"), std::string::npos);
+    }
+}
+
 // The first ToolLoop body write is not yet durable; every later one is.
 struct DeferOnce {
     const ayni_body_store_v1 *inner = nullptr;
@@ -168,19 +310,28 @@ class ManagedResultHarness : public ContextHarness {
 class CountedReplyBudget : public ManagedResultHarness {
   protected:
     uint32_t measurements = 0;
+    uint32_t partial_input_measurements = 0;
+    bool refuse_partial_input = false;
     CountedReplyBudget() {
         configure_loop = [this](policies::ToolLoopConfig &config) {
             config.body_progress = {nullptr, [](void *, uint64_t) { return 1U; }};
             config.limits = {32768, 1024, 4096, 2048};
-            config.projection.context = &measurements;
-            config.projection.context_writer = [](void *, ayni::json::Writer &out,
+            config.projection.context = this;
+            config.projection.context_writer = [](void *context, ayni::json::Writer &out,
                                                   ayni_string_v1 input, ayni::model::Mode mode,
                                                   ayni::model::Completeness completeness) {
+                auto &self = *static_cast<CountedReplyBudget *>(context);
+                if (completeness == ayni::model::Completeness::partial) {
+                    ++self.partial_input_measurements;
+                    if (self.refuse_partial_input) {
+                        return AYNI_CAPACITY_EXCEEDED;
+                    }
+                }
                 return ayni::model::write_context(out, input, mode, completeness);
             };
             config.projection.reply_writer = [](void *context, ayni::json::Writer &out,
                                                 ayni_string_v1 id, ayni_string_v1 content) {
-                ++*static_cast<uint32_t *>(context);
+                ++static_cast<CountedReplyBudget *>(context)->measurements;
                 out.raw(",{\"role\":\"tool\",\"tool_call_id\":");
                 out.string(id);
                 out.raw(",\"content\":");
@@ -190,18 +341,30 @@ class CountedReplyBudget : public ManagedResultHarness {
         };
     }
 };
-// C-POLICY-013: the selected ordinary reply is counted only at final admission.
+// C-POLICY-013: a custom context projection is measured again after the Call.
 TEST_F(CountedReplyBudget, ordinary_result_has_one_final_reply_measurement) {
     const auto task = start();
     propose(0, 1);
     ASSERT_EQ(pending.size(), 2U);
+    EXPECT_EQ(partial_input_measurements, 1U);
     post(1, text("count this result"));
     pump();
     ASSERT_EQ(pending.size(), 3U);
+    EXPECT_EQ(partial_input_measurements, 2U);
     EXPECT_EQ(measurements, 1U);
     post(2, text("done"));
     pump();
     EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+}
+// C-POLICY-013: budget refusal precedes any request to the business Provider.
+TEST_F(CountedReplyBudget, preflight_refusal_stages_no_business_call) {
+    const auto task = start();
+    refuse_partial_input = true;
+    propose(0, 1);
+    ASSERT_EQ(pending.size(), 1U);
+    EXPECT_EQ(partial_input_measurements, 1U);
+    EXPECT_EQ(measurements, 0U);
+    EXPECT_EQ(work.task(task).hold_status, AYNI_CAPACITY_EXCEEDED);
 }
 // C-POLICY-013: selected local candidates carry their measured cost into admission.
 TEST_F(CountedReplyBudget, selected_directory_page_and_inspection_are_not_remeasured) {

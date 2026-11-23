@@ -20,6 +20,8 @@ struct FileValueResult {
     uint64_t generation = 0;
     uint32_t size = 0;
 };
+// Caller-supplied role for storage diagnostics. It has no effect on the operation.
+enum class FileValueRole { other, body_chunk, owner_manifest, conversation_root, count };
 // Owner-thread submission. Metadata is copied; write input stays immutable/alive and
 // read output stays exclusively worker-owned until completion. Value generation is
 // its own CAS version, independent of Core context generation/turn identity.
@@ -39,6 +41,8 @@ struct FileValueRequest {
     uint32_t size = 0;             // Payload bytes or read capacity, at most file_value_bytes_max.
     void *context = nullptr;
     void (*complete)(void *, const FileValueResult &) noexcept = nullptr;
+    FileValueRole role = FileValueRole::other;
+    uint32_t logical_remove_bytes = 0; // Known target size for diagnostics; zero if unavailable.
 };
 // Copied asynchronous port. Uses the same bounded Host queue and pending-space accounting
 // as Core requests. Unavailable/closed/full/invalid submissions are rejected without retention.

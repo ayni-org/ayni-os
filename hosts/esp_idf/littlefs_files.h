@@ -31,6 +31,10 @@ class LittleFiles final : public storage::Files {
     int rename(const char *, const char *) override;
     int remove(const char *) override;
     int free_bytes(uint64_t &) const override;
+    SpaceLedger::Reconciliation space_reconciliation(uint64_t reserved) const {
+        return space_.reconciliation(reserved);
+    }
+    int measure_space() const;
     int last_mount_error() const { return mount_error_; }
     // Same exclusive I/O-thread ownership as the file methods; no synchronization needed.
     FileIoMetrics metrics() const { return metrics_; }

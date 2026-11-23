@@ -6,6 +6,7 @@
 #include <ayni/hosts/sim.h>
 #include <ayni/hosts/storage/file_value.h>
 #include <ayni/runtime/portable.h>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <gtest/gtest.h>
@@ -234,7 +235,7 @@ class ConversationProgress : public testing::Test {
                 return false;
             }
             if (bound) {
-                const auto polled = session.poll();
+                const auto polled = session.poll_with_progress(session_again);
                 if (polled != AYNI_OK && polled != AYNI_BUSY && polled != AYNI_NOT_READY) {
                     ADD_FAILURE() << "session=" << polled;
                     return false;
@@ -432,10 +433,41 @@ class ConversationProgress : public testing::Test {
     void *arena = nullptr;
     conversation::Session session;
     ObservedBodies observed;
-    bool bound = false;
+    bool bound = false, session_again = false;
     std::map<ayni_intent_kind_t, uint32_t> commands;
     std::vector<StageEvent> stage_events;
 };
+// C-SDK-009: the owner needs no unrelated wake to submit ACK; the exact durable commit
+// still gates the result even when the storage worker completes it later.
+TEST_F(ConversationProgress, cleanup_requests_one_local_tick_before_waiting_for_ack_storage) {
+    using Stage = conversation::PublicationStage;
+    ASSERT_EQ(session.begin(text("publish with idle owner")), AYNI_OK);
+    ASSERT_TRUE(until(
+        [&] { return !stage_events.empty() && stage_events.back().stage == Stage::collected; }));
+    EXPECT_TRUE(session_again);
+    ASSERT_EQ(commands[AYNI_INTENT_CONTEXT_ACK], 0U);
+
+    const auto before_ack = host.now_us();
+    ASSERT_EQ(session.poll_with_progress(session_again), AYNI_OK);
+    EXPECT_EQ(host.now_us(), before_ack);
+    EXPECT_EQ(commands[AYNI_INTENT_CONTEXT_ACK], 1U);
+    EXPECT_FALSE(session_again);
+    ASSERT_EQ(profile.tick(), AYNI_OK);
+    conversation::TurnResult result;
+    EXPECT_FALSE(session.take_result(result));
+
+    constexpr uint64_t storage_delay_us = 42000;
+    host.advance_us(storage_delay_us);
+    ASSERT_EQ(session.poll_with_progress(session_again), AYNI_OK);
+    EXPECT_FALSE(session_again);
+    EXPECT_FALSE(session.take_result(result));
+    EXPECT_EQ(stage_events.back().stage, Stage::collected);
+    ASSERT_GT(host.complete_storage(), 0U);
+    ASSERT_TRUE(until([&] { return session.take_result(result); }));
+    ASSERT_TRUE(result.published);
+    EXPECT_EQ(stage_events.back().stage, Stage::context_ready);
+    EXPECT_GE(stage_events.back().at_us - before_ack, storage_delay_us);
+}
 TEST_F(ConversationProgress, background_publication_reuses_dependencies_and_waits_for_exact_ack) {
     ASSERT_EQ(session.begin(text("sum")), AYNI_OK);
     wait_completed_task();
@@ -462,6 +494,75 @@ TEST_F(ConversationProgress, background_publication_reuses_dependencies_and_wait
     EXPECT_LE(anchor.commit_seq, info.durable_seq);
     EXPECT_EQ(anchor.pending_action, AYNI_CONTEXT_IDLE);
 }
+// C-CALL dispatch/publication barriers remain observable on a fixed three-tool software turn.
+TEST_F(ConversationProgress, three_software_tools_report_each_handoff_on_the_sim_clock) {
+    struct ObservedCall {
+        uint64_t dispatching = 0, dispatched = 0, finished = 0;
+        uint32_t tool_count = 0;
+    };
+    std::map<uint64_t, ObservedCall> timeline;
+    conversation::TurnResult result;
+    ASSERT_EQ(session.begin(text("three sums")), AYNI_OK);
+    ASSERT_TRUE(until([&] {
+        const auto now = host.now_us();
+        auto info = ayni::initialized<ayni_kernel_info_v1>();
+        EXPECT_EQ(ayni_get_kernel_info(profile.kernel(), &info), AYNI_OK);
+        std::array<uint64_t, 16> calls{};
+        uint32_t count = 0;
+        EXPECT_EQ(ayni_list_objects(profile.kernel(), AYNI_OBJECT_CALL, calls.data(), calls.size(),
+                                    &count),
+                  AYNI_OK);
+        if (count > calls.size()) {
+            return false;
+        }
+        for (uint32_t i = 0; i < count; ++i) {
+            auto call = ayni::initialized<ayni_call_info_v1>();
+            EXPECT_EQ(ayni_get_call(profile.kernel(), calls[i], &call), AYNI_OK);
+            auto &sample = timeline[calls[i]];
+            if (call.phase == AYNI_CALL_DISPATCHING) {
+                if (!sample.dispatching) {
+                    sample.dispatching = now;
+                }
+                if (!sample.dispatched && call.requires_seq <= info.durable_seq) {
+                    sample.dispatched = now;
+                }
+            }
+            if (call.outcome == AYNI_CALL_COMPLETED && !sample.finished) {
+                sample.finished = now;
+                sample.tool_count = call.tool_call_count;
+            }
+        }
+        return session.take_result(result);
+    }));
+    ASSERT_TRUE(result.published);
+    constexpr size_t tool_loops = 3;
+    ASSERT_EQ(timeline.size(), tool_loops * 2U + 1U);
+    uint64_t handoff_us = 0;
+    auto model = timeline.begin();
+    for (size_t i = 0; i < tool_loops; ++i) {
+        const auto tool = std::next(model);
+        const auto next = std::next(tool);
+        const auto &m = model->second;
+        const auto &t = tool->second;
+        const auto &n = next->second;
+        ASSERT_EQ(m.tool_count, 1U);
+        ASSERT_EQ(t.tool_count, 0U);
+        ASSERT_GT(m.finished, 0U);
+        ASSERT_GE(t.dispatching, m.finished);
+        ASSERT_GE(t.dispatched, t.dispatching);
+        ASSERT_GE(t.finished, t.dispatched);
+        ASSERT_GE(n.dispatched, t.finished);
+        const auto before = t.dispatched - m.finished, after = n.dispatched - t.finished;
+        handoff_us += before + after;
+        std::printf("sim tool=%zu before_us=%llu dispatch_barrier_us=%llu after_us=%llu\n", i + 1,
+                    static_cast<unsigned long long>(before),
+                    static_cast<unsigned long long>(t.dispatched - t.dispatching),
+                    static_cast<unsigned long long>(after));
+        model = next;
+    }
+    std::printf("sim tool_handoff_total_us=%llu\n", static_cast<unsigned long long>(handoff_us));
+}
+
 TEST_F(ConversationProgress, cancel_during_publication_preserves_the_saved_answer_and_forget) {
     ASSERT_EQ(session.begin(text("sum")), AYNI_OK);
     ASSERT_TRUE(until([&] { return context().pending_action == AYNI_CONTEXT_PUBLISH; }));

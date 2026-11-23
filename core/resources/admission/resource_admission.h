@@ -74,10 +74,13 @@ class ResourceAdmission {
     // Expired requests first, then highest-priority eligible Agent in a ring
     // ordered by instance ID; its oldest request alone may be selected.
     bool next(uint64_t now_us, AdmissionChoice &out) const;
-    // Reselects under the same owner before acquiring all units atomically;
-    // false preserves out and changes nothing (including fairness) if selection
-    // has changed. Success returns the exact acquisition identity.
-    bool acquire(uint64_t call_id, uint64_t now_us, ResourceClaim &out);
+    // Result of committing the current selection against the caller's stable Call ID.
+    enum class Acquisition { not_selected, expired, acquired };
+    // Selects under the same owner and acquires all units atomically (C-RES-002/005).
+    // Only acquired writes claim; only expired writes on_wait. Neither other result
+    // changes occupancy, request ownership or fairness.
+    Acquisition acquire(uint64_t call_id, uint64_t now_us, ResourceClaim &claim,
+                        WaitAction &on_wait);
     // Removes a queued request (cancel/expiry), never an acquired request.
     bool remove_waiter(uint64_t call_id, uint64_t now_us);
     // Final dispatch check: this exact held generation still exists and every
@@ -107,6 +110,8 @@ class ResourceAdmission {
     static constexpr uint32_t no_index = UINT32_MAX;
 
   private:
+    // The single arbitration rule used for prediction and the actual claim.
+    uint32_t select(uint64_t now_us) const;
     // Physical availability and occupancy are independent. Health cannot prove stop.
     struct State {
         ayni_resource_health_t health = AYNI_RESOURCE_OFFLINE; // Latest Host fact.

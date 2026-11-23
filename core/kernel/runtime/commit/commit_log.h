@@ -52,6 +52,8 @@ class CommitLog {
     // append waits for a retry, and the ring holds a batch of batch_max
     // bytes in one piece.
     bool has_room() const;
+    // Whether another transition can join the next append issued at this time.
+    bool can_extend_group(uint64_t now_us) const;
     // Begins the batch of the next transition, which takes the next
     // identity; only when has_room().
     durability::BatchWriter begin();

@@ -10,6 +10,10 @@
 
 namespace wifichat {
 
+inline constexpr char model_owner_log_format[] =
+    "wifi model_owner turn=%llu call=%llu kind=%s tool_count=%u bytes=%zu recv_us=%llu "
+    "stage_us=%llu post_us=%llu stage_wait_us=%llu post_wait_us=%llu\n";
+
 // Per-phase deltas of ESP Host storage metrics. wall_us is the phase's wall clock; queue_us and
 // io_us sum across concurrent queued/served work items and therefore may overlap each other.
 struct StoragePhaseDelta {
@@ -23,6 +27,9 @@ struct StoragePhaseDelta {
     uint64_t file_read_calls = 0, file_read_bytes = 0;
     uint64_t file_read_us = 0, file_write_us = 0, file_sync_us = 0;
     uint64_t lfs_size_calls = 0, lfs_size_us = 0;
+    uint64_t foreground_measures = 0, foreground_measure_us = 0;
+    uint64_t idle_measures = 0, idle_measure_us = 0;
+    ayni::hosts::esp_idf::ValueIoMetrics values{};
 
     static StoragePhaseDelta between(const ayni::hosts::esp_idf::StorageMetrics &before,
                                      const ayni::hosts::esp_idf::StorageMetrics &after,
@@ -52,6 +59,13 @@ struct StoragePhaseDelta {
         d.file_sync_us = after.files.sync_us - before.files.sync_us;
         d.lfs_size_calls = after.files.space_measure_calls - before.files.space_measure_calls;
         d.lfs_size_us = after.files.space_measure_us - before.files.space_measure_us;
+        d.foreground_measures = after.foreground_measures - before.foreground_measures;
+        d.foreground_measure_us = after.foreground_measure_us - before.foreground_measure_us;
+        d.idle_measures = after.idle_measures - before.idle_measures;
+        d.idle_measure_us = after.idle_measure_us - before.idle_measure_us;
+        for (size_t i = 0; i < d.values.size(); ++i) {
+            d.values[i] = after.values[i].since(before.values[i]);
+        }
         return d;
     }
 };
@@ -313,8 +327,11 @@ class PublicationTimeline {
             if (written > 0 && static_cast<size_t>(written) < sizeof(line)) {
                 emit(ctx, line, static_cast<size_t>(written));
             }
+            emit_values(i, seg.io, ctx, emit);
+            emit_space(i + 1U, seg.io, ctx, emit);
         }
         const StoragePhaseDelta total = total_delta();
+        emit_space(0, total, ctx, emit);
         const int written = format_summary(turn_, goal_, task_, order_, complete(), total, longest,
                                            line, sizeof(line));
         if (written > 0 && static_cast<size_t>(written) < sizeof(line)) {
@@ -328,6 +345,58 @@ class PublicationTimeline {
     Order order() const { return order_; }
 
   private:
+    // Segment zero reports the whole model-result-to-answer window.
+    void emit_space(size_t segment, const StoragePhaseDelta &io, void *ctx,
+                    void (*emit)(void *, const char *, size_t)) const {
+        if (!(io.foreground_measures || io.idle_measures)) {
+            return;
+        }
+        const auto n = [](uint64_t value) { return static_cast<unsigned long long>(value); };
+        char line[report_line_capacity];
+        const auto written =
+            std::snprintf(line, sizeof(line),
+                          "wifi pub_space turn=%llu seg=%zu foreground=%llu/%llu "
+                          "idle=%llu/%llu\n",
+                          n(turn_), segment, n(io.foreground_measures), n(io.foreground_measure_us),
+                          n(io.idle_measures), n(io.idle_measure_us));
+        if (written > 0 && static_cast<size_t>(written) < sizeof(line)) {
+            emit(ctx, line, static_cast<size_t>(written));
+        }
+    }
+
+    void emit_values(size_t segment, const StoragePhaseDelta &io, void *ctx,
+                     void (*emit)(void *, const char *, size_t)) const {
+        constexpr std::array roles{"other", "body_chunk", "owner_manifest", "conversation_root"};
+        static_assert(roles.size() == ayni::hosts::esp_idf::ValueIoMetrics{}.size());
+        using Op = ayni::hosts::esp_idf::ValueOperationMetrics;
+        const auto count = [](const Op &op) { return static_cast<unsigned long long>(op.calls); };
+        const auto bytes = [](const Op &op) { return static_cast<unsigned long long>(op.bytes); };
+        const auto service = [](const Op &op) {
+            return static_cast<unsigned long long>(op.service_us);
+        };
+        const auto complete = [](const Op &op) {
+            return static_cast<unsigned long long>(op.completion_us);
+        };
+        char line[report_line_capacity];
+        for (size_t i = 0; i < roles.size(); ++i) {
+            const auto &[read, write, remove] = io.values[i];
+            if (!(read.calls || write.calls || remove.calls)) {
+                continue;
+            }
+            const auto written =
+                std::snprintf(line, sizeof(line),
+                              "wifi pub_value turn=%llu seg=%zu role=%s read=%llu/%llu/%llu/%llu "
+                              "write=%llu/%llu/%llu/%llu remove=%llu/%llu/%llu/%llu\n",
+                              static_cast<unsigned long long>(turn_), segment + 1U, roles[i],
+                              count(read), bytes(read), service(read), complete(read), count(write),
+                              bytes(write), service(write), complete(write), count(remove),
+                              bytes(remove), service(remove), complete(remove));
+            if (written > 0 && static_cast<size_t>(written) < sizeof(line)) {
+                emit(ctx, line, static_cast<size_t>(written));
+            }
+        }
+    }
+
     static constexpr size_t stage_count = 5;
     static constexpr uint8_t session_stage_mask = static_cast<uint8_t>((1U << stage_count) - 1U);
     static constexpr uint8_t answer_saved_bit = static_cast<uint8_t>(1U << stage_count);

@@ -32,7 +32,8 @@ class Provider {
     ayni_status_t describe(ayni_provider_v1 &out) const;
     // Exactly one terminal post per accepted request. Failed post retains the borrow.
     // A genuine latest user "sum" proposes software.sum(512); after a tool response
-    // it returns final fixture text. "many sums" repeats eight sequential software
+    // it returns final fixture text. "three sums" repeats the fixed action for latency
+    // diagnostics. "many sums" repeats eight sequential software
     // sums, for the normal soft-limit/owner-resume case. Context/system text never selects a
     // command.
     ayni_status_t advance();

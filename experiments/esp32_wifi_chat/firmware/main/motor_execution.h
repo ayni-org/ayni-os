@@ -2,6 +2,7 @@
 #include "motor_admission.h"
 #include "motor_output.h"
 #include "motor_plan.h"
+#include "output_intervals.h"
 #include "transport.h"
 #include <atomic>
 #include <ayni/calls.h>
@@ -22,6 +23,9 @@ class MotorExecution {
     ayni_submit_result_t submit(const ayni_provider_request_v1 *, ayni_provider_completion_t *);
     ayni_submit_result_t cancel(ayni_attempt_ref_v1);
     ayni_status_t advance();
+    uint64_t latest_dispatch() const { return latest_dispatch_; } // Owner thread only.
+    // Owner reads the control worker's fixed-size output intervals for a model window.
+    bool output_intervals(uint64_t from_us, uint64_t to_us, OutputIntervals &);
     void receive(Kind, uint64_t, const uint8_t *, size_t);
     void set_accepting(bool accepting) { accepting_.store(accepting, std::memory_order_release); }
     void request_stop();
@@ -30,6 +34,7 @@ class MotorExecution {
     bool close();
 
   private:
+    uint64_t latest_dispatch_ = 0; // Last Provider acceptance on the Core owner.
     enum class Mode { disarmed, armed, latched, closed };
     enum class Phase { prepared, running, result };
     enum class Effect { none, possible, partial, complete };
@@ -38,6 +43,7 @@ class MotorExecution {
         ayni_provider_completion_t *completion = nullptr;
         ayni_execution_permit_v1 permit{};
         MotorCommand command{};
+        uint64_t call = 0;           // Core Call identity, used only for timing correlation.
         uint64_t last_sample_us = 0; // Local capture time, telemetry only; zero before sample.
         Phase phase = Phase::prepared;
         Effect effect = Effect::none;
@@ -90,6 +96,9 @@ class MotorExecution {
     static ayni_status_t status_port(void *, ayni_attempt_ref_v1, uint64_t,
                                      ayni_executor_completion_t *);
     void trace(const char *, ayni_status_t);
+    void trace_handoff(const char *phase, uint64_t call, uint64_t at_us);
+    void mark_output_start(uint64_t call, uint64_t at_us);
+    void mark_output_stop(uint64_t call, uint64_t at_us);
     ayni_status_t queue(const PortRequest &);
     ayni_status_t serve(PortRequest &);
     ayni_status_t challenge(const ayni_permit_epochs_v1 &, ayni_executor_nonce_v1 &);
@@ -123,6 +132,9 @@ class MotorExecution {
     std::atomic<uint64_t> heartbeat_capture_{0};
     std::atomic<ayni_status_t> worker_error_{AYNI_OK};
     std::atomic<uint32_t> snapshot_{motor_percent_max};
+    portMUX_TYPE output_mutex_ = portMUX_INITIALIZER_UNLOCKED;
+    OutputIntervals output_intervals_{};
+    uint64_t output_count_ = 0, last_overwritten_stop_us_ = 0; // Guarded by output_mutex_.
     QueueHandle_t inbox_ = nullptr;
     StaticQueue_t *inbox_tcb_ = nullptr;
     uint8_t *inbox_storage_ = nullptr;

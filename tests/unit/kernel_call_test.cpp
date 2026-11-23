@@ -1,6 +1,7 @@
 #include "workspace_fixture.h"
 // Normal public ABI call scenarios, C-CALL-002/012, C-COMMIT-007 and ADR-0045.
 // Sim storage timing is explicit; no fault injection or restart campaign.
+#include "goal_reauthorization_request.h"
 #include "journal_test_support.h"
 #include "kernel/service/command/command_records.h"
 #include "snapshot_test_support.h"
@@ -370,6 +371,20 @@ class ManagedCall : public ::testing::Test {
         info.struct_size = sizeof(info);
         EXPECT_EQ(ayni_get_call(work.kernel(), id, &info), AYNI_OK);
         return info;
+    }
+    uint64_t ready_task(uint64_t goal) {
+        auto &node = work.node();
+        for (unsigned attempt = 0; attempt < 80; ++attempt) {
+            node.sim().complete_storage();
+            node.sim().advance_us(10000);
+            node.step(1);
+            const auto task = work.goal(goal).last_task_id;
+            if (task && work.task(task).lifecycle == AYNI_TASK_READY &&
+                node.sim().pending_storage() == 0U) {
+                return task;
+            }
+        }
+        return 0;
     }
     // Read the restored owner, rather than accepting a writer that omitted the receipt.
     void expect_snapshot_receipt(const ModelSnapshot &snapshot, uint64_t command_id,
@@ -1433,6 +1448,299 @@ TEST_F(ShortCallWorkflow, failed_calls_still_consume_the_task_step_capacity) {
     EXPECT_EQ(pending.size(), 2U);
 }
 
+// The group port holds one append at a time; completion publishes the whole prefix.
+class CallAppendGroup {
+  public:
+    explicit CallAppendGroup(Node &node) : node_(node) {
+        active_ = this;
+        ayni::kernel::KernelTestProbe::host(node_.kernel()).storage_append_many = hold;
+    }
+    ~CallAppendGroup() {
+        complete();
+        ayni::kernel::KernelTestProbe::host(node_.kernel()).storage_append_many = nullptr;
+        active_ = nullptr;
+    }
+    void complete() {
+        if (completion_) {
+            auto &log = node_.sim().log();
+            log.insert(log.end(), batches.begin(), batches.end());
+            const ayni_completion_result_v1 result{sizeof(result), AYNI_WRITE_OK, attempt_, 0, 0};
+            EXPECT_EQ(ayni_completion_post(completion_, &result), AYNI_OK);
+            completion_ = nullptr;
+        }
+    }
+    std::vector<ayni::hosts::sim::StoredBatch> batches;
+
+  private:
+    static ayni_submit_result_t hold(void *, const ayni_storage_batch_v1 *items, uint32_t count,
+                                     ayni_attempt_ref_v1 attempt, ayni_completion_t *completion) {
+        auto &self = *active_;
+        if (self.completion_) {
+            return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+        }
+        self.batches.clear();
+        for (uint32_t index = 0; index < count; ++index) {
+            const auto &item = items[index];
+            self.batches.push_back({item.commit_seq, bytes_of(item.encoded), false});
+        }
+        self.attempt_ = attempt;
+        self.completion_ = completion;
+        return AYNI_SUBMIT_ACCEPTED;
+    }
+    Node &node_;
+    ayni_attempt_ref_v1 attempt_{};
+    ayni_completion_t *completion_ = nullptr;
+    static inline thread_local CallAppendGroup *active_ = nullptr;
+};
+
+// C-COMMIT-006/007: three distinct facts can join one physical append.
+TEST_F(ManagedCall, fresh_call_journals_accept_prepare_and_barrier_in_one_group) {
+    const auto task = ready_task(create());
+    ASSERT_NE(task, 0U);
+    auto &node = work.node();
+    CallAppendGroup append(node);
+    const auto report = node.step();
+    ASSERT_EQ(report.items_done, 3U);
+    const auto call = work.task(task).logical_call_id;
+    ASSERT_NE(call, 0U);
+    ASSERT_EQ(call_info(call).phase, AYNI_CALL_DISPATCHING);
+    ASSERT_EQ(append.batches.size(), 3U);
+    ayni::work::CallRecord decoded{};
+    const std::array<ayni::work::ActionPhase, 2> phases{ayni::work::ActionPhase::prepared,
+                                                        ayni::work::ActionPhase::dispatching};
+    std::array<JournalBatch, 3> records;
+    for (size_t index = 0; index < append.batches.size(); ++index) {
+        // Decoded Call rows borrow their encoded domain and input through the last delta.
+        auto &batch = records[index];
+        batch = read_stored_batch(append.batches[index]);
+        EXPECT_EQ(batch.identity.commit_seq, report.durable_seq + 1U + index);
+        const auto row =
+            std::find_if(batch.records.begin(), batch.records.end(), [](const auto &entry) {
+                return entry.header.type == ayni::work::call_record_type;
+            });
+        ASSERT_NE(row, batch.records.end());
+        ayni::work::CallRecord next{};
+        if (index == 0U) {
+            ASSERT_TRUE(ayni::work::read_call_record(codec_workspace(), row->body.data(),
+                                                     row->header.length, next));
+            EXPECT_FALSE(next.action);
+        } else {
+            ASSERT_TRUE(ayni::work::read_call_delta(codec_workspace(), decoded, row->body.data(),
+                                                    row->header.length, next));
+            ASSERT_TRUE(next.action.has_value());
+            EXPECT_EQ(next.action->phase, phases[index - 1U]);
+        }
+        EXPECT_EQ(next.identity.call_id, call);
+        decoded = next;
+    }
+    EXPECT_EQ(call_info(call).requires_seq, append.batches.back().commit_seq);
+    node.step();
+    EXPECT_TRUE(pending.empty());
+    append.complete();
+    node.step();
+    ASSERT_EQ(pending.size(), 1U);
+    EXPECT_EQ(pending.front().call, call);
+}
+
+// C-COMMIT-006: the optional preparations yield to step bounds and single-append hosts.
+TEST_F(ManagedCall, preparation_yields_to_one_item_step_budget) {
+    const auto task = ready_task(create());
+    ASSERT_NE(task, 0U);
+    auto &node = work.node();
+    CallAppendGroup append(node);
+    EXPECT_EQ(node.step(1).items_done, 1U);
+    const auto call = work.task(task).logical_call_id;
+    ASSERT_NE(call, 0U);
+    EXPECT_EQ(call_info(call).phase, AYNI_CALL_QUEUED);
+    ASSERT_EQ(append.batches.size(), 1U);
+    EXPECT_TRUE(pending.empty());
+}
+
+TEST_F(ManagedCall, single_append_host_keeps_acceptance_as_the_only_new_fact) {
+    const auto task = ready_task(create());
+    ASSERT_NE(task, 0U);
+    auto &node = work.node();
+    EXPECT_EQ(node.step().items_done, 1U);
+    const auto call = work.task(task).logical_call_id;
+    ASSERT_NE(call, 0U);
+    EXPECT_EQ(call_info(call).phase, AYNI_CALL_QUEUED);
+    ASSERT_TRUE(node.sim().pending_append());
+    EXPECT_EQ(node.sim().pending_append()->commit_seq, call_info(call).requires_seq);
+    EXPECT_TRUE(pending.empty());
+}
+
+// C-RES-002/004: a queued older Call gets the available claim before a fresh decision.
+TEST_F(ManagedCall, older_resource_waiter_prepares_before_newly_admitted_call) {
+    auto &node = work.node();
+    const auto slot = text("model.slot");
+    ASSERT_EQ(ayni_set_resource_health(work.kernel(), slot, AYNI_RESOURCE_OFFLINE), AYNI_OK);
+    const auto older_task = ready_task(create(agent_b));
+    ASSERT_NE(older_task, 0U);
+    node.step(1);
+    const auto older = work.task(older_task).logical_call_id;
+    ASSERT_NE(older, 0U);
+    ASSERT_EQ(call_info(older).phase, AYNI_CALL_QUEUED);
+    const auto fresh_task = ready_task(create(agent_a));
+    ASSERT_NE(fresh_task, 0U);
+    ASSERT_EQ(ayni_set_resource_health(work.kernel(), slot, AYNI_RESOURCE_ONLINE), AYNI_OK);
+
+    CallAppendGroup append(node);
+    node.step();
+    const auto fresh = work.task(fresh_task).logical_call_id;
+    ASSERT_NE(fresh, 0U);
+    EXPECT_EQ(call_info(older).phase, AYNI_CALL_DISPATCHING);
+    EXPECT_EQ(call_info(fresh).phase, AYNI_CALL_QUEUED);
+    EXPECT_LT(call_info(older).requires_seq, call_info(fresh).requires_seq);
+    EXPECT_TRUE(pending.empty());
+}
+
+// White-box C-RES-005: the wait expires between the early selection and the claim.
+TEST_F(ManagedCall, preparation_leaves_wait_that_expires_during_selection_for_ordinary_step) {
+    using Runtime = ayni::kernel::CallRuntime;
+    auto &node = work.node();
+    const auto task = ready_task(create());
+    ASSERT_NE(task, 0U);
+    node.step(1);
+    const auto call = work.task(task).logical_call_id;
+    ASSERT_NE(call, 0U);
+    auto &calls = ayni::kernel::KernelTestProbe::calls(work.kernel());
+    const auto report = node.info();
+    const auto deadline = calls.next_deadline_us();
+    ASSERT_NE(deadline, UINT64_MAX);
+    ASSERT_GT(deadline - 2U, node.sim().now_us());
+    node.sim().advance_us(deadline - 2U - node.sim().now_us());
+    node.sim().advance_per_read_us(1);
+    const auto result = calls.prepare_accepted({call, call}, deadline + 10U, report.durable_seq);
+    node.sim().advance_per_read_us(0);
+    ASSERT_EQ(result, Runtime::Advance::idle);
+    EXPECT_EQ(call_info(call).phase, AYNI_CALL_QUEUED);
+    EXPECT_TRUE(pending.empty());
+    pump(4);
+    EXPECT_EQ(work.task(task).hold_reason, AYNI_REASON_RESOURCE_WAIT);
+    EXPECT_TRUE(pending.empty());
+}
+
+// White-box C-RES-005: a different wait expiring also defers an already prepared Call.
+TEST_F(ManagedCall, preparation_yields_to_a_different_waiter_expiring_during_selection) {
+    using Runtime = ayni::kernel::CallRuntime;
+    auto &node = work.node();
+    auto &calls = ayni::kernel::KernelTestProbe::calls(work.kernel());
+    const auto slot = text("model.slot");
+    ASSERT_EQ(ayni_set_resource_health(work.kernel(), slot, AYNI_RESOURCE_OFFLINE), AYNI_OK);
+    ASSERT_NE(ready_task(create()), 0U);
+    node.step(1);
+    const auto expiry = calls.next_deadline_us();
+    ASSERT_NE(expiry, UINT64_MAX);
+    const auto task = ready_task(create_profile("foreground", agent_b));
+    ASSERT_NE(task, 0U);
+    node.step(1);
+    const auto call = work.task(task).logical_call_id;
+    ASSERT_NE(call, 0U);
+    ASSERT_EQ(node.sim().complete_storage(), 1U);
+    node.step(1);
+    ASSERT_EQ(ayni_set_resource_health(work.kernel(), slot, AYNI_RESOURCE_ONLINE), AYNI_OK);
+    node.step(1);
+    ASSERT_EQ(call_info(call).phase, AYNI_CALL_PREPARED);
+
+    const auto durable = node.info().durable_seq;
+    ASSERT_GT(expiry - 2U, node.sim().now_us());
+    node.sim().advance_us(expiry - 2U - node.sim().now_us());
+    node.sim().advance_per_read_us(1);
+    const auto result = calls.prepare_accepted({call, call}, expiry + 10U, durable);
+    node.sim().advance_per_read_us(0);
+    EXPECT_EQ(result, Runtime::Advance::idle);
+    EXPECT_EQ(call_info(call).phase, AYNI_CALL_PREPARED);
+    EXPECT_TRUE(pending.empty());
+}
+
+class QueuedReauthorization : public ManagedCall, public ::testing::WithParamInterface<bool> {};
+
+// C-COMMIT-007: queued progress waits for the binding; a stop remains visible while waiting.
+TEST_P(QueuedReauthorization, queued_call_wakes_for_durability_or_stop) {
+    auto &node = work.node();
+    const ayni_grant_create_v1 replacement{sizeof(replacement),
+                                           1,
+                                           text("echo"),
+                                           work.instance(agent_a),
+                                           0,
+                                           AYNI_GRANT_PERMANENT,
+                                           0,
+                                           0,
+                                           {sizeof(ayni_scope_v1), 0, nullptr}};
+    auto intent = work.intent(AYNI_INTENT_GRANT_CREATE, &replacement);
+    intent.command_id = ++command;
+    const auto grant = work.submit(intent);
+    ASSERT_EQ(grant.status, AYNI_OK);
+    pump(4);
+
+    const auto goal = create();
+    const auto task = ready_task(goal);
+    ASSERT_NE(task, 0U);
+    node.step(1); // Admit the Call but leave its resource request queued.
+    const auto call = work.task(task).logical_call_id;
+    ASSERT_NE(call, 0U);
+    ASSERT_EQ(call_info(call).phase, AYNI_CALL_QUEUED);
+    ASSERT_EQ(node.sim().complete_storage(), 1U);
+    node.step(1);
+    const ayni_grant_revoke_v1 revoke{sizeof(revoke), 0, grants[0]};
+    intent = work.intent(AYNI_INTENT_GRANT_REVOKE, &revoke, 1);
+    intent.command_id = ++command;
+    ASSERT_EQ(work.submit(intent).status, AYNI_OK);
+    node.sim().advance_us(10000);
+    node.step(1); // Apply revocation without running ordinary calls or goal cleanup.
+    ASSERT_EQ(node.sim().complete_storage(), 1U);
+    node.step(1); // Consume only the storage ACK.
+
+    ReauthorizationRequest request(work.kernel(), goal);
+    intent = work.intent(AYNI_INTENT_GOAL_REAUTHORIZE, &request.body, request.echo.info.revision);
+    intent.command_id = ++command;
+    const auto rebound = work.submit(intent);
+    ASSERT_EQ(rebound.status, AYNI_OK);
+    node.sim().advance_us(10000);
+    auto report = node.step();
+    EXPECT_LT(report.durable_seq, rebound.result.commit_seq);
+    EXPECT_EQ(report.more_ready, 0U);
+    EXPECT_EQ(call_info(call).phase, AYNI_CALL_QUEUED);
+    EXPECT_TRUE(pending.empty());
+    ASSERT_EQ(node.sim().pending_storage(), 1U);
+    if (GetParam()) {
+        const ayni_task_target_v1 target{sizeof(target), 0, task};
+        intent = work.intent(AYNI_INTENT_TASK_CANCEL, &target, work.task(task).revision);
+        intent.command_id = ++command;
+        ASSERT_EQ(work.submit(intent).status, AYNI_OK);
+        EXPECT_EQ(node.step(1).items_done, 1U);
+        EXPECT_EQ(call_info(call).outcome, AYNI_CALL_CANCELLED);
+        EXPECT_EQ(call_info(call).effect, AYNI_CALL_EFFECT_NONE);
+        EXPECT_TRUE(pending.empty());
+        return;
+    }
+    EXPECT_EQ(node.sim().complete_storage(), 1U);
+    pump(8);
+    ASSERT_EQ(pending.size(), 1U);
+    EXPECT_EQ(pending.front().call, call);
+}
+
+INSTANTIATE_TEST_SUITE_P(ResumeOrStop, QueuedReauthorization, ::testing::Bool());
+
+TEST_F(ManagedCall, preparation_yields_when_policy_spends_the_time_budget) {
+    const auto task = ready_task(create());
+    ASSERT_NE(task, 0U);
+    auto &node = work.node();
+    const auto answer = work.strategy().answer;
+    work.strategy().answer = [&](const auto &snapshot, auto &output) {
+        node.sim().advance_us(100);
+        return answer(snapshot, output);
+    };
+    CallAppendGroup append(node);
+    EXPECT_EQ(node.step(10, 100).items_done, 1U);
+    work.strategy().answer = answer;
+    const auto call = work.task(task).logical_call_id;
+    ASSERT_NE(call, 0U);
+    EXPECT_EQ(call_info(call).phase, AYNI_CALL_QUEUED);
+    ASSERT_EQ(append.batches.size(), 1U);
+    EXPECT_TRUE(pending.empty());
+}
+
 // C-COMMIT-007: storage acknowledgements, not merely applied state, unlock I/O.
 TEST_F(ManagedCall, dispatch_waits_for_its_persisted_barrier) {
     const auto goal = create();
@@ -1463,26 +1771,21 @@ TEST_F(ManagedCall, dispatch_waits_for_its_persisted_barrier) {
 }
 
 TEST_F(ManagedCall, revocation_after_preparation_prevents_provider_submission) {
-    const auto goal = create();
+    const auto task = ready_task(create());
+    ASSERT_NE(task, 0U);
     uint64_t call = 0;
-    for (unsigned round = 0; round < 80; ++round) {
-        work.node().sim().complete_storage();
-        work.node().sim().advance_us(10000);
-        work.node().step(1);
-        const auto task = work.goal(goal).last_task_id;
-        if (task != 0U) {
-            call = work.task(task).logical_call_id;
-        }
-        if (call != 0U && call_info(call).phase == AYNI_CALL_DISPATCHING) {
-            break;
-        }
+    {
+        CallAppendGroup append(work.node());
+        work.node().step();
+        call = work.task(task).logical_call_id;
+        ASSERT_NE(call, 0U);
+        ASSERT_EQ(call_info(call).phase, AYNI_CALL_DISPATCHING);
+        ASSERT_EQ(append.batches.size(), 3U);
+        const ayni_grant_revoke_v1 revoke{sizeof(revoke), 0, grants[0]};
+        auto intent = work.intent(AYNI_INTENT_GRANT_REVOKE, &revoke, 1);
+        intent.command_id = ++command;
+        ASSERT_EQ(work.submit(intent).status, AYNI_OK);
     }
-    ASSERT_NE(call, 0U);
-    ASSERT_EQ(call_info(call).phase, AYNI_CALL_DISPATCHING);
-    const ayni_grant_revoke_v1 revoke{sizeof(revoke), 0, grants[0]};
-    auto intent = work.intent(AYNI_INTENT_GRANT_REVOKE, &revoke, 1);
-    intent.command_id = ++command;
-    ASSERT_EQ(work.submit(intent).status, AYNI_OK);
     pump(16);
     EXPECT_TRUE(pending.empty());
     EXPECT_EQ(call_info(call).outcome, AYNI_CALL_CANCELLED);

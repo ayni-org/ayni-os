@@ -53,10 +53,30 @@ class CallRuntime {
     authority::GrantCheck check_proposal(uint32_t task_index, const ayni_policy_intent_v1 &intent,
                                          uint64_t now_us, uint64_t durable_seq,
                                          knowledge::MemoryDependencies &dependencies);
-    // Preflight succeeded unchanged on the owner thread; accepts original identity,
-    // canonical body, resource wait and Task state in this one transition.
+    // A stale staged input asks the strategy to decide again without committing a hold.
     bool proposal_needs_redecision() const { return proposal_ && proposal_->redecide; }
-    bool accept(uint32_t task_index, foundation::TransitionStamp stamp, uint64_t now_us);
+    // Accepts one checked intent. New Call identity, queue entry and Task state
+    // share its transition; writes the new stable ID only when it creates a Call.
+    bool accept(uint32_t task_index, foundation::TransitionStamp stamp, uint64_t now_us,
+                uint64_t &accepted_call);
+
+    // Range of monotonic Call IDs admitted by this step's decision pass. Only that pass
+    // allocates Calls; IDs between the ends can also belong to other entity types.
+    struct AcceptedCalls {
+        uint64_t first = 0; // First Call ID; zero if the pass created none.
+        uint64_t last = 0;  // Last Call ID; zero iff first is zero.
+        // Extend in allocation order. Zero denotes a decision that created no Call.
+        void include(uint64_t call) {
+            if (call) {
+                if (!first) {
+                    first = call;
+                }
+                last = call;
+            }
+        }
+        // Only used with a verified Call identity, never a reusable table slot.
+        bool contains(uint64_t call) const { return first && first <= call && call <= last; }
+    };
 
     // Task-scoped borrowed directory; no Provider callback or authority mutation.
     ayni_status_t list_capabilities(uint32_t task_index, uint64_t now_us, uint64_t durable_seq,
@@ -68,6 +88,8 @@ class CallRuntime {
                                      ayni_capability_detail_v1 &out) const;
     using Mode = RuntimeMode;
     using Advance = RuntimeAdvance;
+    // C-COMMIT-006: one journal-only transition for a fresh Call, after higher priority work.
+    Advance prepare_accepted(const AcceptedCalls &, uint64_t deadline_us, uint64_t durable_seq);
     Advance advance(uint64_t now_us, uint64_t durable_seq, Mode mode);
     // Independent local stop/lease ports run even when persistence cannot admit work.
     enum class JournalAdmission { available, blocked }; // Kernel's current commit capacity.
@@ -331,7 +353,8 @@ class CallRuntime {
     Advance
     cancel_transport(Delivery &delivery); // One shared cancel port contract, never a terminal.
     bool transport_ready(Mode mode) const;
-    Advance consume(uint64_t now_us, uint64_t durable_seq);
+    // Nullopt means the mailbox had no readable receipt; any other result owns this turn.
+    std::optional<Advance> consume(uint64_t now_us, uint64_t durable_seq);
     // apply_receipt, then any privacy discard; returns a body the result does not keep.
     ayni_status_t apply_delivery(uint32_t index, uint32_t task_index,
                                  const ProviderMessage &message, uint64_t durable_seq,
@@ -348,14 +371,27 @@ class CallRuntime {
     Advance end_query(uint32_t index, ayni_status_t status, ayni_reason_t reason);
     // Scan domain calls and their shared admission queue after reliable ingress.
     bool calls_ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const;
-    // One occupied slot; choice is null when resource admission cannot advance.
-    bool call_ready(uint32_t index, uint64_t now_us, uint64_t durable_seq, Mode mode,
-                    const resources::AdmissionChoice *choice) const;
+    // Classifies an occupied slot. Queued still needs arbitration; prepared only needs a barrier.
+    enum class CallReady { idle, queued, prepared, other };
+    CallReady call_readiness(uint32_t index, uint64_t now_us, uint64_t durable_seq,
+                             Mode mode) const;
+    // Read-only scheduling projection against this scan's resource choice.
+    CallReady scheduled_readiness(uint32_t index, uint64_t now_us, uint64_t durable_seq, Mode mode,
+                                  const resources::AdmissionChoice *choice) const;
+    // Pending releases, readable receipts and subscription wakeups precede call scheduling.
+    bool ready_before_calls(uint64_t now_us, uint64_t durable_seq, Mode mode) const;
+    // Pick one new Call to prepare only if no older or higher-priority Call can advance.
+    std::optional<uint32_t> next_accepted_preparation(const AcceptedCalls &, uint64_t now_us,
+                                                      uint64_t durable_seq) const;
     Advance advance_call(uint32_t index, uint64_t now_us, uint64_t durable_seq, Mode mode);
     Advance restore_wait(uint32_t index, uint32_t task_index, uint64_t now_us, uint64_t durable_seq,
                          Mode mode);
     Advance progress_dispatch(uint32_t index, uint32_t task_index, uint64_t now_us,
                               uint64_t durable_seq);
+    // Records PREPARED after the exact claim has been acquired.
+    Advance record_preparation(uint32_t index);
+    // Reserves a delivery and records DISPATCHING without submitting it to the Provider.
+    Advance prepare_barrier(uint32_t index);
     Advance stop(uint32_t index, uint32_t task_index, Mode mode, work::CallCancelCause cause);
     Advance dispatch(uint32_t index, uint32_t task_index, uint64_t now_us, uint64_t durable_seq);
     Advance expire_wait(uint32_t index, uint32_t task_index, resources::WaitAction action,

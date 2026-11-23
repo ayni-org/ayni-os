@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <iterator>
 #include <limits>
+#include <utility>
 namespace ayni::strategies {
 struct ToolLoop::Cache {
     struct Saved {
@@ -433,6 +434,7 @@ ayni_status_t revalidate(Workspace &workspace, Turn &turn, const ToolLoopConfig 
         turn.phase = TurnPhase::initial;
         turn.tool_index = 0;
         turn.proposals.reset();
+        turn.waiting_tool_budget.reset();
         turn.result_source = {};
         turn.result_projection.reset();
         turn.result_summary = {};
@@ -830,19 +832,36 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
     }
     auto &response = reply.text;
     ToolBudget budget;
-    status = current_tool_budget(config, turn, proposal.protocol_id, budget);
-    if (status != AYNI_OK) {
-        return status;
+    // Only the built-in projection with fixed discovery tools is stable across
+    // decisions. Each result and authority check above still uses the current snapshot.
+    const bool fixed_projection = !config.projection.context_writer && turn.definitions.empty();
+    auto measured = std::exchange(turn.waiting_tool_budget, std::nullopt);
+    if (fixed_projection && measured && measured->model_call == model.logical_call_id &&
+        measured->tool_index == turn.tool_index &&
+        equal(config.model.text, view(measured->instructions))) {
+        budget = {measured->tokens, proposal.protocol_id, config.projection};
+    } else {
+        status = current_tool_budget(config, turn, proposal.protocol_id, budget);
+        if (status != AYNI_OK) {
+            return status;
+        }
     }
-    const uint32_t capacity = reply_bytes(budget.tokens);
-    std::string scratch(capacity, '\0');
+    ReplyBuffer scratch{reply_bytes(budget.tokens), {}};
     if (call_status == AYNI_NOT_FOUND) {
         // request copies arguments while normalize scratch is live. Only successful
         // acceptance gets a waiting checkpoint; refusal becomes a local tool response.
-        status = native_function(workspace, proposal, config, snapshot, turn, key, output,
-                                 scratch.data(), capacity, budget, reply, requested);
+        status = native_function(workspace, proposal, config, snapshot, turn, key, output, scratch,
+                                 budget, reply, requested);
         if (requested) {
-            return save(turn, config, output);
+            status = save(turn, config, output);
+            if (status == AYNI_OK && fixed_projection) {
+                turn.waiting_tool_budget = Turn::WaitingToolBudget{
+                    model.logical_call_id, turn.tool_index, budget.tokens,
+                    config.model.text.size
+                        ? std::string(config.model.text.data, config.model.text.size)
+                        : std::string{}};
+            }
+            return status;
         }
     } else if (call_status == AYNI_OK) {
         if (call.mode == AYNI_CALL_MODE_MANAGED) {
@@ -854,14 +873,14 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
                          ? snapshot.operation(snapshot.call_context, &reference, &info)
                          : AYNI_UNSUPPORTED;
             if (status == AYNI_OK) {
-                status = operation_result(workspace, info, config, snapshot, output, scratch.data(),
-                                          capacity, reply);
+                status =
+                    operation_result(workspace, info, config, snapshot, output, scratch, reply);
             }
         } else {
-            status = native_result(workspace, reply.call, scratch.data(), capacity, response);
+            status = native_result(workspace, reply.call, scratch, response);
         }
     } else if (call_status == AYNI_EXPIRED && call.logical_call_id) {
-        json::Writer unavailable(scratch.data(), capacity);
+        json::Writer unavailable(scratch.data(), scratch.capacity);
         json::write_call_unavailable(unavailable, call);
         size_t bytes = 0;
         status = unavailable.finish(bytes) ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;

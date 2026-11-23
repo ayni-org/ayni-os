@@ -11,6 +11,7 @@ using storage::Request;
 using storage::WorkItem;
 namespace {
 constexpr TickType_t space_refresh_ticks = pdMS_TO_TICKS(1000);
+constexpr TickType_t space_quiet_ticks = std::max<TickType_t>(1, pdMS_TO_TICKS(20));
 constexpr UBaseType_t worker_priority = 1;
 constexpr char log_file_name[] = "commit_log";
 } // namespace
@@ -18,9 +19,12 @@ constexpr char log_file_name[] = "commit_log";
 // neither flash I/O nor completion delivery runs with that lock held.
 class Host::Storage {
   public:
-    Storage(Host &owner, bool initialize_blank)
-        : owner_(owner), files_(initialize_blank), log_(files_) {
+    Storage(Host &owner, bool initialize_blank, StorageWorkHistory *history)
+        : owner_(owner), files_(initialize_blank), log_(files_), history_(history) {
         done_ = xSemaphoreCreateBinaryStatic(&done_storage_);
+        if (history_) {
+            history_->reset();
+        }
     }
     ~Storage() {
         stop();
@@ -37,27 +41,56 @@ class Host::Storage {
     uint32_t stack_free_bytes() const {
         return worker_ ? uxTaskGetStackHighWaterMark(worker_) : final_stack_free_;
     }
-    StorageMetrics metrics() {
+    StorageMetrics metrics(uint64_t *at_us = nullptr) {
         portENTER_CRITICAL(&mutex_);
+        if (at_us) {
+            *at_us = static_cast<uint64_t>(esp_timer_get_time());
+        }
         const auto result = metrics_;
         portEXIT_CRITICAL(&mutex_);
         return result;
+    }
+    bool read_work(uint64_t index, StorageWorkSample &sample) {
+        portENTER_CRITICAL(&mutex_);
+        const bool found = history_ && history_->read(index, sample);
+        portEXIT_CRITICAL(&mutex_);
+        return found;
+    }
+
+    uint64_t append_durable_us(uint64_t seq) {
+        portENTER_CRITICAL(&mutex_);
+        uint64_t at_us = 0;
+        for (const auto &append : recent_appends_) {
+            if (append.first && seq >= append.first && seq <= append.last) {
+                at_us = std::max(at_us, append.at_us);
+            }
+        }
+        portEXIT_CRITICAL(&mutex_);
+        return at_us;
     }
 
   private:
     ayni_submit_result_t enqueue(const WorkItem &request);
     static void run(void *ctx);
     void serve_queue();
-    bool refresh_space(uint64_t completed_reservation);
+    void refresh_idle_space();
+    bool refresh_space(uint64_t completed_reservation, bool quiet);
     Host &owner_;
     LittleFiles files_;
+    SpaceRefresh space_refresh_;
     storage::FileLog log_;
+    StorageWorkHistory *const history_;
     struct Queued {
         WorkItem work;
         uint64_t submitted_us = 0; // Monotonic enqueue attempt, used only for queue timing.
     };
     void serve(const Queued &queued);
     std::array<Queued, Host::request_capacity_limit> requests_{};
+    struct Appended {
+        uint64_t first = 0, last = 0, at_us = 0; // Successful consecutive journal group.
+    };
+    std::array<Appended, Host::request_capacity_limit> recent_appends_{};
+    size_t next_append_ = 0;
     StorageMetrics metrics_{}; // Published copies only; guarded by mutex_, never read live files.
     uint32_t capacity_ = 0, head_ = 0, count_ = 0;
     enum class State { closed, running, draining };
@@ -86,6 +119,7 @@ StorageOpen Host::Storage::open(const char *label, uint32_t capacity) {
     }
     capacity_ = capacity;
     valid_space_ = log_.free_bytes(available_);
+    metrics_.files = files_.metrics();
     state_ = State::running;
     worker_ = xTaskCreateStatic(run, "ayni.storage", Host::worker_stack_bytes, this,
                                 worker_priority, stack_.data(), &task_storage_);
@@ -119,9 +153,14 @@ ayni_status_t Host::Storage::free_bytes(uint64_t *out) {
     portEXIT_CRITICAL(&mutex_);
     return status;
 }
-bool Host::Storage::refresh_space(uint64_t completed_reservation) {
+bool Host::Storage::refresh_space(uint64_t completed_reservation, bool quiet) {
+    portENTER_CRITICAL(&mutex_);
+    const auto outstanding = reserved_ - completed_reservation;
+    portEXIT_CRITICAL(&mutex_);
+    const auto need = files_.space_reconciliation(outstanding);
+    const bool measure = space_refresh_.measure(need, uint64_t(esp_timer_get_time()), quiet);
     uint64_t available = 0;
-    const bool valid = log_.free_bytes(available);
+    const bool valid = (!measure || files_.measure_space() == 0) && log_.free_bytes(available);
     portENTER_CRITICAL(&mutex_);
     const bool changed = valid != valid_space_ || (valid && available != available_);
     valid_space_ = valid;
@@ -141,7 +180,24 @@ void Host::Storage::run(void *ctx) {
         vTaskSuspend(nullptr);
     }
 }
+void Host::Storage::refresh_idle_space() {
+    const auto started = esp_timer_get_time();
+    const bool changed = refresh_space(0, true);
+    const auto files = files_.metrics();
+    const auto elapsed = static_cast<uint64_t>(esp_timer_get_time() - started);
+    portENTER_CRITICAL(&mutex_);
+    metrics_.idle_space_us += elapsed;
+    ++metrics_.idle_refreshes;
+    metrics_.idle_measures += files.space_measure_calls - metrics_.files.space_measure_calls;
+    metrics_.idle_measure_us += files.space_measure_us - metrics_.files.space_measure_us;
+    metrics_.files = files;
+    portEXIT_CRITICAL(&mutex_);
+    if (changed) {
+        Host::wake(&owner_);
+    }
+}
 void Host::Storage::serve_queue() {
+    bool quiet = false;
     for (;;) {
         Queued queued{};
         bool has_request = false, finished = false;
@@ -168,18 +224,16 @@ void Host::Storage::serve_queue() {
             return;
         }
         if (!has_request) {
-            const auto started = esp_timer_get_time();
-            if (refresh_space(0)) {
-                Host::wake(&owner_);
+            if (quiet) {
+                refresh_idle_space();
             }
-            const auto elapsed = static_cast<uint64_t>(esp_timer_get_time() - started);
-            portENTER_CRITICAL(&mutex_);
-            metrics_.idle_space_us += elapsed;
-            ++metrics_.idle_refreshes;
-            portEXIT_CRITICAL(&mutex_);
-            ulTaskNotifyTake(pdTRUE, space_refresh_ticks);
+            // Give a woken owner a chance to enqueue its follow-up. The queue is checked again
+            // before scanning, and routine work has a hard deadline even when it never drains.
+            const auto timeout = space_refresh_.pending() ? space_quiet_ticks : space_refresh_ticks;
+            quiet = ulTaskNotifyTake(pdTRUE, timeout) == 0;
             continue;
         }
+        quiet = false;
         serve(queued);
     }
 }
@@ -189,13 +243,15 @@ void Host::Storage::serve(const Queued &queued) {
     const auto started = static_cast<uint64_t>(esp_timer_get_time());
     const auto result = storage::serve_work(log_, files_, queued.work);
     const auto served = static_cast<uint64_t>(esp_timer_get_time());
-    static_cast<void>(refresh_space(storage::work_reservation(queued.work)));
+    static_cast<void>(refresh_space(storage::work_reservation(queued.work), false));
     const auto refreshed = static_cast<uint64_t>(esp_timer_get_time());
     const auto file_metrics = files_.metrics();
     const auto scan_frames = log_.append_scan_frames();
     const auto queue_us = started - queued.submitted_us;
     const auto service_us = served - started;
     const auto space_us = refreshed - served;
+    StorageWorkSample sample{};
+    using Kind = StorageWorkSample::Kind;
     portENTER_CRITICAL(&mutex_);
     ++metrics_.completed;
     metrics_.queue_us += queue_us;
@@ -208,26 +264,52 @@ void Host::Storage::serve(const Queued &queued) {
         if (core->port == Request::Port::append || core->port == Request::Port::append_group) {
             ++metrics_.append_calls;
             metrics_.append_us += service_us;
+            sample.kind = Kind::append;
+            if (std::get<storage::CoreCompleted>(result.value).result.outcome == AYNI_WRITE_OK) {
+                const auto count = core->port == Request::Port::append ? 1U : core->batch_count;
+                recent_appends_[next_append_] = {core->commit_seq, core->commit_seq + count - 1U,
+                                                 served};
+                next_append_ = (next_append_ + 1U) % recent_appends_.size();
+            }
         }
     } else if (const auto *value = std::get_if<storage::FileValueRequest>(&queued.work.value)) {
+        const auto role = static_cast<size_t>(value->role);
+        if (role < static_cast<size_t>(storage::FileValueRole::count)) {
+            sample.role = value->role;
+        }
+        metrics_.record_value(*value, std::get<storage::ValueCompleted>(result.value).result,
+                              service_us, refreshed - queued.submitted_us);
         metrics_.value_us += service_us;
         switch (value->kind) {
         case storage::FileValueRequest::Kind::read:
+            sample.kind = Kind::read;
             ++metrics_.value_read_calls;
             metrics_.value_read_us += service_us;
             break;
         case storage::FileValueRequest::Kind::write:
+            sample.kind = Kind::write;
             ++metrics_.value_write_calls;
             metrics_.value_write_us += service_us;
             break;
         case storage::FileValueRequest::Kind::remove:
+            sample.kind = Kind::remove;
             ++metrics_.value_remove_calls;
             metrics_.value_remove_us += service_us;
             break;
         }
     }
     metrics_.scan_frames = scan_frames;
+    metrics_.foreground_measures +=
+        file_metrics.space_measure_calls - metrics_.files.space_measure_calls;
+    metrics_.foreground_measure_us +=
+        file_metrics.space_measure_us - metrics_.files.space_measure_us;
     metrics_.files = file_metrics;
+    if (history_) {
+        sample.at_us = static_cast<uint64_t>(esp_timer_get_time());
+        sample.queue_us = queue_us;
+        sample.service_us = service_us;
+        history_->record(sample);
+    }
     portEXIT_CRITICAL(&mutex_);
     if (result.post()) {
         Host::wake(&owner_);
@@ -259,7 +341,8 @@ void Host::storage_memory_requirements(std::size_t &bytes, std::size_t &alignmen
     bytes = sizeof(Storage);
     alignment = alignof(Storage);
 }
-StorageOpen Host::open_storage(const char *label, uint32_t capacity, bool initialize_blank) {
+StorageOpen Host::open_storage(const char *label, uint32_t capacity, bool initialize_blank,
+                               StorageWorkHistory *history) {
     if (!label || !label[0] || capacity == 0 || capacity > request_capacity_limit) {
         return {StorageStatus::invalid_argument, 0};
     }
@@ -271,7 +354,7 @@ StorageOpen Host::open_storage(const char *label, uint32_t capacity, bool initia
     if (!memory) {
         return {StorageStatus::no_memory, 0};
     }
-    auto *candidate = new (memory) Storage(*this, initialize_blank);
+    auto *candidate = new (memory) Storage(*this, initialize_blank, history);
     const auto opened = candidate->open(label, capacity);
     if (opened.status == StorageStatus::ok) {
         storage_ = candidate;
@@ -286,6 +369,19 @@ storage::FileValuePort Host::value_store() {
 }
 StorageMetrics Host::storage_metrics() const {
     return storage_ ? storage_->metrics() : StorageMetrics{};
+}
+StorageMetrics Host::storage_metrics(uint64_t &at_us) const {
+    if (storage_) {
+        return storage_->metrics(&at_us);
+    }
+    at_us = static_cast<uint64_t>(esp_timer_get_time());
+    return {};
+}
+bool Host::read_storage_work(uint64_t index, StorageWorkSample &sample) const {
+    return storage_ && storage_->read_work(index, sample);
+}
+uint64_t Host::append_durable_us(uint64_t seq) const {
+    return storage_ ? storage_->append_durable_us(seq) : 0;
 }
 ayni_submit_result_t Host::submit_value(void *context, const storage::FileValueRequest *request) {
     auto *storage = static_cast<Host *>(context)->storage_;

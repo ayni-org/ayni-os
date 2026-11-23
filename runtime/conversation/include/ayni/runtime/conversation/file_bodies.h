@@ -75,6 +75,7 @@ class FileBodies {
         std::vector<Release>
             releases;            // Bounded ownership-removal fences, including cold manifests.
         uint64_t generation = 0; // Last confirmed manifest CAS generation; zero if absent.
+        uint32_t saved_manifest_bytes = 0; // Last observed durable image size, zero if absent.
         uint64_t revision = 0, saved_revision = 0; // Owner changes vs confirmed manifest.
         uint32_t chunk = 0;                        // Next payload chunk to load/write/remove.
         bool manifest_loaded = false;
@@ -118,7 +119,7 @@ class FileBodies {
     static std::string encode_manifest(const Entry &);
     bool conflicting(const ayni_body_ref_v1 &) const;
     Entry *find(const ayni_body_ref_v1 &);
-    Entry *metadata(const ayni_body_ref_v1 &);
+    Entry *metadata(const ayni_body_ref_v1 &); // Caller rejected digest collisions under the lock.
     size_t cached_bytes_locked() const;
     ayni_status_t trim_locked(size_t target, bool completed);
     ayni_status_t reserve_cache(size_t bytes);
@@ -134,7 +135,8 @@ class FileBodies {
     std::map<uint64_t, Entry> entries_; // Content identity -> payload and durable owner manifest.
     std::set<uint64_t>
         expired_; // Temporary input IDs awaiting their original Call retirement release.
-    std::list<Pending> pending_;      // Stable callback buffers through completion.
+    std::list<Pending> pending_; // Stable callback buffers through completion.
+    bool scan_needed_ = true;    // Locked. False only after a full scan found no eligible request.
     ayni_status_t failure_ = AYNI_OK; // Sticky background persistence failure.
     ayni_body_store_v1 store_{
         sizeof(ayni_body_store_v1), 0, this, write, read, release, stage, share, confirm,
