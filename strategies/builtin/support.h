@@ -148,16 +148,18 @@ struct Turn {
     Prepared<ResultProjection>
         result_projection;       // Transient, never serialized or independently saved.
     PreparedProposals proposals; // Current source group; no authorization cache.
-    // Measurement from a successful request for this unchanged tool cursor. The
-    // decoded Turn's exact checkpoint match protects its history and usage inputs.
-    struct WaitingToolBudget {
-        uint64_t model_call;      // Original durable model result, which owns the protocol ID.
-        uint32_t tool_index;      // Selected proposal within that result.
-        uint64_t tokens;          // Successful remaining reply-token measurement.
-        std::string instructions; // Borrowed configuration text can change between decisions.
+    // Partial-context character count for the active tool group under a stable
+    // projection. Exact checkpoint matching protects history and usage inputs;
+    // appending a tool reply advances characters and history_size incrementally.
+    struct ToolBudgetCache {
+        uint64_t model_call = 0;   // Original durable model result owning the active tool group.
+        uint32_t tool_index = 0;   // Proposal index matching history_size; zero at group start.
+        uint32_t history_size = 0; // Exact turn.history byte length at this measurement.
+        uint64_t characters = 0;   // Projected partial-context Unicode code points at history_size.
+        std::string instructions;  // Borrowed configuration text matched before reuse.
+        std::string definitions;   // Preloaded tool definitions matched before reuse.
     };
-    std::optional<WaitingToolBudget>
-        waiting_tool_budget; // Transient; never written to a checkpoint.
+    std::optional<ToolBudgetCache> tool_budget_cache; // Transient; never written to a checkpoint.
     bool done = false;
     struct Refs {
         BodyRef input{};

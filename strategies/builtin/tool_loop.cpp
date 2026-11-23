@@ -434,7 +434,7 @@ ayni_status_t revalidate(Workspace &workspace, Turn &turn, const ToolLoopConfig 
         turn.phase = TurnPhase::initial;
         turn.tool_index = 0;
         turn.proposals.reset();
-        turn.waiting_tool_budget.reset();
+        turn.tool_budget_cache.reset();
         turn.result_source = {};
         turn.result_projection.reset();
         turn.result_summary = {};
@@ -728,13 +728,46 @@ ayni_status_t compact(Workspace &workspace, Turn &turn, const ToolLoopConfig &co
     turn.record.last_input_estimate = 0;
     turn.compact_prefix = turn.history_summary.offset = turn.history_summary.next = 0;
     turn.history_projection.reset();
+    turn.tool_budget_cache.reset();
     turn.phase = turn.compact_resume;
     return AYNI_OK;
+}
+// Single tool-budget formula shared by full partial-context measurement and incremental reuse.
+ToolBudget tool_budget_from_characters(const ToolLoopConfig &config, const Turn &turn,
+                                       ayni_string_v1 protocol_id, uint64_t characters) {
+    const model::TokenEstimate count{model::estimate_tokens(characters), characters};
+    const auto used =
+        config.projection.context_writer ? count.tokens : estimated_input(turn.record, count);
+    const auto limit = input_budget(config);
+    const auto room = used < limit ? limit - used : 0;
+    return {std::min(room, config.limits.tool_result_max_tokens), protocol_id, config.projection};
+}
+// Built-in projection with fixed discovery tools, or a serving projection that explicitly
+// guarantees additive per-reply character counts for fixed configuration, can advance across
+// decisions without re-projecting the whole partial history.
+bool stable_tool_projection(const ToolLoopConfig &config, const Turn &turn) {
+    return config.projection.context_writer ? config.projection.stable_tool_replies
+                                            : turn.definitions.empty();
+}
+void save_tool_budget_cache(const ToolLoopConfig &config, Turn &turn, uint64_t model_call,
+                            uint64_t characters) {
+    if (turn.history.size() > UINT32_MAX) {
+        return;
+    }
+    turn.tool_budget_cache = Turn::ToolBudgetCache{
+        model_call,
+        turn.tool_index,
+        static_cast<uint32_t>(turn.history.size()),
+        characters,
+        config.model.text.size ? std::string(config.model.text.data, config.model.text.size)
+                               : std::string{},
+        turn.definitions};
 }
 } // namespace
 namespace detail {
 ayni_status_t current_tool_budget(const ToolLoopConfig &config, const Turn &turn,
-                                  ayni_string_v1 protocol_id, ToolBudget &budget) {
+                                  ayni_string_v1 protocol_id, ToolBudget &budget,
+                                  uint64_t *characters) {
     std::string framing;
     ayni_string_v1 current_frame{};
     // A clock line is appended before the next request. Reserve its worst escaped text with
@@ -770,11 +803,10 @@ ayni_status_t current_tool_budget(const ToolLoopConfig &config, const Turn &turn
     if (status != AYNI_OK) {
         return status;
     }
-    const auto used =
-        config.projection.context_writer ? count.tokens : estimated_input(turn.record, count);
-    const auto limit = input_budget(config);
-    const auto room = used < limit ? limit - used : 0;
-    budget = {std::min(room, config.limits.tool_result_max_tokens), protocol_id, config.projection};
+    budget = tool_budget_from_characters(config, turn, protocol_id, count.characters);
+    if (characters) {
+        *characters = count.characters;
+    }
     return AYNI_OK;
 }
 // Byte room a reply of tokens may take: every estimated character is at most four UTF-8 bytes,
@@ -810,6 +842,7 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
     }
     if (turn.tool_index == model.tool_call_count) {
         turn.proposals.reset();
+        turn.tool_budget_cache.reset();
         ++turn.model_round;
         turn.phase = TurnPhase::ready;
         return AYNI_OK;
@@ -832,16 +865,19 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
     }
     auto &response = reply.text;
     ToolBudget budget;
-    // Only the built-in projection with fixed discovery tools is stable across
-    // decisions. Each result and authority check above still uses the current snapshot.
-    const bool fixed_projection = !config.projection.context_writer && turn.definitions.empty();
-    auto measured = std::exchange(turn.waiting_tool_budget, std::nullopt);
-    if (fixed_projection && measured && measured->model_call == model.logical_call_id &&
-        measured->tool_index == turn.tool_index &&
-        equal(config.model.text, view(measured->instructions))) {
-        budget = {measured->tokens, proposal.protocol_id, config.projection};
+    // Reuse the partial-context character count only under a stable projection and exact
+    // history/config match. Each result and authority check above still uses the current snapshot.
+    const bool stable_projection = stable_tool_projection(config, turn);
+    uint64_t base_characters = 0;
+    auto measured = std::exchange(turn.tool_budget_cache, std::nullopt);
+    if (stable_projection && measured && measured->model_call == model.logical_call_id &&
+        measured->tool_index == turn.tool_index && measured->history_size == turn.history.size() &&
+        equal(config.model.text, view(measured->instructions)) &&
+        measured->definitions == turn.definitions) {
+        base_characters = measured->characters;
+        budget = tool_budget_from_characters(config, turn, proposal.protocol_id, base_characters);
     } else {
-        status = current_tool_budget(config, turn, proposal.protocol_id, budget);
+        status = current_tool_budget(config, turn, proposal.protocol_id, budget, &base_characters);
         if (status != AYNI_OK) {
             return status;
         }
@@ -854,12 +890,8 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
                                  budget, reply, requested);
         if (requested) {
             status = save(turn, config, output);
-            if (status == AYNI_OK && fixed_projection) {
-                turn.waiting_tool_budget = Turn::WaitingToolBudget{
-                    model.logical_call_id, turn.tool_index, budget.tokens,
-                    config.model.text.size
-                        ? std::string(config.model.text.data, config.model.text.size)
-                        : std::string{}};
+            if (status == AYNI_OK && stable_projection) {
+                save_tool_budget_cache(config, turn, model.logical_call_id, base_characters);
             }
             return status;
         }
@@ -894,9 +926,9 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
         return status;
     }
     if (status == AYNI_OK && !reply.measured) {
-        reply.measured = budget.measure(response);
+        reply.measured = budget.measure_estimate(response);
     }
-    if (status == AYNI_CAPACITY_EXCEEDED || *reply.measured > budget.tokens) {
+    if (status == AYNI_CAPACITY_EXCEEDED || reply.measured->tokens > budget.tokens) {
         return reply.call.logical_call_id ? begin_result_summary(config, turn, reply.call, output)
                                           : AYNI_CAPACITY_EXCEEDED;
     }
@@ -919,6 +951,11 @@ ayni_status_t tools(Workspace &workspace, Turn &turn, const ToolLoopConfig &conf
         return status;
     }
     ++turn.tool_index;
+    if (stable_projection && turn.tool_index < model.tool_call_count &&
+        base_characters <= UINT64_MAX - reply.measured->characters) {
+        save_tool_budget_cache(config, turn, model.logical_call_id,
+                               base_characters + reply.measured->characters);
+    }
     // A local response has no Call row. Its matching progress and checkpoint are one batch.
     if (!call.logical_call_id && !step_committed(snapshot, key)) {
         requested = true;

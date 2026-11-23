@@ -158,9 +158,9 @@ ayni_status_t list(const NativeArguments &args, const ayni_task_snapshot_v1 &sna
         json::Writer candidate(buffer, capacity);
         emit(candidate, chosen);
         if (done(candidate, buffer, response)) {
-            const auto tokens = budget.measure(response);
-            if (tokens <= budget.tokens) {
-                reply.measured = tokens;
+            const auto measured = budget.measure_estimate(response);
+            if (measured.tokens <= budget.tokens) {
+                reply.measured = measured;
                 return AYNI_OK;
             }
         }
@@ -363,9 +363,9 @@ ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &pro
             json::Writer out(buffer, scratch.capacity);
             status = inspect(workspace, detail, out);
             if (status == AYNI_OK && done(out, buffer, response)) {
-                const auto tokens = budget.measure(response);
-                if (tokens <= budget.tokens) {
-                    reply.measured = tokens;
+                const auto measured = budget.measure_estimate(response);
+                if (measured.tokens <= budget.tokens) {
+                    reply.measured = measured;
                     return AYNI_OK;
                 }
             }

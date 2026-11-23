@@ -10,6 +10,8 @@ using namespace ayni::providers::model_protocol;
 class SharedModelLoop : public StrategiesFixture, public ::testing::WithParamInterface<Api> {
   protected:
     RequestOptions options;
+    ayni::model::Projection base_projection{};
+    uint32_t partial_projections = 0;
     void SetUp() override {
         options.model = "fixture";
         options.api = GetParam();
@@ -20,32 +22,77 @@ class SharedModelLoop : public StrategiesFixture, public ::testing::WithParamInt
             config.tool_exposure = policies::ToolExposure::preloaded;
             config.reply_encoding = config.summary_reply_encoding =
                 ayni::model::ReplyEncoding::framed;
-            config.projection = Protocol::projection(options);
+            base_projection = Protocol::projection(options);
+            EXPECT_TRUE(base_projection.stable_tool_replies);
+            config.projection = base_projection;
+            config.projection.context = this;
+            config.projection.context_writer = [](void *ctx, ayni::json::Writer &out,
+                                                  ayni_string_v1 input, ayni::model::Mode mode,
+                                                  ayni::model::Completeness completeness) {
+                auto &self = *static_cast<SharedModelLoop *>(ctx);
+                if (completeness == ayni::model::Completeness::partial) {
+                    ++self.partial_projections;
+                }
+                return self.base_projection.context_writer(self.base_projection.context, out, input,
+                                                           mode, completeness);
+            };
+            config.projection.reply_writer = [](void *ctx, ayni::json::Writer &out,
+                                                ayni_string_v1 id, ayni_string_v1 content) {
+                auto &self = *static_cast<SharedModelLoop *>(ctx);
+                self.base_projection.reply_writer(self.base_projection.context, out, id, content);
+            };
             config.clock.timezone =
                 text("UTC0"); // Pending-group budgeting includes a real clock envelope.
         };
         StrategiesFixture::SetUp();
     }
-    void answer(uint32_t at, bool tools, const char *content = "done") {
+    void answer_batch(uint32_t at, uint32_t tool_count, const char *content = "done") {
         ASSERT_LT(at, pending.size());
         std::string wire;
         if (options.api == Api::responses) {
             wire =
                 R"({"status":"completed","output":[{"type":"reasoning","id":"rs_loop","summary":[],"encrypted_content":"opaque-loop-secret"},)";
-            wire +=
-                tools
-                    ? R"({"type":"function_call","id":"fc_loop","call_id":"call_loop","name":"ayni_call_capability","arguments":"{\"binding_id\":\"echo\",\"binding_version\":1,\"arguments\":\"tool body\"}"}])"
-                    : std::string(
-                          R"({"type":"message","id":"msg_loop","role":"assistant","status":"completed","content":[{"type":"output_text","text":")") +
-                          content + R"("}]}])";
+            if (tool_count) {
+                for (uint32_t i = 0; i < tool_count; ++i) {
+                    if (i) {
+                        wire += ",";
+                    }
+                    const std::string suffix = i ? "_" + std::to_string(i) : std::string{};
+                    wire +=
+                        R"({"type":"function_call","id":"fc_loop)" + suffix +
+                        R"(","call_id":"call_loop)" + suffix +
+                        R"(","name":"ayni_call_capability","arguments":"{\"binding_id\":\"echo\",\"binding_version\":1,\"arguments\":\"tool body)" +
+                        suffix + R"(\"}"})";
+                }
+                wire += "]";
+            } else {
+                wire +=
+                    std::string(
+                        R"({"type":"message","id":"msg_loop","role":"assistant","status":"completed","content":[{"type":"output_text","text":")") +
+                    content + R"("}]}])";
+            }
             wire += R"(,"usage":{"input_tokens":30,"output_tokens":4,"total_tokens":34}})";
         } else {
-            wire =
-                tools
-                    ? R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_loop","type":"function","function":{"name":"ayni_call_capability","arguments":"{\"binding_id\":\"echo\",\"binding_version\":1,\"arguments\":\"tool body\"}"}}]}}]})"
-                    : std::string(
-                          R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":")") +
-                          content + R"("}}]})";
+            if (tool_count) {
+                wire =
+                    R"({"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"tool_calls":[)";
+                for (uint32_t i = 0; i < tool_count; ++i) {
+                    if (i) {
+                        wire += ",";
+                    }
+                    const std::string suffix = i ? "_" + std::to_string(i) : std::string{};
+                    wire +=
+                        R"({"id":"call_loop)" + suffix +
+                        R"(","type":"function","function":{"name":"ayni_call_capability","arguments":"{\"binding_id\":\"echo\",\"binding_version\":1,\"arguments\":\"tool body)" +
+                        suffix + R"(\"}"}})";
+                }
+                wire += "]}}]}";
+            } else {
+                wire =
+                    std::string(
+                        R"({"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":")") +
+                    content + R"("}}]})";
+            }
         }
         auto decoded = std::make_unique<Answer>();
         Protocol{}.decode(options, wire.data(), wire.size(), *decoded);
@@ -66,6 +113,9 @@ class SharedModelLoop : public StrategiesFixture, public ::testing::WithParamInt
         ASSERT_EQ(ayni_provider_post(pending[at].completion, &result), AYNI_OK);
         pending[at].ended = true;
         pump();
+    }
+    void answer(uint32_t at, bool tools, const char *content = "done") {
+        answer_batch(at, tools ? 1U : 0U, content);
     }
     void check_request(const std::string &body, bool has_tools = true) {
         std::string wire;
@@ -122,6 +172,40 @@ TEST_P(SharedModelLoop, PreloadedToolsUseTheRealLoopAndNeverAccumulateInHistory)
     answer(3, false);
     finish(next);
     EXPECT_EQ(rounds_of(conversation).back().answer, "done");
+}
+TEST_P(SharedModelLoop, BatchedToolsProjectPartialContextOnceForBothProtocols) {
+    // C-POLICY-013 / ADR-0098: Protocol::projection marks additive tool replies so a 3-tool
+    // group runs one partial projection and advances character counts incrementally.
+    const auto task = start();
+    ASSERT_EQ(pending.size(), 1U);
+    EXPECT_EQ(partial_projections, 0U);
+    answer_batch(0, 3);
+    ASSERT_EQ(pending.size(), 2U);
+    EXPECT_EQ(pending[1].capability, "echo");
+    EXPECT_EQ(partial_projections, 1U);
+    post(1, text("first echo"));
+    pump();
+    ASSERT_EQ(pending.size(), 3U);
+    EXPECT_EQ(pending[2].capability, "echo");
+    EXPECT_EQ(partial_projections, 1U);
+    post(2, text("second echo"));
+    pump();
+    ASSERT_EQ(pending.size(), 4U);
+    EXPECT_EQ(pending[3].capability, "echo");
+    EXPECT_EQ(partial_projections, 1U);
+    post(3, text("third echo"));
+    pump();
+    ASSERT_EQ(pending.size(), 5U);
+    EXPECT_EQ(pending[4].capability, "model");
+    EXPECT_EQ(partial_projections, 1U);
+    check_request(pending[4].text);
+    EXPECT_NE(pending[4].text.find("first echo"), std::string::npos);
+    EXPECT_NE(pending[4].text.find("second echo"), std::string::npos);
+    EXPECT_NE(pending[4].text.find("third echo"), std::string::npos);
+    answer(4, false, "all three done");
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+    finish(task);
+    EXPECT_EQ(rounds_of(conversation).back().answer, "all three done");
 }
 TEST_P(SharedModelLoop, CanonicalCompactionDoesNotDiscloseOpaqueContinuationToSummary) {
     // ADR-0098: original complete groups stay retained until summaries succeed; opaque provider
