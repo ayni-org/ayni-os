@@ -42,6 +42,11 @@ class FileBodies {
     // Pure queue query: no worker borrow and all work drained, or blocked by a sticky failure.
     // Unconfirmed chat tails need no persistence. Always check status for a successful close.
     bool idle() const;
+    // Owner-thread pacing hint: defers purely background persistence and cleanup while resident
+    // bytes stay at or below half of cache_limit_, leaving Host I/O uncontended for hot Core
+    // commits. Foreground waiters (read/share/put/write returning NOT_READY) still advance.
+    // Clearing the pause scans and submits deferred work immediately.
+    void set_background_writes_paused(bool paused);
     static ayni_status_t status(void *context);
     void collect(uint64_t scope, const std::vector<ayni_body_ref_v1> &keep);
 
@@ -84,6 +89,7 @@ class FileBodies {
         bool load_payload = false; // Only read requests payload RAM; metadata operations do not.
         bool staged = false;       // Bytes were accepted locally, so reads need no disk load.
         bool deleting = false;     // All owners released; content then manifest are removed.
+        bool awaited = false;      // Foreground caller saw NOT_READY; bypasses background pause.
     };
     enum class Operation { manifest_read, manifest_write, payload_read, payload_write, remove };
     struct Pending {
@@ -137,7 +143,8 @@ class FileBodies {
         expired_; // Temporary input IDs awaiting their original Call retirement release.
     std::list<Pending> pending_; // Stable callback buffers through completion.
     bool scan_needed_ = true;    // Locked. False only after a full scan found no eligible request.
-    ayni_status_t failure_ = AYNI_OK; // Sticky background persistence failure.
+    bool background_writes_paused_ = false; // Locked. Owner hint; awaited entries/pressure bypass.
+    ayni_status_t failure_ = AYNI_OK;       // Sticky background persistence failure.
     ayni_body_store_v1 store_{
         sizeof(ayni_body_store_v1), 0, this, write, read, release, stage, share, confirm,
         release_temporary};

@@ -36,6 +36,7 @@ ayni_status_t FileBodies::configure(hosts::storage::FileValuePort files, size_t 
     base_ = base;
     owner_ = std::this_thread::get_id();
     scan_needed_ = true;
+    background_writes_paused_ = false;
     return AYNI_OK;
 }
 uint64_t FileBodies::identity(uint64_t scope, uint64_t digest) {
@@ -208,66 +209,77 @@ ayni_status_t FileBodies::put(void *context, uint64_t scope, ayni_bytes_v1 bytes
     }
     auto &self = *static_cast<FileBodies *>(context);
     const auto digest = ayni_body_digest(bytes), id = identity(0, digest);
-    std::lock_guard<std::mutex> lock(self.mutex_);
-    if (!self.files_.submit) {
-        return AYNI_INVALID_STATE;
-    }
-    if (self.failure_ != AYNI_OK) {
-        return self.failure_;
-    }
-    auto found = self.entries_.find(id);
-    if (found != self.entries_.end() && found->second.state == State::failed &&
-        found->second.failure == AYNI_NOT_FOUND && !found->second.staged) {
-        self.entries_.erase(
-            found); // A negative lookup owns no accepted bytes and cannot forbid recreation.
-        found = self.entries_.end();
-    }
-    if (found == self.entries_.end()) {
-        if (self.entries_.size() == entry_limit) {
-            return AYNI_CAPACITY_EXCEEDED;
+    ayni_status_t status = AYNI_OK;
+    {
+        std::lock_guard<std::mutex> lock(self.mutex_);
+        if (!self.files_.submit) {
+            return AYNI_INVALID_STATE;
         }
-        const auto room = self.reserve_cache(bytes.size);
-        if (room != AYNI_OK) {
-            return room;
+        if (self.failure_ != AYNI_OK) {
+            return self.failure_;
         }
-        Entry entry;
-        entry.digest = digest;
-        entry.size = bytes.size;
-        if (bytes.size) {
-            entry.bytes.assign(reinterpret_cast<const char *>(bytes.data), bytes.size);
+        auto found = self.entries_.find(id);
+        if (found != self.entries_.end() && found->second.state == State::failed &&
+            found->second.failure == AYNI_NOT_FOUND && !found->second.staged) {
+            self.entries_.erase(
+                found); // A negative lookup owns no accepted bytes and cannot forbid recreation.
+            found = self.entries_.end();
         }
-        entry.staged = true;
-        found = self.entries_.emplace(id, std::move(entry)).first;
-    }
-    auto &entry = found->second;
-    if (entry.state == State::failed) {
-        return entry.failure;
-    }
-    if (entry.deleting || entry.state == State::loading ||
-        (entry.state == State::checking && !entry.staged)) {
-        return AYNI_NOT_READY;
-    }
-    if (entry.digest != digest || entry.size != bytes.size) {
-        return AYNI_STORAGE_FAILED;
-    }
-    if (entry.state == State::evicted) {
-        const auto room = self.reserve_cache(bytes.size);
-        if (room != AYNI_OK) {
-            return room;
+        if (found == self.entries_.end()) {
+            if (self.entries_.size() == entry_limit) {
+                return AYNI_CAPACITY_EXCEEDED;
+            }
+            const auto room = self.reserve_cache(bytes.size);
+            if (room != AYNI_OK) {
+                return room;
+            }
+            Entry entry;
+            entry.digest = digest;
+            entry.size = bytes.size;
+            if (bytes.size) {
+                entry.bytes.assign(reinterpret_cast<const char *>(bytes.data), bytes.size);
+            }
+            entry.staged = true;
+            found = self.entries_.emplace(id, std::move(entry)).first;
         }
-        if (bytes.size) {
-            entry.bytes.assign(reinterpret_cast<const char *>(bytes.data), bytes.size);
+        auto &entry = found->second;
+        if (entry.state == State::failed) {
+            return entry.failure;
         }
-        entry.state = State::durable;
+        if (entry.deleting || entry.state == State::loading ||
+            (entry.state == State::checking && !entry.staged)) {
+            entry.awaited = true;
+            self.scan_needed_ = true;
+            status = AYNI_NOT_READY;
+        } else if (entry.digest != digest || entry.size != bytes.size) {
+            return AYNI_STORAGE_FAILED;
+        } else {
+            if (entry.state == State::evicted) {
+                const auto room = self.reserve_cache(bytes.size);
+                if (room != AYNI_OK) {
+                    return room;
+                }
+                if (bytes.size) {
+                    entry.bytes.assign(reinterpret_cast<const char *>(bytes.data), bytes.size);
+                }
+                entry.state = State::durable;
+            }
+            if (entry.bytes.size() != bytes.size ||
+                (bytes.size && std::memcmp(entry.bytes.data(), bytes.data, bytes.size))) {
+                return AYNI_STORAGE_FAILED; // Digest collision never aliases different local bytes.
+            }
+            const auto alias = identity(scope, digest);
+            status = self.add_owner(entry, scope, alias);
+            if (status == AYNI_OK) {
+                *out = {alias, digest, bytes.size, 0};
+            } else if (status == AYNI_NOT_READY) {
+                entry.awaited = true;
+                self.scan_needed_ = true;
+            }
+        }
     }
-    if (entry.bytes.size() != bytes.size ||
-        (bytes.size && std::memcmp(entry.bytes.data(), bytes.data, bytes.size))) {
-        return AYNI_STORAGE_FAILED; // Digest collision never aliases different local bytes.
-    }
-    const auto alias = identity(scope, digest);
-    const auto status = self.add_owner(entry, scope, alias);
-    if (status == AYNI_OK) {
-        *out = {alias, digest, bytes.size, 0};
+    if (status == AYNI_NOT_READY) {
+        self.flush();
     }
     return status;
 }
@@ -296,6 +308,21 @@ ayni_status_t FileBodies::write(void *context, uint64_t scope, ayni_bytes_v1 bod
         return status;
     }
     const auto durable = confirm(context, &staged);
+    if (durable == AYNI_NOT_READY) {
+        auto &self = *static_cast<FileBodies *>(context);
+        bool wake = false;
+        {
+            std::lock_guard<std::mutex> lock(self.mutex_);
+            if (auto *entry = self.find(staged); entry && !entry->awaited) {
+                entry->awaited = true;
+                self.scan_needed_ = true;
+                wake = true;
+            }
+        }
+        if (wake) {
+            self.flush();
+        }
+    }
     if (durable == AYNI_OK) {
         *out = staged;
     }
@@ -330,9 +357,14 @@ ayni_status_t FileBodies::share(void *context, uint64_t scope, const ayni_body_r
             const auto status = self.add_owner(*entry, scope, id);
             if (status == AYNI_OK) {
                 *out = {id, ref->digest, ref->size, 0};
+                return AYNI_OK;
             }
-            return status;
+            if (status != AYNI_NOT_READY) {
+                return status;
+            }
         }
+        entry->awaited = true;
+        self.scan_needed_ = true;
     }
     self.flush();
     return AYNI_NOT_READY;
@@ -457,6 +489,8 @@ ayni_status_t FileBodies::read(void *context, const ayni_body_ref_v1 *ref, uint8
             }
             return AYNI_OK;
         }
+        entry->awaited = true;
+        self.scan_needed_ = true;
     }
     self.flush();
     return AYNI_NOT_READY;
@@ -533,6 +567,14 @@ void FileBodies::collect(uint64_t scope, const std::vector<ayni_body_ref_v1> &ke
 bool FileBodies::prepare(uint64_t id, Entry &entry) {
     if (entry.pending || entry.state == State::failed ||
         (entry.staged && !entry.persist_requested && !entry.deleting && entry.releases.empty())) {
+        return false;
+    }
+    // Defer purely background persistence/cleanup during hot owner transitions while RAM
+    // cache headroom remains, so Core commits do not queue behind non-blocking body writes.
+    // Foreground waiters (awaited) and cache pressure above half the budget still advance.
+    constexpr size_t pause_headroom_divisor = 2;
+    if (background_writes_paused_ && !entry.awaited &&
+        cached_bytes_locked() <= cache_limit_ / pause_headroom_divisor) {
         return false;
     }
     Pending pending;
@@ -640,6 +682,7 @@ void FileBodies::complete(void *context, const FileValueResult &result) noexcept
     entry.pending = false;
     const bool missing =
         pending->operation == Operation::manifest_read && result.status == AYNI_NOT_FOUND;
+    bool erased = false;
     if (result.status != AYNI_OK && !missing) {
         entry.state = State::failed;
         self.failure_ = entry.failure = result.status;
@@ -699,6 +742,7 @@ void FileBodies::complete(void *context, const FileValueResult &result) noexcept
     } else if (pending->operation == Operation::remove) {
         if (entry.chunk++ == chunks(entry.size)) {
             self.entries_.erase(pending->id);
+            erased = true;
         }
     } else if (pending->operation == Operation::payload_read &&
                result.size != pending->request.size) {
@@ -715,6 +759,19 @@ void FileBodies::complete(void *context, const FileValueResult &result) noexcept
             self.failure_ = entry.failure = AYNI_STORAGE_FAILED;
         } else {
             entry.state = State::ready;
+        }
+    }
+    if (!erased && entry.awaited) {
+        const bool manifest_done = pending->operation == Operation::manifest_read &&
+                                   entry.manifest_loaded && !entry.deleting &&
+                                   entry.state != State::loading && entry.state != State::writing &&
+                                   entry.releases.empty() && entry.saved_revision == entry.revision;
+        const bool read_done =
+            pending->operation == Operation::payload_read && entry.state == State::ready;
+        const bool write_done = pending->operation == Operation::manifest_write &&
+                                !entry.deleting && entry.saved_revision == entry.revision;
+        if (entry.state == State::failed || manifest_done || read_done || write_done) {
+            entry.awaited = false;
         }
     }
     self.pending_.clear();
@@ -766,6 +823,26 @@ bool FileBodies::idle() const {
         }
     }
     return true;
+}
+void FileBodies::set_background_writes_paused(bool paused) {
+    if (std::this_thread::get_id() != owner_) {
+        return;
+    }
+    bool resume = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (background_writes_paused_ == paused) {
+            return;
+        }
+        background_writes_paused_ = paused;
+        if (!paused) {
+            scan_needed_ = true;
+            resume = true;
+        }
+    }
+    if (resume) {
+        flush();
+    }
 }
 size_t FileBodies::cached_bytes_locked() const {
     size_t total = 0;

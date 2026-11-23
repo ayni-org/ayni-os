@@ -115,6 +115,7 @@ struct ValueFiles {
     };
     std::map<std::pair<uint64_t, uint64_t>, Value> values;
     bool removal_capacity = true;
+    uint32_t submissions = 0;
     static ayni_submit_result_t submit(void *context,
                                        const ayni::hosts::storage::FileValueRequest *r) {
         auto &self = *static_cast<ValueFiles *>(context);
@@ -140,6 +141,7 @@ struct ValueFiles {
             result.generation = found->second.generation;
             result.size = found->second.bytes.size();
         }
+        ++self.submissions;
         r->complete(r->context, result);
         return AYNI_SUBMIT_ACCEPTED;
     }
@@ -400,4 +402,81 @@ TEST(WifiReply, CacheTrimRetainsCleanupUntilNormalFileQueueHasCapacity) {
     }
     EXPECT_EQ(status, AYNI_OK);
     EXPECT_TRUE(files.values.empty());
+}
+TEST(WifiReply, BackgroundWritePauseDefersIoUntilResumedWithoutBlockingForeground) {
+    // Hot tool transitions pause non-blocking background persistence while RAM stays <= half,
+    // without blocking cold foreground reads, synchronous writes, or cache-pressure relief.
+    ValueFiles files;
+    constexpr size_t cache_budget = 64;
+    ayni::runtime::FileBodies bodies;
+    ASSERT_EQ(bodies.configure({&files, ValueFiles::submit}, cache_budget), AYNI_OK);
+    const auto *port = bodies.store();
+    const uint8_t base_bytes[] = "base01";
+    ayni_body_ref_v1 base_ref{};
+    auto status = AYNI_NOT_READY;
+    for (unsigned poll = 0; poll < 16 && status == AYNI_NOT_READY; ++poll) {
+        status = port->write(port->context, 1, {base_bytes, 6}, &base_ref);
+    }
+    ASSERT_EQ(status, AYNI_OK);
+    ASSERT_EQ(bodies.trim_cache(), AYNI_OK);
+    files.submissions = 0;
+
+    bodies.set_background_writes_paused(true);
+    const uint8_t bg_bytes[] = "bg_one";
+    ayni_body_ref_v1 bg_ref{};
+    ASSERT_EQ(port->stage(port->context, 2, {bg_bytes, 6}, &bg_ref), AYNI_OK);
+    EXPECT_EQ(port->confirm(port->context, &bg_ref), AYNI_NOT_READY);
+    EXPECT_EQ(ayni::runtime::FileBodies::progress(&bodies, 0), 1U);
+    EXPECT_EQ(ayni::runtime::FileBodies::ready(&bodies, 0), 0U);
+    EXPECT_FALSE(bodies.idle());
+    EXPECT_EQ(files.submissions, 0U);
+
+    // Cold foreground read still completes while bg_one stays deferred.
+    uint8_t loaded[6]{};
+    status = AYNI_NOT_READY;
+    for (unsigned poll = 0; poll < 16 && status == AYNI_NOT_READY; ++poll) {
+        status = port->read(port->context, &base_ref, loaded, sizeof(loaded));
+    }
+    ASSERT_EQ(status, AYNI_OK);
+    EXPECT_EQ(std::memcmp(loaded, base_bytes, 6), 0);
+    const uint32_t after_read = files.submissions;
+    EXPECT_GT(after_read, 0U);
+    EXPECT_EQ(port->confirm(port->context, &bg_ref), AYNI_NOT_READY);
+    EXPECT_EQ(ayni::runtime::FileBodies::progress(&bodies, 0), 1U);
+    EXPECT_EQ(files.submissions, after_read);
+
+    // Foreground synchronous write still completes while paused.
+    const uint8_t fg_bytes[] = "fg_two";
+    ayni_body_ref_v1 fg_ref{};
+    status = AYNI_NOT_READY;
+    for (unsigned poll = 0; poll < 16 && status == AYNI_NOT_READY; ++poll) {
+        status = port->write(port->context, 3, {fg_bytes, 6}, &fg_ref);
+    }
+    ASSERT_EQ(status, AYNI_OK);
+
+    // Cache occupancy above half of cache_budget bypasses pause to allow eviction.
+    const std::string pressure(24, 'p');
+    ayni_body_ref_v1 pressure_ref{};
+    ASSERT_EQ(port->stage(port->context, 4,
+                          {reinterpret_cast<const uint8_t *>(pressure.data()),
+                           static_cast<uint32_t>(pressure.size())},
+                          &pressure_ref),
+              AYNI_OK);
+    ASSERT_GT(bodies.cached_bytes(), cache_budget / 2U);
+    static_cast<void>(port->confirm(port->context, &pressure_ref));
+    drain(bodies);
+    EXPECT_EQ(port->confirm(port->context, &bg_ref), AYNI_OK);
+
+    // Clearing the pause immediately flushes newly deferred background work.
+    ASSERT_EQ(bodies.trim_cache(), AYNI_OK);
+    files.submissions = 0;
+    const uint8_t bg2_bytes[] = "bg_two";
+    ayni_body_ref_v1 bg2_ref{};
+    ASSERT_EQ(port->stage(port->context, 5, {bg2_bytes, 6}, &bg2_ref), AYNI_OK);
+    EXPECT_EQ(port->confirm(port->context, &bg2_ref), AYNI_NOT_READY);
+    EXPECT_EQ(files.submissions, 0U);
+    bodies.set_background_writes_paused(false);
+    drain(bodies);
+    EXPECT_EQ(port->confirm(port->context, &bg2_ref), AYNI_OK);
+    EXPECT_GT(files.submissions, 0U);
 }
