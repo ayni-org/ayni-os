@@ -19,7 +19,10 @@
 namespace wifichat {
 namespace {
 constexpr uint64_t probe_record_id = UINT64_C(0x43545850524f4245);
-constexpr uint32_t version = 1, step_us = 4000;
+// 250 ms covers one ToolLoop decision plus post-decide encoding on ESP32-S3 so Core's
+// prepare_accepted_calls() batches REQUEST_CALL + PREPARED + DISPATCHING into one append
+// while step_units and Core urgent-stop preemption checks stay unchanged.
+constexpr uint32_t version = 1, step_us = 250000;
 constexpr uint64_t presentation_wait_us = UINT64_C(120) * 1000000;
 constexpr uint64_t principal = 1;
 constexpr char chat_type[] = "wifi.chat", probe_type[] = "wifi.context-probe";
@@ -1310,6 +1313,53 @@ void Chat::diagnostics() {
         status(0, "session metadata exceeded diagnostic capacity");
     }
 }
+// Pause non-blocking FileBodies persistence/cleanup only while the active chat turn is in a
+// transient Core/decision/dispatch-barrier transition, never while waiting on a Provider
+// (HTTP model or physical output), held, terminal, forgetting, or closing.
+bool Chat::hot_tool_transition() const {
+    if (!kernel_ || closing_ != Closing::open || forget_ != Forget::none ||
+        turn_state_ != Turn::running || probe_.has_value()) {
+        return false;
+    }
+    const uint64_t goal_id = history_.latest_goal();
+    if (!goal_id) {
+        return false;
+    }
+    auto goal = sized<ayni_goal_info_v1>();
+    if (ayni_get_goal(kernel_, goal_id, &goal) != AYNI_OK || !goal.last_task_id) {
+        return false;
+    }
+    auto task = sized<ayni_task_info_v1>();
+    if (ayni_get_task(kernel_, goal.last_task_id, &task) != AYNI_OK) {
+        return false;
+    }
+    if (task.lifecycle == AYNI_TASK_READY || task.lifecycle == AYNI_TASK_RUNNING) {
+        return true;
+    }
+    if (task.lifecycle != AYNI_TASK_WAITING) {
+        return false;
+    }
+    uint64_t ids[call_slots]{};
+    uint32_t count = 0;
+    if (ayni_list_objects(kernel_, AYNI_OBJECT_CALL, ids, call_slots, &count) != AYNI_OK) {
+        return false;
+    }
+    for (uint32_t at = 0; at < count; ++at) {
+        auto call = sized<ayni_call_info_v1>();
+        if (ayni_get_call(kernel_, ids[at], &call) != AYNI_OK || call.task_id != task.task_id) {
+            continue;
+        }
+        const bool pending_transition =
+            call.outcome == 0U && (call.wait_reason == AYNI_CALL_WAIT_NONE ||
+                                   call.wait_reason == AYNI_CALL_WAIT_DURABILITY);
+        const bool completion_durability =
+            call.outcome != 0U && call.wait_reason == AYNI_CALL_WAIT_DURABILITY;
+        if (pending_transition || completion_durability) {
+            return true;
+        }
+    }
+    return false;
+}
 ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
     again = progress_ = false;
     report = sized<ayni_step_report_v1>();
@@ -1343,6 +1393,13 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
     }
     auto info = sized<ayni_kernel_info_v1>();
     auto rc = ayni_get_kernel_info(kernel_, &info);
+    // Pause background body persistence across ayni_step() during an active chat turn so
+    // completion/decision confirm() calls do not queue Flash writes ahead of Core commits;
+    // re-evaluate immediately afterward so idle Provider waits and terminal turns drain.
+    const bool pause_for_step = rc == AYNI_OK && closing_ == Closing::open &&
+                                forget_ == Forget::none && turn_state_ == Turn::running &&
+                                !probe_.has_value() && info.lifecycle == AYNI_LIFECYCLE_RUNNING;
+    bodies_.set_background_writes_paused(pause_for_step);
     // STOPPED cannot be stepped again while asynchronous device workers are joining.
     if (rc == AYNI_OK && info.lifecycle != AYNI_LIFECYCLE_STOPPED) {
         const auto started = uint64_t(esp_timer_get_time());
@@ -1360,6 +1417,8 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
             }
         }
     }
+    bodies_.set_background_writes_paused(
+        rc == AYNI_OK && info.lifecycle == AYNI_LIFECYCLE_RUNNING && hot_tool_transition());
     if (rc != AYNI_OK) {
         return rc;
     }

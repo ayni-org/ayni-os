@@ -67,6 +67,7 @@ class Chat {
     ayni_status_t close_session(const ayni_kernel_info_v1 &);
     ayni_status_t observe_probe(const ayni_kernel_info_v1 &);
     ayni_status_t converse(const ayni_kernel_info_v1 &);
+    bool hot_tool_transition() const;
     ayni_status_t present_reply();
     void finish_voice(ayni_status_t);
     static void on_voice_stage(void *, ReplyVoice::Event, uint64_t goal, size_t offset,
