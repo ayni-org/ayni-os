@@ -110,6 +110,24 @@ ayni_status_t ayni_kernel::configure(const ayni_execution_binding_v1 &binding) {
 ayni_status_t ayni_kernel::configure(const ayni_scene_desc_v1 &scene) {
     return work.scenes.register_description(scene);
 }
+// Reflex rules are volatile RAM overlays (ADR-0112): enabling wakes the owner so an
+// already-held observation can fire on the next step without waiting for a new sensor write.
+ayni_status_t ayni_kernel::configure(const ayni_reflex_rule_v1 &rule) {
+    return reflex_table.add_rule(rule);
+}
+ayni_status_t ayni_kernel::set_reflex_enabled(ayni_string_v1 rule_id, uint32_t enabled) {
+    const auto status = reflex_table.set_enabled(rule_id, enabled);
+    if (status == AYNI_OK && enabled != 0U) {
+        wake();
+    }
+    return status;
+}
+ayni_status_t ayni_kernel::get_reflex_info(ayni_string_v1 rule_id, ayni_reflex_info_v1 &out) const {
+    return reflex_table.info(rule_id, out);
+}
+ayni_status_t ayni_kernel::take_reflex_event(ayni_reflex_event_v1 &out) {
+    return reflex_table.take_event(out);
+}
 ayni_status_t ayni_kernel::open_session(const ayni::authority::Principal &principal,
                                         ayni_channel_t channel, uint64_t &out_session_id) {
     return ayni::kernel::open_session(work, principal, channel, out_session_id);
@@ -147,6 +165,18 @@ ayni_status_t ayni_kernel::post_observation(uint64_t boot_epoch,
                                             const ayni::knowledge::ObservationInput &input) {
     const auto status = observation_ingress.post(boot_epoch, input);
     if (status == AYNI_OK) {
+        wake();
+    }
+    return status;
+}
+// Lock-free latest-wins slot write (ADR-0112): wakes the owner only on clean->dirty
+// transitions so high-rate sensor threads do not flood the Host wakeup signal.
+ayni_status_t
+ayni_kernel::publish_observation_latest(uint64_t boot_epoch,
+                                        const ayni::knowledge::ObservationInput &input) {
+    bool wake_owner = false;
+    const auto status = observation_slots.publish_latest(boot_epoch, input, wake_owner);
+    if (status == AYNI_OK && wake_owner) {
         wake();
     }
     return status;

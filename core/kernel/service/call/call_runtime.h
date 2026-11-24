@@ -130,6 +130,20 @@ class CallRuntime {
     bool idle() const; // No retained delivery/queued runtime, independent of durable history.
     // True iff no RAM-only EPHEMERAL call still holds transport or lease ownership.
     bool ephemeral_idle() const;
+    // True iff at least one uncancelled cancellable EPHEMERAL Call currently holds resource_index.
+    bool has_ephemeral_holder(uint32_t resource_index) const;
+    // Soft-stops and cancels eligible held EPHEMERAL Calls on resource_index (ADR-0112).
+    // Returns AYNI_OK when >=1 holder was signalled, AYNI_NOT_FOUND when idle/already stopping,
+    // AYNI_DENIED when only Tier 2 DURABLE or non-cancellable holders occupy it.
+    ayni_status_t preempt_resource(uint32_t resource_index, uint64_t now_us,
+                                   work::CallCancelCause cause, uint64_t &out_affected);
+    // Admits a zero-LLM, zero-WAL deterministic EPHEMERAL reflex Call after live Agent,
+    // Grant/Scope, Scene and capacity preflight (ADR-0112).
+    ayni_status_t submit_reflex_call(uint64_t owner_agent_id, uint32_t binding_index,
+                                     ayni_string_v1 rule_id, ayni_bytes_v1 encoded_input,
+                                     uint64_t now_us, uint64_t durable_seq, uint64_t &out_call_id);
+    // True while a spawned reflex Call still owns runtime transport or physical lease state.
+    bool reflex_call_active(uint64_t call_id) const;
     // Every erased call has released its local transport/Provider borrow; unrelated calls may run.
     bool privacy_released() const;
     // After an automatic storage reload, map retained transport handles back to
@@ -409,7 +423,17 @@ class CallRuntime {
     std::optional<uint32_t> next_accepted_preparation(const AcceptedCalls &, uint64_t now_us,
                                                       uint64_t durable_seq,
                                                       bool ephemeral_only) const;
+    static constexpr uint32_t no_task = UINT32_MAX; // Sentinel for Task-less reflex Calls.
+    bool resolve_call_task(uint32_t call_index, uint32_t &out_task_index) const;
     Advance advance_call(uint32_t index, uint64_t now_us, uint64_t durable_seq, Mode mode);
+    Advance advance_reflex_call(uint32_t index, uint64_t now_us, uint64_t durable_seq, Mode mode);
+    CallReady reflex_call_readiness(uint32_t at, uint64_t now_us, uint64_t durable_seq,
+                                    Mode mode) const;
+    bool select_reflex_grant(uint64_t instance_id, const catalog::Binding &binding,
+                             ayni_bytes_v1 domain, const work::CallInputView &input,
+                             const catalog::CallContract &contract,
+                             const catalog::DecodedBusiness &proof, uint64_t now_us,
+                             uint64_t durable_seq, work::AuthorityReference &out) const;
     Advance restore_wait(uint32_t index, uint32_t task_index, uint64_t now_us, uint64_t durable_seq,
                          Mode mode);
     Advance progress_dispatch(uint32_t index, uint32_t task_index, uint64_t now_us,

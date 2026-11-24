@@ -75,10 +75,10 @@ std::optional<CallRuntime::Advance> CallRuntime::consume(uint64_t now_us, uint64
             break;
         }
     }
-    uint32_t task_index = 0;
+    uint32_t task_index = no_task;
     if (index == limits_.capacity || !slots_[index].active || !slots_[index].active->delivery ||
         slots_[index].active->delivery->reservation.index != receipt.reservation.index ||
-        !work_.tasks.find(work_.calls.identity(index).task_id, task_index)) {
+        !resolve_call_task(index, task_index)) {
         return Advance::internal;
     }
     const bool query = slots_[index].active->delivery->purpose == Delivery::Purpose::query;
@@ -154,6 +154,7 @@ ayni_status_t CallRuntime::apply_delivery(uint32_t index, uint32_t task_index,
         ephemeral ? foundation::TransitionStamp{0, 0} : work_.transitions.next();
     const auto applied = apply_receipt(index, task_index, message, stamp, terminal);
     if (applied == AYNI_OK && terminal && work_.calls.state(index).outcome != 0U &&
+        task_index != no_task &&
         (!task_content_current({work_, host_.monotonic_now_us(host_.ctx), durable_seq},
                                task_index) ||
          !model_context_current(task_index, work_.calls.identity(index).model_context,
@@ -278,24 +279,20 @@ ayni_status_t CallRuntime::apply_receipt(uint32_t index, uint32_t task_index,
                                          foundation::TransitionStamp stamp, bool &terminal) {
     const bool query = slots_[index].active->delivery->purpose == Delivery::Purpose::query;
     const work::ActionStamp action_stamp{work_.ids.boot_epoch(), stamp};
-    const bool old_boot =
-        slots_[index].active->delivery->reservation.attempt.boot_epoch != work_.ids.boot_epoch();
     // C-CALL-011: retaining an old transport borrow across storage reload does
     // not authorize old evidence to update the new writer's execution result.
-    if (old_boot) {
+    if (slots_[index].active->delivery->reservation.attempt.boot_epoch != work_.ids.boot_epoch()) {
         terminal = true;
         if (query) {
             return work_.calls.end_query(index, AYNI_RESULT_UNKNOWN, AYNI_REASON_NONE,
                                          action_stamp);
         }
-        const auto status = work_.calls.finish(work_.workspace, index,
-                                               {AYNI_CALL_ABANDONED,
-                                                AYNI_RESULT_UNKNOWN,
-                                                AYNI_REASON_NONE,
-                                                work::ActionEffect::unknown,
-                                                {}},
-                                               action_stamp);
-        return status == AYNI_OK &&
+        const work::CallResult unknown{AYNI_CALL_ABANDONED,
+                                       AYNI_RESULT_UNKNOWN,
+                                       AYNI_REASON_NONE,
+                                       work::ActionEffect::unknown,
+                                       {}};
+        return work_.calls.finish(work_.workspace, index, unknown, action_stamp) == AYNI_OK &&
                        work::end_task_call(work_.calls, work_.tasks, index, task_index, stamp)
                    ? AYNI_OK
                    : AYNI_INTERNAL;
@@ -335,17 +332,17 @@ ayni_status_t CallRuntime::apply_receipt(uint32_t index, uint32_t task_index,
         if (applied == AYNI_INVALID_ARGUMENT || applied == AYNI_CAPACITY_EXCEEDED) {
             // A terminal has ended the local borrow but malformed evidence cannot
             // prove success/failure. Preserve UNKNOWN with an explicit diagnostic.
-            applied = work_.calls.finish(work_.workspace, index,
-                                         {AYNI_CALL_ABANDONED,
-                                          AYNI_RESULT_UNKNOWN,
-                                          AYNI_REASON_PROVIDER_RESULT,
-                                          work::ActionEffect::unknown,
-                                          {}},
-                                         action_stamp);
+            const work::CallResult bad{AYNI_CALL_ABANDONED,
+                                       AYNI_RESULT_UNKNOWN,
+                                       AYNI_REASON_PROVIDER_RESULT,
+                                       work::ActionEffect::unknown,
+                                       {}};
+            applied = work_.calls.finish(work_.workspace, index, bad, action_stamp);
         }
         if (applied == AYNI_OK) {
             if (work_.calls.state(index).ephemeral) {
-                applied = finish_ephemeral_task_call(index, task_index);
+                applied =
+                    task_index != no_task ? finish_ephemeral_task_call(index, task_index) : AYNI_OK;
             } else if (!work::end_task_call(work_.calls, work_.tasks, index, task_index, stamp)) {
                 return AYNI_INTERNAL;
             }
@@ -486,6 +483,9 @@ CallRuntime::CallReady CallRuntime::call_readiness(uint32_t at, uint64_t now_us,
     if (slots_[at].active && slots_[at].active->stage == Stage::retiring) {
         return CallReady::idle;
     }
+    if (state.reflex) {
+        return reflex_call_readiness(at, now_us, durable_seq, mode);
+    }
     uint32_t task_index = 0;
     if (!work_.tasks.find(id.task_id, task_index)) {
         return CallReady::other; // advance reports the invariant failure, instead of hiding it.
@@ -547,6 +547,46 @@ CallRuntime::CallReady CallRuntime::call_readiness(uint32_t at, uint64_t now_us,
                    (state.ephemeral || state.latest.transition.commit_seq <= durable_seq)
                ? CallReady::other
                : CallReady::idle;
+}
+
+// Projects scheduling readiness for a Task-less RAM-only reflex Call (ADR-0112).
+CallRuntime::CallReady CallRuntime::reflex_call_readiness(uint32_t at, uint64_t now_us,
+                                                          uint64_t durable_seq, Mode mode) const {
+    const auto &state = work_.calls.state(at);
+    if (state.outcome != 0U) {
+        return CallReady::idle;
+    }
+    const auto &active = slots_[at].active;
+    if (!active) {
+        return CallReady::other;
+    }
+    const auto authority = work_.check_ephemeral_call_authority(at, now_us, durable_seq);
+    const bool stopping = (active->delivery && active->delivery->inhibition) ||
+                          mode != Mode::running ||
+                          state.cancel_cause != work::CallCancelCause::none ||
+                          (authority.status != AYNI_OK && authority.status != AYNI_BUSY) ||
+                          delivery_expired(at, now_us);
+    if (stopping) {
+        const bool actionable = submitted(active->stage)
+                                    ? active->delivery->cancel == Delivery::Cancel::none
+                                    : mode != Mode::fenced;
+        return actionable ? CallReady::other : CallReady::idle;
+    }
+    if (authority.status != AYNI_OK) {
+        return CallReady::idle;
+    }
+    if (active->stage == Stage::queued) {
+        return active->preemption != AYNI_CALL_PREEMPT_NONE &&
+                       (!control_.allowed(at, now_us, durable_seq) ||
+                        preemption_ready(at, now_us, durable_seq))
+                   ? CallReady::other
+                   : CallReady::queued;
+    }
+    if (active->stage == Stage::prepared && mailbox_.in_flight() != limits_.capacity) {
+        return CallReady::prepared;
+    }
+    return active->stage == Stage::barrier && control_.issue_ready(at, now_us) ? CallReady::other
+                                                                               : CallReady::idle;
 }
 
 // Evaluates all authority, lifecycle, content and timeout stop conditions for an active call.

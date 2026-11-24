@@ -190,10 +190,13 @@ CallRuntime::Advance CallRuntime::dispatch(uint32_t index, uint32_t task_index, 
                                          work_.calls.input(index), contract, input) != AYNI_OK) {
         return Advance::internal;
     }
-    const auto authority =
-        check_input(task_index, catalogs_.bindings.at(binding_index), work_.calls.domain(index),
-                    input, contract, *proof, host_.monotonic_now_us(host_.ctx), durable_seq,
-                    work_.calls.identity(index).call_id);
+    const auto authority = task_index == no_task
+                               ? work_.check_ephemeral_call_authority(
+                                     index, host_.monotonic_now_us(host_.ctx), durable_seq)
+                               : check_input(task_index, catalogs_.bindings.at(binding_index),
+                                             work_.calls.domain(index), input, contract, *proof,
+                                             host_.monotonic_now_us(host_.ctx), durable_seq,
+                                             work_.calls.identity(index).call_id);
     if (authority.status != AYNI_OK) {
         return authority.status == AYNI_BUSY ? Advance::idle : cancel_local(index, task_index);
     }
@@ -203,7 +206,7 @@ CallRuntime::Advance CallRuntime::dispatch(uint32_t index, uint32_t task_index, 
     }
     // The permit's challenge is answered in a later item, so this recheck
     // runs again before the nonce it brings is used (ADR-0052).
-    switch (control_.issue(index, slots_[index].active->claim, input.arguments, now_us)) {
+    switch (control_.issue(index, slots_[index].active->claim, input, *proof, now_us)) {
     case PermitIssue::issued:
         break;
     case PermitIssue::requested:
@@ -218,11 +221,13 @@ CallRuntime::Advance CallRuntime::dispatch(uint32_t index, uint32_t task_index, 
     case PermitIssue::defect:
         return Advance::internal;
     }
-    if (!task_export_current({work_, host_.monotonic_now_us(host_.ctx), durable_seq}, task_index,
+    if (task_index != no_task &&
+        !task_export_current({work_, host_.monotonic_now_us(host_.ctx), durable_seq}, task_index,
                              catalogs_.bindings.at(binding_index))) {
         return cancel_local(index, task_index);
     }
-    if (!model_context_current(task_index, id.model_context, host_.monotonic_now_us(host_.ctx),
+    if (task_index != no_task &&
+        !model_context_current(task_index, id.model_context, host_.monotonic_now_us(host_.ctx),
                                durable_seq)) {
         const auto result = cancel_local(index, task_index);
         if (result == Advance::applied) {
@@ -293,7 +298,9 @@ CallRuntime::Advance CallRuntime::submit_provider(uint32_t index, uint32_t task_
                 AYNI_OK) {
                 return Advance::internal;
             }
-            work_.tasks.end_volatile_call(task_index, id.call_id);
+            if (task_index != no_task) {
+                work_.tasks.end_volatile_call(task_index, id.call_id);
+            }
         } else {
             const auto stamp = work_.transitions.next();
             if (work_.calls.rejected_not_retained(index, {work_.ids.boot_epoch(), stamp}) !=

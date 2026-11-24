@@ -56,11 +56,13 @@ ayni_status_t ayni_copy_call_result(const ayni_kernel_t *kernel, uint64_t logica
         return AYNI_RESULT_UNKNOWN;
     }
     uint32_t task_index = 0;
+    const bool task_ok =
+        state.reflex ||
+        (kernel->model().tasks.find(calls.identity(index).task_id, task_index) &&
+         ayni::kernel::task_content_current(
+             {kernel->model(), kernel->now_us(), kernel->writer_durable_seq()}, task_index));
     if (calls.record(index).result_kind == ayni::work::CallResultKind::unavailable ||
-        state.content_erased ||
-        !kernel->model().tasks.find(calls.identity(index).task_id, task_index) ||
-        !ayni::kernel::task_content_current(
-            {kernel->model(), kernel->now_us(), kernel->writer_durable_seq()}, task_index)) {
+        state.content_erased || !task_ok) {
         return AYNI_EXPIRED;
     }
     const auto saved = calls.record(index);

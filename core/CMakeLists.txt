@@ -132,6 +132,7 @@ ayni_add_core_module(kernel
         kernel/api/executor_completion_api.cpp
         kernel/api/kernel_api.cpp
         kernel/api/observation_api.cpp
+        kernel/api/reflex_api.cpp
         kernel/api/subscription_api.cpp
         kernel/api/provider_api.cpp
         kernel/api/provider_completion_api.cpp
@@ -175,6 +176,7 @@ ayni_add_core_module(kernel
         kernel/service/execution/execution_control.cpp
         kernel/runtime/ingress/event_ingress.cpp
         kernel/runtime/ingress/observation_ingress.cpp
+        kernel/runtime/ingress/observation_slots.cpp
         kernel/runtime/ingress/observation_subscription_ingress.cpp
         kernel/runtime/ingress/event_queue.cpp
         kernel/service/intent/authority_intent.cpp
@@ -221,6 +223,8 @@ ayni_add_core_module(kernel
         kernel/service/persistence/work_journal.cpp
         kernel/service/persistence/work_replay.cpp
         kernel/service/persistence/work_snapshot.cpp
+        kernel/service/reflex/reflex_engine.cpp
+        kernel/service/reflex/reflex_table.cpp
         kernel/runtime/storage/storage_budget.cpp
         kernel/runtime/storage/storage_maintenance.cpp
     DEPENDS work authority resources knowledge catalog durability foundation)

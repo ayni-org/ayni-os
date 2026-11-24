@@ -805,4 +805,152 @@ bool CallRuntime::action_occupied(uint64_t task_id) const {
     }
     return false;
 }
+// Selects the best live, durable, non-Goal-bound Grant for a reflex AgentInstance covering
+// every projected row of input (ADR-0112). Never bypasses Grant Scope or attenuation.
+bool CallRuntime::select_reflex_grant(uint64_t instance_id, const catalog::Binding &binding,
+                                      ayni_bytes_v1 domain, const work::CallInputView &input,
+                                      const catalog::CallContract &contract,
+                                      const catalog::DecodedBusiness &proof, uint64_t now_us,
+                                      uint64_t durable_seq, work::AuthorityReference &out) const {
+    std::optional<uint32_t> candidate;
+    for (uint32_t at = 0; at < work_.grants.size(); ++at) {
+        const auto &grant = work_.grants.at(at);
+        if (grant.subject_instance_id != instance_id || grant.bound_goal_id != 0U ||
+            !work_.grants.covers_saved_scope(at, binding.capability, binding.capability_version,
+                                             domain, work_.grants.scope(at),
+                                             contract.business_contract) ||
+            work_.check_grant(at, now_us, durable_seq, 0U).status != AYNI_OK) {
+            continue;
+        }
+        const auto covered = authority::contains_business_request(
+            binding, domain, proof.view(), input.value.view(), work_.grants.scope(at));
+        if (covered.status != AYNI_OK || !covered.covered) {
+            continue;
+        }
+        if (!candidate || authority::prefer_admitted_grant(grant, work_.grants.at(*candidate))) {
+            candidate = at;
+        }
+    }
+    if (!candidate) {
+        return false;
+    }
+    const auto &grant = work_.grants.at(*candidate);
+    out = {grant.grant_id, grant.revision};
+    return true;
+}
+
+// Builds identity and enqueues a preflighted reflex Call purely in RAM (0 WAL, ADR-0112).
+ayni_status_t admit_reflex_entry(
+    WorkModel &work, const Catalogs &catalogs, resources::ResourceAdmission &resources,
+    const catalog::Binding &binding, const catalog::BindingLinks &links,
+    const work::AuthorityReference &authorization,
+    const std::optional<work::ExecutionFact> &execution, uint64_t instance_id,
+    ayni_string_v1 rule_id, ayni_bytes_v1 encoded_input, const resources::ResourceRequest &request,
+    uint64_t now_us, uint32_t &out_index, uint64_t &out_call_id) {
+    work::CallIdentity identity{};
+    if (!work.ids.allocate(identity.call_id) || !work.ids.allocate(identity.operation_id) ||
+        !identity.step_key.assign(rule_id)) {
+        return AYNI_INTERNAL;
+    }
+    identity.authorization = authorization;
+    identity.mode = AYNI_CALL_MODE_FOREGROUND;
+    identity.task_id = 0U;
+    identity.owner_instance_id = instance_id;
+    identity.binding_id = binding.id;
+    identity.binding_version = binding.version;
+    identity.capability_id = binding.capability;
+    identity.capability_version = binding.capability_version;
+    identity.provider_id = binding.provider;
+    identity.provider_version = binding.provider_version;
+    identity.endpoint = binding.endpoint;
+    identity.destination = binding.destination;
+    auto req = request;
+    req.call_id = identity.call_id;
+    const auto domain = catalogs.capabilities.domain_view(links.capability);
+    if (work.calls.insert_ephemeral(identity, links.contract, domain, encoded_input,
+                                    work.ids.boot_epoch(), out_index, true) != AYNI_OK ||
+        resources.enqueue(req, now_us) != AYNI_OK) {
+        return AYNI_INTERNAL;
+    }
+    if (execution) {
+        work.calls.attach_execution(out_index, *execution);
+    }
+    out_call_id = identity.call_id;
+    return AYNI_OK;
+}
+
+// Admits a zero-LLM, zero-WAL deterministic EPHEMERAL reflex Call (ADR-0112).
+// Preflights live RUNNING AgentInstance, Grant Scope, Scene/observations, control envelope,
+// and bounded table capacities before allocating IDs or mutating any runtime table.
+ayni_status_t CallRuntime::submit_reflex_call(uint64_t owner_agent_id, uint32_t binding_index,
+                                              ayni_string_v1 rule_id, ayni_bytes_v1 encoded_input,
+                                              uint64_t now_us, uint64_t durable_seq,
+                                              uint64_t &out_call_id) {
+    out_call_id = 0;
+    const auto *agent = work_.agents.find_agent(owner_agent_id);
+    if (agent == nullptr || agent->instance_id == 0U ||
+        work::AgentTable::effective_lifecycle(*agent) != AYNI_AGENT_RUNNING) {
+        return AYNI_DENIED;
+    }
+    const auto &binding = catalogs_.bindings.at(binding_index);
+    catalog::BindingLinks links{};
+    if (catalog::BindingRegistry::resolve(binding, catalogs_.capabilities,
+                                          catalogs_.call_capabilities, catalogs_.providers,
+                                          catalogs_.resources, links) != AYNI_OK ||
+        catalogs_.dispatchable(binding, links) != AYNI_OK || !links.contract.is_ephemeral() ||
+        links.contract.subscription.has_value() ||
+        links.contract.category != catalog::CallClass::tool) {
+        return AYNI_UNSUPPORTED;
+    }
+    const auto domain = catalogs_.capabilities.domain_view(links.capability);
+    auto input_lease = work_.workspace.make<work::CallInputView>();
+    auto proof_lease = work_.workspace.make<catalog::DecodedBusiness>();
+    if (!input_lease || !proof_lease) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    if (catalog::read_admitted_business(work_.workspace, links.contract.business_contract,
+                                        *proof_lease) != AYNI_OK ||
+        work::read_call_input_with_proof(work_.workspace, *proof_lease, domain, encoded_input,
+                                         links.contract, *input_lease) != AYNI_OK) {
+        return AYNI_INTERNAL;
+    }
+    work::AuthorityReference authorization{};
+    if (!select_reflex_grant(agent->instance_id, binding, domain, *input_lease, links.contract,
+                             *proof_lease, now_us, durable_seq, authorization)) {
+        return AYNI_DENIED;
+    }
+    std::optional<work::ExecutionFact> execution;
+    const auto exec_check = control_.prepare(links.contract, binding, domain, *input_lease,
+                                             *proof_lease, now_us, durable_seq, 0U, execution);
+    if (exec_check.status != AYNI_OK) {
+        return exec_check.status;
+    }
+    if (!work_.calls.has_room() || !resources_.has_room() ||
+        !work_.ids.available(identities_per_call) ||
+        links.contract.result_text_limit > limits_.result_bytes) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    catalog::WorkProfile foreground_profile{};
+    foreground_profile.kind = AYNI_WORK_FOREGROUND;
+    auto req = resource_request(0U, agent->instance_id, links, links.contract, foreground_profile,
+                                AYNI_CALL_PREEMPT_SUPERSEDE);
+    if (links.contract.timeout_ms != 0U) {
+        req.wait_us = uint64_t{links.contract.timeout_ms} * microseconds_per_millisecond;
+    }
+    uint32_t index = 0;
+    const auto status = admit_reflex_entry(work_, catalogs_, resources_, binding, links,
+                                           authorization, execution, agent->instance_id, rule_id,
+                                           encoded_input, req, now_us, index, out_call_id);
+    if (status == AYNI_OK) {
+        slots_[index].active = Active{out_call_id,
+                                      Stage::queued,
+                                      {},
+                                      std::nullopt,
+                                      std::nullopt,
+                                      true,
+                                      AYNI_CALL_PREEMPT_SUPERSEDE};
+    }
+    return status;
+}
+
 } // namespace ayni::kernel

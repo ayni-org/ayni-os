@@ -135,13 +135,26 @@ authority::GrantCheck WorkModel::check_ephemeral_call_authority(uint32_t call_in
                                                                 uint64_t durable_seq) const {
     const auto &state = calls.state(call_index);
     const auto &id = calls.identity(call_index);
-    if (!state.ephemeral || id.authorization.grant_id == 0U) {
+    if (state.reflex) {
+        // Reflex Calls belong to a live RUNNING AgentInstance, never a Task/Goal (ADR-0112).
+        const auto *agent = agents.find_instance(id.owner_instance_id);
+        if (agent == nullptr ||
+            work::AgentTable::effective_lifecycle(*agent) != AYNI_AGENT_RUNNING) {
+            return {AYNI_DENIED, AYNI_REASON_GRANT_SUBJECT};
+        }
+        if (id.authorization.grant_id == 0U) {
+            return {AYNI_DENIED, AYNI_REASON_GOAL_AUTHORITY_MISSING};
+        }
+    } else if (!state.ephemeral || id.authorization.grant_id == 0U) {
         return {AYNI_OK, AYNI_REASON_NONE};
     }
     uint32_t grant_index = 0;
     if (!grants.find(id.authorization.grant_id, grant_index) ||
         grants.at(grant_index).revision != id.authorization.revision) {
         return {AYNI_DENIED, AYNI_REASON_GOAL_AUTHORITY_MISSING};
+    }
+    if (state.reflex) {
+        return check_grant(grant_index, now_us, durable_seq, 0U);
     }
     uint32_t task_index = 0;
     if (!tasks.find(id.task_id, task_index)) {

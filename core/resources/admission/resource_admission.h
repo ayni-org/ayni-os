@@ -118,6 +118,10 @@ class ResourceAdmission {
     uint32_t conflicting_holders(uint64_t waiter_call_id, HeldConflict *out, uint32_t max_out,
                                  bool &out_blocked_by_unavailable, uint64_t &out_waiter_ticket,
                                  Priority &out_waiter_priority) const;
+    // Lists held Call IDs occupying resource_index or any resource in its conflict
+    // domain without mutating queue state (ADR-0112). Returns total matching holders.
+    uint32_t holders_of_resource(uint32_t resource_index, uint64_t *out_call_ids,
+                                 uint32_t max_count) const;
     // Earliest pending finite wait deadline; no_deadline if none.
     uint64_t next_deadline_us() const;
     // Boot-local peak wait among requests acquired or removed.

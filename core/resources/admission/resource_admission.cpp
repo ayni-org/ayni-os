@@ -426,6 +426,37 @@ uint32_t ResourceAdmission::conflicting_holders(uint64_t waiter_call_id, HeldCon
     return total;
 }
 
+// Lists held Call IDs occupying resource_index or any conflict-domain partner without
+// mutating queue state, used by ReflexEngine SOFT_STOP_RESOURCE (ADR-0112).
+uint32_t ResourceAdmission::holders_of_resource(uint32_t resource_index, uint64_t *out_call_ids,
+                                                uint32_t max_count) const {
+    if (resource_index >= registry_.size()) {
+        return 0;
+    }
+    uint32_t total = 0;
+    for (uint32_t at = 0; at < requests_.size(); ++at) {
+        const auto &entry = requests_[at];
+        if (entry.phase != Phase::held) {
+            continue;
+        }
+        bool matches = false;
+        for (uint32_t h = 0; h < entry.request.count; ++h) {
+            const uint32_t held_res = entry.request.resources[h].index;
+            if (held_res == resource_index || registry_.conflict(resource_index, held_res)) {
+                matches = true;
+                break;
+            }
+        }
+        if (matches) {
+            if (out_call_ids != nullptr && total < max_count) {
+                out_call_ids[total] = entry.request.call_id;
+            }
+            ++total;
+        }
+    }
+    return total;
+}
+
 uint64_t ResourceAdmission::next_deadline_us() const {
     uint64_t next = no_deadline;
     for (uint32_t index = 0; index < requests_.size(); ++index) {

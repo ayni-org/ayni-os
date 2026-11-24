@@ -2,6 +2,7 @@
 #ifndef AYNI_CORE_CATALOG_EXECUTION_REGISTRY_H
 #define AYNI_CORE_CATALOG_EXECUTION_REGISTRY_H
 #include "catalog/binding/binding_registry.h"
+#include "catalog/capability/business_encoding.h"
 #include "foundation/workspace.h"
 #include <ayni/execution.h>
 namespace ayni::catalog {
@@ -36,6 +37,13 @@ bool same_execution_binding(const ExecutionBinding &left, const ExecutionBinding
 // sources and unit/range mismatches; never clamp, substitute or infer a parameter.
 ayni_status_t execution_envelope(const ExecutionBinding &binding, ayni_bytes_v1 arguments,
                                  ayni_control_envelope_v1 &out);
+// Shared envelope derivation for both fixed PROCEDURE (single row) and multi-row SESSION
+// VALUE inputs (ADR-0084, ADR-0112): for AYNI_FORM_SESSION with list projections, takes the
+// exact tight [min, max] union across every authorized row instead of silently selecting row 0.
+ayni_status_t execution_envelope_for_value(const ExecutionBinding &binding,
+                                           const ayni_business_contract_v1 &proof,
+                                           const ayni_value_v1 &value, ayni_bytes_v1 fallback_args,
+                                           ayni_control_envelope_v1 &out);
 
 class ExecutionRegistry {
   public:

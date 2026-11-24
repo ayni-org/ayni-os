@@ -58,6 +58,9 @@ void CallRuntime::release(uint32_t index, uint64_t now_us) {
             control_.release_ephemeral_stopped(active->call_id)) {
             // Confirmed ephemeral physical stop lifts RAM quarantine immediately (ADR-0110).
             active.reset();
+            if (work_.calls.state(index).reflex && work_.calls.state(index).outcome != 0U) {
+                static_cast<void>(work_.calls.retire_ephemeral(index));
+            }
             work_.forget_due_work();
             return;
         }
@@ -76,6 +79,10 @@ void CallRuntime::release(uint32_t index, uint64_t now_us) {
         static_cast<void>(resources_.remove_waiter(active->call_id, now_us));
     }
     active.reset();
+    if (work_.calls.occupied(index) && work_.calls.state(index).reflex &&
+        work_.calls.state(index).outcome != 0U) {
+        static_cast<void>(work_.calls.retire_ephemeral(index));
+    }
     // The task table reads this slot (runtime_retains) without a transition.
     work_.forget_due_work();
 }
@@ -111,6 +118,100 @@ bool CallRuntime::privacy_released() const {
     return true;
 }
 
+bool CallRuntime::resolve_call_task(uint32_t call_index, uint32_t &out_task_index) const {
+    if (work_.calls.state(call_index).reflex) {
+        out_task_index = no_task;
+        return true;
+    }
+    return work_.tasks.find(work_.calls.identity(call_index).task_id, out_task_index);
+}
+
+bool CallRuntime::reflex_call_active(uint64_t call_id) const {
+    uint32_t index = 0;
+    return call_id != 0U && (control_.holds_lease(call_id) || active_index(call_id, index));
+}
+
+bool CallRuntime::has_ephemeral_holder(uint32_t resource_index) const {
+    std::array<uint64_t, AYNI_RESOURCE_REQUEST_CAPACITY_MAX> holders{};
+    const uint32_t total = resources_.holders_of_resource(resource_index, holders.data(),
+                                                          static_cast<uint32_t>(holders.size()));
+    const uint32_t limit = total < holders.size() ? total : static_cast<uint32_t>(holders.size());
+    for (uint32_t at = 0; at < limit; ++at) {
+        uint32_t index = 0;
+        if (!work_.calls.find(holders[at], index)) {
+            continue;
+        }
+        const auto &state = work_.calls.state(index);
+        if (state.ephemeral && state.outcome == 0U &&
+            state.cancel_cause == work::CallCancelCause::none &&
+            work_.calls.contract(index).cancel != catalog::CancelMode::none) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Soft-stops and cancels every eligible uncancelled EPHEMERAL holder on resource_index.
+// Tier 2 DURABLE and non-cancellable holders are never preempted (ADR-0111/0112).
+ayni_status_t CallRuntime::preempt_resource(uint32_t resource_index, uint64_t,
+                                            work::CallCancelCause cause, uint64_t &out_affected) {
+    out_affected = 0;
+    std::array<uint64_t, AYNI_RESOURCE_REQUEST_CAPACITY_MAX> holders{};
+    const uint32_t total = resources_.holders_of_resource(resource_index, holders.data(),
+                                                          static_cast<uint32_t>(holders.size()));
+    if (total == 0U) {
+        return AYNI_NOT_FOUND;
+    }
+    const uint32_t limit = total < holders.size() ? total : static_cast<uint32_t>(holders.size());
+    uint32_t stopped = 0;
+    bool saw_protected = false;
+    bool saw_stopping = false;
+    const ayni_reason_t reason =
+        cause == work::CallCancelCause::reflex ? AYNI_REASON_REFLEX : AYNI_REASON_PREEMPTED;
+    for (uint32_t at = 0; at < limit; ++at) {
+        uint32_t index = 0;
+        uint32_t task_index = no_task;
+        if (!work_.calls.find(holders[at], index) || !slots_[index].active ||
+            !resolve_call_task(index, task_index)) {
+            continue;
+        }
+        const auto &state = work_.calls.state(index);
+        if (!state.ephemeral || work_.calls.contract(index).cancel == catalog::CancelMode::none) {
+            saw_protected = true;
+            continue;
+        }
+        if (state.outcome != 0U || state.cancel_cause != work::CallCancelCause::none) {
+            saw_stopping = true;
+            continue;
+        }
+        auto &active = *slots_[index].active;
+        if (!submitted(active.stage)) {
+            if (cancel_local(index, task_index, reason) != Advance::applied) {
+                return AYNI_INTERNAL;
+            }
+        } else {
+            if (work_.calls.request_cancel(index, cause, {work_.ids.boot_epoch(), {0, 0}}) !=
+                AYNI_OK) {
+                return AYNI_INTERNAL;
+            }
+            if (control_.holds_lease(holders[at]) && !control_.request_stop(holders[at])) {
+                return AYNI_INTERNAL;
+            }
+            if (active.delivery && cancel_transport(*active.delivery) == Advance::internal) {
+                return AYNI_INTERNAL;
+            }
+        }
+        if (out_affected == 0U) {
+            out_affected = holders[at];
+        }
+        ++stopped;
+    }
+    if (stopped > 0U) {
+        return AYNI_OK;
+    }
+    return saw_protected && !saw_stopping ? AYNI_DENIED : AYNI_NOT_FOUND;
+}
+
 CallRuntime::Advance CallRuntime::expire_wait(uint32_t index, uint32_t task_index,
                                               resources::WaitAction action, uint64_t now_us) {
     if (action == resources::WaitAction::wait) {
@@ -118,7 +219,7 @@ CallRuntime::Advance CallRuntime::expire_wait(uint32_t index, uint32_t task_inde
     }
     if (work_.calls.state(index).ephemeral) {
         const uint64_t call_id = work_.calls.identity(index).call_id;
-        if (action == resources::WaitAction::skip) {
+        if (action == resources::WaitAction::skip && task_index != no_task) {
             if (work_.calls.skip_before_dispatch(index, {work_.ids.boot_epoch(), {0, 0}}) !=
                 AYNI_OK) {
                 return Advance::internal;
@@ -127,13 +228,15 @@ CallRuntime::Advance CallRuntime::expire_wait(uint32_t index, uint32_t task_inde
             work_.tasks.skip_queued_call(task_index, work_.transitions.next());
         } else {
             // Never set durable waiting_for_resource() for a RAM-only call; report failure
-            // in RAM so the strategy observes EXPIRED/RESOURCE_WAIT without replay drift.
+            // in RAM so the strategy or reflex rule observes EXPIRED/RESOURCE_WAIT without drift.
             if (work_.calls.fail_before_dispatch_ephemeral(index, AYNI_EXPIRED,
                                                            AYNI_REASON_RESOURCE_WAIT,
                                                            work_.ids.boot_epoch()) != AYNI_OK) {
                 return Advance::internal;
             }
-            work_.tasks.end_volatile_call(task_index, call_id);
+            if (task_index != no_task) {
+                work_.tasks.end_volatile_call(task_index, call_id);
+            }
         }
         release(index, now_us);
         return Advance::applied;
@@ -168,7 +271,9 @@ CallRuntime::Advance CallRuntime::cancel_local(uint32_t index, uint32_t task_ind
             AYNI_OK) {
             return Advance::internal;
         }
-        work_.tasks.end_volatile_call(task_index, work_.calls.identity(index).call_id);
+        if (task_index != no_task) {
+            work_.tasks.end_volatile_call(task_index, work_.calls.identity(index).call_id);
+        }
         release(index, host_.monotonic_now_us(host_.ctx));
         return Advance::applied;
     }
@@ -212,10 +317,9 @@ bool CallRuntime::collect_preempt_victims(uint32_t waiter_index, uint64_t now_us
                 ? holder.priority > waiter_priority
                 : (holder.priority >= waiter_priority && holder.ticket < waiter_ticket);
         uint32_t victim_index = 0;
-        uint32_t victim_task = 0;
+        uint32_t victim_task = no_task;
         if (!priority_ok || !work_.calls.find(holder.call_id, victim_index) ||
-            !slots_[victim_index].active ||
-            !work_.tasks.find(work_.calls.identity(victim_index).task_id, victim_task)) {
+            !slots_[victim_index].active || !resolve_call_task(victim_index, victim_task)) {
             return false;
         }
         const auto &victim_state = work_.calls.state(victim_index);
@@ -253,21 +357,23 @@ CallRuntime::Advance CallRuntime::trigger_preemption(uint32_t waiter_index, uint
     }
     for (uint32_t at = 0; at < count; ++at) {
         const uint32_t victim_index = victims[at];
-        uint32_t victim_task = 0;
-        if (!slots_[victim_index].active ||
-            !work_.tasks.find(work_.calls.identity(victim_index).task_id, victim_task)) {
+        uint32_t victim_task = no_task;
+        if (!slots_[victim_index].active || !resolve_call_task(victim_index, victim_task)) {
             return Advance::internal;
         }
         auto &victim_active = *slots_[victim_index].active;
+        const bool by_reflex = work_.calls.state(waiter_index).reflex;
+        const auto cancel_cause =
+            by_reflex ? work::CallCancelCause::reflex : work::CallCancelCause::preempted;
+        const auto cancel_reason = by_reflex ? AYNI_REASON_REFLEX : AYNI_REASON_PREEMPTED;
         if (!submitted(victim_active.stage)) {
-            if (cancel_local(victim_index, victim_task, AYNI_REASON_PREEMPTED) !=
-                Advance::applied) {
+            if (cancel_local(victim_index, victim_task, cancel_reason) != Advance::applied) {
                 return Advance::internal;
             }
             continue;
         }
-        const auto status = work_.calls.request_cancel(
-            victim_index, work::CallCancelCause::preempted, {work_.ids.boot_epoch(), {0, 0}});
+        const auto status = work_.calls.request_cancel(victim_index, cancel_cause,
+                                                       {work_.ids.boot_epoch(), {0, 0}});
         if (status != AYNI_OK) {
             return Advance::internal;
         }
@@ -432,6 +538,9 @@ CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,
         control_.stop_measured(id.call_id)) {
         return control_.commit_stop(index);
     }
+    if (state.reflex) {
+        return advance_reflex_call(index, now_us, durable_seq, mode);
+    }
     uint32_t task_index = 0;
     if (!work_.tasks.find(id.task_id, task_index)) {
         return Advance::internal;
@@ -499,6 +608,45 @@ CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,
         return Advance::idle;
     }
     return progress_dispatch(index, task_index, now_us, durable_seq);
+}
+
+// Advances a Task-less RAM-only ReflexRule Call through preemption, admission and dispatch
+// while re-verifying live Agent + Grant authority on every step (ADR-0112).
+CallRuntime::Advance CallRuntime::advance_reflex_call(uint32_t index, uint64_t now_us,
+                                                      uint64_t durable_seq, Mode mode) {
+    const auto &id = work_.calls.identity(index);
+    const auto &state = work_.calls.state(index);
+    if (slots_[index].active && slots_[index].active->stage == Stage::retiring) {
+        return Advance::idle;
+    }
+    if (state.outcome != 0U) {
+        if (!slots_[index].active) {
+            static_cast<void>(work_.calls.retire_ephemeral(index));
+        }
+        return Advance::idle;
+    }
+    if (!slots_[index].active || slots_[index].active->call_id != id.call_id) {
+        return Advance::internal;
+    }
+    const auto &active = *slots_[index].active;
+    const auto authority = work_.check_ephemeral_call_authority(index, now_us, durable_seq);
+    const bool expired = delivery_expired(index, now_us);
+    const bool denied = authority.status != AYNI_OK && authority.status != AYNI_BUSY;
+    if (mode != Mode::running || expired || denied ||
+        state.cancel_cause != work::CallCancelCause::none ||
+        (active.delivery && active.delivery->inhibition)) {
+        const auto cause = state.cancel_cause != work::CallCancelCause::none ? state.cancel_cause
+                           : active.delivery && active.delivery->inhibition
+                               ? *active.delivery->inhibition
+                           : mode != Mode::running ? work::CallCancelCause::shutdown
+                           : expired               ? work::CallCancelCause::deadline
+                                                   : work::CallCancelCause::authority;
+        return stop(index, no_task, mode, cause);
+    }
+    if (authority.status != AYNI_OK || mode == Mode::fenced) {
+        return Advance::idle;
+    }
+    return progress_dispatch(index, no_task, now_us, durable_seq);
 }
 
 // Resource admission determines order; table scanning never bypasses its fair

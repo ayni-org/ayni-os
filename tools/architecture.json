@@ -119,6 +119,7 @@
         "service/memory",
         "service/intent",
         "service/persistence",
+        "service/reflex",
         "config",
         "ports"
       ],
@@ -177,6 +178,11 @@
       "config": [],
       "service/memory": [
         "service/model"
+      ],
+      "service/reflex": [
+        "config",
+        "service/call",
+        "service/model"
       ]
     },
     "durability": {
@@ -192,6 +198,7 @@
   },
   "core_std_headers": [
     "array",
+    "atomic",
     "charconv",
     "system_error",
     "cstddef",

@@ -88,7 +88,8 @@ class ExecutionControl {
     // the executor's deadline. The caller rechecks authority, resources and
     // allowed before every call, so also after the answer arrived.
     PermitIssue issue(uint32_t index, const resources::ResourceClaim &claim,
-                      ayni_bytes_v1 arguments, uint64_t now_us);
+                      const work::CallInputView &input, const catalog::DecodedBusiness &proof,
+                      uint64_t now_us);
     // Read-only: whether issue would do more than wait for an answer.
     bool issue_ready(uint32_t index, uint64_t now_us) const;
     // The call left the dispatch path before its permit: its unanswered

@@ -16,6 +16,7 @@
 #include "kernel/service/persistence/work_journal.h"
 
 #include <ayni/ayni.h>
+#include <ayni/reflex.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -195,6 +196,12 @@ constexpr CapacityField capacity_fields[] = {
     {&ayni_config_v1::business_contract_max_bytes,
      {0U, AYNI_BUSINESS_CONTRACT_BYTES_MAX},
      &KernelCapacities::business_contract_max_bytes},
+    {&ayni_config_v1::reflex_capacity,
+     {0U, AYNI_REFLEX_CAPACITY_MAX},
+     &KernelCapacities::reflex_capacity},
+    {&ayni_config_v1::reflex_event_capacity,
+     {0U, AYNI_REFLEX_EVENT_CAPACITY_MAX},
+     &KernelCapacities::reflex_event_capacity},
 };
 
 // Read each bounded capacity once, then let validate_config resolve storage
@@ -214,6 +221,12 @@ ayni_status_t read_capacities(const ayni_config_v1 *config, KernelCapacities &ca
     if (capacities.observation_source_capacity != 0 &&
         capacities.observation_ingress_capacity == 0) {
         capacities.observation_ingress_capacity = AYNI_OBSERVATION_INGRESS_CAPACITY_DEFAULT;
+    }
+    if (capacities.reflex_capacity == 0U && capacities.reflex_event_capacity != 0U) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (capacities.reflex_capacity != 0U && capacities.reflex_event_capacity == 0U) {
+        capacities.reflex_event_capacity = AYNI_REFLEX_EVENT_CAPACITY_DEFAULT;
     }
     if (capacities.memory_body_max_bytes == 0U) {
         capacities.memory_body_max_bytes = AYNI_MEMORY_BODY_BYTES_DEFAULT;

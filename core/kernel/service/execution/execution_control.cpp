@@ -102,7 +102,10 @@ authority::GrantCheck ExecutionControl::prepare(
             return {status, AYNI_REASON_EXECUTION_OBSERVATION};
         }
     }
-    if (!work::valid_execution(fact, input.arguments)) {
+    ayni_control_envelope_v1 envelope{};
+    if (!work::valid_execution_metadata(fact) ||
+        catalog::execution_envelope_for_value(fact.binding, proof.view(), input.value.view(),
+                                              input.arguments, envelope) != AYNI_OK) {
         return {AYNI_INVALID_ARGUMENT, AYNI_REASON_GRANT_INPUT};
     }
     out_fact = fact;
@@ -241,7 +244,8 @@ bool ExecutionControl::any_due(uint32_t executor, uint64_t now_us) const {
 // nonce anchors the executor's deadline and the full envelope is derived from
 // authorized bytes. Nothing reaches a Provider before the lease is installed.
 PermitIssue ExecutionControl::issue(uint32_t index, const resources::ResourceClaim &claim,
-                                    ayni_bytes_v1 arguments, uint64_t now_us) {
+                                    const work::CallInputView &input,
+                                    const catalog::DecodedBusiness &proof, uint64_t now_us) {
     const auto &saved = work_.calls.state(index).execution;
     if (!saved) {
         return PermitIssue::issued;
@@ -298,7 +302,8 @@ PermitIssue ExecutionControl::issue(uint32_t index, const resources::ResourceCla
     // the permit to a remote gate has that long before a NOT_FOUND fences it.
     const uint64_t first_poll_us = foundation::deadline(
         now_us, work_.catalogs.execution.executor(executor).ports.poll_period_us);
-    if (catalog::execution_envelope(fact.binding, arguments, permit.envelope) != AYNI_OK ||
+    if (catalog::execution_envelope_for_value(fact.binding, proof.view(), input.value.view(),
+                                              input.arguments, permit.envelope) != AYNI_OK ||
         !permits_.install(id.call_id, executor, claim, permit, first_poll_us)) {
         return PermitIssue::refused;
     }
@@ -630,16 +635,24 @@ bool ExecutionControl::should_stop(const resources::PermitLease &lease, uint64_t
     }
     bool expired = false;
     uint32_t index = 0;
-    uint32_t task_index = 0;
     if (!transport_.holds(transport_.context, lease.call_id, now_us, expired) ||
-        !work_.calls.find(lease.call_id, index) ||
-        !work_.tasks.find(work_.calls.identity(index).task_id, task_index)) {
+        !work_.calls.find(lease.call_id, index)) {
+        return true;
+    }
+    const auto &state = work_.calls.state(index);
+    if (state.reflex) {
+        return expired || state.cancel_cause != work::CallCancelCause::none ||
+               work_.check_ephemeral_call_authority(index, now_us, durable_seq).status != AYNI_OK ||
+               !allowed(index, now_us, durable_seq) || !resources_.executable(lease.claim);
+    }
+    uint32_t task_index = 0;
+    if (!work_.tasks.find(work_.calls.identity(index).task_id, task_index)) {
         return true;
     }
     const auto &task = work_.tasks.at(task_index);
     return expired || task.call.end != work::TaskCall::End::none ||
            !work::TaskTable::is_live(task.lifecycle) || task.lifecycle == AYNI_TASK_PAUSED ||
-           work_.calls.state(index).cancel_cause != work::CallCancelCause::none ||
+           state.cancel_cause != work::CallCancelCause::none ||
            work_.check_task_authority(task_index, now_us, durable_seq).status != AYNI_OK ||
            work_.check_ephemeral_call_authority(index, now_us, durable_seq).status != AYNI_OK ||
            !allowed(index, now_us, durable_seq) || !resources_.executable(lease.claim);

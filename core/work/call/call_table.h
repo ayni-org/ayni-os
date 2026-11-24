@@ -47,8 +47,16 @@ struct CallIdentity {
 };
 
 // Cancellation intent is independent of remote stop and terminal outcome.
-// preempted is RAM-only for EPHEMERAL Calls (ADR-0111) and never persisted.
-enum class CallCancelCause : uint32_t { none = 0, user, authority, deadline, shutdown, preempted };
+// preempted and reflex are RAM-only for EPHEMERAL Calls (ADR-0111/0112) and never persisted.
+enum class CallCancelCause : uint32_t {
+    none = 0,
+    user,
+    authority,
+    deadline,
+    shutdown,
+    preempted,
+    reflex
+};
 
 // One explicit owner-requested reconciliation. Its attempt never replaces the
 // original execution attempt. Finished UNKNOWN may be queried again with a new command.
@@ -88,6 +96,8 @@ struct CallState {
     std::optional<ActionStamp> content_erased; // None retains bodies; otherwise irreversible
                                                // privacy stamp, independent of outcome.
     bool ephemeral = false; // True iff RAM-only Tier 0 call (ADR-0110); never journaled.
+    bool reflex = false;    // True iff owned by ReflexEngine (task_id == 0); never persisted
+                            // (ADR-0112).
 };
 
 // Borrowed terminal input already matched to the original attempt by the caller.
@@ -149,9 +159,11 @@ class CallTable {
                          uint32_t &index);
     // In-RAM Tier 0 EPHEMERAL admission (ADR-0110): requires contract.is_ephemeral()
     // and foreground mode; never journaled or included in compaction snapshots.
+    // reflex == true admits a Task-less ReflexRule Call (task_id == 0, ADR-0112).
     ayni_status_t insert_ephemeral(const CallIdentity &identity,
                                    const catalog::CallContract &contract, ayni_bytes_v1 domain,
-                                   ayni_bytes_v1 input, uint64_t boot_epoch, uint32_t &index);
+                                   ayni_bytes_v1 input, uint64_t boot_epoch, uint32_t &index,
+                                   bool reflex = false);
     // Confirm exactly the next start/renew ACK and detach initial Task admission atomically.
     ayni_status_t confirm_subscription(uint32_t index, uint64_t sequence, ActionStamp stamp);
     // Stop this generation; desired distinguishes a pause from explicit intent closure.
@@ -231,6 +243,9 @@ class CallTable {
     // Caller proved the Task terminal and can_retire_task true; wipes its bounded bodies.
     // Body references are released once release_seq is durable; zero (replay) forgets them.
     void retire_task(uint64_t task_id, uint64_t release_seq);
+    // Reclaims one terminal RAM-only reflex Call slot once its runtime borrow and physical stop
+    // have settled (ADR-0112). Returns false without modifying state if still retained.
+    bool retire_ephemeral(uint32_t index);
     // A body reference whose dropping commit is now durable, removed from the queue; false
     // when none is due. The caller hands it to the host body store's release.
     bool next_release(uint64_t durable_seq, ayni_body_ref_v1 &out);
@@ -312,7 +327,7 @@ class CallTable {
     // only.
     static bool valid_mode(const CallIdentity &, const catalog::CallContract &);
     static bool valid_identity(const CallIdentity &identity, ActionStamp stamp,
-                               bool ephemeral = false);
+                               bool ephemeral = false, bool reflex = false);
     static bool advances(const Entry &entry, ActionStamp stamp); // Strict stamp order in this boot.
     ayni_status_t check_result(ayni::foundation::Workspace &workspace, uint32_t index,
                                const CallResult &result)

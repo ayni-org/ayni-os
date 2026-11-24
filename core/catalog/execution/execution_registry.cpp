@@ -129,6 +129,100 @@ ayni_status_t execution_envelope(const ExecutionBinding &binding, ayni_bytes_v1 
     out = envelope;
     return AYNI_OK;
 }
+
+// Extracts one row's [min, max] bounds per execution channel from an already projected row.
+// Every channel must resolve to concrete integer values in its exact registered unit.
+namespace {
+bool read_projected_row(const ExecutionBinding &binding, const ProjectionRow &row,
+                        std::array<int64_t, AYNI_CONTROL_FIELD_COUNT_MAX> &minima,
+                        std::array<int64_t, AYNI_CONTROL_FIELD_COUNT_MAX> &maxima) {
+    std::array<bool, AYNI_CONTROL_FIELD_COUNT_MAX> lower{};
+    std::array<bool, AYNI_CONTROL_FIELD_COUNT_MAX> upper{};
+    for (uint32_t idx = 0; idx < row.count; ++idx) {
+        const auto &field = row.fields[idx];
+        for (uint32_t at = 0; at < binding.field_count; ++at) {
+            const auto &mapping = binding.fields[at];
+            if (field.field_id != mapping.minimum_field &&
+                field.field_id != mapping.maximum_field) {
+                continue;
+            }
+            if (field.allowed.kind != AYNI_AUTHORITY_I64 ||
+                !mapping.unit.equals(field.allowed.unit) ||
+                field.allowed.values.integer.min_inclusive !=
+                    field.allowed.values.integer.max_inclusive) {
+                return false;
+            }
+            const int64_t val = field.allowed.values.integer.min_inclusive;
+            if (field.field_id == mapping.minimum_field) {
+                lower[at] = true;
+                minima[at] = val;
+            }
+            if (field.field_id == mapping.maximum_field) {
+                upper[at] = true;
+                maxima[at] = val;
+            }
+        }
+    }
+    for (uint32_t at = 0; at < binding.field_count; ++at) {
+        if (!lower[at] || !upper[at] || minima[at] > maxima[at]) {
+            return false;
+        }
+    }
+    return true;
+}
+} // namespace
+
+// For AYNI_FORM_SESSION with multi-row list inputs, builds the tight [min, max] union across
+// every authorized row so ControlGate validates all streamed segments (ADR-0112).
+ayni_status_t execution_envelope_for_value(const ExecutionBinding &binding,
+                                           const ayni_business_contract_v1 &proof,
+                                           const ayni_value_v1 &value, ayni_bytes_v1 fallback_args,
+                                           ayni_control_envelope_v1 &out) {
+    if (binding.form != AYNI_FORM_SESSION || proof.projection_count == 0U ||
+        value.node_count == 0U) {
+        return execution_envelope(binding, fallback_args, out);
+    }
+    const uint32_t rows = projection_rows(proof, value);
+    if (rows == 0U) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (rows == 1U) {
+        return execution_envelope(binding, fallback_args, out);
+    }
+    std::array<int64_t, AYNI_CONTROL_FIELD_COUNT_MAX> union_min{};
+    std::array<int64_t, AYNI_CONTROL_FIELD_COUNT_MAX> union_max{};
+    for (uint32_t row_idx = 0; row_idx < rows; ++row_idx) {
+        ProjectionRow row{};
+        const auto projected = project_row(proof, value, row_idx, row);
+        if (projected != AYNI_OK) {
+            return projected;
+        }
+        std::array<int64_t, AYNI_CONTROL_FIELD_COUNT_MAX> row_min{};
+        std::array<int64_t, AYNI_CONTROL_FIELD_COUNT_MAX> row_max{};
+        if (!read_projected_row(binding, row, row_min, row_max)) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        for (uint32_t at = 0; at < binding.field_count; ++at) {
+            if (row_idx == 0U || row_min[at] < union_min[at]) {
+                union_min[at] = row_min[at];
+            }
+            if (row_idx == 0U || row_max[at] > union_max[at]) {
+                union_max[at] = row_max[at];
+            }
+        }
+    }
+    ayni_control_envelope_v1 envelope{};
+    envelope.count = binding.field_count;
+    for (uint32_t at = 0; at < binding.field_count; ++at) {
+        if (union_min[at] > union_max[at]) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        envelope.fields[at] = {binding.fields[at].id.snapshot(), binding.fields[at].unit.snapshot(),
+                               union_min[at], union_max[at]};
+    }
+    out = envelope;
+    return AYNI_OK;
+}
 std::size_t ExecutionRegistry::storage_size(uint32_t executors, uint32_t bindings) {
     return foundation::BoundedArray<Executor>::storage_size(executors) +
            foundation::BoundedArray<ExecutionBinding>::storage_size(bindings);
@@ -287,9 +381,11 @@ ayni_status_t ExecutionRegistry::validate_all(ayni::foundation::Workspace &works
                         continue;
                     }
                     for (uint32_t depth = 0; depth < projection.path_count; ++depth) {
-                        // ADR-0084: one permit cannot silently select the first
-                        // element of a multi-value physical control process.
-                        if (projection.path[depth] == AYNI_PROJECTION_LIST_ITEM) {
+                        // ADR-0084: fixed PROCEDURE permits cannot silently select row 0 of a list.
+                        // AYNI_FORM_SESSION derives the exact [min, max] union across all rows
+                        // (ADR-0112).
+                        if (projection.path[depth] == AYNI_PROJECTION_LIST_ITEM &&
+                            spec.form != AYNI_FORM_SESSION) {
                             return AYNI_UNSUPPORTED;
                         }
                     }
