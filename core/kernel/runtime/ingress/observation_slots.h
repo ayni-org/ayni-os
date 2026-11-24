@@ -1,7 +1,7 @@
 // Per-source triple-buffered lock-free latest-wins observation slots (ADR-0112).
 // Any non-ISR Host thread writes without blocking or mutex contention; the single Kernel owner
 // drains dirty slots at the start of ayni_step() before refreshing gates or evaluating reflexes.
-// Disjoint buffer ownership guarantees zero C++17 data races (TSan clean).
+// Each buffer has disjoint writer and reader ownership.
 #ifndef AYNI_CORE_KERNEL_INGRESS_OBSERVATION_SLOTS_H
 #define AYNI_CORE_KERNEL_INGRESS_OBSERVATION_SLOTS_H
 #include "catalog/observation/source_registry.h"
@@ -32,8 +32,9 @@ class ObservationSlots {
     // Sets out_wake = true when transitioning clean->dirty so caller wakes owner outside locks.
     ayni_status_t publish_latest(uint64_t boot_epoch, const knowledge::ObservationInput &input,
                                  bool &out_wake);
-    // Owner: drains one dirty source slot race-free; returns false if clean.
-    bool drain(uint32_t source_index, knowledge::ObservationInput &out);
+    // Owner: one dirty slot consumes an item even if its boot epoch is stale.
+    enum class Drain { empty, stale, sample };
+    Drain drain(uint32_t source_index, knowledge::ObservationInput &out);
     // Owner: returns true iff any source slot currently holds an unread sample.
     bool any_dirty() const;
     // Owner: records owner-side acceptance or clock/sequence rejection of drained samples.

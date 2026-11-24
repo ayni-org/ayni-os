@@ -365,6 +365,11 @@ bool WorkModel::goal_boot_reset_pending(uint32_t goal_index) const {
            foundation::id_boot_epoch(goal.goal_id) < ids.boot_epoch();
 }
 
+bool WorkModel::goal_lineage_boot_reset_pending(uint32_t goal_index) const {
+    return !goals.visit_lineage(goal_index,
+                                [&](uint32_t at) { return !goal_boot_reset_pending(at); });
+}
+
 bool refresh_due_work(WorkModel &model, uint64_t now_us, uint64_t &out_next_us,
                       uint64_t durable_seq) {
     uint32_t boot_reset_index = 0;

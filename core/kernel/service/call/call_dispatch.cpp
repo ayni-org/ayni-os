@@ -87,7 +87,7 @@ CallRuntime::Advance CallRuntime::restore_wait(uint32_t index, uint32_t task_ind
     // Old-boot CANCEL_ON_REBOOT Goals wait for do_due_work() to cancel them (ADR-0110).
     // Only never-dispatched calls reach this gate (ADR-0047).
     if (work::TaskTable::is_held(task) || task.lifecycle == AYNI_TASK_PAUSED ||
-        work_.goal_boot_reset_pending(task.goal_index)) {
+        work_.goal_lineage_boot_reset_pending(task.goal_index)) {
         return Advance::idle;
     }
     catalog::BindingLinks links{};

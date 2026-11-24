@@ -4,7 +4,6 @@
 #include "synthetic_history.h"
 #include "tool_io_window.h"
 #include "wake.h"
-#include "write_pacing.h"
 #include <algorithm>
 #include <ayni/bodies.h>
 #include <ayni/host_authority.h>
@@ -758,8 +757,9 @@ ayni_status_t Chat::configure_strategy() {
     config.limits = {harness::context_window_tokens, harness::max_output_tokens,
                      harness::compact_target_tokens, harness::tool_result_max_tokens};
     config.bodies = bodies_.store();
-    config.persistence = ayni::strategies::Persistence::background;
-    config.body_progress = {&bodies_, ayni::runtime::FileBodies::progress};
+    config.persistence = ayni::strategies::Persistence::turn_boundary;
+    config.body_progress = {&bodies_, ayni::runtime::FileBodies::progress,
+                            ayni::runtime::FileBodies::discard_unconfirmed};
     config.tool_exposure = ayni::strategies::ToolExposure::preloaded;
     config.reply_encoding = config.summary_reply_encoding = ayni::model::ReplyEncoding::framed;
     protocol_options_.model = selection_.model.data();
@@ -1553,70 +1553,6 @@ void Chat::diagnostics() {
         status(0, "session metadata exceeded diagnostic capacity");
     }
 }
-// Pause non-blocking FileBodies persistence/cleanup during hot Core/decision/dispatch-barrier
-// transitions, HTTP Provider waits, and the pre-stop guard band of active motor procedures.
-// Unpauses during active motor runs with remaining time > motor_write_guard_us, and immediately
-// on stalled resources, terminal/held Tasks, forgetting, or closing.
-bool Chat::hot_tool_transition() const {
-    if (!kernel_ || closing_ != Closing::open || forget_ != Forget::none ||
-        turn_state_ != Turn::running || probe_.has_value()) {
-        return false;
-    }
-    const uint64_t goal_id = history_.latest_goal();
-    if (!goal_id) {
-        return false;
-    }
-    auto goal = sized<ayni_goal_info_v1>();
-    if (ayni_get_goal(kernel_, goal_id, &goal) != AYNI_OK || !goal.last_task_id) {
-        return false;
-    }
-    auto task = sized<ayni_task_info_v1>();
-    if (ayni_get_task(kernel_, goal.last_task_id, &task) != AYNI_OK) {
-        return false;
-    }
-    WritePacingInput in{};
-    in.task_lifecycle = task.lifecycle;
-    in.now_us = uint64_t(esp_timer_get_time());
-    in.motor_expected_stop_us = motor_.execution().expected_stop_us();
-    if (task.lifecycle == AYNI_TASK_RUNNING && task.logical_call_id) {
-        auto call = sized<ayni_call_info_v1>();
-        if (ayni_get_call(kernel_, task.logical_call_id, &call) == AYNI_OK) {
-            in.has_active_call = true;
-            in.call_outcome = call.outcome;
-            in.call_wait = call.wait_reason;
-        }
-    } else if (task.lifecycle == AYNI_TASK_WAITING) {
-        uint64_t ids[call_slots]{};
-        uint32_t count = 0;
-        if (ayni_list_objects(kernel_, AYNI_OBJECT_CALL, ids, call_slots, &count) == AYNI_OK) {
-            for (uint32_t at = 0; at < count; ++at) {
-                auto call = sized<ayni_call_info_v1>();
-                if (ayni_get_call(kernel_, ids[at], &call) != AYNI_OK ||
-                    call.task_id != task.task_id) {
-                    continue;
-                }
-                const bool pending_transition =
-                    call.outcome == 0U && (call.wait_reason == AYNI_CALL_WAIT_NONE ||
-                                           call.wait_reason == AYNI_CALL_WAIT_DURABILITY);
-                const bool completion_durability =
-                    call.outcome != 0U && call.wait_reason == AYNI_CALL_WAIT_DURABILITY;
-                if (pending_transition || completion_durability) {
-                    in.has_active_call = true;
-                    in.call_outcome = call.outcome;
-                    in.call_wait = call.wait_reason;
-                    break;
-                }
-                if (call.outcome == 0U && call.wait_reason == AYNI_CALL_WAIT_PROVIDER &&
-                    !in.has_active_call) {
-                    in.has_active_call = true;
-                    in.call_outcome = call.outcome;
-                    in.call_wait = call.wait_reason;
-                }
-            }
-        }
-    }
-    return should_pause_background_writes(in);
-}
 ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
     again = progress_ = false;
     report = sized<ayni_step_report_v1>();
@@ -1650,13 +1586,6 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
     }
     auto info = sized<ayni_kernel_info_v1>();
     auto rc = ayni_get_kernel_info(kernel_, &info);
-    // Pause background body persistence across ayni_step() during an active chat turn so
-    // completion/decision confirm() calls do not queue Flash writes ahead of Core commits;
-    // re-evaluate immediately afterward so idle Provider waits and terminal turns drain.
-    const bool pause_for_step = rc == AYNI_OK && closing_ == Closing::open &&
-                                forget_ == Forget::none && turn_state_ == Turn::running &&
-                                !probe_.has_value() && info.lifecycle == AYNI_LIFECYCLE_RUNNING;
-    bodies_.set_background_writes_paused(pause_for_step);
     // STOPPED cannot be stepped again while asynchronous device workers are joining.
     if (rc == AYNI_OK && info.lifecycle != AYNI_LIFECYCLE_STOPPED) {
         const auto started = uint64_t(esp_timer_get_time());
@@ -1676,8 +1605,6 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
             }
         }
     }
-    bodies_.set_background_writes_paused(
-        rc == AYNI_OK && info.lifecycle == AYNI_LIFECYCLE_RUNNING && hot_tool_transition());
     if (rc != AYNI_OK) {
         return rc;
     }
@@ -1905,7 +1832,7 @@ ayni_status_t Chat::prepare_history(const ayni_kernel_info_v1 &info) {
                 return out;
             }};
         config.unfinished = ayni::runtime::conversation::UnfinishedTurn::discard;
-        config.persistence = ayni::strategies::Persistence::background;
+        config.persistence = ayni::strategies::Persistence::turn_boundary;
         config.observer = {this, on_publication_stage, on_publication_ack};
         config.collection_mode = ayni::runtime::conversation::PublicationCollection::deferred;
         rc = history_.configure(config);

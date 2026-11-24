@@ -73,6 +73,18 @@ bool Transport::take_output(Packet &out) {
     xQueueSend(free_, &slot, 0);
     return true;
 }
+void Transport::request_motor_stop() {
+    motor_stop_.store(true, std::memory_order_release);
+    if (wake_motor_) {
+        wake_motor_(motor_context_);
+    }
+}
+void Transport::request_motor_soft_stop() {
+    motor_soft_stop_.store(true, std::memory_order_release);
+    if (wake_motor_) {
+        wake_motor_(motor_context_);
+    }
+}
 bool Transport::post(Kind kind, uint64_t id, const void *body, size_t bytes) {
     if (kind == Kind::motor_stop) {
         request_motor_stop();

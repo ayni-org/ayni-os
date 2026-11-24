@@ -47,7 +47,8 @@ ayni_call_outcome_t outcome(ProviderMessageKind kind) {
 
 // Read never retires the delivery. Publication must succeed before acknowledge,
 // so journal backpressure cannot free a slot or lose a result body (C-CALL-012).
-std::optional<CallRuntime::Advance> CallRuntime::consume(uint64_t now_us, uint64_t durable_seq) {
+std::optional<CallRuntime::Advance> CallRuntime::consume(uint64_t now_us, uint64_t durable_seq,
+                                                         JournalAdmission admission) {
     // The configured byte limit can be nonzero even when there is no receipt arena.
     if (limits_.capacity == 0U) {
         return std::nullopt;
@@ -55,7 +56,7 @@ std::optional<CallRuntime::Advance> CallRuntime::consume(uint64_t now_us, uint64
     ProviderMessage message{};
     ProviderReceipt receipt{};
     uint32_t required = 0;
-    const auto blocked = blocked_receipts();
+    const auto blocked = blocked_receipts(admission);
     const auto read =
         mailbox_.read_next(receipt_, limits_.result_bytes, required, message, receipt, &blocked);
     if (read == AYNI_NOT_FOUND) {
@@ -108,7 +109,8 @@ std::optional<CallRuntime::Advance> CallRuntime::consume(uint64_t now_us, uint64
         }
     }
     bool terminal = false;
-    const auto applied = apply_delivery(index, task_index, message, durable_seq, terminal);
+    const auto applied =
+        apply_delivery(index, task_index, message, durable_seq, terminal, admission);
     if (applied != AYNI_OK ||
         mailbox_.acknowledge(receipt) == ProviderMailbox::Acknowledge::stale) {
         return Advance::internal;
@@ -148,11 +150,11 @@ CallRuntime::settle_execution_terminal(uint32_t index, const ProviderMessage &me
 // Privacy may discard a valid late body; it must never turn malformed evidence into success.
 ayni_status_t CallRuntime::apply_delivery(uint32_t index, uint32_t task_index,
                                           const ProviderMessage &message, uint64_t durable_seq,
-                                          bool &terminal) {
+                                          bool &terminal, JournalAdmission admission) {
     const bool ephemeral = work_.calls.state(index).ephemeral;
     const foundation::TransitionStamp stamp =
         ephemeral ? foundation::TransitionStamp{0, 0} : work_.transitions.next();
-    const auto applied = apply_receipt(index, task_index, message, stamp, terminal);
+    const auto applied = apply_receipt(index, task_index, message, stamp, terminal, admission);
     if (applied == AYNI_OK && terminal && work_.calls.state(index).outcome != 0U &&
         task_index != no_task &&
         (!task_content_current({work_, host_.monotonic_now_us(host_.ctx), durable_seq},
@@ -280,7 +282,8 @@ ayni_status_t CallRuntime::normalize_result(uint32_t index, ayni_bytes_v1 body,
 // interpretation is separate from copying/acknowledging the reliable mailbox.
 ayni_status_t CallRuntime::apply_receipt(uint32_t index, uint32_t task_index,
                                          const ProviderMessage &message,
-                                         foundation::TransitionStamp stamp, bool &terminal) {
+                                         foundation::TransitionStamp stamp, bool &terminal,
+                                         JournalAdmission admission) {
     const bool query = slots_[index].active->delivery->purpose == Delivery::Purpose::query;
     const work::ActionStamp action_stamp{work_.ids.boot_epoch(), stamp};
     // C-CALL-011: retaining an old transport borrow across storage reload does
@@ -345,8 +348,9 @@ ayni_status_t CallRuntime::apply_receipt(uint32_t index, uint32_t task_index,
         }
         if (applied == AYNI_OK) {
             if (work_.calls.state(index).ephemeral) {
-                applied =
-                    task_index != no_task ? finish_ephemeral_task_call(index, task_index) : AYNI_OK;
+                applied = task_index != no_task
+                              ? finish_ephemeral_task_call(index, task_index, admission)
+                              : AYNI_OK;
             } else if (!work::end_task_call(work_.calls, work_.tasks, index, task_index, stamp)) {
                 return AYNI_INTERNAL;
             }
@@ -358,16 +362,19 @@ ayni_status_t CallRuntime::apply_receipt(uint32_t index, uint32_t task_index,
 // Finishes a RAM-only Tier 0 EPHEMERAL call on its Task. Completed calls append a volatile
 // step key with zero WAL traffic; ABANDONED persists an explicit UNKNOWN hold without
 // setting task.call_unknown so reboot replay never looks up an unpersisted call row.
-ayni_status_t CallRuntime::finish_ephemeral_task_call(uint32_t index, uint32_t task_index) {
+ayni_status_t CallRuntime::finish_ephemeral_task_call(uint32_t index, uint32_t task_index,
+                                                      JournalAdmission admission) {
     const auto &final_state = work_.calls.state(index);
     const auto &task = work_.tasks.at(task_index);
     const auto call_id = work_.calls.identity(index).call_id;
     if (final_state.outcome == AYNI_CALL_ABANDONED) {
         work_.tasks.end_volatile_call(task_index, call_id);
         if (work::TaskTable::is_live(task.lifecycle)) {
-            work_.tasks.fold_volatile_model_calls(task_index);
-            work_.tasks.hold(task_index, AYNI_RESULT_UNKNOWN, final_state.reason,
-                             work_.transitions.next());
+            work_.tasks.defer_volatile_unknown(task_index, final_state.reason);
+            if (admission == JournalAdmission::available &&
+                !work::TaskTable::at_largest_revision(task)) {
+                work_.tasks.commit_volatile_unknown(task_index, work_.transitions.next());
+            }
         }
         return AYNI_OK;
     }
@@ -381,86 +388,98 @@ ayni_status_t CallRuntime::finish_ephemeral_task_call(uint32_t index, uint32_t t
     return AYNI_OK;
 }
 
-uint64_t CallRuntime::next_deadline_us() const {
-    uint64_t deadline = resources_.next_deadline_us();
-    for (uint32_t at = 0; at < work_.tasks.size(); ++at) {
-        const auto &task = work_.tasks.at(at);
-        if (task.lifecycle == AYNI_TASK_WAITING && task.operation_wait &&
-            task.operation_wait->timeout_ms) {
-            const auto &wait = *task.operation_wait;
-            const auto until = wait.boot_epoch == work_.ids.boot_epoch() ? wait.deadline_us : 0;
-            if (until < deadline) {
-                deadline = until;
-            }
+// Journal-blocked timeouts wait for the append wake. A submitted physical
+// Call still needs its deadline to inhibit output even if its ledger is blocked.
+uint64_t CallRuntime::next_deadline_us(uint64_t now_us, JournalAdmission admission) const {
+    uint64_t next = UINT64_MAX;
+    const auto report = [&](uint64_t deadline) {
+        if (deadline > now_us && deadline < next) {
+            next = deadline;
         }
-    }
-    if (control_.next_deadline_us() < deadline) {
-        deadline = control_.next_deadline_us();
-    }
-    for (uint32_t at = 0; at < limits_.capacity; ++at) {
-        const auto &active = slots_[at].active;
-        if (active && active->stage == Stage::submitted && active->delivery &&
-            active->delivery->cancel == Delivery::Cancel::none &&
-            active->delivery->deadline_us < deadline) {
-            deadline = active->delivery->deadline_us;
+    };
+    report(resources_.next_deadline_us(resource_admission(admission)));
+    report(control_.next_deadline_us());
+    if (admission == JournalAdmission::available) {
+        for (uint32_t at = 0; at < work_.tasks.size(); ++at) {
+            const auto &task = work_.tasks.at(at);
+            if (task.lifecycle == AYNI_TASK_WAITING && task.operation_wait &&
+                task.operation_wait->timeout_ms &&
+                task.operation_wait->boot_epoch == work_.ids.boot_epoch()) {
+                report(task.operation_wait->deadline_us);
+            }
         }
     }
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         const auto &active = slots_[at].active;
-        if (active && active->stage == Stage::lease_stop) {
-            const auto stop = collection_stop_deadline(*active->collection);
-            if (stop < deadline) {
-                deadline = stop;
-            }
-        } else if (active && active->delivery && active->collection) {
-            const auto &lease = *active->collection;
-            if (!lease.inhibition && !lease.pending &&
-                active->delivery->cancel == Delivery::Cancel::none &&
-                lease.renew_at_us < deadline) {
-                deadline = lease.renew_at_us;
-            }
+        if (!active) {
+            continue;
+        }
+        if (active->stage == Stage::lease_stop) {
+            report(collection_stop_deadline(*active->collection));
+        }
+        if (!active->delivery || active->delivery->cancel != Delivery::Cancel::none) {
+            continue;
+        }
+        if (active->stage == Stage::submitted &&
+            (admits_call(at, admission) || control_.holds_lease(active->call_id))) {
+            report(active->delivery->deadline_us);
+        }
+        if (admission == JournalAdmission::available && active->collection &&
+            !active->collection->inhibition && !active->collection->pending) {
+            report(active->collection->renew_at_us);
         }
     }
-    return deadline;
+    return next;
 }
 
 // Project only work that can advance now. A pending remote call alone must not
 // keep the owner spinning; completion wakeups or the next timer bring it back.
-bool CallRuntime::ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const {
+bool CallRuntime::ready(uint64_t now_us, uint64_t durable_seq, Mode mode,
+                        JournalAdmission admission) const {
     if (mode == Mode::fenced || mode == Mode::closing) {
         return work_.calls.release_due(durable_seq) || transport_ready(mode);
     }
-    return ready_before_calls(now_us, durable_seq, mode) || calls_ready(now_us, durable_seq, mode);
+    return ready_before_calls(now_us, durable_seq, mode, admission) ||
+           calls_ready(now_us, durable_seq, mode, admission);
 }
 
-bool CallRuntime::ready_before_calls(uint64_t now_us, uint64_t durable_seq, Mode mode) const {
+bool CallRuntime::ready_before_calls(uint64_t now_us, uint64_t durable_seq, Mode mode,
+                                     JournalAdmission admission) const {
     if (work_.calls.release_due(durable_seq)) {
         return true;
     }
-    const auto blocked = blocked_receipts();
+    const auto blocked = blocked_receipts(admission);
     uint32_t waiting_task = 0;
     return mailbox_.has_pending(&blocked) ||
-           (mode == Mode::running && next_subscription_wakeup(now_us, durable_seq, waiting_task));
+           (admission == JournalAdmission::available &&
+            (work_.tasks.next_volatile_unknown(waiting_task) ||
+             (mode == Mode::running &&
+              next_subscription_wakeup(now_us, durable_seq, waiting_task))));
 }
 
 // Match the ordinary Call progress lane, including retained background leases.
 // A completed transport alone is idle until its Task, query or stop can advance.
-bool CallRuntime::calls_ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const {
+bool CallRuntime::calls_ready(uint64_t now_us, uint64_t durable_seq, Mode mode,
+                              JournalAdmission admission) const {
     resources::AdmissionChoice choice{};
-    const bool resource_ready = resources_.next(now_us, choice);
+    const bool resource_ready = resources_.next(now_us, choice, resource_admission(admission));
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         if (work_.calls.occupied(at) &&
-            scheduled_readiness(at, now_us, durable_seq, mode,
-                                resource_ready ? &choice : nullptr) != CallReady::idle) {
+            scheduled_readiness(at, now_us, durable_seq, mode, resource_ready ? &choice : nullptr,
+                                admission) != CallReady::idle) {
             return true;
         }
     }
     return false;
 }
 
-CallRuntime::CallReady
-CallRuntime::scheduled_readiness(uint32_t at, uint64_t now_us, uint64_t durable_seq, Mode mode,
-                                 const resources::AdmissionChoice *choice) const {
+CallRuntime::CallReady CallRuntime::scheduled_readiness(uint32_t at, uint64_t now_us,
+                                                        uint64_t durable_seq, Mode mode,
+                                                        const resources::AdmissionChoice *choice,
+                                                        JournalAdmission admission) const {
+    if (!admits_call(at, admission)) {
+        return CallReady::idle;
+    }
     const auto ready = call_readiness(at, now_us, durable_seq, mode);
     if (ready != CallReady::queued) {
         return ready;
@@ -518,7 +537,7 @@ CallRuntime::CallReady CallRuntime::call_readiness(uint32_t at, uint64_t now_us,
             return CallReady::other;
         }
         if (work::TaskTable::is_held(task) || task.lifecycle == AYNI_TASK_PAUSED ||
-            work_.goal_boot_reset_pending(task.goal_index)) {
+            work_.goal_lineage_boot_reset_pending(task.goal_index)) {
             return CallReady::idle;
         }
         if (mode != Mode::fenced && resources_.has_room()) {
@@ -539,6 +558,7 @@ CallRuntime::CallReady CallRuntime::call_readiness(uint32_t at, uint64_t now_us,
     }
     if (active->stage == Stage::queued) {
         return active->preemption != AYNI_CALL_PREEMPT_NONE &&
+                       !resources_.wait_expired(active->call_id, now_us) &&
                        (!control_.allowed(at, now_us, durable_seq) ||
                         preemption_ready(at, now_us, durable_seq))
                    ? CallReady::other
@@ -581,6 +601,7 @@ CallRuntime::CallReady CallRuntime::reflex_call_readiness(uint32_t at, uint64_t 
     }
     if (active->stage == Stage::queued) {
         return active->preemption != AYNI_CALL_PREEMPT_NONE &&
+                       !resources_.wait_expired(active->call_id, now_us) &&
                        (!control_.allowed(at, now_us, durable_seq) ||
                         preemption_ready(at, now_us, durable_seq))
                    ? CallReady::other

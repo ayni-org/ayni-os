@@ -12,12 +12,14 @@ struct ToolLoop::Cache {
     struct Saved {
         std::string source;
         detail::Turn turn;
+        BodyRef superseded_index{}; // Safe to discard only after source is the live checkpoint.
     };
     std::map<uint64_t, Saved> turns;
     std::map<std::string, std::string> definitions;
     uint64_t privacy_request = 0; // Last observed invalidation sequence; zero before any request.
     // Same bounded slots serve active Tasks and the latest completed graph per conversation.
-    void remember(uint64_t task, ayni_bytes_v1 checkpoint, detail::Turn &&turn, uint32_t limit) {
+    void remember(uint64_t task, ayni_bytes_v1 checkpoint, detail::Turn &&turn, uint32_t limit,
+                  BodyRef superseded_index) {
         // Keep only the latest decoded representation of this private conversation.
         // It shares the existing slot bound and privacy invalidation with active turns.
         for (auto at = turns.begin(); at != turns.end();) {
@@ -32,7 +34,7 @@ struct ToolLoop::Cache {
         }
         turns[task] = {
             std::string(reinterpret_cast<const char *>(checkpoint.data), checkpoint.size),
-            std::move(turn)};
+            std::move(turn), superseded_index};
     }
 };
 ToolLoop::ToolLoop() : cache_(std::make_unique<Cache>()) {}
@@ -134,8 +136,8 @@ ayni_string_v1 local_time(const LocalClock &clock, LocalTimeLines &buffer) {
     }
     return lines.text();
 }
-// Durable writes precede the checkpoint. Background bodies request persistence at
-// creation; only Session's complete graph/file/ACK barrier publishes durable history.
+// Durable writes precede the checkpoint. Staged refs are readable across live decisions;
+// Session's graph/file/ACK barrier publishes durable history.
 // An unaccepted body defers the decision without publishing a partial checkpoint.
 ayni_status_t save(Turn &turn, const ToolLoopConfig &config, ayni_policy_output_v1 &output) {
     const auto status = write_turn(turn, *config.bodies, output.checkpoint,
@@ -1243,7 +1245,7 @@ ayni_status_t ToolLoop::configure(const ToolLoopConfig &config, const ayni_works
         config.model.kind != AYNI_POLICY_REQUEST_MODEL ||
         config.summary.kind != AYNI_POLICY_REQUEST_MODEL || !valid_limits(config.limits) ||
         !config.cached_turns || config.cached_turns > AYNI_TASK_CAPACITY_MAX ||
-        (config.persistence == Persistence::background &&
+        (config.persistence != Persistence::durable &&
          (!config.bodies || !config.bodies->stage || !config.bodies->share ||
           !config.bodies->confirm)) ||
         !config.bodies || config.bodies->struct_size != sizeof(ayni_body_store_v1) ||
@@ -1298,6 +1300,14 @@ ayni_status_t ToolLoop::decide(void *context, const ayni_task_snapshot_v1 *snaps
     auto status = AYNI_OK;
     if (cached != self.cache_->turns.end() && cached->second.source == identity) {
         turn = cached->second.turn; // Validated immutable bodies; privacy is rechecked in run.
+        auto &obsolete = cached->second.superseded_index;
+        if (obsolete.id && self.config_.body_progress.discard_unconfirmed) {
+            // This checkpoint is now the one Core owns. A proposal that was not
+            // accepted cannot cause its predecessor to be released.
+            self.config_.body_progress.discard_unconfirmed(self.config_.body_progress.context,
+                                                           obsolete);
+            obsolete = {};
+        }
     } else {
         std::vector<const Turn *> completed;
         for (const auto &[task, saved] : self.cache_->turns) {
@@ -1318,15 +1328,23 @@ ayni_status_t ToolLoop::decide(void *context, const ayni_task_snapshot_v1 *snaps
         }
         auto config = self.config_;
         auto bodies = *config.bodies;
-        if (config.persistence == Persistence::background) {
+        if (config.persistence != Persistence::durable) {
             bodies.write = bodies.stage;
         }
+        const bool at_turn_boundary = config.persistence == Persistence::turn_boundary;
+        if (at_turn_boundary) {
+            bodies.confirm = nullptr; // Stage history, its children and the input in RAM.
+        }
+        const auto previous_index = turn.record.history;
         config.bodies = &bodies;
         status = run(workspace, turn, config, *snapshot, *output, self.cache_->definitions);
         if (status == AYNI_OK && output->disposition != AYNI_POLICY_OUTPUT_DEFER &&
             output->checkpoint_size) {
+            const auto obsolete = at_turn_boundary && previous_index.id != turn.record.history.id
+                                      ? previous_index
+                                      : BodyRef{};
             self.cache_->remember(snapshot->task_id, {output->checkpoint, output->checkpoint_size},
-                                  std::move(turn), self.config_.cached_turns);
+                                  std::move(turn), self.config_.cached_turns, obsolete);
         }
     }
     // A body still being written or loaded holds this decision; nothing it staged is kept.

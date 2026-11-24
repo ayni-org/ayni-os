@@ -118,15 +118,14 @@ Candidate candidate(const WorkModel &model, PrivacyPhase phase, uint64_t after) 
         }
     } else if (phase == PrivacyPhase::calls) {
         for (uint32_t index = 0; index < model.calls.capacity(); ++index) {
-            if (!model.calls.occupied(index)) {
+            // The durable cursor must be reproducible without RAM-only calls. Their Task
+            // erasure scrubs them separately (ADR-0110).
+            if (!model.calls.occupied(index) || model.calls.state(index).ephemeral) {
                 continue;
             }
             uint32_t task = 0;
             const auto &id = model.calls.identity(index);
-            // RAM-only EPHEMERAL calls are absent from WAL/replay and are scrubbed inline with
-            // their owning Task erasure in erase_work() so replay never sees missing call IDs.
-            const bool invalid = !model.calls.state(index).ephemeral &&
-                                 !model.calls.state(index).content_erased &&
+            const bool invalid = !model.calls.state(index).content_erased &&
                                  model.tasks.find(id.task_id, task) && task_invalid(model, task);
             result.consider(id.call_id, after, invalid ? PrivacyEffect::call : PrivacyEffect::none);
         }

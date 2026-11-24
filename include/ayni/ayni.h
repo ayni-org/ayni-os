@@ -584,9 +584,9 @@ typedef struct ayni_step_report_v1 {
      * some already has and more_ready is set. That is the earliest of the
      * goals' expiries and either the next occurrence of a goal whose tasks
      * may advance, while the task table has room and an id is left, or else
-     * the end of such an occurrence's wait. Since 0.14 none while the
-     * storage buffer has no room for another transition: the post of the
-     * append that frees it wakes the owner. Since 0.15 also includes
+     * the end of such an occurrence's wait. Since 0.14 durable Goal timers
+     * are omitted while the storage buffer has no room. The append that
+     * frees it wakes the owner. Since 0.15 also includes
      * storage write intervals and retry backoff while new work is frozen;
      * an accepted request waits for its completion wake without a timer. */
     uint64_t next_deadline_us;
@@ -694,14 +694,16 @@ ayni_status_t ayni_start(ayni_kernel_t *kernel);
  * a step ends by starting the append of the oldest batch waiting when no
  * append is in flight, whatever is left of max_items and max_time_us; that
  * call is not an item, and applying its completion is one. When the buffer has no room for another
- * transition, the due work, decisions and events wait for the appends in flight, and more_ready
- * leaves them out. Since 0.15 failures and unknown results retry the same batch
+ * transition, due work, decisions and events requiring a batch wait for the appends in flight,
+ * and more_ready leaves them out. Since 0.59, eligible EPHEMERAL work continues, and more_ready
+ * and next_deadline_us include ready RAM work and its timers. Since 0.15 failures and unknown
+ * results retry the same batch
  * at most three times, with 10/50 ms backoff; only a failed attempt freezes
  * new transitions. Exhaustion enters FENCED, isolates the old writer and
  * reloads the durable state under a new boot epoch, or stays RESTRICTED if
  * isolation or recovery fails. Automatic snapshots drain the log, publish
  * an inactive slot and activate it before trimming covered history. These
- * maintenance stages also pause new work and report storage deadlines.
+ * maintenance stages also pause new durable work and report storage deadlines.
  * Recovery replays the log into the work model before it enters RUNNING: instances, goals,
  * tasks with their steps and checkpoints, and command mappings come back as the last stored
  * transition left them, while sessions do not. Every wait on the host clock starts again in full

@@ -68,7 +68,7 @@ ayni_status_t Session::configure(Config config) {
         !config.goal_type.size || !config.workspace || !config.files.submit ||
         !config.bodies.store || !config.bodies.collect || !config.commands.submit ||
         ((config.bodies.ready || config.bodies.progress) && !config.bodies.collected) ||
-        (config.persistence == strategies::Persistence::background &&
+        (config.persistence != strategies::Persistence::durable &&
          (!config.bodies.store->stage || !config.bodies.store->share ||
           !config.bodies.store->confirm))) {
         return AYNI_INVALID_ARGUMENT;
@@ -230,6 +230,12 @@ ayni_status_t Session::restore_turn() {
             std::memcmp(goal.goal_type_id, config_.goal_type.data, config_.goal_type.size) ||
             goal.lifecycle == AYNI_GOAL_CANCELLED || goal.lifecycle == AYNI_GOAL_FAILED ||
             goal.lifecycle == AYNI_GOAL_EXPIRED) {
+            continue;
+        }
+        // A staged completed checkpoint is not a recoverable publication by
+        // itself. Only a durable PUBLISH anchor proves its graph was confirmed.
+        if (config_.persistence == strategies::Persistence::turn_boundary &&
+            goal.lifecycle == AYNI_GOAL_SATISFIED) {
             continue;
         }
         status = ayni_get_goal_parameters(config_.kernel, id, parameters.bytes.data(),
@@ -399,7 +405,7 @@ ayni_status_t Session::begin(ayni_string_v1 user, uint64_t memory_id) {
     end_request_ = EndRequest::none;
     held_ = false;
     phase_ = status == AYNI_OK ? Phase::save : Phase::input;
-    if (status == AYNI_OK && config_.persistence == strategies::Persistence::background) {
+    if (status == AYNI_OK && config_.persistence != strategies::Persistence::durable) {
         current_ = candidate_; // Volatile draft; only a completed durable file publishes history.
         phase_ = Phase::start_turn;
     }
@@ -411,6 +417,9 @@ ayni_status_t Session::input() {
     auto bodies = *config_.bodies.store;
     if (bodies.stage && bodies.confirm) {
         bodies.write = bodies.stage;
+        if (config_.persistence == strategies::Persistence::turn_boundary) {
+            bodies.confirm = nullptr; // Session confirms the complete published graph.
+        }
     }
     strategies::BodyRef input{};
     const auto status = Conversation::begin(config_.workspace, bodies, current_,
@@ -435,6 +444,9 @@ ayni_status_t Session::turn(const ayni_context_info_v1 &anchor, uint64_t durable
         }
     }
     if (phase_ == Phase::start_turn) {
+        if (volatile_cleanup_pending_) {
+            return AYNI_BUSY; // Queue the old scope's removals before a new Task can add bodies.
+        }
         // Privacy maintenance retains terminal work until compaction finishes.
         // Wait before new Goal admission; file ACKs in other Sessions must still progress.
         auto privacy = initialized<ayni_privacy_info_v1>();
@@ -497,7 +509,7 @@ ayni_status_t Session::turn(const ayni_context_info_v1 &anchor, uint64_t durable
         return AYNI_OK;
     }
     if (task.lifecycle == AYNI_TASK_COMPLETED) {
-        if (config_.persistence == strategies::Persistence::background) {
+        if (config_.persistence != strategies::Persistence::durable) {
             auto copied = ayni_copy_task_checkpoint(
                 config_.kernel, task.task_id, parameters_.bytes.data(),
                 static_cast<uint32_t>(parameters_.bytes.size()), &parameters_.size);
@@ -736,9 +748,9 @@ ayni_status_t Session::poll_step(bool *again) {
         }
         status = input();
         if (status == AYNI_OK) {
-            phase_ = config_.persistence == strategies::Persistence::background ? Phase::start_turn
-                                                                                : Phase::save;
-            if (config_.persistence == strategies::Persistence::background) {
+            phase_ = config_.persistence != strategies::Persistence::durable ? Phase::start_turn
+                                                                             : Phase::save;
+            if (config_.persistence != strategies::Persistence::durable) {
                 current_ = candidate_;
             }
         } else if (status == AYNI_NOT_READY) {
@@ -1059,6 +1071,29 @@ ayni_status_t Session::preview_answer(std::string &out) const {
     if (!in_publication || !candidate_.rounds.id) {
         return AYNI_NOT_FOUND;
     }
+    auto anchor = initialized<ayni_context_info_v1>();
+    const auto queried = context(anchor);
+    if (queried != AYNI_OK) {
+        return queried;
+    }
+    if (phase_ == Phase::prepare_publication) {
+        // The completed Task is the source until Core accepts its publication. A zero-capacity
+        // checkpoint query verifies the Task and its current dependencies without copying it.
+        if (!anchor.usable || anchor.pending_action != AYNI_CONTEXT_IDLE ||
+            !matches(current_, anchor) || !result_) {
+            return AYNI_EXPIRED;
+        }
+        uint32_t size = 0;
+        const auto source =
+            ayni_copy_task_checkpoint(config_.kernel, result_->task, nullptr, 0, &size);
+        if (source != AYNI_BUFFER_TOO_SMALL) {
+            return source == AYNI_OK ? AYNI_NOT_FOUND : source;
+        }
+    } else if (!anchor.usable || !matches(candidate_, anchor) ||
+               (anchor.pending_action != AYNI_CONTEXT_PUBLISH &&
+                anchor.pending_action != AYNI_CONTEXT_IDLE)) {
+        return AYNI_NOT_READY;
+    }
     return Conversation::latest_answer(*config_.bodies.store, candidate_, out);
 }
 const TurnResult *Session::pending_result() const {
@@ -1082,7 +1117,7 @@ ayni_status_t Session::unfinished() {
     if (config_.unfinished == UnfinishedTurn::discard || end_request_ == EndRequest::abandon) {
         return discard();
     }
-    if (config_.persistence == strategies::Persistence::background && current_.draft.id) {
+    if (config_.persistence != strategies::Persistence::durable && current_.draft.id) {
         // A cancelled turn retains its input, never its partial generated tail. The
         // same save/collect pipeline makes the retained draft durable before exposing it.
         candidate_ = current_;
@@ -1098,7 +1133,7 @@ ayni_status_t Session::unfinished() {
     return AYNI_OK;
 }
 bool Session::volatile_discard() const {
-    return config_.persistence == strategies::Persistence::background &&
+    return config_.persistence != strategies::Persistence::durable &&
            config_.unfinished == UnfinishedTurn::discard;
 }
 ayni_status_t Session::run_volatile_cleanup() {
@@ -1124,7 +1159,9 @@ ayni_status_t Session::run_volatile_cleanup() {
         if (draft.id != 0U && !draft_shared) {
             if (store->release_temporary) {
                 store->release_temporary(store->context, &draft);
-            } else if (store->release) {
+            }
+            // These drafts have no Call ledger to deliver a second release.
+            if (store->release) {
                 store->release(store->context, &draft);
             }
         }

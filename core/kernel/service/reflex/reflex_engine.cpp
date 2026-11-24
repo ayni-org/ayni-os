@@ -158,10 +158,15 @@ void ReflexEngine::reap_completed() {
     }
 }
 
-ayni_status_t ReflexEngine::evaluate(uint64_t now_us, uint64_t durable_seq) {
-    reap_completed();
-    for (uint32_t pos = 0; pos < table_.count(); ++pos) {
-        const uint32_t index = table_.ordered_index(pos);
+ReflexEngine::Advance ReflexEngine::advance(OwnerClock clock, uint64_t cutoff_us,
+                                            uint64_t durable_seq) {
+    while (next_rule_ < table_.count()) {
+        const auto now_us = clock.now_us();
+        if (now_us >= cutoff_us) {
+            pass_pending_ = true;
+            return Advance::timed_out;
+        }
+        const uint32_t index = table_.ordered_index(next_rule_++);
         auto &rule = table_.entry(index);
         if (!rule.enabled || !scene_active(rule, now_us, durable_seq)) {
             rule.latched_active = false;
@@ -180,11 +185,15 @@ ayni_status_t ReflexEngine::evaluate(uint64_t now_us, uint64_t durable_seq) {
             now_us - rule.last_fired_us < rule.cooldown_us) {
             continue;
         }
-        if (execute_rule(index, now_us, durable_seq, source, value) != AYNI_OK) {
-            return AYNI_INTERNAL;
+        const auto status = execute_rule(index, now_us, durable_seq, source, value);
+        pass_pending_ = next_rule_ < table_.count();
+        if (!pass_pending_) {
+            reset_pass();
         }
+        return status == AYNI_OK ? Advance::applied : Advance::internal;
     }
-    return AYNI_OK;
+    reset_pass();
+    return Advance::idle;
 }
 
 // Schedules owner wakeups for active STALE_OR_GAP fail-safe rules so a dead sensor wakes

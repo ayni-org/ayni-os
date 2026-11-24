@@ -91,10 +91,10 @@ enum class DecisionResult {
 DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t ready_before,
                            uint64_t now_us, uint64_t durable_seq, OwnerClock clock,
                            CallRuntime &calls, uint64_t &accepted_call,
-                           uint64_t volatile_before = UINT64_MAX);
+                           uint64_t volatile_before = UINT64_MAX, bool journal_available = true);
 
 // Whether a task waits for a decision; the step reports it as more_ready.
-bool awaits_decision(const WorkModel &model, uint64_t durable_seq);
+bool awaits_decision(const WorkModel &model, uint64_t durable_seq, bool journal_available = true);
 
 } // namespace ayni::kernel
 

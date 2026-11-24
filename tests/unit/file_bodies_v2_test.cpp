@@ -237,6 +237,32 @@ TEST(FileBodiesV2, inline_small_and_empty_bodies_use_single_op_write_read_and_re
     }
 }
 
+// C-HVAL-009: a new RAM alias of an already saved tool result waits for confirmation.
+TEST(FileBodiesV2, staging_a_shared_owner_does_not_rewrite_the_manifest) {
+    CountingFilePort storage;
+    FileBodies bodies;
+    ASSERT_EQ(bodies.configure(storage.port(), 1024), AYNI_OK);
+    const auto *store = bodies.store();
+    const std::string payload = "tool result already owned by Core";
+    const ayni_bytes_v1 view{reinterpret_cast<const uint8_t *>(payload.data()),
+                             static_cast<uint32_t>(payload.size())};
+    ayni_body_ref_v1 core{}, chat{};
+    ASSERT_EQ(store->stage(store->context, 1, view, &core), AYNI_OK);
+    ASSERT_TRUE(
+        storage.until(bodies, [&] { return store->confirm(store->context, &core) == AYNI_OK; }));
+    storage.reset_counts();
+
+    ASSERT_EQ(store->share(store->context, 2, &core, &chat), AYNI_OK);
+    EXPECT_TRUE(bodies.idle());
+    FileBodies::progress(&bodies, 0);
+    EXPECT_TRUE(storage.queue.empty());
+    EXPECT_EQ(storage.writes, 0U);
+
+    ASSERT_TRUE(
+        storage.until(bodies, [&] { return store->confirm(store->context, &chat) == AYNI_OK; }));
+    EXPECT_EQ(storage.writes, 1U);
+}
+
 // ADR-0113: optimistic previous_generation=0 create encountering AYNI_STALE falls back cleanly
 // to manifest_read + merge + CAS manifest_write, retaining both independent owners.
 TEST(FileBodiesV2, optimistic_create_recovers_on_stale_and_evicted_partial_release_rewrites) {

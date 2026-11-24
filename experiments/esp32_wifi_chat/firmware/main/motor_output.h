@@ -20,7 +20,6 @@ class MotorOutput {
     esp_err_t transition(const MotorCommand &next);
     // Polls current segment completion while keeping RMT channels warm for transition().
     Poll poll_segment();
-    Poll poll();
     esp_err_t stop();
     bool disabled() const; // Actual GPIO input/matrix/output readback, not shaft measurement.
     bool counts(std::array<int, 4> &out) const;

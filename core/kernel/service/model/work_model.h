@@ -228,6 +228,8 @@ struct WorkModel {
     // Live CANCEL_ON_REBOOT Goals created in an earlier boot must cancel before
     // any Task decision or Call dispatch may run in this boot (ADR-0110).
     bool goal_boot_reset_pending(uint32_t goal_index) const;
+    // Blocks new work for a Goal whose own or ancestor's previous boot still requires cancellation.
+    bool goal_lineage_boot_reset_pending(uint32_t goal_index) const;
 
     // Runs call, which calls caller code (a goal type's validator or
     // requirement export, a strategy's decide function, a Provider or an

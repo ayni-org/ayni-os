@@ -105,10 +105,9 @@ class Session {
     bool take_result(TurnResult &out);
     // Borrow only until the next owner operation. Consume after any required body read succeeds.
     const TurnResult *pending_result() const;
-    // Reads the completed publication candidate's latest answer directly from RAM once
-    // checkpoint_ready has populated candidate_ (0 ms preview before durable ACK, ADR-0113).
-    // Returns NOT_FOUND when no publication candidate is active; TurnResult::published stays
-    // false until CONTEXT_ACK is durable.
+    // Reads the completed answer before durable ACK while the exact Core source and context
+    // still permit reading it (ADR-0113). Returns NOT_FOUND without an active candidate.
+    // TurnResult::published stays false until CONTEXT_ACK is durable.
     ayni_status_t preview_answer(std::string &out) const;
     // Last poll observed a Core Task hold; resolves on that same Task.
     bool held() const { return held_; }

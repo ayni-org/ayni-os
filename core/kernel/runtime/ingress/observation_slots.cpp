@@ -31,7 +31,7 @@ void ObservationSlots::close() {
     boot_.store(0U, std::memory_order_release);
     knowledge::ObservationInput dropped{};
     for (uint32_t at = 0; at < capacity_; ++at) {
-        if (drain(at, dropped)) {
+        if (drain(at, dropped) == Drain::sample) {
             record_discarded();
         }
     }
@@ -80,6 +80,16 @@ ayni_status_t ObservationSlots::publish_latest(uint64_t boot_epoch,
         return AYNI_BUSY;
     }
     const uint32_t latest = cur & slot_mask;
+    const auto &previous = slot.buffers[latest];
+    // A writer may have passed the boot check before close/reload. After taking
+    // ownership it cannot replace a newer boot's sample or regress this boot's frontier.
+    if (boot_.load(std::memory_order_acquire) != active_boot ||
+        (slot.epochs[latest] == active_boot &&
+         !knowledge::newer_sample(input, {previous.generation, previous.sequence},
+                                  previous.captured_at_us))) {
+        slot.state.fetch_and(~writing_bit, std::memory_order_release);
+        return AYNI_STALE;
+    }
     const uint32_t reading = (cur >> reading_shift) & slot_mask;
     uint32_t write_idx = 0;
     while (write_idx == latest || write_idx == reading) {
@@ -106,19 +116,20 @@ ayni_status_t ObservationSlots::publish_latest(uint64_t boot_epoch,
     return AYNI_OK;
 }
 
-bool ObservationSlots::drain(uint32_t source_index, knowledge::ObservationInput &out) {
+ObservationSlots::Drain ObservationSlots::drain(uint32_t source_index,
+                                                knowledge::ObservationInput &out) {
     if (source_index >= capacity_) {
-        return false;
+        return Drain::empty;
     }
     Slot &slot = slots_[source_index];
     uint32_t s = slot.state.load(std::memory_order_acquire);
     if ((s & dirty_bit) == 0U) {
-        return false;
+        return Drain::empty;
     }
     uint32_t pinned = 0;
     for (;;) {
         if ((s & dirty_bit) == 0U) {
-            return false;
+            return Drain::empty;
         }
         pinned = s & slot_mask;
         const uint32_t next =
@@ -142,9 +153,9 @@ bool ObservationSlots::drain(uint32_t source_index, knowledge::ObservationInput 
     if (active_boot != 0U && sample_epoch != active_boot) {
         // Discard a producer sample that raced a FENCED close/reload across boot epochs.
         record_discarded();
-        return false;
+        return Drain::stale;
     }
-    return true;
+    return Drain::sample;
 }
 
 bool ObservationSlots::any_dirty() const {

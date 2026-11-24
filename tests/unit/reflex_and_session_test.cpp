@@ -836,6 +836,24 @@ TEST(ReflexAndSession, ObservationSlotLockFreeConcurrentPublishAndSameStepDrain)
     EXPECT_EQ(obs.value, static_cast<int64_t>(1000 + total_publishes));
 }
 
+// ADR-0112: a delayed publication cannot displace the newest unread sample.
+TEST(ReflexAndSession, observation_slot_rejects_out_of_order_unread_sample) {
+    ReflexFixture fix;
+    fix.start();
+    ASSERT_EQ(fix.publish_obstacle_latest(20, 90), AYNI_OK);
+    EXPECT_EQ(fix.publish_obstacle_latest(19, 500), AYNI_STALE);
+    EXPECT_EQ(fix.publish_obstacle_latest(20, 600), AYNI_STALE);
+
+    const auto report = fix.work.node().step(1);
+    EXPECT_EQ(report.items_done, 1U);
+    ayni_observation_info_v1 observation{};
+    observation.struct_size = sizeof(observation);
+    ASSERT_EQ(ayni_get_observation(fix.work.kernel(), text("sensor.obstacle_mm"), &observation),
+              AYNI_OK);
+    EXPECT_EQ(observation.reference.sequence, 20U);
+    EXPECT_EQ(observation.value, 90);
+}
+
 // Test 3 (ADR-0112): SOFT_STOP_RESOURCE rejects INFERRED sources at start, stops an active
 // EPHEMERAL physical call in the exact same step with 0 WAL, ignores DEGRADED/disabled Scene,
 // protects Tier 2 DURABLE calls, and quarantines on failed hardware stop.
@@ -973,6 +991,55 @@ TEST(ReflexAndSession, ReflexSoftStopResourceAndSafetyBoundaries) {
     ASSERT_EQ(fix.publish_obstacle_latest(4, 50, AYNI_OBSERVATION_GOOD), AYNI_OK);
     fix.step();
     EXPECT_EQ(fix.reflex_info("reflex.obstacle_stop").fire_count, 1U);
+}
+
+// ADR-0112: reading a sample, firing a rule, and sending STOP each spend a
+// separate item. Continued sensor updates must not delay an already requested stop.
+TEST(ReflexAndSession, single_item_steps_resume_reflex_before_more_samples) {
+    ReflexFixture fix;
+    fix.extra_configure = [](ayni_kernel_t *kernel) {
+        const ayni_observation_condition_v1 cond{text("sensor.obstacle_mm"), 1, 0, 0, 200,
+                                                 obstacle_validity_us};
+        ayni_reflex_rule_v1 rule{};
+        rule.struct_size = sizeof(rule);
+        rule.version = 1;
+        rule.rule_id = text("reflex.obstacle_stop");
+        rule.action = AYNI_REFLEX_SOFT_STOP_RESOURCE;
+        rule.trigger_mode = AYNI_REFLEX_TRIGGER_IN_RANGE;
+        rule.flags = AYNI_REFLEX_FLAG_ENABLED_BY_DEFAULT | AYNI_REFLEX_FLAG_EDGE_TRIGGERED;
+        rule.condition_count = 1;
+        rule.conditions = &cond;
+        rule.resource_id = text("motor.actuator");
+        ASSERT_EQ(ayni_register_reflex_rule(kernel, &rule), AYNI_OK);
+    };
+    fix.start();
+    fix.grant_motor(agent_a);
+    fix.set_scene(true);
+    fix.start_motor_goal({{40, 40, 1500}}, "short_budget");
+    for (unsigned tries = 0; tries < 8 && fix.executor.submit_calls == 0U; ++tries) {
+        fix.step();
+    }
+    ASSERT_EQ(fix.executor.submit_calls, 1U);
+
+    ASSERT_EQ(fix.publish_obstacle_latest(1, 120), AYNI_OK);
+    auto first = fix.work.node().step(1);
+    EXPECT_EQ(first.items_done, 1U);
+    EXPECT_EQ(first.more_ready, 1U);
+    EXPECT_EQ(fix.reflex_info("reflex.obstacle_stop").fire_count, 0U);
+
+    ASSERT_EQ(fix.publish_obstacle_latest(2, 110), AYNI_OK);
+    auto reflex = fix.work.node().step(1);
+    EXPECT_EQ(reflex.items_done, 1U);
+    EXPECT_EQ(reflex.more_ready, 1U);
+    EXPECT_EQ(fix.reflex_info("reflex.obstacle_stop").fire_count, 1U);
+    EXPECT_EQ(fix.executor.cancel_calls, 0U);
+    EXPECT_EQ(fix.executor.stop_calls, 0U);
+
+    ASSERT_EQ(fix.publish_obstacle_latest(3, 90), AYNI_OK);
+    auto stop = fix.work.node().step(1);
+    EXPECT_EQ(stop.items_done, 1U);
+    EXPECT_EQ(fix.executor.stop_calls, 1U);
+    EXPECT_EQ(fix.executor.cancel_calls, 0U);
 }
 
 // Test 3b (ADR-0112): Tier 2 DURABLE holder protection and stop-failure fail-closed quarantine.

@@ -6,6 +6,7 @@
 #include "durability/batch/batch_codec.h"
 #include "foundation/crc32.h"
 #include "foundation/little_endian.h"
+#include "kernel_config_fixture.h"
 #include "work/call/call_records.h"
 #include "work/goal/goal_records.h"
 #include "work_node.h"
@@ -279,6 +280,7 @@ struct EphemeralFixture {
     uint64_t model_grant_id = 0;
     uint64_t durable_grant_id = 0;
     bool on_demand_tools = false;
+    bool single_batch_journal = false;
     uint32_t max_turns = AYNI_MAX_TURNS_DEFAULT;
 
     ayni_call_resource_v1 motor_resource{text("motor.actuator"), 1, 0};
@@ -312,7 +314,7 @@ struct EphemeralFixture {
         cfg.executor_capacity = 2;
         cfg.execution_binding_capacity = 2;
         cfg.command_capacity = 16;
-        cfg.storage_buffer_bytes = 0;
+        cfg.storage_buffer_bytes = single_batch_journal ? smallest_storage_buffer(cfg) : 0;
         work.node().on_create([this](ayni_kernel_t *kernel) { register_all(kernel); });
     }
 
@@ -607,8 +609,17 @@ struct EphemeralFixture {
         configure_node();
         work.run();
         motor_grant_id = create_grant("motor.act", true);
+        if (single_batch_journal) {
+            pump(3);
+        }
         model_grant_id = create_grant("test.model", false);
+        if (single_batch_journal) {
+            pump(3);
+        }
         durable_grant_id = create_grant("test.durable", false);
+        if (single_batch_journal) {
+            pump(3);
+        }
         set_scene(true);
         pump(20);
     }
@@ -809,6 +820,58 @@ TEST(EphemeralExecution, EphemeralRequiresCancelOnRebootGoalAndValidContract) {
          AYNI_CALL_RESULT_TEXT, 32, 32, 0, nullptr, nullptr, AYNI_CALL_DURABILITY_EPHEMERAL, 0},
         &bad_biz};
     EXPECT_EQ(ayni_register_call_capability(reg_node.kernel(), &bad_query), AYNI_INVALID_ARGUMENT);
+}
+
+// ADR-0110 / C-COMMIT-006: an unrelated pending append must not block the first
+// motor's stop proof or the next RAM-only decision, dispatch or receipt.
+TEST(EphemeralExecution, motor_actions_handoff_while_journal_is_full) {
+    EphemeralFixture fix;
+    fix.single_batch_journal = true;
+    fix.motor_exec.auto_complete = false;
+    fix.work.strategy().answer = [&](const ayni_task_snapshot_v1 &snap,
+                                     ayni_policy_output_v1 &out) {
+        for (const auto *key : {"first", "second"}) {
+            ayni_task_call_result_v1 result{};
+            result.struct_size = sizeof(result);
+            if (snap.call_result(snap.call_context, text(key), &result) != AYNI_OK) {
+                return EphemeralFixture::stage_motor_call(key, 40, out);
+            }
+            EXPECT_EQ(result.outcome, AYNI_CALL_COMPLETED);
+        }
+        return report(AYNI_POLICY_REPORT_COMPLETION, snap, out);
+    };
+    fix.start();
+    const auto goal = fix.create_goal("ephemeral_goal");
+    for (unsigned tries = 0; tries < 12 && fix.motor_exec.submit_calls == 0U; ++tries) {
+        fix.pump(1);
+    }
+    ASSERT_EQ(fix.motor_exec.submit_calls, 1U);
+
+    const auto unrelated = WorkNode::create_body(fix.work.instance(agent_a), 0, "resume_goal", 1,
+                                                 {}, AYNI_TRIGGER_NONE);
+    ASSERT_EQ(fix.work.create(unrelated).status, AYNI_OK);
+    const auto prefix = fix.work.node().info().durable_seq;
+    ASSERT_EQ(fix.work.create(unrelated).status, AYNI_BUSY);
+
+    fix.motor_exec.finish_active(AYNI_CALL_COMPLETED, AYNI_OK, AYNI_CALL_EFFECT_COMPLETE, "moved");
+    for (unsigned tries = 0; tries < 3 && fix.motor_exec.submit_calls < 2U; ++tries) {
+        const auto step = fix.work.node().step();
+        if (fix.motor_exec.submit_calls < 2U) {
+            EXPECT_EQ(step.more_ready, 1U);
+        }
+    }
+    ASSERT_EQ(fix.motor_exec.submit_calls, 2U);
+    EXPECT_EQ(fix.motor_exec.challenge_calls, 2U);
+    EXPECT_EQ(fix.motor_exec.stop_calls, 0U);
+    EXPECT_EQ(fix.motor_exec.status_calls, 0U);
+    fix.motor_exec.finish_active(AYNI_CALL_COMPLETED, AYNI_OK, AYNI_CALL_EFFECT_COMPLETE, "moved");
+    fix.work.node().step();
+    EXPECT_EQ(fix.work.node().info().durable_seq, prefix);
+    EXPECT_EQ(fix.work.goal(goal).lifecycle, AYNI_GOAL_ACTIVE);
+    EXPECT_EQ(fix.work.node().step().more_ready, 0U);
+
+    fix.pump(6);
+    EXPECT_EQ(fix.work.goal(goal).lifecycle, AYNI_GOAL_SATISFIED);
 }
 
 // Test 3 (ADR-0110):

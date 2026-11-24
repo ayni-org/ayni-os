@@ -154,8 +154,7 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
     advance_recovery_and_maintenance(progress);
     apply_revocations(progress);
     apply_observation_gaps(progress);
-    drain_observation_slots(progress);
-    evaluate_reflexes(progress);
+    apply_realtime_ingress(progress);
     if (!calls.refresh_live_gates(progress.now_us(), log.durable_seq(), call_mode())) {
         enter_restricted(AYNI_RESTRICTION_INTERNAL);
     }
@@ -294,11 +293,11 @@ ayni::kernel::CallRuntime::AcceptedCalls ayni_kernel::apply_ready_work(StepConte
             progress.applied();
         }
         uint64_t call_id = 0;
-        while (lifecycle == AYNI_LIFECYCLE_RUNNING && progress.available() && has_room() &&
-               run_transition([&] {
-                   return ended(ayni::kernel::decide_next(
-                       work, decisions, ready_before, progress.started_us, log.durable_seq(),
-                       {host.ctx, host.monotonic_now_us}, calls, call_id, volatile_before));
+        while (lifecycle == AYNI_LIFECYCLE_RUNNING && progress.available() && run_transition([&] {
+                   return ended(ayni::kernel::decide_next(work, decisions, ready_before,
+                                                          progress.started_us, log.durable_seq(),
+                                                          {host.ctx, host.monotonic_now_us}, calls,
+                                                          call_id, volatile_before, has_room()));
                })) {
             accepted.include(call_id);
             progress.applied();
@@ -314,10 +313,13 @@ void ayni_kernel::prepare_accepted_calls(StepContext &progress,
     while (accepted.first && lifecycle == AYNI_LIFECYCLE_RUNNING && progress.available() &&
            completions.posted_count() == 0 && !revocation_ready() &&
            !work.authority_cleanup.ready() && !privacy_ready()) {
-        const bool ephemeral_only = !(has_room() && log.can_extend_group(progress.now_us()));
+        using Admission = ayni::kernel::CallRuntime::JournalAdmission;
+        const bool room = has_room();
+        const auto admission = room ? Admission::available : Admission::blocked;
+        const bool ephemeral_only = !(room && log.can_extend_group(progress.now_us()));
         if (!run_transition([&] {
                 return ended(calls.prepare_accepted(accepted, progress.cutoff_us(),
-                                                    log.durable_seq(), ephemeral_only));
+                                                    log.durable_seq(), ephemeral_only, admission));
             })) {
             break;
         }
@@ -365,15 +367,47 @@ void ayni_kernel::apply_observation_gaps(StepContext &) {
     }
 }
 
-// Drains each dirty lock-free ObservationSlot at most once per step before gate refresh
-// and reflex evaluation so high-rate sensor updates react in the same step (ADR-0112).
-void ayni_kernel::drain_observation_slots(StepContext &progress) {
+// When a short step is spent on samples, evaluate those samples before reading
+// more. Give the ordinary Call lane a turn if the reflex pass also fills a step.
+void ayni_kernel::apply_realtime_ingress(StepContext &progress) {
     if (lifecycle != AYNI_LIFECYCLE_RUNNING) {
+        realtime_turn_ = RealtimeTurn::samples;
+        reflex_engine.reset_pass();
         return;
     }
+    if (!progress.available()) {
+        return;
+    }
+    if (realtime_turn_ == RealtimeTurn::calls) {
+        realtime_turn_ = RealtimeTurn::samples;
+        return;
+    }
+    if (realtime_turn_ == RealtimeTurn::samples && !reflex_engine.pending()) {
+        drain_observation_slots(progress);
+        if (!progress.available()) {
+            realtime_turn_ = reflex_table.count() ? RealtimeTurn::reflexes : RealtimeTurn::calls;
+            return;
+        }
+    }
+    evaluate_reflexes(progress);
+    realtime_turn_ = progress.available() ? RealtimeTurn::samples : RealtimeTurn::calls;
+}
+
+// Drains each source at most once per pass; the cursor prevents a busy source
+// monopolizing shorter steps. Even a dropped old-boot sample spends an item.
+void ayni_kernel::drain_observation_slots(StepContext &progress) {
+    const uint32_t count = catalogs.observation_sources.size();
+    using Drain = ayni::kernel::ObservationSlots::Drain;
     ayni::knowledge::ObservationInput input{};
-    for (uint32_t source = 0; source < catalogs.observation_sources.size(); ++source) {
-        if (!observation_slots.drain(source, input)) {
+    for (uint32_t scanned = 0; scanned < count && progress.available(); ++scanned) {
+        const uint32_t source = next_observation_slot_;
+        next_observation_slot_ = (source + 1U) % count;
+        const auto drained = observation_slots.drain(source, input);
+        if (drained == Drain::empty) {
+            continue;
+        }
+        if (drained == Drain::stale) {
+            progress.applied();
             continue;
         }
         const bool owner_known =
@@ -386,17 +420,30 @@ void ayni_kernel::drain_observation_slots(StepContext &progress) {
         } else {
             observation_slots.record_discarded();
         }
+        progress.applied();
     }
 }
 
 // Evaluates local deterministic ReflexRules right after draining sensor slots and before
 // gate refresh / urgent executor stops (0 LLM, 0 WAL, ADR-0112).
 void ayni_kernel::evaluate_reflexes(StepContext &progress) {
-    if (lifecycle != AYNI_LIFECYCLE_RUNNING || reflex_table.count() == 0U) {
-        return;
-    }
-    if (reflex_engine.evaluate(progress.now_us(), log.durable_seq()) != AYNI_OK) {
-        enter_restricted(AYNI_RESTRICTION_INTERNAL);
+    using Advance = ayni::kernel::ReflexEngine::Advance;
+    while (progress.available()) {
+        const auto result = reflex_engine.advance({host.ctx, host.monotonic_now_us},
+                                                  progress.cutoff_us(), log.durable_seq());
+        if (result == Advance::internal) {
+            enter_restricted(AYNI_RESTRICTION_INTERNAL);
+        }
+        if (result == Advance::timed_out) {
+            progress.check_time();
+        }
+        if (result != Advance::applied) {
+            break;
+        }
+        progress.applied();
+        if (!reflex_engine.pending()) {
+            break;
+        }
     }
 }
 // Accepted samples consume the same bounded item/time budget after ordinary
@@ -450,14 +497,15 @@ void ayni_kernel::report_step(StepContext &progress, ayni_step_report_v1 &report
     // Runs after the time budget is spent too: more_ready must not drop due
     // work. A task still READY waits for a decision, also one that a
     // decision reporting progress left READY for a later step (ADR-0024).
-    // Without room, all of it waits for an append's post, which wakes the
-    // owner.
+    // Durable work waits for storage capacity. Eligible RAM-only decisions
+    // still run, and report readiness through the same predicate.
     progress.next_deadline_us = ayni::work::no_time;
+    const bool room = has_room();
     const bool work_due =
-        lifecycle == AYNI_LIFECYCLE_RUNNING && has_room() &&
-        (ayni::kernel::refresh_due_work(work, progress.started_us, progress.next_deadline_us,
-                                        log.durable_seq()) ||
-         ayni::kernel::awaits_decision(work, log.durable_seq()));
+        lifecycle == AYNI_LIFECYCLE_RUNNING &&
+        ((room && ayni::kernel::refresh_due_work(work, progress.started_us,
+                                                 progress.next_deadline_us, log.durable_seq())) ||
+         ayni::kernel::awaits_decision(work, log.durable_seq(), room));
     const bool maintenance_due = maintaining() && maintenance.wants_advance(progress.started_us) &&
                                  completions.has_free_slot();
     // A request held back by the write interval or a retry backoff is due
@@ -465,20 +513,21 @@ void ayni_kernel::report_step(StepContext &progress, ayni_step_report_v1 &report
     const uint64_t storage_due_us = storage_deadline();
     progress.include_deadline(storage_due_us);
     const auto mode = call_mode();
+    using Admission = ayni::kernel::CallRuntime::JournalAdmission;
+    const auto admission = room ? Admission::available : Admission::blocked;
     const bool call_ready = calls.control_ready(progress.started_us, log.durable_seq(), mode) ||
-                            ((has_room() || mode == ayni::kernel::CallRuntime::Mode::fenced ||
-                              mode == ayni::kernel::CallRuntime::Mode::closing) &&
-                             calls.ready(progress.started_us, log.durable_seq(), mode));
-    const auto call_deadline = calls.next_deadline_us();
+                            calls.ready(progress.started_us, log.durable_seq(), mode, admission);
+    const auto call_deadline = calls.next_deadline_us(progress.started_us, admission);
     progress.include_deadline(call_deadline);
     const uint64_t reflex_deadline =
         lifecycle == AYNI_LIFECYCLE_RUNNING
             ? reflex_engine.next_deadline_us(progress.started_us, log.durable_seq())
             : ayni::work::no_time;
     progress.include_deadline(reflex_deadline);
-    const bool reflex_due = lifecycle == AYNI_LIFECYCLE_RUNNING &&
-                            reflex_deadline != ayni::work::no_time &&
-                            reflex_deadline <= progress.started_us;
+    const bool reflex_due =
+        lifecycle == AYNI_LIFECYCLE_RUNNING &&
+        (realtime_turn_ == RealtimeTurn::reflexes || reflex_engine.pending() ||
+         (reflex_deadline != ayni::work::no_time && reflex_deadline <= progress.started_us));
     report = ayni_step_report_v1{};
     report.struct_size = sizeof(report);
     report.items_done = progress.items_done();

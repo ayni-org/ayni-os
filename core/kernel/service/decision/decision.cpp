@@ -32,12 +32,13 @@ struct DecisionAdmission {
     // Query-local sample: false iff no retained Grant has a boot compatibility
     // hold. The owner model cannot change during this synchronous query.
     bool inspect_compatibility;
+    bool journal_available; // True if this pass can publish a Task transition.
     // Packed Compatibility cells by retained Goal index; zero means unknown.
     mutable std::array<uint64_t, compatibility_word_count> compatibility{};
 
-    DecisionAdmission(const WorkModel &owner, uint64_t durable)
+    DecisionAdmission(const WorkModel &owner, uint64_t durable, bool room)
         : model(owner), durable_seq(durable),
-          inspect_compatibility(owner.grants.has_compatibility_holds()) {}
+          inspect_compatibility(owner.grants.has_compatibility_holds()), journal_available(room) {}
 
     // Share each Goal's static reference check across its READY Tasks. Slot
     // identities cannot change during the query; a later query starts fresh.
@@ -63,10 +64,14 @@ struct DecisionAdmission {
 bool admission_ready(const void *context, const work::Task &task) {
     const auto &query = *static_cast<const DecisionAdmission *>(context);
     // Old-boot CANCEL_ON_REBOOT Goals must cancel in do_due_work(), never decide (ADR-0110).
-    if (query.model.goal_boot_reset_pending(task.goal_index)) {
+    if (query.model.goal_lineage_boot_reset_pending(task.goal_index)) {
         return false;
     }
     const auto &goal = query.model.goals.at(task.goal_index);
+    if (!query.journal_available &&
+        (!goal.work_profile.cancel_on_reboot() || task.volatile_state.decision_waits_for_journal)) {
+        return false;
+    }
     // Memory-capable decisions may consume their preceding call result or saved record.
     // Wait for that Task transition's durable prefix instead of holding a normal I/O wait,
     // except for CANCEL_ON_REBOOT tasks with no unconfirmed durable call or provenance.
@@ -354,7 +359,7 @@ std::optional<DecisionResult>
 publish_volatile_decision(WorkModel &model, DecisionBuffer &decisions, uint32_t index,
                           const catalog::Strategy &strategy, const ayni_policy_output_v1 &output,
                           Verdict verdict, CallRuntime &calls, OwnerClock clock,
-                          MemoryDecision &memory, uint64_t &accepted_call) {
+                          MemoryDecision &memory, uint64_t &accepted_call, bool journal_available) {
     const auto &task = model.tasks.at(index);
     const auto &goal = model.goals.at(task.goal_index);
     if (!goal.work_profile.cancel_on_reboot()) {
@@ -406,6 +411,9 @@ publish_volatile_decision(WorkModel &model, DecisionBuffer &decisions, uint32_t 
                 ? goal_only_deps
                 : knowledge::same_dependencies(memory.dependencies(), task_prov->dependencies);
         if (!checkpoint_unchanged || !provenance_unchanged) {
+            if (!journal_available) {
+                return std::nullopt;
+            }
             const auto stamp = model.transitions.next();
             model.tasks.fold_volatile_model_calls(index);
             memory.publish(stamp);
@@ -424,13 +432,20 @@ DecisionResult publish_decision(WorkModel &model, DecisionBuffer &decisions, uin
                                 const catalog::Strategy &strategy,
                                 const ayni_policy_output_v1 &output, Verdict verdict,
                                 CallRuntime &calls, OwnerClock clock, MemoryDecision &memory,
-                                uint64_t &accepted_call) {
+                                uint64_t &accepted_call, bool journal_available) {
     if (verdict.kind == Verdict::Kind::redecide) {
         return DecisionResult::none;
     }
-    if (const auto fast = publish_volatile_decision(model, decisions, index, strategy, output,
-                                                    verdict, calls, clock, memory, accepted_call)) {
+    if (const auto fast =
+            publish_volatile_decision(model, decisions, index, strategy, output, verdict, calls,
+                                      clock, memory, accepted_call, journal_available)) {
         return *fast;
+    }
+    // C-POLICY-001 exposes decisions as proposals. Discard this proposal and
+    // re-evaluate from the last accepted checkpoint when a durable batch fits.
+    if (!journal_available) {
+        model.tasks.set_decision_waits_for_journal(index, true);
+        return DecisionResult::applied;
     }
     work::WorkTables tables = model.tables();
     if (verdict.kind == Verdict::Kind::end && work::task_end_exhausts(tables, index, verdict.end)) {
@@ -480,6 +495,32 @@ DecisionResult publish_decision(WorkModel &model, DecisionBuffer &decisions, uin
     return DecisionResult::applied;
 }
 
+// Borrow the snapshot and proposal ports only for the synchronous policy callback.
+ayni_status_t ask_strategy(WorkModel &model, DecisionBuffer &decisions, uint32_t index,
+                           uint64_t now_us, uint64_t durable_seq, const catalog::Strategy &strategy,
+                           CallRuntime &calls, MemoryDecision &memory,
+                           ayni_policy_output_v1 &output) {
+    ayni_task_snapshot_v1 snapshot = snapshot_of(model, decisions, index, now_us);
+    snapshot.memory = model.memories.capacity() == 0 ? nullptr : memory.view();
+    output.struct_size = sizeof(output);
+    output.intent_capacity = strategy.max_intents_per_call;
+    output.intents = decisions.clear(strategy.max_intents_per_call);
+    // Startup checked the old writer against this strategy's reader promises
+    // and capacity; later decisions use this writer (ADR-0024, ADR-0056).
+    output.checkpoint_capacity = strategy.max_checkpoint_bytes;
+    output.checkpoint_size = snapshot.checkpoint.state.size;
+    output.checkpoint =
+        decisions.load_checkpoint(snapshot.checkpoint.state, strategy.max_checkpoint_bytes);
+    // Nothing changes while the strategy runs (C-POLICY-001), so the task
+    // it decides is still the one it saw.
+    calls.begin_decision(index, snapshot, output, durable_seq);
+    const ayni_status_t status =
+        model.call_out([&] { return strategy.decide(strategy.ctx, &snapshot, &output); });
+    calls.end_decision();
+    memory.close();
+    return status;
+}
+
 } // namespace
 
 std::size_t DecisionBuffer::storage_size(const Limits &limits) {
@@ -525,21 +566,27 @@ uint8_t *DecisionBuffer::load_checkpoint(ayni_bytes_v1 state, uint32_t capacity)
 
 DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t ready_before,
                            uint64_t now_us, uint64_t durable_seq, OwnerClock clock,
-                           CallRuntime &calls, uint64_t &accepted_call, uint64_t volatile_before) {
+                           CallRuntime &calls, uint64_t &accepted_call, uint64_t volatile_before,
+                           bool journal_available) {
     accepted_call = 0;
     uint32_t index = 0;
-    const DecisionAdmission admission{model, durable_seq};
+    const DecisionAdmission admission{model, durable_seq, journal_available};
     if (!model.tasks.next_ready(ready_before, index, {&admission, admission_ready},
                                 volatile_before)) {
         return DecisionResult::none;
     }
+    model.tasks.set_decision_waits_for_journal(index, false);
     const work::Task &task = model.tasks.at(index);
     const auto authority = model.check_task_authority(index, clock.now_us(), durable_seq);
     if (authority.status != AYNI_OK) {
         if (authority.status == AYNI_BUSY) {
             return DecisionResult::none;
         }
-        model.pause_task_authority(index, clock.now_us(), durable_seq);
+        if (journal_available) {
+            model.pause_task_authority(index, clock.now_us(), durable_seq);
+        } else {
+            model.tasks.set_decision_waits_for_journal(index, true);
+        }
         return DecisionResult::applied;
     }
     const uint32_t strategy_index =
@@ -549,33 +596,25 @@ DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t
 
     MemoryDecision memory(model, index, durable_seq, clock, decisions.memory_staging());
     if (const auto source = memory.validate(); source != AYNI_OK) {
-        model.tasks.hold(index, source, memory_reason(source), model.transitions.next());
+        if (journal_available) {
+            model.tasks.hold(index, source, memory_reason(source), model.transitions.next());
+        } else {
+            model.tasks.set_decision_waits_for_journal(index, true);
+        }
         return DecisionResult::applied;
     }
-    ayni_task_snapshot_v1 snapshot = snapshot_of(model, decisions, index, now_us);
-    snapshot.memory = model.memories.capacity() == 0 ? nullptr : memory.view();
     ayni_policy_output_v1 output{};
-    output.struct_size = sizeof(output);
-    output.intent_capacity = strategy.max_intents_per_call;
-    output.intents = decisions.clear(strategy.max_intents_per_call);
-    // Startup checked the old writer against this strategy's reader promises
-    // and capacity; later decisions use this writer (ADR-0024, ADR-0056).
-    output.checkpoint_capacity = strategy.max_checkpoint_bytes;
-    output.checkpoint_size = snapshot.checkpoint.state.size;
-    output.checkpoint =
-        decisions.load_checkpoint(snapshot.checkpoint.state, strategy.max_checkpoint_bytes);
-    // Nothing changes while the strategy runs (C-POLICY-001), so the task
-    // it decides is still the one it saw.
-    calls.begin_decision(index, snapshot, output, durable_seq);
-    const ayni_status_t status =
-        model.call_out([&] { return strategy.decide(strategy.ctx, &snapshot, &output); });
-    calls.end_decision();
-    memory.close();
+    const auto status =
+        ask_strategy(model, decisions, index, now_us, durable_seq, strategy, calls, memory, output);
 
     // A non-reentrant callback can still run past a Grant deadline. Discard all
     // returned progress/checkpoint output before committing if authority expired.
     if (model.check_task_authority(index, clock.now_us(), durable_seq).status != AYNI_OK) {
-        model.pause_task_authority(index, clock.now_us(), durable_seq);
+        if (journal_available) {
+            model.pause_task_authority(index, clock.now_us(), durable_seq);
+        } else {
+            model.tasks.set_decision_waits_for_journal(index, true);
+        }
         decisions.scrub();
         calls.scrub_decision();
         return DecisionResult::applied;
@@ -595,14 +634,14 @@ DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t
     }
     verdict = judge_proposal(verdict, decisions, index, durable_seq, clock, calls, memory);
     const auto result = publish_decision(model, decisions, index, strategy, output, verdict, calls,
-                                         clock, memory, accepted_call);
+                                         clock, memory, accepted_call, journal_available);
     decisions.scrub();
     calls.scrub_decision();
     return result;
 }
 
-bool awaits_decision(const WorkModel &model, uint64_t durable_seq) {
-    const DecisionAdmission admission{model, durable_seq};
+bool awaits_decision(const WorkModel &model, uint64_t durable_seq, bool journal_available) {
+    const DecisionAdmission admission{model, durable_seq, journal_available};
     return model.tasks.has_ready({&admission, admission_ready});
 }
 

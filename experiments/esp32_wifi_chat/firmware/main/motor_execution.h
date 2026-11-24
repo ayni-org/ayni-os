@@ -29,15 +29,13 @@ class MotorExecution {
     ayni_submit_result_t cancel(ayni_attempt_ref_v1);
     ayni_status_t advance();
     uint64_t latest_dispatch() const { return latest_dispatch_; } // Owner thread only.
-    // Any-thread read of the estimated active PWM completion time (monotonic us); zero when idle.
-    uint64_t expected_stop_us() const { return expected_stop_us_.load(std::memory_order_acquire); }
     // Owner reads the control worker's fixed-size output intervals for a model window.
     bool output_intervals(uint64_t from_us, uint64_t to_us, OutputIntervals &);
     void receive(Kind, uint64_t, const uint8_t *, size_t);
     void set_accepting(bool accepting) { accepting_.store(accepting, std::memory_order_release); }
     void request_stop();      // Latched hard E-stop (Mode::latched until reboot).
     void request_soft_stop(); // Recoverable soft-stop (stays Mode::armed unless stop fails).
-    void request_local_stop() { request_stop(); }
+    void wake_control();      // Best-effort inbox nudge; the stop latch is separate.
     int describe(char *out, size_t capacity) const;
     bool close();
 
@@ -72,7 +70,7 @@ class MotorExecution {
         ayni_attempt_ref_v1 attempt{};
         ayni_provider_completion_t *completion = nullptr;
     };
-    enum class MessageKind { start, cancel, port, frame, soft_stop };
+    enum class MessageKind { start, cancel, port, frame, soft_stop, wake };
     struct Message {
         MessageKind kind = MessageKind::frame;
         Pending start{};
@@ -149,10 +147,12 @@ class MotorExecution {
     enum class Initialization { unattempted, failed, ready };
     Initialization initialization_ = Initialization::unattempted;
     // Independent latest-level interlocks bypass the command inbox.
-    std::atomic<bool> accepting_{false}, local_stop_{false}, soft_stop_{false}, inbox_open_{false},
-        closing_{false}, worker_stopped_{false};
+    std::atomic<bool> accepting_{false}, local_stop_{false}, soft_stop_{false}, closing_{false},
+        worker_stopped_{false};
+    // High bit closes producer admission; low bits count borrows until xQueueSend returns.
+    static constexpr uint32_t inbox_closed = 1U << 31U;
+    std::atomic<uint32_t> inbox_access_{inbox_closed};
     std::atomic<uint64_t> heartbeat_capture_{0};
-    std::atomic<uint64_t> expected_stop_us_{0}; // Worker writes; owner reads for write pacing.
     std::atomic<ayni_status_t> worker_error_{AYNI_OK};
     std::atomic<uint32_t> snapshot_{motor_percent_max};
     portMUX_TYPE output_mutex_ = portMUX_INITIALIZER_UNLOCKED;

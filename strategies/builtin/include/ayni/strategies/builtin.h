@@ -196,11 +196,14 @@ struct LocalClock {
 // Both calls are MODEL class; summary binding must have a text result contract.
 // model.text and summary.text are trusted instructions, framed apart from the conversation data
 // (AYNI_MODEL_INSTRUCTIONS_PREFIX, ADR-0074). User text is in parameters.
-// Body-store progress only. Queue-wide readiness never gates a ToolLoop Task:
+// Body-store progress and staged-index retirement. Queue-wide readiness never gates a Task:
 // dependent reads/writes decide whether the current step must defer.
 struct BodyProgress {
     void *context = nullptr;                            // Borrowed through strategy destruction.
     uint32_t (*ready)(void *, uint64_t task) = nullptr; // Return ignored; null: no async work.
+    // Optional owner-thread discard after the exact replacement checkpoint is observed.
+    // Implementations may remove only an unconfirmed RAM copy and must preserve durable owners.
+    void (*discard_unconfirmed)(void *, const BodyRef &) = nullptr;
 };
 // The model binding's token settings (ADR-0095), all positive. A request holds at most
 // context_window_tokens; max_output_tokens of it are left for the answer. Compaction starts when
@@ -215,7 +218,9 @@ struct TokenLimits {
 // Discovery preserves existing consumers; preloaded sends the current authorized directory
 // as request-only tools. Neither mode changes Core authorization.
 enum class ToolExposure { discovery, preloaded };
-enum class Persistence { durable, background };
+// Background requests saves while work progresses. turn_boundary stages during the turn
+// and relies on Session's publication barrier. Select it with CANCEL_ON_REBOOT Goals.
+enum class Persistence { durable, background, turn_boundary };
 // Metadata-only observation of one tool proposal outcome in a model batch. Never carries
 // arguments, tool output text, or private payloads, and must not block or reenter Core.
 struct ToolOutcome {
@@ -245,7 +250,7 @@ struct ToolLoopConfig {
     // rest of the config. Bodies of conversation id use scope id.
     const ayni_body_store_v1 *bodies = nullptr;
     BodyProgress body_progress{};
-    Persistence persistence = Persistence::durable; // Background is explicit and requires staging.
+    Persistence persistence = Persistence::durable; // Other modes require a stage port.
     // Active turns and at most one completed graph per conversation share this bound.
     uint32_t cached_turns = 4;                            // Eviction never drops store ownership.
     ToolExposure tool_exposure = ToolExposure::discovery; // Captured anew on every decision.

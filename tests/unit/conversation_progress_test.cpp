@@ -250,6 +250,24 @@ class ConversationProgress : public testing::Test {
         ADD_FAILURE() << "normal progress deadline";
         return false;
     }
+    // Reopen the profile and Session only after both owners have drained callbacks.
+    void reopen_profile() {
+        bound = false;
+        ASSERT_EQ(profile.begin_shutdown(), AYNI_OK);
+        ASSERT_TRUE(until([&] { return profile.stopped() && values.empty(); }));
+        ASSERT_EQ(profile.destroy(), AYNI_OK);
+        // Both callback owners are drained; restart the placed Session on its fresh Core handle.
+        session.~Session();
+        new (&session) conversation::Session();
+        files.end();
+        ASSERT_EQ(files.begin(directory.path().c_str()), 0);
+        ASSERT_EQ(profile.create_in(arena, memory.bytes, host.table(), values.port(), persistence),
+                  AYNI_OK);
+        ASSERT_EQ(profile.start(), AYNI_OK);
+        ASSERT_TRUE(until([&] { return profile.running(); }));
+        bind();
+        ASSERT_TRUE(session.ready());
+    }
     ayni_context_info_v1 context() {
         auto anchor = ayni::initialized<ayni_context_info_v1>();
         EXPECT_EQ(
@@ -594,21 +612,7 @@ TEST_F(ConversationProgress, normal_close_reopen_retains_answer_without_another_
     ASSERT_TRUE(result.published);
     const auto last = session.record()->last_round;
     ASSERT_TRUE(until([&] { return session.quiesce() == AYNI_OK; }));
-    bound = false;
-    ASSERT_EQ(profile.begin_shutdown(), AYNI_OK);
-    ASSERT_TRUE(until([&] { return profile.stopped() && values.empty(); }));
-    ASSERT_EQ(profile.destroy(), AYNI_OK);
-    // Both callback owners are drained; restart the placed Session on its fresh Core handle.
-    session.~Session();
-    new (&session) conversation::Session();
-    files.end();
-    ASSERT_EQ(files.begin(directory.path().c_str()), 0);
-    ASSERT_EQ(profile.create_in(arena, memory.bytes, host.table(), values.port(), persistence),
-              AYNI_OK);
-    ASSERT_EQ(profile.start(), AYNI_OK);
-    ASSERT_TRUE(until([&] { return profile.running(); }));
-    bind();
-    ASSERT_TRUE(session.ready());
+    ASSERT_NO_FATAL_FAILURE(reopen_profile());
     EXPECT_EQ(session.record()->last_round, last);
     EXPECT_EQ(profile.model_submissions(), 0U);
     std::string answer;
@@ -618,6 +622,35 @@ TEST_F(ConversationProgress, normal_close_reopen_retains_answer_without_another_
     }));
     EXPECT_FALSE(answer.empty());
 }
+class TurnBoundaryConversationProgress : public ConversationProgress {
+  protected:
+    TurnBoundaryConversationProgress() {
+        persistence = ayni::strategies::Persistence::turn_boundary;
+    }
+};
+
+// C-SDK-009: a normal close before PUBLISH has no durable conversation candidate to recover.
+TEST_F(TurnBoundaryConversationProgress, reopen_drops_completed_but_unpublished_turn) {
+    ASSERT_EQ(session.begin(text("three sums")), AYNI_OK);
+    ASSERT_TRUE(until([&] {
+        return !stage_events.empty() &&
+               stage_events.back().stage == conversation::PublicationStage::checkpoint_ready;
+    }));
+    EXPECT_EQ(context().last_turn_id, 0U);
+    EXPECT_EQ(context().pending_action, AYNI_CONTEXT_IDLE);
+
+    ASSERT_NO_FATAL_FAILURE(reopen_profile());
+    EXPECT_EQ(session.record()->round_count, 0U);
+    EXPECT_EQ(profile.model_submissions(), 0U);
+    EXPECT_EQ(commands[AYNI_INTENT_CONTEXT_PUBLISH], 0U);
+
+    ASSERT_EQ(session.begin(text("sum")), AYNI_OK);
+    conversation::TurnResult result{};
+    ASSERT_TRUE(until([&] { return session.take_result(result); }));
+    EXPECT_TRUE(result.published);
+    EXPECT_EQ(session.record()->round_count, 1U);
+}
+
 class DurableConversationProgress : public ConversationProgress {
   protected:
     DurableConversationProgress() { persistence = ayni::strategies::Persistence::durable; }

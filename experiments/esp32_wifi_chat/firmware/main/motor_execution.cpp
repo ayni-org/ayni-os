@@ -148,7 +148,7 @@ ayni_status_t MotorExecution::queue(const PortRequest &request) {
         request.kind > AYNI_EXECUTOR_STATUS) {
         return AYNI_INVALID_ARGUMENT;
     }
-    if (!inbox_open_.load(std::memory_order_acquire)) {
+    if ((inbox_access_.load(std::memory_order_acquire) & inbox_closed) != 0U) {
         return AYNI_DENIED;
     }
     Message message{};
@@ -282,11 +282,11 @@ ayni_status_t MotorExecution::serve(PortRequest &request) {
     } else {
         response.status = status(request.permit_id, response.output.status);
     }
-    if (request.kind == AYNI_EXECUTOR_CHALLENGE || response.status != AYNI_OK) {
+    const auto posted = ayni_executor_post(request.completion, &response);
+    if (response.status != AYNI_OK) {
         trace(request.kind == AYNI_EXECUTOR_CHALLENGE ? "challenge" : "executor-port",
               response.status);
     }
-    const auto posted = ayni_executor_post(request.completion, &response);
     // Core may have abandoned this exact answer after its bounded wait. Never replay it.
     return posted == AYNI_INVALID_STATE ? AYNI_OK : posted;
 }
@@ -363,7 +363,6 @@ ayni_status_t MotorExecution::sample() {
     return rc == AYNI_OK && step.state != AYNI_CONTROL_SESSION_ACTIVE ? AYNI_EXPIRED : rc;
 }
 ayni_status_t MotorExecution::stop_output() {
-    expected_stop_us_.store(0, std::memory_order_release);
     ayni_status_t stopped = AYNI_OK;
     if (session_ && gate_ && current_permit_) {
         stopped = ayni_control_session_soft_stop(session_, now());
@@ -553,7 +552,6 @@ ayni_status_t MotorExecution::advance_owner() {
     if (mode_ == Mode::closed) {
         return AYNI_OK;
     }
-    publish_terminal();
     if (transport_.motor_stop_requested() ||
         local_stop_.exchange(false, std::memory_order_acq_rel)) {
         stop_owner();
@@ -602,6 +600,7 @@ ayni_status_t MotorExecution::advance_owner() {
             return rc;
         }
     }
+    publish_terminal();
     return AYNI_OK;
 }
 ayni_status_t MotorExecution::advance_pending() {
@@ -629,10 +628,6 @@ ayni_status_t MotorExecution::advance_pending() {
             } else {
                 p.phase = Phase::running;
                 const auto started_us = now();
-                expected_stop_us_.store(started_us +
-                                            uint64_t(total_duration_ms(p.trajectory)) * 1000ULL,
-                                        std::memory_order_release);
-                wake_owner(); // Let the owner re-evaluate the motor background-write window now.
                 mark_output_start(p.call, started_us);
                 trace_handoff("output_started", p.call, started_us);
                 transport_.diagnostics().record("wifi motor_segment call=%llu seg=1/%lu gap_us=0\n",
@@ -752,7 +747,6 @@ bool MotorExecution::close_owner() {
     session_memory_ = nullptr;
     heap_caps_free(gate_memory_);
     gate_memory_ = nullptr;
-    expected_stop_us_.store(0, std::memory_order_release);
     mode_ = Mode::closed;
     return true;
 }

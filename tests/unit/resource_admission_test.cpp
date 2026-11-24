@@ -100,6 +100,37 @@ class ResourceAdmissionTest : public ::testing::Test {
     ResourceAdmission admission;
 };
 
+// C-RES-004: storage pressure skips a blocked Agent, preserving its FIFO.
+TEST_F(ResourceAdmissionTest, ram_only_admission_keeps_per_agent_fifo) {
+    auto durable = request(1, 1);
+    durable.on_wait = WaitAction::pause;
+    durable.wait_us = 30;
+    queue(durable);
+    auto same_agent = request(2, 1);
+    same_agent.lane = ResourceRequest::Lane::ephemeral;
+    queue(same_agent);
+    auto other_agent = request(3, 2, 1);
+    other_agent.lane = ResourceRequest::Lane::ephemeral;
+    other_agent.on_wait = WaitAction::pause;
+    other_agent.wait_us = 60;
+    queue(other_agent);
+
+    AdmissionChoice choice{};
+    auto on_wait = WaitAction::wait;
+    ResourceClaim claim{};
+    using Admission = ResourceAdmission::Admission;
+    EXPECT_EQ(admission.next_deadline_us(), durable.wait_us);
+    EXPECT_EQ(admission.next_deadline_us(Admission::ram_only), other_agent.wait_us);
+    ASSERT_TRUE(admission.next(0, choice, Admission::ram_only));
+    EXPECT_EQ(choice.call_id, other_agent.call_id);
+    EXPECT_EQ(admission.acquire(other_agent.call_id, 0, claim, on_wait, Admission::ram_only),
+              ResourceAdmission::Acquisition::acquired);
+    EXPECT_FALSE(admission.next(0, choice, Admission::ram_only));
+    take(1);
+    ASSERT_TRUE(release(1));
+    take(2);
+}
+
 // C-RES-002/003: unavailable groups never consume a subset of units.
 TEST_F(ResourceAdmissionTest, group_admission_is_atomic_and_held_units_do_not_overflow) {
     queue(request(1, 1, 1, 2));

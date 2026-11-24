@@ -287,9 +287,7 @@ ayni_status_t CallRuntime::preempt_resource(uint32_t resource_index, uint64_t no
             if (control_.holds_lease(holders[at]) && !control_.request_stop(holders[at])) {
                 return AYNI_INTERNAL;
             }
-            if (active.delivery && cancel_transport(*active.delivery) == Advance::internal) {
-                return AYNI_INTERNAL;
-            }
+            // The ordinary Call lane sends Provider cancellation as its own budgeted item.
         }
         audit_preempted(holders[at], 0U, reason, physical, res_label, now_us);
         if (out_affected == 0U) {
@@ -452,7 +450,7 @@ bool CallRuntime::preemption_ready(uint32_t waiter_index, uint64_t now_us,
     return collect_preempt_victims(waiter_index, now_us, durable_seq, nullptr, 0U, count);
 }
 
-// Issues soft stop / cancel to every uncancelled eligible EPHEMERAL holder blocking waiter_index.
+// Marks every uncancelled eligible EPHEMERAL holder blocking waiter_index for stop/cancel.
 // Physical holders also enter PermitLease::Phase::stopping so ExecutionControl::advance_urgent()
 // dispatches AYNI_EXECUTOR_STOP immediately on the urgent lane (ADR-0111).
 CallRuntime::Advance CallRuntime::trigger_preemption(uint32_t waiter_index, uint64_t now_us,
@@ -494,10 +492,7 @@ CallRuntime::Advance CallRuntime::trigger_preemption(uint32_t waiter_index, uint
         if (control_.holds_lease(victim_call_id) && !control_.request_stop(victim_call_id)) {
             return Advance::internal;
         }
-        if (victim_active.delivery &&
-            cancel_transport(*victim_active.delivery) == Advance::internal) {
-            return Advance::internal;
-        }
+        // The ordinary Call lane sends Provider cancellation as its own budgeted item.
         audit_preempted(victim_call_id, waiter_call_id, cancel_reason, physical,
                         {victim_cap.data(), victim_cap.size()}, now_us);
     }
@@ -528,21 +523,40 @@ void CallRuntime::release_model_input(uint32_t index) {
     }
     slots_[index].expired_model_input = work_.calls.identity(index).call_id;
 }
-CallRuntime::Advance CallRuntime::advance(uint64_t now_us, uint64_t durable_seq, Mode mode) {
+bool CallRuntime::admits_call(uint32_t index, JournalAdmission admission) const {
+    return admission == JournalAdmission::available || work_.calls.state(index).ephemeral;
+}
+
+resources::ResourceAdmission::Admission
+CallRuntime::resource_admission(JournalAdmission admission) {
+    using Admission = resources::ResourceAdmission::Admission;
+    return admission == JournalAdmission::available ? Admission::all : Admission::ram_only;
+}
+
+CallRuntime::Advance CallRuntime::advance(uint64_t now_us, uint64_t durable_seq, Mode mode,
+                                          JournalAdmission admission) {
     // Bodies whose last durable record is gone; the queue is not a transition (ADR-0096).
     // Without a store the composition root owns them, and the queue still drains.
     ayni_body_ref_v1 released{};
-    while (work_.calls.next_release(durable_seq, released)) {
+    if (work_.calls.next_release(durable_seq, released)) {
         release_body(released);
+        return Advance::applied;
     }
     if (mode == Mode::fenced || mode == Mode::closing) {
         return drain_transport(mode);
     }
-    if (const auto receipt = consume(now_us, durable_seq)) {
+    if (const auto receipt = consume(now_us, durable_seq, admission)) {
         return *receipt;
     }
     uint32_t waiting_task = 0;
-    if (mode == Mode::running && next_subscription_wakeup(now_us, durable_seq, waiting_task)) {
+    if (admission == JournalAdmission::available &&
+        work_.tasks.next_volatile_unknown(waiting_task)) {
+        work_.tasks.commit_volatile_unknown(waiting_task, work_.transitions.next());
+        work_.forget_due_work();
+        return Advance::applied;
+    }
+    if (admission == JournalAdmission::available && mode == Mode::running &&
+        next_subscription_wakeup(now_us, durable_seq, waiting_task)) {
         if (!work_.tasks.wake_operation(waiting_task, work_.transitions.next())) {
             return Advance::internal;
         }
@@ -552,14 +566,14 @@ CallRuntime::Advance CallRuntime::advance(uint64_t now_us, uint64_t durable_seq,
     for (uint32_t scanned = 0; scanned < limits_.capacity; ++scanned) {
         const uint32_t index = cursor_;
         cursor_ = (cursor_ + 1U) % limits_.capacity;
-        if (!work_.calls.occupied(index)) {
+        if (!work_.calls.occupied(index) || !admits_call(index, admission)) {
             continue;
         }
         if (model_input_due(index, durable_seq)) {
             release_model_input(index);
             return Advance::applied; // Volatile lease cleanup; no new journal fact.
         }
-        const auto result = advance_call(index, now_us, durable_seq, mode);
+        const auto result = advance_call(index, now_us, durable_seq, mode, admission);
         if (result != Advance::idle) {
             return result;
         }
@@ -571,11 +585,12 @@ CallRuntime::Advance CallRuntime::advance(uint64_t now_us, uint64_t durable_seq,
 // Call work keep their own lanes, including the only path that can dispatch.
 CallRuntime::Advance CallRuntime::prepare_accepted(const AcceptedCalls &accepted,
                                                    uint64_t deadline_us, uint64_t durable_seq,
-                                                   bool ephemeral_only) {
+                                                   bool ephemeral_only,
+                                                   JournalAdmission admission) {
     const auto now_us = host_.monotonic_now_us(host_.ctx);
     if (now_us >= deadline_us || mailbox_.in_flight() == limits_.capacity ||
         control_ready(now_us, durable_seq, Mode::running) ||
-        ready_before_calls(now_us, durable_seq, Mode::running)) {
+        ready_before_calls(now_us, durable_seq, Mode::running, admission)) {
         return Advance::idle;
     }
     const auto selection_us = host_.monotonic_now_us(host_.ctx);
@@ -583,7 +598,7 @@ CallRuntime::Advance CallRuntime::prepare_accepted(const AcceptedCalls &accepted
         return Advance::idle;
     }
     const auto candidate =
-        next_accepted_preparation(accepted, selection_us, durable_seq, ephemeral_only);
+        next_accepted_preparation(accepted, selection_us, durable_seq, ephemeral_only, admission);
     if (!candidate) {
         return Advance::idle;
     }
@@ -592,7 +607,7 @@ CallRuntime::Advance CallRuntime::prepare_accepted(const AcceptedCalls &accepted
     // gives both precedence over a journal-only transition (ADR-0052).
     const auto prepare_us = host_.monotonic_now_us(host_.ctx);
     if (prepare_us >= deadline_us || control_ready(prepare_us, durable_seq, Mode::running) ||
-        ready_before_calls(prepare_us, durable_seq, Mode::running)) {
+        ready_before_calls(prepare_us, durable_seq, Mode::running, admission)) {
         return Advance::idle;
     }
     const auto ready = call_readiness(*candidate, prepare_us, durable_seq, Mode::running);
@@ -601,13 +616,15 @@ CallRuntime::Advance CallRuntime::prepare_accepted(const AcceptedCalls &accepted
         auto on_wait = resources::WaitAction::wait;
         // One arbitration at prepare_us. Selection changes and expired waits
         // both yield to ordinary scheduling (C-RES-005).
-        const auto acquired = resources_.acquire(active.call_id, prepare_us, active.claim, on_wait);
+        const auto acquired = resources_.acquire(active.call_id, prepare_us, active.claim, on_wait,
+                                                 resource_admission(admission));
         return acquired == resources::ResourceAdmission::Acquisition::acquired
                    ? record_preparation(*candidate)
                    : Advance::idle;
     }
     // A Call that already has its claim still yields to any newly overdue waiter.
-    return ready == CallReady::prepared && prepare_us < resources_.next_deadline_us()
+    return ready == CallReady::prepared &&
+                   prepare_us < resources_.next_deadline_us(resource_admission(admission))
                ? prepare_barrier(*candidate)
                : Advance::idle;
 }
@@ -617,16 +634,17 @@ CallRuntime::Advance CallRuntime::prepare_accepted(const AcceptedCalls &accepted
 std::optional<uint32_t> CallRuntime::next_accepted_preparation(const AcceptedCalls &accepted,
                                                                uint64_t now_us,
                                                                uint64_t durable_seq,
-                                                               bool ephemeral_only) const {
+                                                               bool ephemeral_only,
+                                                               JournalAdmission admission) const {
     resources::AdmissionChoice choice{};
-    const bool chosen = resources_.next(now_us, choice);
+    const bool chosen = resources_.next(now_us, choice, resource_admission(admission));
     std::optional<uint32_t> candidate;
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         if (!work_.calls.occupied(at)) {
             continue;
         }
-        const auto ready =
-            scheduled_readiness(at, now_us, durable_seq, Mode::running, chosen ? &choice : nullptr);
+        const auto ready = scheduled_readiness(at, now_us, durable_seq, Mode::running,
+                                               chosen ? &choice : nullptr, admission);
         if (ready == CallReady::idle) {
             continue;
         }
@@ -646,7 +664,8 @@ std::optional<uint32_t> CallRuntime::next_accepted_preparation(const AcceptedCal
 // Cancellation intent is distinct from a terminal receipt. The Provider keeps
 // its delivery reservation until it reports a terminal, even if cancel refuses.
 CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,
-                                               uint64_t durable_seq, Mode mode) {
+                                               uint64_t durable_seq, Mode mode,
+                                               JournalAdmission admission) {
     const auto &id = work_.calls.identity(index);
     const auto &state = work_.calls.state(index);
     if (state.execution && !work::execution_stopped(*state.execution) &&
@@ -654,7 +673,7 @@ CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,
         return control_.commit_stop(index);
     }
     if (state.reflex) {
-        return advance_reflex_call(index, now_us, durable_seq, mode);
+        return advance_reflex_call(index, now_us, durable_seq, mode, admission);
     }
     uint32_t task_index = 0;
     if (!work_.tasks.find(id.task_id, task_index)) {
@@ -722,13 +741,14 @@ CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,
     if (authority.status != AYNI_OK || mode == Mode::fenced) {
         return Advance::idle;
     }
-    return progress_dispatch(index, task_index, now_us, durable_seq);
+    return progress_dispatch(index, task_index, now_us, durable_seq, admission);
 }
 
 // Advances a Task-less RAM-only ReflexRule Call through preemption, admission and dispatch
 // while re-verifying live Agent + Grant authority on every step (ADR-0112).
 CallRuntime::Advance CallRuntime::advance_reflex_call(uint32_t index, uint64_t now_us,
-                                                      uint64_t durable_seq, Mode mode) {
+                                                      uint64_t durable_seq, Mode mode,
+                                                      JournalAdmission admission) {
     const auto &id = work_.calls.identity(index);
     const auto &state = work_.calls.state(index);
     if (slots_[index].active && slots_[index].active->stage == Stage::retiring) {
@@ -761,20 +781,23 @@ CallRuntime::Advance CallRuntime::advance_reflex_call(uint32_t index, uint64_t n
     if (authority.status != AYNI_OK || mode == Mode::fenced) {
         return Advance::idle;
     }
-    return progress_dispatch(index, no_task, now_us, durable_seq);
+    return progress_dispatch(index, no_task, now_us, durable_seq, admission);
 }
 
 // Resource admission determines order; table scanning never bypasses its fair
 // choice. Preparation follows acquisition; DISPATCHING waits for their durable prefix.
 CallRuntime::Advance CallRuntime::progress_dispatch(uint32_t index, uint32_t task_index,
-                                                    uint64_t now_us, uint64_t durable_seq) {
+                                                    uint64_t now_us, uint64_t durable_seq,
+                                                    JournalAdmission admission) {
     auto &active = *slots_[index].active;
     if (active.stage == Stage::queued) {
         auto on_wait = resources::WaitAction::wait;
-        const auto acquired = resources_.acquire(active.call_id, now_us, active.claim, on_wait);
+        const auto acquired = resources_.acquire(active.call_id, now_us, active.claim, on_wait,
+                                                 resource_admission(admission));
         using Acquisition = resources::ResourceAdmission::Acquisition;
         if (acquired == Acquisition::not_selected) {
-            if (active.preemption == AYNI_CALL_PREEMPT_NONE) {
+            if (active.preemption == AYNI_CALL_PREEMPT_NONE ||
+                resources_.wait_expired(active.call_id, now_us)) {
                 return Advance::idle;
             }
             // Scene/observation preflight must pass before preemption can touch any holder
@@ -876,9 +899,7 @@ CallRuntime::Advance CallRuntime::advance_managed(uint64_t now_us, uint64_t dura
     } else {
         next_lane_ = NextLane::control;
     }
-    return admission == JournalAdmission::available || mode == Mode::fenced || mode == Mode::closing
-               ? advance(now_us, durable_seq, mode)
-               : Advance::idle;
+    return advance(now_us, durable_seq, mode, admission);
 }
 
 bool CallRuntime::active_index(uint64_t call_id, uint32_t &index) const {
@@ -931,13 +952,14 @@ bool CallRuntime::runtime_retains(const void *context, uint64_t call_id) {
     return runtime.control_.holds_lease(call_id) || runtime.active_index(call_id, index);
 }
 
-ProviderMailbox::BlockedSlots CallRuntime::blocked_receipts() const {
+ProviderMailbox::BlockedSlots CallRuntime::blocked_receipts(JournalAdmission admission) const {
     ProviderMailbox::BlockedSlots blocked{};
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         const auto &active = slots_[at].active;
-        if (active && active->stage == Stage::waiting_stop && active->delivery &&
-            work_.calls.state(at).execution &&
-            !work::execution_stopped(*work_.calls.state(at).execution)) {
+        if (active && active->delivery &&
+            (!admits_call(at, admission) ||
+             (active->stage == Stage::waiting_stop && work_.calls.state(at).execution &&
+              !work::execution_stopped(*work_.calls.state(at).execution)))) {
             blocked[active->delivery->reservation.index] = true;
         }
     }

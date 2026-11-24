@@ -174,7 +174,7 @@ typedef struct ayni_observation_slot_info_v1 {
 
 /* Any non-ISR Host thread, RUNNING only. Lock-free triple-buffered latest-wins overwrite per
  * registered source; wakes the Kernel owner when transitioning a slot from clean to dirty.
- * Single-writer per source is wait-free; under heavy multi-thread contention on the same source,
+ * Older boot epochs or non-advancing samples return AYNI_STALE. Same-source writer contention
  * returns AYNI_BUSY if the bounded writer-claim spin is exhausted. Since 0.59. */
 ayni_status_t ayni_publish_observation_latest(ayni_kernel_t *kernel,
                                               const ayni_observation_post_v1 *post);

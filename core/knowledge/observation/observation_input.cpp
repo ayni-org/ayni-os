@@ -58,4 +58,9 @@ bool after_boundary(uint64_t generation, uint64_t sequence, ObservationBoundary 
     return generation > boundary.generation ||
            (generation == boundary.generation && sequence > boundary.through);
 }
+bool newer_sample(const ObservationInput &input, ObservationBoundary last,
+                  uint64_t last_captured_at_us) {
+    return after_boundary(input.generation, input.sequence, last) &&
+           (input.generation != last.generation || input.captured_at_us >= last_captured_at_us);
+}
 } // namespace ayni::knowledge

@@ -105,6 +105,9 @@ struct TaskVolatile {
     uint32_t checkpoint_writer_version = 0;    // Nonzero iff checkpoint_dirty is true.
     catalog::CatalogId checkpoint_writer_id{}; // Strategy id that wrote volatile checkpoint.
     bool checkpoint_dirty = false; // True iff slot buffer holds unpersisted volatile checkpoint.
+    bool decision_waits_for_journal = false; // A discarded decision needs a durable transition.
+    // Set until the UNKNOWN hold can be committed, or the Task terminates.
+    std::optional<ayni_reason_t> pending_unknown{};
 };
 
 struct Task {
@@ -305,6 +308,14 @@ class TaskTable {
     void begin_volatile_call(uint32_t index, uint64_t call_id, CallKind kind);
     // Clears the in-RAM EPHEMERAL call reference when the call completes or stops.
     void end_volatile_call(uint32_t index, uint64_t call_id);
+    // Blocks further work immediately after an ephemeral UNKNOWN without changing the durable row.
+    void defer_volatile_unknown(uint32_t index, ayni_reason_t reason);
+    // Finds a live RAM UNKNOWN hold that can now take one durable revision.
+    bool next_volatile_unknown(uint32_t &index) const;
+    // Commits the saved UNKNOWN diagnostic and model count at the caller's transition.
+    void commit_volatile_unknown(uint32_t index, foundation::TransitionStamp stamp);
+    // Remembers whether the last discarded decision for this Task awaits journal admission.
+    void set_decision_waits_for_journal(uint32_t index, bool waits);
     // Appends one volatile step key at the tail of steps_of(index) without journaling.
     bool add_volatile_step(uint32_t index, ayni_string_v1 key);
     // Stores a volatile checkpoint into the slot buffer; caller requires checkpoint_seq == 0.
@@ -427,6 +438,7 @@ class TaskTable {
     static ayni_status_t effective_hold_status(const Task &task) {
         return task.hold_status != AYNI_OK            ? task.hold_status
                : task.recovery_hold_status != AYNI_OK ? task.recovery_hold_status
+               : task.volatile_state.pending_unknown  ? AYNI_RESULT_UNKNOWN
                : task.call_unknown                    ? AYNI_RESULT_UNKNOWN
                : task.model_calls.blocked             ? AYNI_CAPACITY_EXCEEDED
                                                       : AYNI_OK;
@@ -434,14 +446,14 @@ class TaskTable {
     static ayni_reason_t effective_hold_reason(const Task &task) {
         return task.hold_status != AYNI_OK            ? task.hold_reason
                : task.recovery_hold_status != AYNI_OK ? task.recovery_hold_reason
+               : task.volatile_state.pending_unknown  ? *task.volatile_state.pending_unknown
                : task.call_unknown                    ? AYNI_REASON_NONE
                : task.model_calls.blocked             ? AYNI_REASON_TASK_MODEL_CALL_LIMIT
                                                       : AYNI_REASON_NONE;
     }
     static ayni_task_lifecycle_t effective_lifecycle(const Task &task) {
         if (is_live(task.lifecycle) && task.lifecycle != AYNI_TASK_CANCELLING &&
-            (task.hold_status != AYNI_OK || task.recovery_hold_status != AYNI_OK ||
-             task.model_calls.blocked || task.call_unknown)) {
+            effective_hold_status(task) != AYNI_OK) {
             return AYNI_TASK_PAUSED;
         }
         // A READY task with an in-flight Tier 0 EPHEMERAL call behaves as RUNNING in RAM.

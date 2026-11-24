@@ -293,6 +293,10 @@ struct ayni_kernel {
         observation_ingress; // Owns Host sample queue/gap lanes, no knowledge facts.
     // Lock-free triple-buffered latest observation slots drained at step start (ADR-0112).
     ayni::kernel::ObservationSlots observation_slots;
+    // Resume sensor/reflex work, then yield to Calls if either used the last item.
+    enum class RealtimeTurn { samples, reflexes, calls };
+    RealtimeTurn realtime_turn_ = RealtimeTurn::samples; // Next lane after a short step.
+    uint32_t next_observation_slot_ = 0; // Source cursor, zero when no sources are configured.
     // Bounded RAM overwrite-oldest audit ring; declared before services that borrow it (ADR-0113).
     ayni::kernel::AuditRing audit_ring;
     // Bounded cross-owner call coordination; workers only access the two mailboxes.
@@ -337,6 +341,7 @@ struct ayni_kernel {
     ayni::kernel::CallRuntime::Mode call_mode() const;
     // Drain only inputs queued before this phase, counting each against the budget.
     void apply_observation_gaps(ayni::kernel::StepContext &progress);
+    void apply_realtime_ingress(ayni::kernel::StepContext &progress);
     void drain_observation_slots(ayni::kernel::StepContext &progress);
     void evaluate_reflexes(ayni::kernel::StepContext &progress);
     void take_queued_observations(ayni::kernel::StepContext &progress);

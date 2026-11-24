@@ -25,7 +25,11 @@ namespace wifichat {
 class Chat {
   public:
     explicit Chat(Transport &transport)
-        : transport_(transport), speaker_(transport), motor_(transport) {}
+        : transport_(transport), speaker_(transport), motor_(transport) {
+        transport_.attach_motor_wake(&motor_.execution(), [](void *context) {
+            static_cast<MotorExecution *>(context)->wake_control();
+        });
+    }
     // Owner startup before the UI/radios: reserve contiguous control/audio stacks.
     // The audio worker stays idle; motor hardware/worker initialize automatically during
     // composition.
@@ -72,7 +76,6 @@ class Chat {
     ayni_status_t observe_probe(const ayni_kernel_info_v1 &);
     ayni_status_t converse(const ayni_kernel_info_v1 &);
     void start_user_turn(uint64_t id, std::string_view user_text);
-    bool hot_tool_transition() const;
     ayni_status_t present_reply();
     void finish_voice(ayni_status_t);
     static void on_voice_stage(void *, ReplyVoice::Event, uint64_t goal, size_t offset,

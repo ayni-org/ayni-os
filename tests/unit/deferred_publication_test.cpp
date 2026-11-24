@@ -18,6 +18,7 @@
 #include <map>
 #include <new>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -31,6 +32,15 @@ ayni_string_v1 text(const char *s) {
 
 class InMemoryFiles final : public Files {
   public:
+    bool contains(std::string_view bytes) const {
+        for (const auto &[name, data] : files_) {
+            if (std::search(data.begin(), data.end(), bytes.begin(), bytes.end()) != data.end()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     int begin(const char *) override { return 0; }
     void end() override { handles_.clear(); }
     int open(const char *name, Mode mode, int &handle) override {
@@ -155,8 +165,7 @@ class DeferredPublicationTest : public testing::Test {
         ASSERT_EQ(portable::Profile::memory_requirements(memory), AYNI_OK);
         arena = ::operator new(memory.bytes, std::align_val_t(memory.alignment), std::nothrow);
         ASSERT_NE(arena, nullptr);
-        ASSERT_EQ(profile.create_in(arena, memory.bytes, host.table(), values.port(),
-                                    ayni::strategies::Persistence::background),
+        ASSERT_EQ(profile.create_in(arena, memory.bytes, host.table(), values.port(), persistence),
                   AYNI_OK);
         ASSERT_EQ(profile.start(), AYNI_OK);
         ASSERT_TRUE(until([&] { return profile.running(); }));
@@ -217,7 +226,7 @@ class DeferredPublicationTest : public testing::Test {
         cfg.bodies = wrapped;
         cfg.commands = {this, command};
         cfg.unfinished = conversation::UnfinishedTurn::discard;
-        cfg.persistence = ayni::strategies::Persistence::background;
+        cfg.persistence = persistence;
         cfg.observer = {this, on_stage, nullptr};
         cfg.collection_mode = conversation::PublicationCollection::deferred;
         ASSERT_EQ(session.configure(cfg), AYNI_OK);
@@ -281,6 +290,7 @@ class DeferredPublicationTest : public testing::Test {
         }
     }
 
+    ayni::strategies::Persistence persistence = ayni::strategies::Persistence::background;
     InMemoryFiles files;
     QueuedValues values{files};
     ayni::hosts::sim::Host host;
@@ -377,10 +387,86 @@ TEST_F(DeferredPublicationTest,
     EXPECT_FALSE(r2.published);
     EXPECT_EQ(session.record()->round_count, 1U);
 
-    // Deferred cold-cache cleanup must complete before quiesce() and free the staged draft.
+    // The next turn may stage input while cleanup is cold. Its Task must not
+    // create bodies in the scope until the old keep set has been queued.
+    const auto collection_before = collect_calls;
+    ASSERT_EQ(session.begin(text("new turn after cancellation")), AYNI_OK);
+    ASSERT_EQ(session.poll(), AYNI_BUSY);
+    EXPECT_EQ(collect_calls, collection_before);
+    EXPECT_EQ(session.latest_goal(), 0U);
+    ASSERT_TRUE(until([&] { return session.ready(); }));
+    conversation::TurnResult next{};
+    ASSERT_TRUE(session.take_result(next));
+    EXPECT_TRUE(next.published);
+    EXPECT_EQ(session.record()->round_count, 2U);
+
     ASSERT_TRUE(until([&] { return session.quiesce() == AYNI_OK; }));
     EXPECT_EQ(bodies->trim_cache(), AYNI_OK);
     EXPECT_EQ(bodies->cached_bytes(), 0U);
+}
+
+// ADR-0113: a RAM preview still needs the live Core privacy anchor.
+TEST_F(DeferredPublicationTest, preview_refuses_after_core_accepts_forget) {
+    ASSERT_EQ(session.begin(text("private prompt")), AYNI_OK);
+    ASSERT_TRUE(until([&] { return preview_status == AYNI_OK; }));
+    auto anchor = ayni::initialized<ayni_context_info_v1>();
+    ASSERT_EQ(ayni_get_context(profile.kernel(), profile.session(), profile.instance(0), &anchor),
+              AYNI_OK);
+    auto forget = ayni::initialized<ayni_context_command_v1>();
+    forget.action = AYNI_CONTEXT_ERASE_ALL;
+    forget.context_id = anchor.context_id;
+    forget.expected_generation = anchor.generation;
+    ASSERT_EQ(profile.submit(AYNI_INTENT_CONTEXT_FORGET, &forget, anchor.revision).status, AYNI_OK);
+    std::string after_forget;
+    EXPECT_NE(session.preview_answer(after_forget), AYNI_OK);
+    EXPECT_TRUE(after_forget.empty());
+}
+
+class TurnBoundaryPublicationTest : public DeferredPublicationTest {
+  protected:
+    TurnBoundaryPublicationTest() { persistence = ayni::strategies::Persistence::turn_boundary; }
+};
+
+// C-HVAL-009 / ADR-0113: retain a complete staged graph across a model/tool round,
+// and persist its history only when Session accepts the completed candidate.
+TEST_F(TurnBoundaryPublicationTest, draft_and_intermediate_indexes_wait_for_publication) {
+    constexpr auto user = "three sums";
+    constexpr auto history_magic = "AYNDXI1";
+    ASSERT_EQ(session.begin(text(user)), AYNI_OK);
+    ASSERT_TRUE(until([&] { return preview_status == AYNI_OK; }));
+    EXPECT_EQ(profile.model_submissions(), 4U);
+    EXPECT_FALSE(files.contains(user));
+    EXPECT_FALSE(files.contains(history_magic));
+
+    conversation::TurnResult result{};
+    ASSERT_TRUE(until([&] { return session.take_result(result); }));
+    EXPECT_TRUE(result.published);
+    EXPECT_TRUE(files.contains(user));
+    EXPECT_TRUE(files.contains(history_magic));
+    ASSERT_TRUE(until([&] { return session.quiesce() == AYNI_OK; }));
+    auto *bodies = static_cast<FileBodies *>(profile.bodies()->context);
+    ASSERT_EQ(bodies->trim_cache(), AYNI_OK);
+
+    ASSERT_EQ(session.begin(text("read cold published history")), AYNI_OK);
+    ASSERT_TRUE(until([&] { return session.take_result(result); }));
+    EXPECT_TRUE(result.published);
+    EXPECT_EQ(session.record()->round_count, 2U);
+
+    ASSERT_EQ(session.forget(AYNI_CONTEXT_ERASE_ALL), AYNI_OK);
+    ASSERT_TRUE(until([&] { return session.ready() && session.quiesce() == AYNI_OK; }));
+    EXPECT_FALSE(files.contains(user));
+    EXPECT_FALSE(files.contains(history_magic));
+}
+
+// ADR-0111/0113: a draft discarded before dispatch never becomes a saved input.
+TEST_F(TurnBoundaryPublicationTest, cancelling_staged_input_leaves_no_body_file) {
+    constexpr auto input = "cancel a staged input before dispatch";
+    ASSERT_EQ(session.begin(text(input)), AYNI_OK);
+    ASSERT_EQ(session.cancel(), AYNI_OK);
+    ASSERT_TRUE(until([&] { return session.ready() && session.quiesce() == AYNI_OK; }));
+    EXPECT_FALSE(files.contains(input));
+    EXPECT_EQ(profile.model_submissions(), 0U);
+    EXPECT_EQ(session.record()->round_count, 0U);
 }
 
 } // namespace

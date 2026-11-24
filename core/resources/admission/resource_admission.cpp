@@ -129,6 +129,17 @@ bool ResourceAdmission::find(uint64_t call_id, uint32_t &index) const {
     return false;
 }
 
+bool ResourceAdmission::is_expired(const Entry &entry, uint64_t now_us) {
+    return entry.deadline_us != no_deadline && entry.deadline_us <= now_us;
+}
+
+bool ResourceAdmission::admitted(const Entry &entry, uint64_t now_us, Admission admission) {
+    // Skipping an expired wait can end its Task durably (C-RES-005).
+    return admission == Admission::all ||
+           (entry.request.lane == ResourceRequest::Lane::ephemeral &&
+            (entry.request.on_wait != WaitAction::skip || !is_expired(entry, now_us)));
+}
+
 bool ResourceAdmission::head(uint32_t index) const {
     const auto &entry = requests_[index];
     for (uint32_t other = 0; other < requests_.size(); ++other) {
@@ -179,12 +190,12 @@ WaitReason ResourceAdmission::availability(const Entry &entry, uint32_t &index) 
     return WaitReason::available;
 }
 
-uint32_t ResourceAdmission::expired(uint64_t now_us) const {
+uint32_t ResourceAdmission::expired(uint64_t now_us, Admission admission) const {
     uint32_t selected = no_index;
     for (uint32_t index = 0; index < requests_.size(); ++index) {
         const auto &entry = requests_[index];
-        if (entry.phase == Phase::waiting && entry.deadline_us != no_deadline &&
-            entry.deadline_us <= now_us &&
+        if (entry.phase == Phase::waiting && is_expired(entry, now_us) &&
+            admitted(entry, now_us, admission) &&
             (selected == no_index || entry.ticket < requests_[selected].ticket)) {
             selected = index;
         }
@@ -196,7 +207,8 @@ uint32_t ResourceAdmission::expired(uint64_t now_us) const {
 // without letting that same Agent's later request overtake it (ADR-0042).
 // Eligible preempting waiters are chosen ahead of ordinary waiters at the same
 // priority so a newly freed preempted resource hands off deterministically (ADR-0111).
-uint32_t ResourceAdmission::eligible_scan(Priority priority, bool preempt_only) const {
+uint32_t ResourceAdmission::eligible_scan(Priority priority, bool preempt_only, uint64_t now_us,
+                                          Admission admission) const {
     uint32_t after_cursor = no_index;
     uint32_t wrap = no_index;
     const auto last = last_instance_[static_cast<std::size_t>(priority)];
@@ -204,7 +216,8 @@ uint32_t ResourceAdmission::eligible_scan(Priority priority, bool preempt_only) 
         const auto &entry = requests_[index];
         uint32_t resource = no_index;
         if (entry.phase != Phase::waiting || entry.request.priority != priority ||
-            (preempt_only && entry.request.preemption == AYNI_CALL_PREEMPT_NONE) || !head(index) ||
+            (preempt_only && entry.request.preemption == AYNI_CALL_PREEMPT_NONE) ||
+            !admitted(entry, now_us, admission) || !head(index) ||
             availability(entry, resource) != WaitReason::available) {
             continue;
         }
@@ -220,26 +233,27 @@ uint32_t ResourceAdmission::eligible_scan(Priority priority, bool preempt_only) 
     return after_cursor != no_index ? after_cursor : wrap;
 }
 
-uint32_t ResourceAdmission::eligible(Priority priority) const {
-    const auto preemptor = eligible_scan(priority, true);
-    return preemptor != no_index ? preemptor : eligible_scan(priority, false);
+uint32_t ResourceAdmission::eligible(Priority priority, uint64_t now_us,
+                                     Admission admission) const {
+    const auto preemptor = eligible_scan(priority, true, now_us, admission);
+    return preemptor != no_index ? preemptor : eligible_scan(priority, false, now_us, admission);
 }
 
 AdmissionChoice ResourceAdmission::choice(uint32_t index, uint64_t now_us) const {
     const auto &entry = requests_[index];
     return {entry.request.call_id, elapsed(now_us, entry.queued_us), entry.request.on_wait,
-            entry.deadline_us != no_deadline && entry.deadline_us <= now_us};
+            is_expired(entry, now_us)};
 }
 
-uint32_t ResourceAdmission::select(uint64_t now_us) const {
-    const auto overdue = expired(now_us);
+uint32_t ResourceAdmission::select(uint64_t now_us, Admission admission) const {
+    const auto overdue = expired(now_us, admission);
     if (overdue != no_index) {
         return overdue;
     }
     // Expiry consumes no resources; lower priorities may use resources that
     // no eligible higher-priority request can use (work-conserving selection).
     for (std::size_t priority = 0; priority < last_instance_.size(); ++priority) {
-        const auto selected = eligible(static_cast<Priority>(priority));
+        const auto selected = eligible(static_cast<Priority>(priority), now_us, admission);
         if (selected != no_index) {
             return selected;
         }
@@ -247,8 +261,8 @@ uint32_t ResourceAdmission::select(uint64_t now_us) const {
     return no_index;
 }
 
-bool ResourceAdmission::next(uint64_t now_us, AdmissionChoice &out) const {
-    const auto index = select(now_us);
+bool ResourceAdmission::next(uint64_t now_us, AdmissionChoice &out, Admission admission) const {
+    const auto index = select(now_us, admission);
     if (index == no_index) {
         return false;
     }
@@ -259,9 +273,9 @@ bool ResourceAdmission::next(uint64_t now_us, AdmissionChoice &out) const {
 // Reselect immediately before the all-or-none change. Reusing a logical call
 // still produces a different claim, fencing delayed release/stop confirmations.
 ResourceAdmission::Acquisition ResourceAdmission::acquire(uint64_t call_id, uint64_t now_us,
-                                                          ResourceClaim &claim,
-                                                          WaitAction &on_wait) {
-    const auto index = select(now_us);
+                                                          ResourceClaim &claim, WaitAction &on_wait,
+                                                          Admission admission) {
+    const auto index = select(now_us, admission);
     if (index == no_index || requests_[index].request.call_id != call_id) {
         return Acquisition::not_selected;
     }
@@ -282,6 +296,12 @@ ResourceAdmission::Acquisition ResourceAdmission::acquire(uint64_t call_id, uint
     }
     claim = {call_id, entry.ticket};
     return Acquisition::acquired;
+}
+
+bool ResourceAdmission::wait_expired(uint64_t call_id, uint64_t now_us) const {
+    uint32_t index = 0;
+    return find(call_id, index) && requests_[index].phase == Phase::waiting &&
+           is_expired(requests_[index], now_us);
 }
 
 bool ResourceAdmission::remove_waiter(uint64_t call_id, uint64_t now_us) {
@@ -481,11 +501,12 @@ uint32_t ResourceAdmission::holders_of_resource(uint32_t resource_index, uint64_
     return total;
 }
 
-uint64_t ResourceAdmission::next_deadline_us() const {
+uint64_t ResourceAdmission::next_deadline_us(Admission admission) const {
     uint64_t next = no_deadline;
     for (uint32_t index = 0; index < requests_.size(); ++index) {
         const auto &entry = requests_[index];
-        if (entry.phase == Phase::waiting && entry.deadline_us < next) {
+        if (entry.phase == Phase::waiting && entry.deadline_us < next &&
+            admitted(entry, entry.deadline_us, admission)) {
             next = entry.deadline_us;
         }
     }

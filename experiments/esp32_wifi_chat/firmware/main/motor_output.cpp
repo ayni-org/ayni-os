@@ -343,20 +343,6 @@ MotorOutput::Poll MotorOutput::poll_segment() {
     }
     return Poll::completed;
 }
-MotorOutput::Poll MotorOutput::poll() {
-    const auto segment = poll_segment();
-    if (segment != Poll::completed) {
-        return segment;
-    }
-    if (stop() != ESP_OK) {
-        if (last_error_ == ESP_OK) {
-            last_error_ = ESP_FAIL;
-        }
-        state_ = State::fault;
-        return Poll::failed;
-    }
-    return Poll::completed;
-}
 esp_err_t MotorOutput::stop() {
     active_percent_ = {};
     coast_until_us_ = 0;

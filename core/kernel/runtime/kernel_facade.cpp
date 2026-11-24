@@ -118,6 +118,7 @@ ayni_status_t ayni_kernel::configure(const ayni_reflex_rule_v1 &rule) {
 ayni_status_t ayni_kernel::set_reflex_enabled(ayni_string_v1 rule_id, uint32_t enabled) {
     const auto status = reflex_table.set_enabled(rule_id, enabled);
     if (status == AYNI_OK && enabled != 0U) {
+        reflex_engine.request_pass();
         wake();
     }
     return status;

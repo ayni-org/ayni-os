@@ -51,4 +51,6 @@
 | C-OUT-002 | 屏障提交后、真正发出前重启，也只能保守判为 `RESULT_UNKNOWN`；只有可证明没有越过屏障或有权威未执行证据的记录才可重新评估 | 屏障已提交但计数器为 0，就当作未派发直接重做 | E2 F3 |
 | C-OUT-003 | Host `submit` 区分“确定拒绝且未保留工作”与“已受理/受理结果未知”；后两者都算在途，Host 内部排队不算确定未派发 | Host 队列中的请求被当成未派发，撤销后不做任何处理 | E2 F10；C-HOST-004 |
 
+按 [ADR-0110](../../docs/adr/0110-ephemeral-execution-tier-and-immediate-resource-release.md)，日志缓冲满或存储维护期间，运行中的 Core 继续处理纯 RAM 的瞬态回执、确认停止后的资源释放及已获授权的瞬态派发。资源队列暂时跳过需要日志的队首，保留原票号与优先级。同一 Agent 的同级后继仍按 C-RES-004 排队，其他 Agent 可继续申请资源。对可重启取消的 Task，策略输出若需要持久检查点、终态或持久调用，则丢弃本次未接受的提议，待日志可写后基于新快照重新判定。瞬态调用的未知结果先在 RAM 挂起对应 Task，再于有空间时持久化该挂起。Tier 2 派发继续服从 C-COMMIT-006。正常回归见 `EphemeralExecution.motor_actions_handoff_while_journal_is_full`。
+
 ABI0.55的可选Host storage_append_many一次借用至多8个连续批次，保留每批原writer/transition/commit身份及完整帧。CommitLog冻结组和字节跨同身份重试，仅整个组OK才释放ring并推进durable_seq；其他结果不确认任何后缀。Native/ESP写完完整帧后一次同步；组不是新的跨transition原子事务，持久前缀仍逐批定义。正常有界前缀确认见`CommitGroups.durable_prefix_advances_only_after_bounded_group_completion`，组写入及关闭重开见`NativeHost.grouped_frames_preserve_exact_bytes_through_normal_close_and_reopen`；新组格式的异常恢复未验证。

@@ -75,21 +75,24 @@ ayni_status_t MotorExecution::initialize() {
     if (!inbox_) {
         return abort_init("inbox-create", AYNI_CAPACITY_EXCEEDED);
     }
-    inbox_open_.store(true, std::memory_order_release);
     worker_ = xTaskCreateStatic(worker_entry, "motor-control", worker_stack_bytes, this,
                                 worker_priority, worker_stack_, worker_tcb_);
     if (!worker_) {
-        inbox_open_.store(false, std::memory_order_release);
         return abort_init("worker-create", AYNI_CAPACITY_EXCEEDED);
     }
+    inbox_access_.fetch_and(~inbox_closed, std::memory_order_release);
     initialization_ = Initialization::ready;
     // Driver ownership has passed to the worker; startup must no longer inspect it.
     trace_init("ready", AYNI_OK, ESP_OK);
     return AYNI_OK;
 }
 bool MotorExecution::send(const Message &message) {
-    return inbox_open_.load(std::memory_order_acquire) && inbox_ &&
-           xQueueSend(inbox_, &message, 0) == pdTRUE;
+    // The producer holds a borrow across the FreeRTOS queue call. Closing does
+    // not free the backing memory until producers and the worker have left it.
+    const auto before = inbox_access_.fetch_add(1U, std::memory_order_acquire);
+    const bool sent = (before & inbox_closed) == 0U && xQueueSend(inbox_, &message, 0) == pdTRUE;
+    inbox_access_.fetch_sub(1U, std::memory_order_release);
+    return sent;
 }
 ayni_submit_result_t MotorExecution::submit(const ayni_provider_request_v1 *request,
                                             ayni_provider_completion_t *completion) {
@@ -200,12 +203,16 @@ void MotorExecution::receive(Kind kind, uint64_t id, const uint8_t *data, size_t
 }
 void MotorExecution::request_stop() {
     local_stop_.store(true, std::memory_order_release);
+    wake_control();
 }
 void MotorExecution::request_soft_stop() {
     soft_stop_.store(true, std::memory_order_release);
-    // Wake the control worker immediately instead of waiting for the next 1-tick inbox timeout.
+    wake_control();
+}
+void MotorExecution::wake_control() {
+    // A full queue already wakes the worker; the atomic interlock remains set.
     Message message{};
-    message.kind = MessageKind::soft_stop;
+    message.kind = MessageKind::wake;
     static_cast<void>(send(message));
 }
 ayni_status_t MotorExecution::advance() {
@@ -237,10 +244,10 @@ void MotorExecution::handle_message(const Message &message) {
         receive_owner(message.frame_kind, message.frame_id, message.frame.data(),
                       message.frame_size);
         break;
+    case MessageKind::wake:
+        break; // The caller already published the stop level.
     case MessageKind::soft_stop:
-        if (message.soft_stop.completion) {
-            serve_soft_stop(message.soft_stop);
-        }
+        serve_soft_stop(message.soft_stop);
         break;
     case MessageKind::port: {
         auto &slot = requests_[message.port.kind - 1];
@@ -330,7 +337,7 @@ void MotorExecution::release_worker_storage() {
     worker_tcb_ = nullptr;
 }
 bool MotorExecution::close() {
-    inbox_open_.store(false, std::memory_order_release);
+    const auto access = inbox_access_.fetch_or(inbox_closed, std::memory_order_acq_rel);
     accepting_.store(false, std::memory_order_release);
     if (!worker_) {
         if (!close_owner()) {
@@ -340,7 +347,8 @@ bool MotorExecution::close() {
         return true;
     }
     closing_.store(true, std::memory_order_release);
-    if (!worker_stopped_.load(std::memory_order_acquire) || eTaskGetState(worker_) != eSuspended) {
+    if ((access & ~inbox_closed) != 0U || !worker_stopped_.load(std::memory_order_acquire) ||
+        eTaskGetState(worker_) != eSuspended) {
         return false;
     }
     // IDF6 legacy dual-CPU join: suspension excludes execution before freeing static memory.

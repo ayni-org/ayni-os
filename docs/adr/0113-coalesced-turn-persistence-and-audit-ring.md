@@ -39,6 +39,8 @@
    - `hosts/storage` 新增可选 `AuditSink`（`AYAU` v1 小端格式，A/B 双槽低优先级 `FileValueRequest::Priority::background` 轮转写入，遇前次 boot `STALE` 自动清理重置，写失败与背压完全隔离不限制 Core）。
    - ESP32 默认配置 `audit_capacity = 64`（~6.5 KiB PSRAM），由 `Chat::drain_audit_records()` 排空至现有 `DiagnosticLog`（`/api/diagnostics` 可查），默认零 Flash 磨损。
 
+> 后续收口：ESP32 的 `CANCEL_ON_REBOOT` 回合采用 `Persistence::turn_boundary`。会话草稿、中间索引和正文只暂存在有界 RAM，Session 在发布时确认完整的最终引用图。策略观察到 Core 接受替代检查点后可回收未保存的旧索引。原 800 ms 写盘节流随提前确认一起移除。可恢复回合仍采用原保存契约，持久 Call 的结果也由 Core 按原契约保存。见 [C-HVAL-009](../../contracts/host/file_values.md)。
+
 ## 后果
 
 - **正面**：小正文 I/O 降至 1 次原子操作；普通对话答案呈现延迟降至 0 ms，后台发布操作数大幅下降且不阻塞下一轮输入；瞬态调用、抢占与反射拥有零 WAL 阻塞的结构化审计轨迹。

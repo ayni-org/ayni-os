@@ -25,9 +25,20 @@ class ReflexEngine {
     ReflexEngine(const ReflexEngine &) = delete;
     ReflexEngine &operator=(const ReflexEngine &) = delete;
 
-    // Evaluates all enabled ReflexRules in descending priority order.
-    // Returns AYNI_OK normally or AYNI_INTERNAL on a Core invariant defect.
-    ayni_status_t evaluate(uint64_t now_us, uint64_t durable_seq);
+    // Resumes a priority-ordered pass up to one matched action or the step cutoff.
+    // A matched action consumes one item; inspection of disabled/idle rules consumes time only.
+    enum class Advance { idle, applied, timed_out, internal };
+    Advance advance(OwnerClock clock, uint64_t cutoff_us, uint64_t durable_seq);
+    // Owner-side enable may change a rule already passed by the cursor.
+    void request_pass() {
+        next_rule_ = 0;
+        pass_pending_ = true;
+    }
+    bool pending() const { return pass_pending_; }
+    void reset_pass() {
+        next_rule_ = 0;
+        pass_pending_ = false;
+    }
     // Clears active_call_id on any PREEMPT_CALL rule whose spawned EPHEMERAL call finished.
     void reap_completed();
     // Earliest staleness deadline for enabled STALE_OR_GAP fail-safe rules whose resource
@@ -41,8 +52,10 @@ class ReflexEngine {
     ayni_status_t execute_rule(uint32_t index, uint64_t now_us, uint64_t durable_seq,
                                const ayni_catalog_name_v1 &source, int64_t value);
 
-    ReflexTable &table_;                              // Sole owner of rules and event ring.
-    const WorkModel &work_;                           // Read-only Scene/Grant/Agent owner.
+    uint32_t next_rule_ = 0;    // Next rule in the current priority pass, zero at pass start.
+    bool pass_pending_ = false; // An interrupted pass still has rules to visit.
+    ReflexTable &table_;        // Sole owner of rules and event ring.
+    const WorkModel &work_;     // Read-only Scene/Grant/Agent owner.
     const knowledge::ObservationTable &observations_; // Latest owner-thread observations.
     CallRuntime &calls_;                              // Resource preemption and reflex Call owner.
     AuditRing &audit_;                                // Kernel-owned RAM audit ring (ADR-0113).

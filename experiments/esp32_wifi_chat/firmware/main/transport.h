@@ -42,8 +42,13 @@ class Transport {
         return motor_soft_stop_.exchange(false, std::memory_order_acq_rel);
     }
     void set_motor_active(bool active) { motor_active_.store(active, std::memory_order_release); }
-    void request_motor_stop() { motor_stop_.store(true, std::memory_order_release); }
-    void request_motor_soft_stop() { motor_soft_stop_.store(true, std::memory_order_release); }
+    // Startup before the I/O task; context has the composition's boot lifetime.
+    void attach_motor_wake(void *context, void (*wake)(void *)) {
+        motor_context_ = context;
+        wake_motor_ = wake;
+    }
+    void request_motor_stop();
+    void request_motor_soft_stop();
     void request_motor_disable() { motor_disable_.store(true, std::memory_order_release); }
     bool motor_disable_requested() {
         return motor_disable_.exchange(false, std::memory_order_acq_rel);
@@ -53,6 +58,8 @@ class Transport {
     DiagnosticLog diagnostics_;
     Display display_;
     ModelHandoff model_;
+    void *motor_context_ = nullptr;
+    void (*wake_motor_)(void *) = nullptr;
     std::atomic<bool> motor_active_{false};
     std::atomic<bool> motor_stop_{false};      // Latched hard E-stop bypasses bounded queues.
     std::atomic<bool> motor_soft_stop_{false}; // Recoverable soft-stop bypasses bounded queues.

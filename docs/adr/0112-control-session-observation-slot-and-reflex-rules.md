@@ -34,6 +34,8 @@
    - 升级 `motor.run` 至 `v3`（`segments[1..8]` 列表参数 + `AYNI_FORM_SESSION` 2 s 短租约 + 200 ms 自动续租），`MotorOutput::transition()` 实现同方向不断流热切换与反向先断后通防直通，`MotorExecution` 实现 `AYNI_EXECUTOR_RENEW` 并在 `MotorCheck` 与系统提示词同步适配。
    - 在 `chat_config()` 启用 `observation_source_capacity = 2`、`reflex_capacity = 2`、`reflex_event_capacity = 8`，注册通用测距源 `sensor.obstacle_mm` 与受 `motor.manual-bench` Scene 门控的 `reflex.obstacle_stop` 软停规则，排空反射事件至诊断日志与状态通知，待接入实体传感器后直接挂载生产线程即可闭环。
 
+> 后续收口：最新值顺序、并发 `AYNI_BUSY` 和单步预算的当前行为见[观测契约](../../contracts/domain/observations_and_media.md)。预算足够时同一步完成反射与停止，预算用尽时在下一步续跑。
+
 ## 后果与备选方案
 
 - **后果**：多段连续运动无需在段间停机和重握手，高频传感器不再受 FIFO 满队丢新样或 step 尾延迟拖累，确定性安全反射可绕开大模型与 Flash 在亚毫秒至毫秒级闭环；代价是 ABI 升至 `0.59` 且 ESP32 `motor.run` 参数格式升级为 `v3` `segments[]`。

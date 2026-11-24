@@ -30,5 +30,8 @@ struct ObservationBoundary {
 };
 // Lexicographic identity comparison shared by transport and knowledge owners.
 bool after_boundary(uint64_t generation, uint64_t sequence, ObservationBoundary boundary);
+// Sample order also requires a nondecreasing capture time within the same generation.
+bool newer_sample(const ObservationInput &input, ObservationBoundary last,
+                  uint64_t last_captured_at_us);
 } // namespace ayni::knowledge
 #endif

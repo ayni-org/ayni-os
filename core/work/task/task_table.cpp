@@ -191,6 +191,7 @@ void TaskTable::apply(uint32_t index, TaskChange change, foundation::TransitionS
     }
     if (!is_live(task.lifecycle)) {
         task.operation_wait.reset();
+        task.volatile_state.pending_unknown.reset();
         // Discard unpersisted volatile checkpoint bytes (invariant: checkpoint_seq == 0).
         if (task.volatile_state.checkpoint_dirty) {
             std::memset(checkpoints_ + static_cast<std::size_t>(task.slot) * checkpoint_max_bytes_,
@@ -291,6 +292,38 @@ void TaskTable::end_volatile_call(uint32_t index, uint64_t call_id) {
         task.volatile_state.call_id = 0;
         task.volatile_state.generation = volatile_clock_++;
     }
+}
+
+void TaskTable::defer_volatile_unknown(uint32_t index, ayni_reason_t reason) {
+    auto &task = tasks_[index];
+    const bool held = still_held(task);
+    task.volatile_state.pending_unknown = reason;
+    if (!held && still_held(task)) {
+        ++held_count_;
+    }
+}
+
+bool TaskTable::next_volatile_unknown(uint32_t &index) const {
+    for (uint32_t at = 0; at < tasks_.size(); ++at) {
+        const auto &task = tasks_[at];
+        if (task.volatile_state.pending_unknown && is_live(task.lifecycle) &&
+            !at_largest_revision(task)) {
+            index = at;
+            return true;
+        }
+    }
+    return false;
+}
+
+void TaskTable::commit_volatile_unknown(uint32_t index, foundation::TransitionStamp stamp) {
+    auto &task = tasks_[index];
+    fold_volatile_model_calls(index);
+    hold(index, AYNI_RESULT_UNKNOWN, *task.volatile_state.pending_unknown, stamp);
+    task.volatile_state.pending_unknown.reset();
+}
+
+void TaskTable::set_decision_waits_for_journal(uint32_t index, bool waits) {
+    tasks_[index].volatile_state.decision_waits_for_journal = waits;
 }
 
 bool TaskTable::add_volatile_step(uint32_t index, ayni_string_v1 key) {

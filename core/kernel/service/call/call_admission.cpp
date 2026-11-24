@@ -451,7 +451,10 @@ resources::ResourceRequest CallRuntime::resource_request(uint64_t call_id, uint6
                                        AYNI_RESOURCE_WAIT_DEFAULT_US,
                                        contract.resource_count,
                                        {},
-                                       preemption};
+                                       preemption,
+                                       contract.is_ephemeral()
+                                           ? resources::ResourceRequest::Lane::ephemeral
+                                           : resources::ResourceRequest::Lane::durable};
     switch (profile.kind) {
     case AYNI_WORK_FOREGROUND:
         request.priority = resources::Priority::foreground;

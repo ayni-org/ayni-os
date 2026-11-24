@@ -36,7 +36,6 @@ ayni_status_t FileBodies::configure(hosts::storage::FileValuePort files, size_t 
     base_ = base;
     owner_ = std::this_thread::get_id();
     scan_needed_ = true;
-    background_writes_paused_ = false;
     return AYNI_OK;
 }
 uint64_t FileBodies::identity(uint64_t scope, uint64_t digest) {
@@ -101,8 +100,7 @@ ayni_status_t FileBodies::add_owner(Entry &entry, uint64_t scope, uint64_t id) {
     }
     owners.push_back({scope, id});
     entry.temporary.push_back(id);
-    ++entry.revision;
-    scan_needed_ = true;
+    // Staging an alias for previously saved bytes does not itself dirty the manifest.
     return AYNI_OK;
 }
 void FileBodies::drop_owner(Entry &entry, uint64_t id) {
@@ -299,7 +297,6 @@ ayni_status_t FileBodies::put(void *context, uint64_t scope, ayni_bytes_v1 bytes
         }
         if (entry.deleting || entry.state == State::loading ||
             (entry.state == State::checking && !entry.staged)) {
-            entry.awaited = true;
             self.scan_needed_ = true;
             status = AYNI_NOT_READY;
         } else if (entry.digest != digest || entry.size != bytes.size) {
@@ -324,7 +321,6 @@ ayni_status_t FileBodies::put(void *context, uint64_t scope, ayni_bytes_v1 bytes
             if (status == AYNI_OK) {
                 *out = {alias, digest, bytes.size, 0};
             } else if (status == AYNI_NOT_READY) {
-                entry.awaited = true;
                 self.scan_needed_ = true;
             }
         }
@@ -359,21 +355,6 @@ ayni_status_t FileBodies::write(void *context, uint64_t scope, ayni_bytes_v1 bod
         return status;
     }
     const auto durable = confirm(context, &staged);
-    if (durable == AYNI_NOT_READY) {
-        auto &self = *static_cast<FileBodies *>(context);
-        bool wake = false;
-        {
-            std::lock_guard<std::mutex> lock(self.mutex_);
-            if (auto *entry = self.find(staged); entry && !entry->awaited) {
-                entry->awaited = true;
-                self.scan_needed_ = true;
-                wake = true;
-            }
-        }
-        if (wake) {
-            self.flush();
-        }
-    }
     if (durable == AYNI_OK) {
         *out = staged;
     }
@@ -414,7 +395,6 @@ ayni_status_t FileBodies::share(void *context, uint64_t scope, const ayni_body_r
                 return status;
             }
         }
-        entry->awaited = true;
         self.scan_needed_ = true;
     }
     self.flush();
@@ -435,13 +415,19 @@ ayni_status_t FileBodies::confirm(void *context, const ayni_body_ref_v1 *ref) {
         if (!entry) {
             return AYNI_CAPACITY_EXCEEDED;
         }
+        const auto temporary = std::find(entry->temporary.begin(), entry->temporary.end(), ref->id);
+        if (temporary != entry->temporary.end()) {
+            if (entry->revision == UINT64_MAX) {
+                return AYNI_CAPACITY_EXCEEDED;
+            }
+            entry->temporary.erase(temporary);
+            ++entry->revision;
+            self.scan_needed_ = true;
+        }
         if (!entry->persist_requested) {
             entry->persist_requested = true;
             self.scan_needed_ = true;
         }
-        entry->temporary.erase(
-            std::remove(entry->temporary.begin(), entry->temporary.end(), ref->id),
-            entry->temporary.end());
     }
     self.flush();
     std::lock_guard<std::mutex> lock(self.mutex_);
@@ -540,11 +526,42 @@ ayni_status_t FileBodies::read(void *context, const ayni_body_ref_v1 *ref, uint8
             }
             return AYNI_OK;
         }
-        entry->awaited = true;
         self.scan_needed_ = true;
     }
     self.flush();
     return AYNI_NOT_READY;
+}
+bool FileBodies::is_temporary(const Entry &entry, uint64_t id) {
+    return std::find(entry.temporary.begin(), entry.temporary.end(), id) != entry.temporary.end();
+}
+
+bool FileBodies::unconfirmed_owner(const Entry &entry, uint64_t id) {
+    return !entry.manifest_loaded && !entry.pending && !entry.persist_requested &&
+           entry.releases.empty() && !entry.deleting && is_temporary(entry, id);
+}
+
+// Only for an owner whose data was never handed to the file worker. The caller
+// decides whether Core will still need an expiry tombstone for a retained reference.
+void FileBodies::drop_unconfirmed_owner(Entry &entry, uint64_t id) {
+    entry.additions.erase(std::remove_if(entry.additions.begin(), entry.additions.end(),
+                                         [id](const auto &owner) { return owner.id == id; }),
+                          entry.additions.end());
+    entry.temporary.erase(std::remove(entry.temporary.begin(), entry.temporary.end(), id),
+                          entry.temporary.end());
+    if (entry.additions.empty()) {
+        entries_.erase(identity(0, entry.digest));
+    }
+}
+void FileBodies::discard_unconfirmed(void *context, const ayni_body_ref_v1 &ref) {
+    if (!context || !valid_ref(&ref)) {
+        return;
+    }
+    auto &self = *static_cast<FileBodies *>(context);
+    std::lock_guard<std::mutex> lock(self.mutex_);
+    auto *entry = self.find(ref);
+    if (entry && unconfirmed_owner(*entry, ref.id)) {
+        self.drop_unconfirmed_owner(*entry, ref.id);
+    }
 }
 void FileBodies::release_temporary(void *context, const ayni_body_ref_v1 *ref) {
     if (!context || !valid_ref(ref)) {
@@ -554,27 +571,16 @@ void FileBodies::release_temporary(void *context, const ayni_body_ref_v1 *ref) {
     {
         std::lock_guard<std::mutex> lock(self.mutex_);
         auto *entry = self.find(*ref);
-        if (!entry || std::find(entry->temporary.begin(), entry->temporary.end(), ref->id) ==
-                          entry->temporary.end()) {
+        if (!entry || !is_temporary(*entry, ref->id)) {
             return;
         }
-        if (!entry->manifest_loaded && !entry->pending && !entry->persist_requested &&
-            entry->releases.empty() && !entry->deleting) {
-            entry->additions.erase(
-                std::remove_if(entry->additions.begin(), entry->additions.end(),
-                               [&](const auto &owner) { return owner.id == ref->id; }),
-                entry->additions.end());
+        if (unconfirmed_owner(*entry, ref->id)) {
             if (self.expired_.size() == entry_limit) {
                 self.failure_ = AYNI_CAPACITY_EXCEEDED;
                 return; // Preserve accepted content and report backpressure, never lose ownership.
             }
             self.expired_.insert(ref->id);
-            entry->temporary.erase(
-                std::remove(entry->temporary.begin(), entry->temporary.end(), ref->id),
-                entry->temporary.end());
-            if (entry->additions.empty()) {
-                self.entries_.erase(identity(0, ref->digest));
-            }
+            self.drop_unconfirmed_owner(*entry, ref->id);
             return; // Removing RAM-only owners creates no persistence work.
         }
     }
@@ -618,14 +624,6 @@ void FileBodies::collect(uint64_t scope, const std::vector<ayni_body_ref_v1> &ke
 bool FileBodies::prepare(uint64_t id, Entry &entry) {
     if (entry.pending || entry.state == State::failed ||
         (entry.staged && !entry.persist_requested && !entry.deleting && entry.releases.empty())) {
-        return false;
-    }
-    // Defer purely background persistence/cleanup during hot owner transitions while RAM
-    // cache headroom remains, so Core commits do not queue behind non-blocking body writes.
-    // Foreground waiters (awaited) and cache pressure above half the budget still advance.
-    constexpr size_t pause_headroom_divisor = 2;
-    if (background_writes_paused_ && !entry.awaited &&
-        cached_bytes_locked() <= cache_limit_ / pause_headroom_divisor) {
         return false;
     }
     Pending pending;
@@ -905,7 +903,6 @@ void FileBodies::complete(void *context, const FileValueResult &result) noexcept
                          !pending->reload_inline_only && result.status == AYNI_NOT_FOUND;
     const bool optimistic_stale = pending->operation == Operation::manifest_write &&
                                   pending->optimistic_create && result.status == AYNI_STALE;
-    bool erased = false;
     if (result.status != AYNI_OK && !missing && !optimistic_stale) {
         entry.state = State::failed;
         self.failure_ = entry.failure = result.status;
@@ -916,7 +913,6 @@ void FileBodies::complete(void *context, const FileValueResult &result) noexcept
     } else if (pending->operation == Operation::remove) {
         if (entry.chunk++ == chunks(entry.size)) {
             self.entries_.erase(pending->id);
-            erased = true;
         }
     } else if (pending->operation == Operation::payload_read &&
                result.size != pending->request.size) {
@@ -933,23 +929,6 @@ void FileBodies::complete(void *context, const FileValueResult &result) noexcept
             self.failure_ = entry.failure = AYNI_STORAGE_FAILED;
         } else {
             entry.state = State::ready;
-        }
-    }
-    if (!erased && entry.awaited) {
-        const bool manifest_done = pending->operation == Operation::manifest_read &&
-                                   !pending->reload_inline_only && entry.manifest_loaded &&
-                                   !entry.deleting && entry.state != State::loading &&
-                                   entry.state != State::writing && entry.releases.empty() &&
-                                   entry.saved_revision == entry.revision;
-        const bool reload_done = pending->reload_inline_only && entry.state == State::ready;
-        const bool read_done =
-            pending->operation == Operation::payload_read && entry.state == State::ready;
-        const bool write_done = pending->operation == Operation::manifest_write &&
-                                entry.manifest_loaded && !entry.deleting &&
-                                entry.saved_revision == entry.revision;
-        if (entry.state == State::failed || manifest_done || reload_done || read_done ||
-            write_done) {
-            entry.awaited = false;
         }
     }
     self.pending_.clear();
@@ -1029,26 +1008,6 @@ FileBodies::Backlog FileBodies::backlog() const {
         }
     }
     return out;
-}
-void FileBodies::set_background_writes_paused(bool paused) {
-    if (std::this_thread::get_id() != owner_) {
-        return;
-    }
-    bool resume = false;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (background_writes_paused_ == paused) {
-            return;
-        }
-        background_writes_paused_ = paused;
-        if (!paused) {
-            scan_needed_ = true;
-            resume = true;
-        }
-    }
-    if (resume) {
-        flush();
-    }
 }
 size_t FileBodies::cached_bytes_locked() const {
     size_t total = 0;
