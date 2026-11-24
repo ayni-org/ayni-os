@@ -171,4 +171,5 @@
 
 | [0109](0109-owned-conversation-text-and-scoped-cleanup.md) | 不可变正文复用与按会话确认清理 | 已实施；本地验证及独立复查见实验记录，不OTA | Session/FileBodies、ToolLoop、ESP工具进度；ABI及持久格式不变 |
 
-| [0110](0110-ephemeral-execution-tier-and-immediate-resource-release.md) | 瞬态执行等级（Tier 0）、重启自动取消与内存即时释放资源 | 已接受并实施中（阶段 1） | ABI0.57、schema11、EPHEMERAL Call、内联停稳证明、ESP32 低时延交接 |
+| [0110](0110-ephemeral-execution-tier-and-immediate-resource-release.md) | 瞬态执行等级（Tier 0）、重启自动取消与内存即时释放资源 | 已实施（阶段 1，待真机 OTA 实测） | ABI0.57、schema11、EPHEMERAL Call、内联停稳证明、ESP32 低时延交接 |
+| [0111](0111-soft-stop-preemption-and-barge-in.md) | 软停止与硬急停拆分、Core 资源级原子抢占及会话即时打断 | 已实施（阶段 2，待真机 OTA 实测） | ABI0.58（schema11 不变）、PREEMPT/SUPERSEDE、零 Flash 取消丢弃、ESP32 Barge-In |

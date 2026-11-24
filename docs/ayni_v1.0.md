@@ -10,7 +10,7 @@
 
 > **本轮范围**：用户2026-10-31要求实施[独立工程接入与验收计划](architecture/independent-consumption-plan.md)：通用源码SDK、低栈工作区、Native/ESP存储及Host、共同应用和验收。平台适配保持独立目录，必要接口直接升级，正常存储和最小重开获授权；实机操作、付费模型及其他新专项不启动。
 
-> **计划入口**：[基础能力实施与实验计划](architecture/foundation-and-experiment-plan.md)统一记录现行工作包顺序、缺口、完成条件及实验进入条件；[低时延实时 AgentOS 架构演进计划](architecture/low-latency-realtime-agentos-plan.md)与[ADR-0110](adr/0110-ephemeral-execution-tier-and-immediate-resource-release.md)记录三平面低时延、瞬态执行等级、抢占与实时传感闭环的分阶段演进路线；[通用能力架构计划](architecture/capability-centered-agentos-plan.md)与[发现、适配及代码处置计划](architecture/capability-discovery-and-adapters.md)继续描述机制与迁移边界。历史 MA 编号、已交付实现和实验结果保留；旧轮式设备试用路线不再作为通用 AgentOS 的必经发布链。
+> **计划入口**：[基础能力实施与实验计划](architecture/foundation-and-experiment-plan.md)统一记录现行工作包顺序、缺口、完成条件及实验进入条件；[低时延实时 AgentOS 架构演进计划](architecture/low-latency-realtime-agentos-plan.md)、[ADR-0110](adr/0110-ephemeral-execution-tier-and-immediate-resource-release.md)与[ADR-0111](adr/0111-soft-stop-preemption-and-barge-in.md)记录三平面低时延、瞬态执行等级、软停止/原子抢占与实时传感闭环的分阶段演进路线；[通用能力架构计划](architecture/capability-centered-agentos-plan.md)与[发现、适配及代码处置计划](architecture/capability-discovery-and-adapters.md)继续描述机制与迁移边界。历史 MA 编号、已交付实现和实验结果保留；旧轮式设备试用路线不再作为通用 AgentOS 的必经发布链。
 
 ## 0. 执行摘要与已确定决策
 
