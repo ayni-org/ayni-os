@@ -37,7 +37,20 @@ ayni_status_t MotorExecution::initialize_owner() {
     }
     gate_memory_ =
         heap_caps_aligned_alloc(alignment, gate_bytes_, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    return gate_memory_ ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
+    if (!gate_memory_) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    size_t session_align = 0;
+    rc = ayni_control_session_memory_requirements(&session_bytes_, &session_align);
+    if (rc != AYNI_OK) {
+        return rc;
+    }
+    session_memory_ = heap_caps_aligned_alloc(session_align, session_bytes_,
+                                              MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!session_memory_) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    return ayni_control_session_create(session_memory_, session_bytes_, &session_);
 }
 ayni_executor_v1 MotorExecution::ports() {
     if (!executor_boot_) {
@@ -55,7 +68,7 @@ ayni_executor_v1 MotorExecution::ports() {
             1,
             1,
             motor_procedure_us,
-            motor_procedure_us,
+            motor_session_lease_us,
             motor_sample_age_us,
             motor_poll_us,
             this,
@@ -150,22 +163,27 @@ ayni_status_t MotorExecution::challenge_port(void *ctx, ayni_attempt_ref_v1 id,
         return AYNI_INVALID_ARGUMENT;
     }
     return static_cast<MotorExecution *>(ctx)->queue(
-        {AYNI_EXECUTOR_CHALLENGE, id, completion, *epochs, 0});
+        {AYNI_EXECUTOR_CHALLENGE, id, completion, *epochs, 0, 0});
 }
-ayni_status_t MotorExecution::renew_port(void *, ayni_attempt_ref_v1,
-                                         const ayni_permit_renewal_v1 *,
-                                         ayni_executor_completion_t *) {
-    return AYNI_INVALID_STATE; // Only bounded, nonrenewable procedures are registered.
+ayni_status_t MotorExecution::renew_port(void *ctx, ayni_attempt_ref_v1 id,
+                                         const ayni_permit_renewal_v1 *renewal,
+                                         ayni_executor_completion_t *completion) {
+    if (!renewal) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    return static_cast<MotorExecution *>(ctx)->queue({AYNI_EXECUTOR_RENEW, id, completion,
+                                                      renewal->epochs, renewal->permit_id,
+                                                      renewal->echoed_nonce});
 }
 ayni_status_t MotorExecution::stop_port(void *ctx, ayni_attempt_ref_v1 id, uint64_t permit,
                                         ayni_executor_completion_t *completion) {
     return static_cast<MotorExecution *>(ctx)->queue(
-        {AYNI_EXECUTOR_STOP, id, completion, {}, permit});
+        {AYNI_EXECUTOR_STOP, id, completion, {}, permit, 0});
 }
 ayni_status_t MotorExecution::status_port(void *ctx, ayni_attempt_ref_v1 id, uint64_t permit,
                                           ayni_executor_completion_t *completion) {
     return static_cast<MotorExecution *>(ctx)->queue(
-        {AYNI_EXECUTOR_STATUS, id, completion, {}, permit});
+        {AYNI_EXECUTOR_STATUS, id, completion, {}, permit, 0});
 }
 ayni_control_observation_v1 MotorExecution::live() const {
     auto epochs = epochs_;
@@ -180,14 +198,20 @@ ayni_control_observation_v1 MotorExecution::live() const {
 }
 ayni_status_t MotorExecution::challenge(const ayni_permit_epochs_v1 &expected,
                                         ayni_executor_nonce_v1 &nonce) {
-    if (!live().interlocks_ok || pending_ || expected.executor_boot_epoch != executor_boot_ ||
-        expected.safety_epoch != 1 || expected.calibration_version != 1) {
+    // Allow challenges while an AYNI_FORM_SESSION is active so Core can renew its short lease
+    // without interrupting hardware output (ADR-0112).
+    if (!live().interlocks_ok || (pending_ && pending_->phase == Phase::result) ||
+        expected.executor_boot_epoch != executor_boot_ || expected.safety_epoch != 1 ||
+        expected.calibration_version != 1) {
         return AYNI_DENIED;
     }
     if (!gate_) {
-        const ayni_control_config_v1 config{
-            sizeof(config),     AYNI_ABI_MAJOR,     AYNI_ABI_MINOR,      1, motor_domain,  expected,
-            motor_procedure_us, motor_procedure_us, motor_sample_age_us, 0, motor_limits()};
+        const ayni_control_config_v1 config{sizeof(config),      AYNI_ABI_MAJOR,
+                                            AYNI_ABI_MINOR,      1,
+                                            motor_domain,        expected,
+                                            motor_procedure_us,  motor_session_lease_us,
+                                            motor_sample_age_us, 0,
+                                            motor_limits()};
         auto rc = ayni_control_create(&config, now(), gate_memory_, gate_bytes_, &gate_);
         if (rc != AYNI_OK) {
             return rc;
@@ -229,6 +253,17 @@ ayni_status_t MotorExecution::serve(PortRequest &request) {
     response.request = request.identity;
     if (request.kind == AYNI_EXECUTOR_CHALLENGE) {
         response.status = challenge(request.epochs, response.output.nonce);
+    } else if (request.kind == AYNI_EXECUTOR_RENEW) {
+        if (!session_ || !pending_ || !current_permit_ || request.permit_id != current_permit_) {
+            response.status = AYNI_NOT_FOUND;
+        } else if (!admission_.permits(request.echoed_nonce)) {
+            response.status = AYNI_DENIED;
+        } else {
+            const ayni_permit_renewal_v1 renewal{sizeof(renewal), 0, request.permit_id,
+                                                 request.echoed_nonce, request.epochs};
+            const auto observation = live();
+            response.status = ayni_control_session_renew(session_, &renewal, now(), &observation);
+        }
     } else if (request.kind == AYNI_EXECUTOR_STOP) {
         if (request.permit_id == current_permit_ && current_permit_) {
             if (pending_ && pending_->phase != Phase::result) {
@@ -272,22 +307,43 @@ void MotorExecution::reject(const Pending &request, ayni_status_t cause) {
 void MotorExecution::begin(Pending incoming) {
     // UI state-notice backpressure (terminal_notice_) must not deny an authorized motor start
     // (ADR-0111); Mode::armed/gate/interlocks/output_->disabled() remain the safety gates.
-    if (pending_ || !gate_ || !live().interlocks_ok ||
+    bool within_limit = valid_motor_trajectory(incoming.trajectory);
+    for (uint32_t at = 0; within_limit && at < incoming.trajectory.count; ++at) {
+        const auto &seg = incoming.trajectory.segments[at];
+        within_limit =
+            seg.first_percent >= -int32_t(limit_) && seg.first_percent <= int32_t(limit_) &&
+            seg.second_percent >= -int32_t(limit_) && seg.second_percent <= int32_t(limit_);
+    }
+    if (pending_ || !gate_ || !session_ || !live().interlocks_ok ||
         incoming.permit.permit_id <= refused_through_ ||
         !admission_.permits(incoming.permit.echoed_nonce) || !output_->disabled() ||
-        incoming.command.first_percent < -int32_t(limit_) ||
-        incoming.command.first_percent > int32_t(limit_) ||
-        incoming.command.second_percent < -int32_t(limit_) ||
-        incoming.command.second_percent > int32_t(limit_)) {
+        !within_limit) {
         reject(incoming, AYNI_DENIED);
         return;
     }
+    const auto limits = motor_limits();
+    std::array<ayni_control_segment_v1, motor_segments_max> segments{};
+    for (uint32_t at = 0; at < incoming.trajectory.count; ++at) {
+        const auto &cmd = incoming.trajectory.segments[at];
+        const int64_t vals[]{cmd.first_percent, cmd.second_percent, cmd.duration_ms};
+        segments[at].struct_size = sizeof(segments[at]);
+        segments[at].field_count = limits.count;
+        // Hardware RMT loop counts time each segment; ControlSession advances via advance_segment.
+        segments[at].duration_us = 0;
+        for (uint32_t f = 0; f < limits.count; ++f) {
+            segments[at].fields[f] = {limits.fields[f].field_id, limits.fields[f].unit, vals[f]};
+        }
+    }
     const auto observation = live();
-    const auto started = ayni_control_start(gate_, &incoming.permit, now(), &observation);
+    const auto started =
+        ayni_control_session_open(session_, gate_, &incoming.permit, segments.data(),
+                                  incoming.trajectory.count, now(), &observation);
     if (started != AYNI_OK) {
         reject(incoming, started);
         return;
     }
+    incoming.segment_index = 0;
+    incoming.segments_completed = 0;
     pending_ = incoming;
     current_permit_ = incoming.permit.permit_id;
     sequence_ = 0;
@@ -295,30 +351,23 @@ void MotorExecution::begin(Pending incoming) {
 }
 ayni_status_t MotorExecution::sample() {
     auto &p = *pending_;
-    ayni_control_sample_v1 sample{};
-    sample.struct_size = sizeof(sample);
-    sample.count = p.permit.envelope.count;
-    sample.permit_id = p.permit.permit_id;
-    sample.sequence = ++sequence_;
-    sample.sampled_at_us = now();
-    const auto limits = motor_limits();
-    const int64_t values[]{p.command.first_percent, p.command.second_percent,
-                           p.command.duration_ms};
-    sample.count = limits.count;
-    for (uint32_t at = 0; at < limits.count; ++at) {
-        sample.fields[at] = {limits.fields[at].field_id, limits.fields[at].unit, values[at]};
-    }
     const auto observation = live();
-    const auto rc = ayni_control_sample(gate_, &sample, now(), &observation);
+    const auto sampled_at = now();
+    ayni_control_session_step_v1 step{};
+    step.struct_size = sizeof(step);
+    const auto rc = ayni_control_session_tick(session_, sampled_at, &observation, &step);
     if (rc == AYNI_OK) {
-        p.last_sample_us = sample.sampled_at_us;
+        p.last_sample_us = sampled_at;
+        ++sequence_;
     }
-    return rc;
+    return rc == AYNI_OK && step.state != AYNI_CONTROL_SESSION_ACTIVE ? AYNI_EXPIRED : rc;
 }
 ayni_status_t MotorExecution::stop_output() {
     expected_stop_us_.store(0, std::memory_order_release);
     ayni_status_t stopped = AYNI_OK;
-    if (gate_ && current_permit_) {
+    if (session_ && gate_ && current_permit_) {
+        stopped = ayni_control_session_soft_stop(session_, now());
+    } else if (gate_ && current_permit_) {
         stopped = ayni_control_stop(gate_, current_permit_, now());
     }
     if (!output_ || output_->stop() != ESP_OK || !output_->disabled()) {
@@ -331,7 +380,8 @@ ayni_status_t MotorExecution::stop_output() {
         return AYNI_OK;
     }
     // C-STOP-006: actual controller output readback, separate from wheel/target facts.
-    return ayni_control_confirm_stopped(gate_, current_permit_, now());
+    return session_ ? ayni_control_session_confirm_stopped(session_, now())
+                    : ayni_control_confirm_stopped(gate_, current_permit_, now());
 }
 void MotorExecution::end(ayni_call_outcome_t outcome, ayni_status_t status) {
     if (!pending_) {
@@ -353,11 +403,10 @@ void MotorExecution::end(ayni_call_outcome_t outcome, ayni_status_t status) {
     // It does not measure wheel speed/position or repair an earlier UNKNOWN record.
     if (p.effect == Effect::possible) {
         std::array<int, 4> edges{};
-        const auto duties = motor_duties(p.command.first_percent, p.command.second_percent);
+        const auto &expected = output_->expected_counts();
         bool valid = output_->counts(edges), positive = false;
         for (size_t at = 0; at < edges.size(); ++at) {
-            valid = valid && edges[at] >= 0 && uint32_t(edges[at]) <= p.command.duration_ms &&
-                    (duties[at] || edges[at] == 0);
+            valid = valid && edges[at] >= 0 && uint32_t(edges[at]) <= expected[at];
             positive = positive || edges[at] > 0;
         }
         if (valid && positive) {
@@ -365,7 +414,7 @@ void MotorExecution::end(ayni_call_outcome_t outcome, ayni_status_t status) {
         }
     }
     trace_handoff("output_stopped", p.call, stopped_us);
-    p.phase = Phase::result; // Local output-stop fact ends a timed PWM procedure; target stays
+    p.phase = Phase::result; // Local output-stop fact ends a timed PWM session; target stays
                              // unverified.
 }
 void MotorExecution::stop_owner() {
@@ -431,19 +480,21 @@ void MotorExecution::serve_soft_stop(const SoftStopRequest &request) {
 }
 ayni_status_t MotorExecution::post_result() {
     auto &p = *pending_;
+    const auto &last =
+        p.trajectory.segments[p.segment_index < p.trajectory.count ? p.segment_index : 0];
     char json[768];
     const auto length = std::snprintf(
         json, sizeof(json),
-        "{\"permit_id\":%llu,\"motor1_percent\":%ld,\"motor2_percent\":%ld,\"duration_ms\":%lu,"
-        "\"duration_basis\":\"cumulative-pwm-ms\",\"output_started\":%s,\"output_waveform_"
-        "complete\":%s,\"output_stop\":\"gpio-matrix-and-"
-        "low-readback\","
+        "{\"permit_id\":%llu,\"segments_requested\":%lu,\"segments_completed\":%lu,"
+        "\"total_duration_ms\":%lu,\"motor1_percent\":%ld,\"motor2_percent\":%ld,"
+        "\"duration_ms\":%lu,\"duration_basis\":\"cumulative-pwm-ms\",\"output_started\":%s,"
+        "\"output_waveform_complete\":%s,\"output_stop\":\"gpio-matrix-and-low-readback\","
         "\"operator_stopped\":null,\"operator_source\":\"not-requested\",\"local_status\":%ld,"
-        "\"target\":"
-        "\"unverified\","
-        "\"mode\":\"manual-bench-exception\",\"independent_watchdog_verified\":false}",
-        (unsigned long long)current_permit_, (long)p.command.first_percent,
-        (long)p.command.second_percent, (unsigned long)p.command.duration_ms,
+        "\"target\":\"unverified\",\"mode\":\"manual-bench-exception\","
+        "\"independent_watchdog_verified\":false}",
+        (unsigned long long)current_permit_, (unsigned long)p.trajectory.count,
+        (unsigned long)p.segments_completed, (unsigned long)total_duration_ms(p.trajectory),
+        (long)last.first_percent, (long)last.second_percent, (unsigned long)last.duration_ms,
         p.effect == Effect::none ? "false" : "true",
         p.effect == Effect::complete ? "true" : "false", (long)p.status);
     if (length <= 0 || size_t(length) >= sizeof(json)) {
@@ -572,17 +623,21 @@ ayni_status_t MotorExecution::advance_pending() {
             end(AYNI_CALL_FAILED, AYNI_DENIED);
         } else {
             p.effect = Effect::possible; // Even a partially failed SDK start can have effects.
-            if (output_->start(p.command) != ESP_OK) {
+            if (output_->start(p.trajectory.segments[0]) != ESP_OK) {
                 mode_ = Mode::latched;
                 end(AYNI_CALL_FAILED, AYNI_INTERNAL);
             } else {
                 p.phase = Phase::running;
                 const auto started_us = now();
-                expected_stop_us_.store(started_us + uint64_t(p.command.duration_ms) * 1000ULL,
+                expected_stop_us_.store(started_us +
+                                            uint64_t(total_duration_ms(p.trajectory)) * 1000ULL,
                                         std::memory_order_release);
                 wake_owner(); // Let the owner re-evaluate the motor background-write window now.
                 mark_output_start(p.call, started_us);
                 trace_handoff("output_started", p.call, started_us);
+                transport_.diagnostics().record("wifi motor_segment call=%llu seg=1/%lu gap_us=0\n",
+                                                static_cast<unsigned long long>(p.call),
+                                                static_cast<unsigned long>(p.trajectory.count));
                 trace("pwm-started", AYNI_OK);
             }
         }
@@ -590,10 +645,34 @@ ayni_status_t MotorExecution::advance_pending() {
         if (sample() != AYNI_OK) {
             end(AYNI_CALL_CANCELLED, AYNI_EXPIRED);
         } else {
-            const auto state = output_->poll();
+            const auto state = output_->poll_segment();
             if (state == MotorOutput::Poll::completed) {
-                p.effect = Effect::complete;
-                end(AYNI_CALL_COMPLETED, AYNI_OK);
+                ++p.segments_completed;
+                const auto done_us = now();
+                ayni_control_session_step_v1 next_step{};
+                next_step.struct_size = sizeof(next_step);
+                const auto adv = ayni_control_session_advance_segment(session_, done_us,
+                                                                      &observation, &next_step);
+                if (adv != AYNI_OK) {
+                    end(AYNI_CALL_CANCELLED, adv);
+                } else if (next_step.state == AYNI_CONTROL_SESSION_COMPLETED) {
+                    p.effect = Effect::complete;
+                    end(AYNI_CALL_COMPLETED, AYNI_OK);
+                } else {
+                    p.segment_index = next_step.segment_index;
+                    if (output_->transition(p.trajectory.segments[p.segment_index]) != ESP_OK) {
+                        mode_ = Mode::latched;
+                        end(AYNI_CALL_FAILED, AYNI_INTERNAL);
+                    } else {
+                        const auto gap_us = now() - done_us;
+                        transport_.diagnostics().record(
+                            "wifi motor_segment call=%llu seg=%lu/%lu gap_us=%llu\n",
+                            static_cast<unsigned long long>(p.call),
+                            static_cast<unsigned long>(p.segment_index + 1U),
+                            static_cast<unsigned long>(p.trajectory.count),
+                            static_cast<unsigned long long>(gap_us));
+                    }
+                }
             } else if (state == MotorOutput::Poll::failed) {
                 mode_ = Mode::latched;
                 end(AYNI_CALL_FAILED, AYNI_INTERNAL);
@@ -655,9 +734,11 @@ bool MotorExecution::close_owner() {
     // The first allocation may fail before any output exists. Absence then
     // needs no stop; an acquired output still requires confirmed shutdown.
     if ((output_ && stop_output() != AYNI_OK) ||
+        (session_ && ayni_control_session_destroy(session_) != AYNI_OK) ||
         (gate_ && ayni_control_destroy(gate_) != AYNI_OK)) {
         return false;
     }
+    session_ = nullptr;
     gate_ = nullptr;
     if (output_ && output_->close() != ESP_OK) {
         return false;
@@ -667,6 +748,8 @@ bool MotorExecution::close_owner() {
         heap_caps_free(output_);
         output_ = nullptr;
     }
+    heap_caps_free(session_memory_);
+    session_memory_ = nullptr;
     heap_caps_free(gate_memory_);
     gate_memory_ = nullptr;
     expected_stop_us_.store(0, std::memory_order_release);

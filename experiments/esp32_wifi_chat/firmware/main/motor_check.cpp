@@ -43,6 +43,11 @@ ayni_status_t MotorCheck::configure(Owner owner) {
         auto &p = profiles_[motor];
         p.input[0].kind = AYNI_VALUE_OBJECT;
         p.input[0].subtree_end = p.input.size();
+        p.input[1].kind = AYNI_VALUE_LIST;
+        p.input[1].field_id = 1;
+        p.input[1].subtree_end = p.input.size();
+        p.input[2].kind = AYNI_VALUE_OBJECT;
+        p.input[2].subtree_end = p.input.size();
         for (uint32_t at = 0; at < field_count; ++at) {
             auto &f = p.fields[at];
             f.struct_size = sizeof(f);
@@ -52,10 +57,10 @@ ayni_status_t MotorCheck::configure(Owner owner) {
             f.allowed.unit = motor_text(at == field_count - 1 ? "ms" : "percent");
             const int64_t value = at == field_count - 1 ? duration_ms : at == motor ? percent : 0;
             f.allowed.values.integer = {value, value};
-            auto &node = p.input[at + 1];
+            auto &node = p.input[at + 3];
             node.kind = AYNI_VALUE_I64;
             node.field_id = at + 1;
-            node.subtree_end = at + 2;
+            node.subtree_end = at + 4;
             node.value.integer = value;
         }
         p.step.name = motor_text("run");

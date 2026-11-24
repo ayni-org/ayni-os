@@ -65,7 +65,7 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
     run_input_ = motor_run_schema();
     std::array<ayni_authority_field_desc_v1, 3> fields{};
     for (uint32_t at = 0; at < fields.size(); ++at) {
-        auto &node = run_input_[at + 1];
+        auto &node = run_input_[at + 3];
         auto &field = fields[at];
         field.struct_size = sizeof(field);
         field.field_id = at + 1;
@@ -75,8 +75,10 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
         field.domain.unit = node.unit;
         field.domain.values.integer = {node.min_i64, node.max_i64};
         projections_[at].field_id = at + 1;
-        projections_[at].path_count = 1;
-        projections_[at].path[0] = at + 1;
+        projections_[at].path_count = 3;
+        projections_[at].path[0] = 1; // Root field "segments" list.
+        projections_[at].path[1] = AYNI_PROJECTION_LIST_ITEM;
+        projections_[at].path[2] = at + 1;
         projections_[at].unit = node.unit;
     }
     business_[2] = {{run_input_.data(), uint32_t(run_input_.size())},
@@ -152,8 +154,8 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
         constexpr const char *summaries[]{
             "Read TA6586 wiring and manual-bench readiness; power/shaft state is not measured.",
             "Compute a TA6586 software plan without output.",
-            "Run a bounded TA6586 PWM procedure while local motor control is enabled; no "
-            "per-action approval.",
+            "Run a bounded 1..8 segment TA6586 PWM session continuously while local motor control "
+            "is enabled; no per-action approval.",
             "Request recoverable local motor soft-stop and confirm GPIO low readback; stays "
             "armed unless stop fails."};
         constexpr const char *parameters[]{
@@ -163,30 +165,28 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
             "Required integer motor1_percent and motor2_percent: -90..90; duration_ms: 50..60000.",
             "ACTION: operation=\"invoke\" waits for completion (managed start is unsupported on "
             "ephemeral bench motor calls). "
-            "Required integers motor1_percent and motor2_percent: -90..90; duration_ms: 50..60000, "
-            "multiple of 5. "
-            "Zero coasts a motor; both zero is invalid. Do not insert motor.stop for a pause "
-            "between motions unless stopping is requested; motor.stop performs a recoverable "
-            "soft-stop (stays armed after confirmed stop). Motor 1 positive D0 PWM, "
-            "negative D1 PWM; motor 2 positive D3 PWM, negative D2 PWM (board polarity corrected). "
-            "This is PWM duty, not RPM; actual shaft direction is not measured. Runtime operator "
-            "cap may "
-            "be lower than 90. "
-            "Resources initialize automatically; control defaults enabled after session readiness. "
-            "The local toggle can disable it. No per-action approval; do not retry "
-            "expired or "
-            "unknown actions.",
+            "Required field segments: ordered array of 1..8 objects, each with required integers "
+            "motor1_percent and motor2_percent (-90..90) and duration_ms (50..60000, multiple of "
+            "5). Total duration across all segments must not exceed 60000 ms; at least one "
+            "segment must be nonzero (a (0,0) segment coasts for a pause between motions). "
+            "Segments switch seamlessly in one ControlSession without stopping between them. "
+            "Do not insert motor.stop for a pause between motions unless stopping is requested; "
+            "motor.stop performs a recoverable soft-stop (stays armed after confirmed stop). "
+            "Motor 1 positive D0 PWM, negative D1 PWM; motor 2 positive D3 PWM, negative D2 PWM "
+            "(board polarity corrected). This is PWM duty, not RPM; actual shaft direction is not "
+            "measured. Runtime operator cap may be lower than 90. Resources initialize "
+            "automatically; control defaults enabled after session readiness.",
             "UNARY: use operation=\"invoke\" or omit operation; start is unsupported. Empty "
             "object. Performs a recoverable soft-stop with GPIO low readback; "
             "this tool is not an independent hardware stop — the touchscreen red stop button "
             "bypasses model execution and latches until reboot."};
         const ayni_tool_field_usage_v1 descriptions[]{
             {sizeof(ayni_tool_field_usage_v1), motor1_field,
-             text("Motor 1 signed PWM percent; zero coasts, no RPM measurement.")},
+             text("Motor 1 signed PWM percent per segment; zero coasts, no RPM measurement.")},
             {sizeof(ayni_tool_field_usage_v1), motor2_field,
-             text("Motor 2 signed PWM percent; zero coasts, no RPM measurement.")},
+             text("Motor 2 signed PWM percent per segment; zero coasts, no RPM measurement.")},
             {sizeof(ayni_tool_field_usage_v1), duration_field,
-             text("Cumulative PWM output duration in ms; multiple of 5, at most 60000.")}};
+             text("Segment PWM duration in ms; multiple of 5, total across segments <= 60000.")}};
         const ayni_tool_usage_v1 usage{
             sizeof(usage),
             version,
@@ -195,21 +195,21 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
             binding.capability_id,
             text(summaries[at]),
             text(parameters[at]),
-            text(at == 2
-                     ? "Reports actual waveform and locally measured controller output-stop facts. "
-                       "No wheel observation is inferred. "
-                       "Target, wheel distance and RPM remain unverified. Manual raised-wheel "
-                       "bench only; "
-                       "external watchdog/reset-disable are not verified."
+            text(at == 2 ? "Reports actual multi-segment waveform and locally measured controller "
+                           "output-stop facts. No wheel observation is inferred. "
+                           "Target, wheel distance and RPM remain unverified. Manual raised-wheel "
+                           "bench only; external watchdog/reset-disable are not verified."
                  : at == 3
                      ? "Confirms controller PWM disable and GPIO low readback (stop_confirmed) "
                        "and whether motor stays armed; does not measure shaft standstill or "
                        "driver power-off. Query motor.status for local controller state."
                      : "Configured wiring/supply are not electrical measurements. A plan does "
                        "not move motors."),
-            text(at == 1 || at == 2
-                     ? "{\"motor1_percent\":50,\"motor2_percent\":0,\"duration_ms\":5000}"
-                     : "{}"),
+            text(at == 1   ? "{\"motor1_percent\":50,\"motor2_percent\":0,\"duration_ms\":5000}"
+                 : at == 2 ? "{\"segments\":[{\"motor1_percent\":50,\"motor2_percent\":50,"
+                             "\"duration_ms\":1000},{\"motor1_percent\":-40,\"motor2_percent\":40,"
+                             "\"duration_ms\":500}]}"
+                           : "{}"),
             at == 2 ? 3U : 0U,
             0,
             at == 2 ? descriptions : nullptr};
@@ -256,8 +256,8 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
                                               version,
                                               version,
                                               text(motor_scene),
-                                              AYNI_FORM_PROCEDURE,
-                                              motor_procedure_us,
+                                              AYNI_FORM_SESSION,
+                                              motor_session_lease_us,
                                               motor_sample_age_us,
                                               uint32_t(mappings.size()),
                                               mappings.data()};

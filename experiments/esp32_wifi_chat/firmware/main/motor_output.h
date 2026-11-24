@@ -15,10 +15,16 @@ class MotorOutput {
     static bool pins_disabled();
     esp_err_t initialize();
     esp_err_t start(const MotorCommand &command);
+    // Seamless mid-session segment transition: reuses same-direction RMT channels without
+    // teardown and drives reversed/coast pins low break-before-make (ADR-0112).
+    esp_err_t transition(const MotorCommand &next);
+    // Polls current segment completion while keeping RMT channels warm for transition().
+    Poll poll_segment();
     Poll poll();
     esp_err_t stop();
     bool disabled() const; // Actual GPIO input/matrix/output readback, not shaft measurement.
     bool counts(std::array<int, 4> &out) const;
+    const std::array<uint32_t, 4> &expected_counts() const { return expected_; }
     esp_err_t last_error() const { return last_error_; }
     esp_err_t close(); // Only after output stop; releases partial initialization too.
 
@@ -36,12 +42,17 @@ class MotorOutput {
         rmt_encoder_handle_t encoder = nullptr;
         std::array<rmt_symbol_word_t, block_symbols> waveform{};
     };
+    static void fill_waveform(Output &output, int32_t percent);
+    esp_err_t detach_motor(size_t motor);
     esp_err_t prepare(size_t motor, int32_t percent);
+    esp_err_t apply_segment(const MotorCommand &command);
     State state_ = State::cold;
     esp_err_t last_error_ = ESP_OK;
     std::array<Counter, 4> counters_{};
     std::array<Output, 2> outputs_{};
     rmt_sync_manager_handle_t sync_ = nullptr;
-    std::array<uint32_t, 4> expected_{}; // Rising edges, set before any per-command GPIO work.
+    std::array<int32_t, 2> active_percent_{}; // Active signed percent per motor, 0 when coasting.
+    uint64_t coast_until_us_ = 0;             // Nonzero only during an all-zero coast segment.
+    std::array<uint32_t, 4> expected_{};      // Cumulative rising edges across started segments.
 };
 } // namespace wifichat

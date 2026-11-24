@@ -6,6 +6,7 @@
 #include "transport.h"
 #include <atomic>
 #include <ayni/calls.h>
+#include <ayni/control_session.h>
 #include <ayni/execution.h>
 #include <freertos/task.h>
 #include <optional>
@@ -49,9 +50,11 @@ class MotorExecution {
         ayni_attempt_ref_v1 attempt{};
         ayni_provider_completion_t *completion = nullptr;
         ayni_execution_permit_v1 permit{};
-        MotorCommand command{};
-        uint64_t call = 0;           // Core Call identity, used only for timing correlation.
-        uint64_t last_sample_us = 0; // Local capture time, telemetry only; zero before sample.
+        MotorTrajectory trajectory{};
+        uint32_t segment_index = 0;      // Active segment index in trajectory.
+        uint32_t segments_completed = 0; // Hardware-verified completed segments.
+        uint64_t call = 0;               // Core Call identity, used only for timing correlation.
+        uint64_t last_sample_us = 0;     // Local capture time, telemetry only; zero before sample.
         Phase phase = Phase::prepared;
         Effect effect = Effect::none;
         ayni_call_outcome_t outcome = AYNI_CALL_COMPLETED;
@@ -63,6 +66,7 @@ class MotorExecution {
         ayni_executor_completion_t *completion = nullptr;
         ayni_permit_epochs_v1 epochs{};
         uint64_t permit_id = 0;
+        uint64_t echoed_nonce = 0; // Fresh renewal nonce for AYNI_EXECUTOR_RENEW (ADR-0112).
     };
     struct SoftStopRequest {
         ayni_attempt_ref_v1 attempt{};
@@ -130,6 +134,9 @@ class MotorExecution {
     void *gate_memory_ = nullptr;
     size_t gate_bytes_ = 0;
     ayni_control_gate_t *gate_ = nullptr;
+    void *session_memory_ = nullptr;
+    size_t session_bytes_ = 0;
+    ayni_control_session_t *session_ = nullptr;
     ayni_permit_epochs_v1 epochs_{};
     uint64_t executor_boot_ = 0, current_permit_ = 0, refused_through_ = 0;
     uint64_t sequence_ = 0, terminal_notice_ = 0;

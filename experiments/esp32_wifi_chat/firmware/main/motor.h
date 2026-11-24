@@ -17,7 +17,8 @@ class Motor {
     static ayni_submit_result_t cancel(void *, ayni_attempt_ref_v1);
     Transport &transport_;
     MotorExecution execution_;
-    std::array<ayni_schema_node_v1, 4> plan_input_{}, run_input_{};
+    std::array<ayni_schema_node_v1, 4> plan_input_{};
+    std::array<ayni_schema_node_v1, 6> run_input_{};
     std::array<ayni_authority_projection_v1, 3> projections_{};
     ayni_call_resource_v1 resource_{};
     ayni_schema_node_v1 status_input_{}, result_{};

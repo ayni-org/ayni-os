@@ -9,6 +9,8 @@
 #include <ayni/bodies.h>
 #include <ayni/host_authority.h>
 #include <ayni/model_messages.hpp>
+#include <ayni/observations.h>
+#include <ayni/reflex.h>
 #include <ayni/resources.h>
 #include <ayni/scenes.h>
 #include <ayni/values.hpp>
@@ -38,12 +40,15 @@ constexpr uint64_t grant_count = sizeof(grant_capabilities) / sizeof(grant_capab
 // the built-in ToolLoop, device details from the public capability directory.
 constexpr char instructions[] =
     "你是Ayni，一个通用助手。根据用户的目标直接回答，或使用当前获准的能力完成请求。"
-    "在同一回复中使用默认 operation=\"invoke\"（或省略 operation）提交多个工具调用时，"
+    "调用 motor.run 时，请使用 segments 数组（1~8 段，每段包含 motor1_percent、motor2_percent、"
+    "duration_ms）编排运动；当用户要求连续多段运动（例如前进后转向、加速或中途停顿）且各段参数"
+    "已确定时，优先在单次 motor.run 的 segments 中一次性编排连续轨迹，以实现无缝换段，无需拆成"
+    "多次调用或插入 motor.stop（中途停顿可用 0/0 段表示）。"
+    "在同一回复中使用默认 operation=\"invoke\"（或省略 operation）提交多个不同工具调用时，"
     "设备会按提交顺序逐个执行完前一步再执行下一步，不会并发争抢电机；每一步仍会独立校验"
-    "参数、权限与当前状态。用户明确要求多个动作且每一步的参数和顺序都已确定时，在同一回复中"
-    "按顺序一次性提交这些 invoke 调用，不要拆成多轮；顺序动作不要使用 operation=\"start\"，"
-    "动作之间无需调用 motor.stop；需要立即停机时可调用 motor.stop（可恢复软停，停机后仍可继续"
-    "执行新动作；触屏红色急停按钮为硬件锁存急停，需重启恢复）。"
+    "参数、权限与当前状态。顺序动作不要使用 operation=\"start\"；"
+    "需要立即停机时可调用 motor.stop（可恢复软停，停机后仍可继续执行新动作；触屏红色急停按钮为"
+    "硬件锁存急停，需重启恢复）。"
     "后一步的选择或参数依赖前一步的观测结果时，只提交当前可以确定的步骤，收到结果后再决定其余步骤"
     "。";
 template <class T> T sized() {
@@ -363,8 +368,8 @@ ayni_status_t Chat::initialize(const ModelSelection &selection) {
     }
     bodies_.set_shared_call_results();
     transport_.attach_bodies(bodies_.store());
-    const uint32_t input_bytes =
-        std::max({model_input_bytes(destination_), screen_input_bytes(), Speaker::input_bytes()});
+    const uint32_t input_bytes = std::max({model_input_bytes(destination_), screen_input_bytes(),
+                                           Speaker::input_bytes(), motor_input_bytes_max});
     const uint32_t result_bytes =
         std::max({static_cast<uint32_t>(summary_bytes), static_cast<uint32_t>(summary_bytes),
                   Speaker::result_bytes});
@@ -461,6 +466,9 @@ ayni_status_t Chat::configure() {
         rc = check("motor check", configure_motor_check());
     }
     if (rc == AYNI_OK) {
+        rc = check("reflex", configure_reflexes());
+    }
+    if (rc == AYNI_OK) {
         auto speech = reply_voice_.strategy(bodies_.store());
         rc = check("reply voice strategy", ayni_register_strategy(kernel_, &speech));
         if (rc == AYNI_OK) {
@@ -514,6 +522,66 @@ ayni_status_t Chat::configure_motor_check() {
     };
     auto status = motor_check_.configure(owner);
     return status == AYNI_OK ? motor_check_.install(kernel_) : status;
+}
+// Registers the generic obstacle-distance observation source and a motor soft-stop reflex
+// gated by the bench Scene so future hardware sensors plug directly into ObservationSlots
+// (ADR-0112).
+ayni_status_t Chat::configure_reflexes() {
+    const ayni_observation_source_v1 obstacle{sizeof(obstacle),          obstacle_source_version,
+                                              text(obstacle_source),     AYNI_OBSERVATION_I64,
+                                              AYNI_OBSERVATION_MEASURED, text("mm"),
+                                              obstacle_validity_us};
+    auto rc = ayni_register_observation_source(kernel_, &obstacle);
+    if (rc != AYNI_OK) {
+        return rc;
+    }
+    const ayni_observation_condition_v1 cond{
+        text(obstacle_source), obstacle_source_version, 0,
+        obstacle_stop_min_mm,  obstacle_stop_max_mm,    obstacle_validity_us};
+    const ayni_reflex_rule_v1 rule{sizeof(rule),
+                                   1,
+                                   text(obstacle_reflex),
+                                   AYNI_REFLEX_SOFT_STOP_RESOURCE,
+                                   AYNI_REFLEX_TRIGGER_IN_RANGE,
+                                   AYNI_REFLEX_FLAG_ENABLED_BY_DEFAULT,
+                                   200,
+                                   obstacle_cooldown_us,
+                                   text(motor_scene),
+                                   motor_version,
+                                   1,
+                                   &cond,
+                                   text("motor.actuator"),
+                                   0,
+                                   {},
+                                   0,
+                                   0,
+                                   {}};
+    return ayni_register_reflex_rule(kernel_, &rule);
+}
+void Chat::drain_reflex_events() {
+    ayni_reflex_event_v1 event{};
+    event.struct_size = sizeof(event);
+    while (ayni_take_reflex_event(kernel_, &event) == AYNI_OK) {
+        transport_.diagnostics().record(
+            "wifi reflex seq=%llu rule=%.*s action=%lu status=%ld affected=%llu spawned=%llu "
+            "src=%.*s val=%lld dropped=%llu\n",
+            static_cast<unsigned long long>(event.sequence), int(event.rule_id.size),
+            event.rule_id.data, static_cast<unsigned long>(event.action), long(event.status),
+            static_cast<unsigned long long>(event.affected_call_id),
+            static_cast<unsigned long long>(event.spawned_call_id), int(event.trigger_source.size),
+            event.trigger_source.data, static_cast<long long>(event.trigger_value),
+            static_cast<unsigned long long>(event.dropped_before));
+        char note[160];
+        const auto len = std::snprintf(
+            note, sizeof(note), "reflex %.*s status=%ld src=%.*s val=%lld", int(event.rule_id.size),
+            event.rule_id.data, long(event.status), int(event.trigger_source.size),
+            event.trigger_source.data, static_cast<long long>(event.trigger_value));
+        if (len > 0 && size_t(len) < sizeof(note)) {
+            status(0, note);
+        }
+        event = {};
+        event.struct_size = sizeof(event);
+    }
 }
 // Two model capabilities on one Provider and one slot: tool-calling turns for the ToolLoop and
 // text-only summaries for its compaction. Both egress to this boot's fixed destination.
@@ -1563,6 +1631,7 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
             timing_.max_step_us = std::max(timing_.max_step_us, elapsed);
         }
         if (rc == AYNI_OK) {
+            drain_reflex_events();
             rc = ayni_get_kernel_info(kernel_, &info);
             if (rc == AYNI_OK && turn_) {
                 emit_tool_decisions(info.durable_seq, elapsed, report);

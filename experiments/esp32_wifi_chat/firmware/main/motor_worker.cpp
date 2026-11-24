@@ -97,29 +97,50 @@ ayni_submit_result_t MotorExecution::submit(const ayni_provider_request_v1 *requ
         request->execution_permit->operation_id != request->operation_id) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
-    ayni::ValueReader reader;
-    if (reader.read(request->value) != AYNI_OK) {
+    const auto &tree = request->value;
+    if (!tree.nodes || tree.node_count < 6 || tree.nodes[0].kind != AYNI_VALUE_OBJECT ||
+        tree.nodes[0].subtree_end != tree.node_count) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
-    int64_t values[3]{};
-    for (uint32_t at = 0; at < 3; ++at) {
-        const auto *field = reader.field(at + 1);
-        if (!field || field->kind != AYNI_VALUE_I64) {
-            return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    uint32_t list_idx = 0;
+    for (uint32_t at = 1; at < tree.nodes[0].subtree_end; at = tree.nodes[at].subtree_end) {
+        if (tree.nodes[at].field_id == 1 && tree.nodes[at].kind == AYNI_VALUE_LIST) {
+            list_idx = at;
+            break;
         }
-        values[at] = field->value.integer;
     }
-    if (values[0] < -motor_percent_max || values[0] > motor_percent_max ||
-        values[1] < -motor_percent_max || values[1] > motor_percent_max ||
-        values[2] < motor_duration_ms_min || values[2] > motor_plan_duration_ms_max) {
+    if (!list_idx) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     Message message{};
     message.kind = MessageKind::start;
     auto &start = message.start;
-    start.command = {int32_t(values[0]), int32_t(values[1]), uint32_t(values[2])};
-    if (!valid_motor_command(start.command) ||
-        (!start.command.first_percent && !start.command.second_percent)) {
+    for (uint32_t item = list_idx + 1; item < tree.nodes[list_idx].subtree_end;
+         item = tree.nodes[item].subtree_end) {
+        if (start.trajectory.count >= motor_segments_max ||
+            tree.nodes[item].kind != AYNI_VALUE_OBJECT) {
+            return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+        }
+        int64_t values[3]{};
+        uint32_t seen = 0;
+        for (uint32_t f = item + 1; f < tree.nodes[item].subtree_end;
+             f = tree.nodes[f].subtree_end) {
+            const auto &node = tree.nodes[f];
+            if (node.field_id < 1 || node.field_id > 3 || node.kind != AYNI_VALUE_I64) {
+                return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+            }
+            values[node.field_id - 1] = node.value.integer;
+            seen |= 1u << (node.field_id - 1);
+        }
+        if (seen != 0x7u || values[0] < -motor_percent_max || values[0] > motor_percent_max ||
+            values[1] < -motor_percent_max || values[1] > motor_percent_max ||
+            values[2] < motor_duration_ms_min || values[2] > motor_plan_duration_ms_max) {
+            return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+        }
+        start.trajectory.segments[start.trajectory.count++] = {
+            int32_t(values[0]), int32_t(values[1]), uint32_t(values[2])};
+    }
+    if (!valid_motor_trajectory(start.trajectory)) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     start.attempt = request->attempt;

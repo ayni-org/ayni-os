@@ -55,6 +55,9 @@ inline ayni_config_v1 chat_config(uint32_t call_input_bytes, uint32_t call_resul
     c.executor_capacity = 1;
     c.execution_binding_capacity = 1;
     c.resource_request_capacity = 2;
+    c.observation_source_capacity = 2;
+    c.reflex_capacity = 2;
+    c.reflex_event_capacity = 8;
     c.storage_write_interval_us = 1000;
     return c;
 }

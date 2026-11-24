@@ -56,6 +56,8 @@ class Chat {
     ayni_status_t configure_model();
     ayni_status_t configure_strategy();
     ayni_status_t configure_motor_check();
+    ayni_status_t configure_reflexes();
+    void drain_reflex_events();
     ayni_status_t command(ayni_intent_kind_t, const void *, uint64_t * = nullptr, uint32_t = 0,
                           ayni_reason_t * = nullptr);
     ayni_status_t receipt();

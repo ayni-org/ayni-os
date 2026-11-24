@@ -51,7 +51,8 @@ class MotorCheck {
     static constexpr uint32_t field_count = 3, version = 1;
     struct Profile {
         std::array<ayni_scope_field_v1, field_count> fields{};
-        std::array<ayni_value_node_v1, field_count + 1> input{};
+        // v3 motor.run 1-element segments list: root obj, list, item obj, 3 I64 fields.
+        std::array<ayni_value_node_v1, field_count + 3> input{};
         ayni::strategies::RuleStep step{};
     };
     enum class State { creating, waiting_task, running, cancelling, terminal };
