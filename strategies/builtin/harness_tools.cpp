@@ -212,7 +212,8 @@ ayni_status_t inspect(Workspace &workspace, const ayni_capability_detail_v1 &det
 // admits defaults, numbers and object closure before the ordinary Call boundary.
 ayni_status_t invoke(Workspace &workspace, const NativeArguments &args, uint32_t argument,
                      const ayni_capability_detail_v1 &detail, ayni_string_v1 step,
-                     ayni_policy_output_v1 &output, uint32_t mode) {
+                     ayni_policy_output_v1 &output, uint32_t mode,
+                     ayni_call_preemption_t preemption) {
     auto source_lease =
         workspace.make<std::array<ayni_argument_node_v1, AYNI_VALUE_NODE_COUNT_MAX>>();
     if (!source_lease) {
@@ -232,8 +233,9 @@ ayni_status_t invoke(Workspace &workspace, const NativeArguments &args, uint32_t
         ayni_string_v1 step;
         ayni_policy_output_v1 &output;
         uint32_t mode;
+        ayni_call_preemption_t preemption;
         Workspace &workspace;
-    } inspection{{source.data(), count}, detail, step, output, mode, workspace};
+    } inspection{{source.data(), count}, detail, step, output, mode, preemption, workspace};
     return ::ayni::detail::with_workspace(
         workspace, ayni_business_workspace_requirements, [&](const ayni_workspace_v1 *region) {
             return ayni_business_contract_read(
@@ -272,6 +274,10 @@ ayni_status_t invoke(Workspace &workspace, const NativeArguments &args, uint32_t
                     }
                     Call call;
                     call.mode = state.mode;
+                    call.preemption = (state.mode == AYNI_CALL_MODE_FOREGROUND &&
+                                       state.detail.info.form != AYNI_CALL_SUBSCRIPTION)
+                                          ? state.preemption
+                                          : AYNI_CALL_PREEMPT_NONE;
                     call.binding_id = state.detail.info.binding_id;
                     call.binding_version = state.detail.info.binding_version;
                     call.input = ayni_value_v1{nodes.data(), value.node_count};
@@ -378,7 +384,8 @@ ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &pro
             if (shell) {
                 args.positions[arguments_field] = 0;
             }
-            status = invoke(workspace, args, arguments_field, detail, step, output, mode);
+            status = invoke(workspace, args, arguments_field, detail, step, output, mode,
+                            config.tool_preemption);
             if (status == AYNI_OK) {
                 requested = true;
                 return AYNI_OK;

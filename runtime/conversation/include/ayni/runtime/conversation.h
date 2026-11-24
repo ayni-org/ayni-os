@@ -85,8 +85,10 @@ class Session {
     // Completion is ready() with a new last_round; the final answer crosses Core ACK durability.
     ayni_status_t begin(ayni_string_v1 user, uint64_t memory_id = 0);
     ayni_status_t forget(ayni_context_action_t action, uint64_t turn = 0);
-    // Owner-thread, nonblocking. Cancel waits for actual durable Core termination before
-    // discarding a draft. Publication already in flight completes and is never rolled back.
+    // Owner-thread, nonblocking. Durable/retaining modes wait for actual durable Core termination
+    // before discarding a saved draft; background+discard clears an unpersisted RAM draft once
+    // Core records termination without writing storage (ADR-0111). Publication already in flight
+    // completes and is never rolled back.
     ayni_status_t cancel();
     // Explicitly discard a retained terminal draft; never resumes/retries the old action.
     ayni_status_t abandon();
@@ -160,6 +162,7 @@ class Session {
     ayni_status_t turn(const ayni_context_info_v1 &, uint64_t durable);
     ayni_status_t cancel_turn(uint64_t durable);
     ayni_status_t discard();
+    bool volatile_discard() const;
     ayni_status_t unfinished();
     ayni_status_t settled(uint64_t durable) const;
     ayni_status_t collect_superseded(const strategies::ConversationRecord &);
@@ -193,7 +196,9 @@ class Session {
     enum class EndRequest { none, cancel, abandon };
     EndRequest end_request_ = EndRequest::none; // Owner intent, never Core lifecycle state.
     bool held_ = false;                         // Last poll's public Task hold observation.
-    std::optional<TurnResult> result_;          // Delivered once; history itself remains queryable.
+    // True iff the latest confirmed conversation_root file on storage holds a non-empty draft.
+    bool draft_persisted_ = false;
+    std::optional<TurnResult> result_; // Delivered once; history itself remains queryable.
 
     hosts::storage::FileValueResult answer_{}; // Published before completed_'s release store.
     std::atomic<bool> completed_{false}; // Worker->owner one-shot publication, not domain state.

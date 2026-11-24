@@ -1230,6 +1230,7 @@ ayni_status_t ToolLoop::configure(const ToolLoopConfig &config, const ayni_works
     int64_t local = 0;
     if ((config.tool_exposure != ToolExposure::discovery &&
          config.tool_exposure != ToolExposure::preloaded) ||
+        config.tool_preemption > AYNI_CALL_PREEMPT_SUPERSEDE ||
         (config.reply_encoding != model::ReplyEncoding::text &&
          config.reply_encoding != model::ReplyEncoding::framed) ||
         (config.summary_reply_encoding != model::ReplyEncoding::text &&

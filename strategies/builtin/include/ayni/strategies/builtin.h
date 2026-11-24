@@ -145,6 +145,8 @@ struct Call {
         input{}; // Explicit complete native input; excludes scalar/text templates.
     uint32_t mode =
         AYNI_CALL_MODE_FOREGROUND; // Explicit managed start; normal calls retain terminal waiting.
+    // Foreground preemption policy for held EPHEMERAL Calls (Since 0.58, ADR-0111).
+    ayni_call_preemption_t preemption = AYNI_CALL_PREEMPT_NONE;
 };
 // Stable name plus semantic version becomes name.vN, at most 32 bytes.
 struct RuleStep {
@@ -251,6 +253,8 @@ struct ToolLoopConfig {
     model::ReplyEncoding summary_reply_encoding = model::ReplyEncoding::text; // Summary encoding.
     model::Projection projection{}; // Actual wire context, including tools and continuation.
     ToolObserver tool_observer{};   // Optional metadata-only tool outcome observer.
+    // Preemption policy applied to foreground non-subscription tool Calls (Since 0.58, ADR-0111).
+    ayni_call_preemption_t tool_preemption = AYNI_CALL_PREEMPT_NONE;
 };
 class ToolLoop {
   public:
