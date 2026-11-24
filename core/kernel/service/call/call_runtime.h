@@ -183,6 +183,8 @@ class CallRuntime {
         std::optional<CollectionLease>
             collection{};       // Subscription lease outlives an uncertain ended borrow.
         bool ephemeral = false; // True iff this active slot owns a RAM-only Tier 0 call.
+        // Preemption policy for queued admission; NONE keeps ordinary FIFO (ADR-0111).
+        ayni_call_preemption_t preemption = AYNI_CALL_PREEMPT_NONE;
     };
     struct Slot {
         std::optional<Active> active; // Exact boot-local delivery/claim owner, absent when idle.
@@ -196,6 +198,8 @@ class CallRuntime {
         catalog::BindingLinks links; // Catalog resolution, not cached authority or availability.
         uint32_t input_size;         // Canonical bytes in staging_, bounded by limits_.input_bytes.
         uint32_t mode = AYNI_CALL_MODE_FOREGROUND; // Copied explicit Task attachment selection.
+        // Copied preemption policy for queued admission; NONE keeps FIFO (ADR-0111).
+        ayni_call_preemption_t preemption = AYNI_CALL_PREEMPT_NONE;
         work::ModelContext model_context{}; // Captured visibility, never execution authority.
         bool redecide = false; // Final optional admission expired: discard this decision only.
         work::AuthorityReference
@@ -310,10 +314,10 @@ class CallRuntime {
                                                ayni_bytes_v1 domain, const ayni_value_v1 &value,
                                                const catalog::CallContract &contract,
                                                const ayni_business_contract_v1 &proof) const;
-    resources::ResourceRequest resource_request(uint64_t call_id, uint64_t owner,
-                                                const catalog::BindingLinks &links,
-                                                const catalog::CallContract &contract,
-                                                const catalog::WorkProfile &profile) const;
+    resources::ResourceRequest
+    resource_request(uint64_t call_id, uint64_t owner, const catalog::BindingLinks &links,
+                     const catalog::CallContract &contract, const catalog::WorkProfile &profile,
+                     ayni_call_preemption_t preemption = AYNI_CALL_PREEMPT_NONE) const;
     // Fencing never drops pending receipts. Explicit unwritable shutdown may
     // discard volatile outcomes without reporting a committed business success.
     Advance drain_transport(Mode mode);
@@ -418,7 +422,16 @@ class CallRuntime {
     Advance dispatch(uint32_t index, uint32_t task_index, uint64_t now_us, uint64_t durable_seq);
     Advance expire_wait(uint32_t index, uint32_t task_index, resources::WaitAction action,
                         uint64_t now_us);
-    Advance cancel_local(uint32_t index, uint32_t task_index);
+    Advance cancel_local(uint32_t index, uint32_t task_index,
+                         ayni_reason_t reason = AYNI_REASON_NONE);
+    // Shared all-or-none victim check for preemption_ready() and trigger_preemption().
+    bool collect_preempt_victims(uint32_t waiter_index, uint64_t now_us, uint64_t durable_seq,
+                                 uint32_t *out_victims, uint32_t max_victims,
+                                 uint32_t &out_count) const;
+    // True when a queued preempting Call has eligible uncancelled EPHEMERAL conflicts (ADR-0111).
+    bool preemption_ready(uint32_t waiter_index, uint64_t now_us, uint64_t durable_seq) const;
+    // All-or-none soft preemption of eligible EPHEMERAL holders blocking waiter_index (ADR-0111).
+    Advance trigger_preemption(uint32_t waiter_index, uint64_t now_us, uint64_t durable_seq);
     void release(uint32_t index, uint64_t now_us); // Exact claim/waiter; delivery already drained.
     // Hands a body Core no longer names to the host body store, when one is installed.
     void release_body(const ayni_body_ref_v1 &ref) const;

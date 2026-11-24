@@ -5,12 +5,15 @@
 #include "foundation/bounded_array.h"
 
 #include <array>
+#include <ayni/calls.h>
 #include <cstddef>
 #include <cstdint>
 
 namespace ayni::resources {
 
-// System stop bypasses this queue. Priorities never preempt existing holders.
+// System stop bypasses this queue. Ordinary priorities never preempt existing
+// holders; explicit preemption policies query conflicts and request soft stop
+// through CallRuntime/ExecutionControl (ADR-0111).
 enum class Priority : uint32_t { foreground, normal, background, count };
 // Outcome for the work owner when a queued request reaches its deadline.
 enum class WaitAction : uint32_t { pause, skip, wait };
@@ -35,6 +38,15 @@ struct ResourceRequest {
     uint64_t wait_us;     // Relative monotonic duration; 0 may expire immediately.
     uint32_t count;       // 0..resource_group_max; zero-resource calls still obey FIFO.
     std::array<ResourceUnits, resource_group_max> resources; // Only [0,count) is read.
+    // Preemption policy for this queued request; NONE keeps strict FIFO (ADR-0111).
+    ayni_call_preemption_t preemption = AYNI_CALL_PREEMPT_NONE;
+};
+
+// Snapshot of one held request blocking a waiting preemptor; never exposes queue slots.
+struct HeldConflict {
+    uint64_t call_id;  // Held logical Call occupying or conflicting with the waiter's group.
+    Priority priority; // Held Call's admitted priority.
+    uint64_t ticket;   // Held Call's monotonic enqueue ticket; compares relative age.
 };
 
 // Selection is an owner-thread snapshot; commit must reselect before acquire.
@@ -99,6 +111,13 @@ class ResourceAdmission {
     // is responsible (FIFO/available). Returns false for absent/held calls.
     bool waiting(uint64_t call_id, uint64_t now_us, WaitReason &reason, uint32_t &resource_index,
                  uint64_t &waited_us) const;
+    // Read-only conflict inspection for a waiting Call. Writes up to max_out held
+    // entries that block waiter_call_id via capacity shortage or conflict-domain
+    // overlap, and returns total matching holders. Sets out_blocked_by_unavailable
+    // when any target resource or conflict partner is offline, faulted or quarantined.
+    uint32_t conflicting_holders(uint64_t waiter_call_id, HeldConflict *out, uint32_t max_out,
+                                 bool &out_blocked_by_unavailable, uint64_t &out_waiter_ticket,
+                                 Priority &out_waiter_priority) const;
     // Earliest pending finite wait deadline; no_deadline if none.
     uint64_t next_deadline_us() const;
     // Boot-local peak wait among requests acquired or removed.
@@ -139,6 +158,10 @@ class ResourceAdmission {
     uint32_t expired(uint64_t now_us) const;
     // Fair work-conserving selection among eligible heads of one priority.
     uint32_t eligible(Priority priority) const;
+    // Shared round-robin scan; preempt_only restricts candidates to preempting waiters.
+    uint32_t eligible_scan(Priority priority, bool preempt_only) const;
+    // True when held entry blocks waiter via capacity shortage or conflict-domain overlap.
+    bool blocks_waiter(const Entry &waiter, const Entry &held) const;
     // Capture an immutable candidate without exposing its storage slot.
     AdmissionChoice choice(uint32_t index, uint64_t now_us) const;
 

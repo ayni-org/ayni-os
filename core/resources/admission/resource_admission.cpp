@@ -72,7 +72,7 @@ ayni_resource_info_v1 ResourceAdmission::info(uint32_t index) const {
 // group. Repeated indices are rejected, so accounting cannot hide an overclaim.
 ayni_status_t ResourceAdmission::validate(const ResourceRequest &request) const {
     if (request.call_id == 0U || request.instance_id == 0U || request.priority >= Priority::count ||
-        request.count > resource_group_max ||
+        request.count > resource_group_max || request.preemption > AYNI_CALL_PREEMPT_SUPERSEDE ||
         (request.on_wait != WaitAction::pause && request.on_wait != WaitAction::skip &&
          request.on_wait != WaitAction::wait) ||
         ((request.on_wait == WaitAction::wait) != (request.wait_us == no_deadline))) {
@@ -194,14 +194,17 @@ uint32_t ResourceAdmission::expired(uint64_t now_us) const {
 
 // One round-robin cursor per priority. An unavailable Agent head may be skipped
 // without letting that same Agent's later request overtake it (ADR-0042).
-uint32_t ResourceAdmission::eligible(Priority priority) const {
+// Eligible preempting waiters are chosen ahead of ordinary waiters at the same
+// priority so a newly freed preempted resource hands off deterministically (ADR-0111).
+uint32_t ResourceAdmission::eligible_scan(Priority priority, bool preempt_only) const {
     uint32_t after_cursor = no_index;
     uint32_t wrap = no_index;
     const auto last = last_instance_[static_cast<std::size_t>(priority)];
     for (uint32_t index = 0; index < requests_.size(); ++index) {
         const auto &entry = requests_[index];
         uint32_t resource = no_index;
-        if (entry.phase != Phase::waiting || entry.request.priority != priority || !head(index) ||
+        if (entry.phase != Phase::waiting || entry.request.priority != priority ||
+            (preempt_only && entry.request.preemption == AYNI_CALL_PREEMPT_NONE) || !head(index) ||
             availability(entry, resource) != WaitReason::available) {
             continue;
         }
@@ -215,6 +218,11 @@ uint32_t ResourceAdmission::eligible(Priority priority) const {
         }
     }
     return after_cursor != no_index ? after_cursor : wrap;
+}
+
+uint32_t ResourceAdmission::eligible(Priority priority) const {
+    const auto preemptor = eligible_scan(priority, true);
+    return preemptor != no_index ? preemptor : eligible_scan(priority, false);
 }
 
 AdmissionChoice ResourceAdmission::choice(uint32_t index, uint64_t now_us) const {
@@ -353,6 +361,69 @@ bool ResourceAdmission::waiting(uint64_t call_id, uint64_t now_us, WaitReason &r
     reason = head(index) ? availability(requests_[index], resource_index) : WaitReason::fifo;
     waited_us = elapsed(now_us, requests_[index].queued_us);
     return true;
+}
+
+// True when held occupies a resource currently short of capacity for waiter or
+// occupies a resource in waiter's conflict domain (ADR-0111).
+bool ResourceAdmission::blocks_waiter(const Entry &waiter, const Entry &held) const {
+    for (uint32_t w = 0; w < waiter.request.count; ++w) {
+        const auto &need = waiter.request.resources[w];
+        const bool short_capacity =
+            need.units > registry_.at(need.index).capacity - states_[need.index].used;
+        for (uint32_t h = 0; h < held.request.count; ++h) {
+            const uint32_t held_index = held.request.resources[h].index;
+            if ((short_capacity && held_index == need.index) ||
+                registry_.conflict(need.index, held_index)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Inspects every held request currently blocking waiter_call_id without mutating
+// queue state. Offline, faulted or quarantined targets fail closed so preemption
+// never fires while an actuator stop remains unconfirmed (ADR-0111).
+uint32_t ResourceAdmission::conflicting_holders(uint64_t waiter_call_id, HeldConflict *out,
+                                                uint32_t max_out, bool &out_blocked_by_unavailable,
+                                                uint64_t &out_waiter_ticket,
+                                                Priority &out_waiter_priority) const {
+    out_blocked_by_unavailable = false;
+    out_waiter_ticket = 0;
+    out_waiter_priority = Priority::background;
+    uint32_t waiter_index = 0;
+    if (!find(waiter_call_id, waiter_index) || requests_[waiter_index].phase != Phase::waiting) {
+        return 0;
+    }
+    const auto &waiter = requests_[waiter_index];
+    out_waiter_ticket = waiter.ticket;
+    out_waiter_priority = waiter.request.priority;
+    for (uint32_t at = 0; at < waiter.request.count; ++at) {
+        const uint32_t res = waiter.request.resources[at].index;
+        const auto &state = states_[res];
+        if (state.health != AYNI_RESOURCE_ONLINE || state.quarantine.call_id != 0U) {
+            out_blocked_by_unavailable = true;
+            return 0;
+        }
+        for (uint32_t other = 0; other < registry_.size(); ++other) {
+            if (registry_.conflict(res, other) && states_[other].quarantine.call_id != 0U) {
+                out_blocked_by_unavailable = true;
+                return 0;
+            }
+        }
+    }
+    uint32_t total = 0;
+    for (uint32_t at = 0; at < requests_.size(); ++at) {
+        const auto &candidate = requests_[at];
+        if (candidate.phase != Phase::held || !blocks_waiter(waiter, candidate)) {
+            continue;
+        }
+        if (out != nullptr && total < max_out) {
+            out[total] = {candidate.request.call_id, candidate.request.priority, candidate.ticket};
+        }
+        ++total;
+    }
+    return total;
 }
 
 uint64_t ResourceAdmission::next_deadline_us() const {

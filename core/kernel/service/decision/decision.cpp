@@ -357,13 +357,27 @@ publish_volatile_decision(WorkModel &model, DecisionBuffer &decisions, uint32_t 
                           MemoryDecision &memory, uint64_t &accepted_call) {
     const auto &task = model.tasks.at(index);
     const auto &goal = model.goals.at(task.goal_index);
-    const bool volatile_eligible =
-        goal.work_profile.cancel_on_reboot() && memory.dependencies().count == 0U &&
-        model.provenance.find(work::ProvenanceKind::task, task.slot, task.task_id) == nullptr;
-    if (!volatile_eligible) {
+    if (!goal.work_profile.cancel_on_reboot()) {
         return std::nullopt;
     }
-    if (verdict.kind == Verdict::Kind::progress && work::TaskTable::can_volatile_checkpoint(task)) {
+    const auto *goal_prov =
+        model.provenance.find(work::ProvenanceKind::goal, task.goal_index, task.goal_id);
+    const auto *task_prov =
+        model.provenance.find(work::ProvenanceKind::task, task.slot, task.task_id);
+    // Goal-owned provenance (e.g. AYNI_GOAL_CONTEXT_AGENT) is already durable on the Goal and
+    // checked by task_invalid(); keep pure-RAM volatile steps/EPHEMERAL calls off WAL unless the
+    // Task adds new Memory reads or already owns durable provenance/checkpoint state
+    // (ADR-0110/0111).
+    const bool goal_only_deps =
+        goal_prov == nullptr
+            ? memory.dependencies().count == 0U
+            : knowledge::same_dependencies(memory.dependencies(), goal_prov->dependencies);
+    const bool pure_ram =
+        task_prov == nullptr && goal_only_deps && work::TaskTable::can_volatile_checkpoint(task);
+    if (verdict.kind == Verdict::Kind::progress) {
+        if (!pure_ram) {
+            return std::nullopt;
+        }
         record_volatile(model.tasks, index, decisions, output.intent_count, strategy,
                         output.checkpoint_size);
         model.tasks.volatile_progress(index);
@@ -372,22 +386,29 @@ publish_volatile_decision(WorkModel &model, DecisionBuffer &decisions, uint32_t 
     if (verdict.kind != Verdict::Kind::call || !calls.proposal_ephemeral()) {
         return std::nullopt;
     }
-    if (work::TaskTable::can_volatile_checkpoint(task)) {
+    if (pure_ram) {
         model.tasks.set_volatile_checkpoint(index, strategy.id, strategy.version,
                                             decisions.checkpoint(output.checkpoint_size));
     } else {
-        // Task already has a durable checkpoint (mixed Tier 0 + Tier 2): persist only
-        // changed checkpoint bytes so compaction snapshots always match checkpoint_seq.
+        // Task carries durable provenance/checkpoint state or read new Memories beyond Goal
+        // provenance: persist checkpoint + provenance in one WAL batch when changed, then accept
+        // the EPHEMERAL call in RAM (CallTable::insert forbids EPHEMERAL calls).
         const auto current = model.tasks.checkpoint(index);
         const auto next = decisions.checkpoint(output.checkpoint_size);
-        const bool unchanged =
+        const bool checkpoint_unchanged =
+            !work::TaskTable::can_volatile_checkpoint(task) &&
             task.checkpoint_writer_version == strategy.version &&
             task.checkpoint_writer_id.equals({strategy.id.data(), strategy.id.size()}) &&
             current.size == next.size &&
             (next.size == 0U || std::memcmp(current.data, next.data, next.size) == 0);
-        if (!unchanged) {
+        const bool provenance_unchanged =
+            task_prov == nullptr
+                ? goal_only_deps
+                : knowledge::same_dependencies(memory.dependencies(), task_prov->dependencies);
+        if (!checkpoint_unchanged || !provenance_unchanged) {
             const auto stamp = model.transitions.next();
             model.tasks.fold_volatile_model_calls(index);
+            memory.publish(stamp);
             model.tasks.set_checkpoint(index, strategy.id, strategy.version, next, stamp);
             model.tasks.progress(index, stamp);
         }

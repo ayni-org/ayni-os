@@ -534,7 +534,11 @@ CallRuntime::CallReady CallRuntime::call_readiness(uint32_t at, uint64_t now_us,
         return CallReady::idle;
     }
     if (active->stage == Stage::queued) {
-        return CallReady::queued;
+        return active->preemption != AYNI_CALL_PREEMPT_NONE &&
+                       (!control_.allowed(at, now_us, durable_seq) ||
+                        preemption_ready(at, now_us, durable_seq))
+                   ? CallReady::other
+                   : CallReady::queued;
     }
     if (active->stage == Stage::prepared && mailbox_.in_flight() != limits_.capacity) {
         return CallReady::prepared;

@@ -25,7 +25,7 @@ ayni_status_t request_header(const ayni_call_request_v1 &request) {
     if (shape != AYNI_OK) {
         return shape;
     }
-    if (request.reserved != 0U || request.mode_reserved != 0 ||
+    if (request.reserved != 0U || request.preemption > AYNI_CALL_PREEMPT_SUPERSEDE ||
         request.mode > AYNI_CALL_MODE_MANAGED ||
         (request.kind != AYNI_POLICY_REQUEST_CALL && request.kind != AYNI_POLICY_REQUEST_MODEL &&
          request.kind != AYNI_POLICY_CLOSE_SUBSCRIPTION &&
@@ -135,6 +135,7 @@ ayni_status_t CallRuntime::stage_business(const ayni_call_request_v1 &request, P
         return form;
     }
     proposal.mode = request.mode;
+    proposal.preemption = request.preemption;
     if ((request.arguments.struct_size != 0U || request.arguments.field_count != 0U ||
          request.arguments.fields != nullptr || request.text.size != 0U)) {
         return AYNI_INVALID_ARGUMENT;
@@ -185,8 +186,12 @@ ayni_status_t CallRuntime::check_call_form(uint64_t task_id, const ayni_call_req
                                            const catalog::CallContract &contract) const {
     if (request.mode == AYNI_CALL_MODE_MANAGED &&
         (contract.category != catalog::CallClass::tool ||
-         contract.form == catalog::CallForm::unary || contract.is_ephemeral())) {
+         contract.form == catalog::CallForm::unary || contract.is_ephemeral() ||
+         request.preemption != AYNI_CALL_PREEMPT_NONE)) {
         return AYNI_INVALID_ARGUMENT;
+    }
+    if (request.preemption != AYNI_CALL_PREEMPT_NONE && contract.subscription.has_value()) {
+        return AYNI_INVALID_ARGUMENT; // Subscriptions cannot preempt held actions (ADR-0111).
     }
     if (contract.category == catalog::CallClass::tool &&
         contract.form == catalog::CallForm::action && action_occupied(task_id)) {
@@ -212,8 +217,8 @@ void CallRuntime::stage_intent(const Proposal &proposal) {
 // Close and wait refer to an existing Task-owned step, never a new route.
 // Capturing the frontier within decide cannot race with owner sample application.
 ayni_status_t CallRuntime::stage_subscription_target(const ayni_call_request_v1 &request) {
-    if (request.mode != AYNI_CALL_MODE_FOREGROUND || request.binding_version != 0 ||
-        request.binding_id.size != 0 || request.text.size != 0 ||
+    if (request.mode != AYNI_CALL_MODE_FOREGROUND || request.preemption != AYNI_CALL_PREEMPT_NONE ||
+        request.binding_version != 0 || request.binding_id.size != 0 || request.text.size != 0 ||
         request.arguments.struct_size != 0 || request.arguments.field_count != 0 ||
         request.arguments.fields != nullptr || request.value.node_count != 0U ||
         request.value.nodes != nullptr) {
@@ -434,17 +439,19 @@ CallRuntime::check_business_proof(uint32_t task_index, const catalog::Binding &b
 
 // Ordinary resource groups use the same round-robin queue even with zero
 // resources. Sort resolved indices, keeping units attached to their resource.
-resources::ResourceRequest
-CallRuntime::resource_request(uint64_t call_id, uint64_t owner, const catalog::BindingLinks &links,
-                              const catalog::CallContract &contract,
-                              const catalog::WorkProfile &profile) const {
+resources::ResourceRequest CallRuntime::resource_request(uint64_t call_id, uint64_t owner,
+                                                         const catalog::BindingLinks &links,
+                                                         const catalog::CallContract &contract,
+                                                         const catalog::WorkProfile &profile,
+                                                         ayni_call_preemption_t preemption) const {
     resources::ResourceRequest request{call_id,
                                        owner,
                                        resources::Priority::normal,
                                        resources::WaitAction::pause,
                                        AYNI_RESOURCE_WAIT_DEFAULT_US,
                                        contract.resource_count,
-                                       {}};
+                                       {},
+                                       preemption};
     switch (profile.kind) {
     case AYNI_WORK_FOREGROUND:
         request.priority = resources::Priority::foreground;
@@ -569,6 +576,10 @@ CallRuntime::check_call_capacity(uint32_t task_index, const Proposal &proposal,
         if (!work::TaskTable::can_begin_volatile_call(task)) {
             return {AYNI_INVALID_STATE, AYNI_REASON_POLICY_INTENT};
         }
+        // Reserve one revision in case durable provenance/checkpoint must commit before RAM accept.
+        if (!work_.tasks.has_revisions(task, 1U)) {
+            return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_REVISION_EXHAUSTED};
+        }
     } else {
         const bool detaches =
             proposal.mode == AYNI_CALL_MODE_MANAGED || contract.subscription.has_value();
@@ -638,16 +649,18 @@ bool CallRuntime::accept(uint32_t task_index, foundation::TransitionStamp stamp,
     if (work_.calls.insert(
             identity, contract, catalogs_.capabilities.domain_view(proposal.links.capability),
             {staging_, proposal.input_size}, {work_.ids.boot_epoch(), stamp}, index) != AYNI_OK ||
-        resources_.enqueue(resource_request(identity.call_id, task.owner_instance_id,
-                                            proposal.links, contract,
-                                            work_.goals.at(task.goal_index).work_profile),
-                           now_us) != AYNI_OK) {
+        resources_.enqueue(
+            resource_request(identity.call_id, task.owner_instance_id, proposal.links, contract,
+                             work_.goals.at(task.goal_index).work_profile, proposal.preemption),
+            now_us) != AYNI_OK) {
         return false;
     }
     if (proposal.execution) {
         work_.calls.attach_execution(index, *proposal.execution);
     }
-    slots_[index].active = Active{identity.call_id, Stage::queued, {}, std::nullopt};
+    slots_[index].active =
+        Active{identity.call_id,   Stage::queued, {}, std::nullopt, std::nullopt, false,
+               proposal.preemption};
     if (identity.mode == AYNI_CALL_MODE_MANAGED) {
         // The step records acceptance, never business success. The original Call owns its result.
         if (!work_.tasks.add_step(task_index, view(identity.step_key), stamp)) {
@@ -699,17 +712,17 @@ bool CallRuntime::accept_ephemeral(uint32_t task_index, uint64_t now_us, uint64_
     if (work_.calls.insert_ephemeral(
             identity, contract, catalogs_.capabilities.domain_view(proposal.links.capability),
             {staging_, proposal.input_size}, work_.ids.boot_epoch(), index) != AYNI_OK ||
-        resources_.enqueue(resource_request(identity.call_id, task.owner_instance_id,
-                                            proposal.links, contract,
-                                            work_.goals.at(task.goal_index).work_profile),
-                           now_us) != AYNI_OK) {
+        resources_.enqueue(
+            resource_request(identity.call_id, task.owner_instance_id, proposal.links, contract,
+                             work_.goals.at(task.goal_index).work_profile, proposal.preemption),
+            now_us) != AYNI_OK) {
         return false;
     }
     if (proposal.execution) {
         work_.calls.attach_execution(index, *proposal.execution);
     }
-    slots_[index].active =
-        Active{identity.call_id, Stage::queued, {}, std::nullopt, std::nullopt, true};
+    slots_[index].active = Active{
+        identity.call_id, Stage::queued, {}, std::nullopt, std::nullopt, true, proposal.preemption};
     work_.tasks.begin_volatile_call(task_index, identity.call_id,
                                     contract.category == catalog::CallClass::model
                                         ? work::TaskTable::CallKind::model

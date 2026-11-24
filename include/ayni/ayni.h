@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 57u
+#define AYNI_ABI_MINOR 58u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -1057,6 +1057,8 @@ typedef struct ayni_error_v1 {
 #define AYNI_REASON_PAUSE_GROUP ((ayni_reason_t)81)
 /* CANCELLED: unfinished CANCEL_ON_REBOOT work cancelled on new boot epoch. Since 0.57. */
 #define AYNI_REASON_BOOT_RESET ((ayni_reason_t)82)
+/* CANCELLED: in-flight EPHEMERAL Call superseded by an authorized preempting Call. Since 0.58. */
+#define AYNI_REASON_PREEMPTED ((ayni_reason_t)83)
 
 /* Principals: who a session acts for (C-AUTH-010). */
 typedef uint32_t ayni_principal_kind_t;

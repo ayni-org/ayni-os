@@ -107,6 +107,16 @@ typedef uint32_t ayni_call_durability_t;
 #define AYNI_CALL_MODE_FOREGROUND 0u
 /* Explicit Task-owned action/subscription, permitting further decisions. Since 0.51. */
 #define AYNI_CALL_MODE_MANAGED 1u
+/* Explicit resource preemption policy for FOREGROUND Calls (ADR-0111). Since 0.58. */
+typedef uint32_t ayni_call_preemption_t;
+/* Ordinary FIFO admission; never preempts existing resource holders. Since 0.58. */
+#define AYNI_CALL_PREEMPT_NONE ((ayni_call_preemption_t)0)
+/* May preempt strictly lower-priority held EPHEMERAL cancellable Calls on conflicting resources
+ * after full authorization/schema preflight. Since 0.58. */
+#define AYNI_CALL_PREEMPT_LOWER ((ayni_call_preemption_t)1)
+/* May preempt equal- or lower-priority older held EPHEMERAL cancellable Calls on conflicting
+ * resources after full authorization/schema preflight. Since 0.58. */
+#define AYNI_CALL_PREEMPT_SUPERSEDE ((ayni_call_preemption_t)2)
 /* Since 0.31. Explicit trusted Binding selection and concrete typed arguments.
  * All views are copied by output.request_call before it returns. The model may
  * propose values, but cannot register a new Binding or endpoint. */
@@ -122,7 +132,8 @@ typedef struct ayni_call_request_v1 {
     ayni_value_v1 value; /* Since 0.48. VALUE input; legacy arguments/text must be empty. */
     uint32_t
         mode; /* Since 0.51. FOREGROUND by default; MANAGED only for TOOL action/subscription. */
-    uint32_t mode_reserved; /* Since 0.51. Must be zero. */
+    ayni_call_preemption_t
+        preemption; /* Since 0.58. Replaces mode_reserved (was zero); NONE, LOWER or SUPERSEDE. */
 } ayni_call_request_v1;
 
 /* Native typed business input. Since 0.48. */

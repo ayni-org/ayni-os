@@ -436,9 +436,14 @@ void CallTable::set_terminal(Entry &entry, const CallResult &result, ActionStamp
     }
 }
 
-ayni_status_t CallTable::cancel_before_dispatch(uint32_t index, ActionStamp stamp) {
+ayni_status_t CallTable::cancel_before_dispatch(uint32_t index, ActionStamp stamp,
+                                                ayni_reason_t reason) {
+    const auto &state = slots_[index].entry->state;
+    if (reason != AYNI_REASON_NONE && !(reason == AYNI_REASON_PREEMPTED && state.ephemeral)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
     return end_before_dispatch(
-        index, {AYNI_CALL_CANCELLED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::none, {}}, stamp);
+        index, {AYNI_CALL_CANCELLED, AYNI_OK, reason, ActionEffect::none, {}}, stamp);
 }
 
 ayni_status_t CallTable::skip_before_dispatch(uint32_t index, ActionStamp stamp) {
@@ -496,8 +501,11 @@ ayni_status_t CallTable::rejected_not_retained(uint32_t index, ActionStamp stamp
 
 ayni_status_t CallTable::request_cancel(uint32_t index, CallCancelCause cause, ActionStamp stamp) {
     auto &entry = *slots_[index].entry;
-    if (cause != CallCancelCause::user && cause != CallCancelCause::authority &&
-        cause != CallCancelCause::deadline && cause != CallCancelCause::shutdown) {
+    const bool valid_cause =
+        cause == CallCancelCause::user || cause == CallCancelCause::authority ||
+        cause == CallCancelCause::deadline || cause == CallCancelCause::shutdown ||
+        (cause == CallCancelCause::preempted && entry.state.ephemeral);
+    if (!valid_cause) {
         return AYNI_INVALID_ARGUMENT;
     }
     if (!pending(entry) || !advances(entry, stamp) ||
@@ -550,6 +558,12 @@ ayni_status_t CallTable::finish(ayni::foundation::Workspace &workspace, uint32_t
         return checked;
     }
     auto result = usable_result(input, dependencies);
+    // Core itself tags preempted EPHEMERAL cancellations after Provider evidence
+    // validation passes; Providers cannot forge a cancel reason (ADR-0111).
+    if (entry.state.ephemeral && entry.state.cancel_cause == CallCancelCause::preempted &&
+        result.outcome == AYNI_CALL_CANCELLED) {
+        result.reason = AYNI_REASON_PREEMPTED;
+    }
     if (entry.state.content_erased) {
         result.text = {};
         result.kind = CallResultKind::text;

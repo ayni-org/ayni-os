@@ -157,13 +157,14 @@ CallRuntime::Advance CallRuntime::expire_wait(uint32_t index, uint32_t task_inde
     return Advance::applied;
 }
 
-CallRuntime::Advance CallRuntime::cancel_local(uint32_t index, uint32_t task_index) {
+CallRuntime::Advance CallRuntime::cancel_local(uint32_t index, uint32_t task_index,
+                                               ayni_reason_t reason) {
     auto &active = slots_[index].active;
     if (active && active->delivery && !mailbox_.withdraw(active->delivery->reservation)) {
         return Advance::internal; // No submit has occurred; a receipt here violates ownership.
     }
     if (work_.calls.state(index).ephemeral) {
-        if (work_.calls.cancel_before_dispatch(index, {work_.ids.boot_epoch(), {0, 0}}) !=
+        if (work_.calls.cancel_before_dispatch(index, {work_.ids.boot_epoch(), {0, 0}}, reason) !=
             AYNI_OK) {
             return Advance::internal;
         }
@@ -172,11 +173,113 @@ CallRuntime::Advance CallRuntime::cancel_local(uint32_t index, uint32_t task_ind
         return Advance::applied;
     }
     const auto stamp = work_.transitions.next();
-    if (work_.calls.cancel_before_dispatch(index, {work_.ids.boot_epoch(), stamp}) != AYNI_OK ||
+    if (work_.calls.cancel_before_dispatch(index, {work_.ids.boot_epoch(), stamp}, reason) !=
+            AYNI_OK ||
         !work::end_task_call(work_.calls, work_.tasks, index, task_index, stamp)) {
         return Advance::internal;
     }
     release(index, host_.monotonic_now_us(host_.ctx));
+    return Advance::applied;
+}
+
+// Evaluates all-or-none preemption eligibility for a queued preempting Call (ADR-0111).
+// Returns true iff execution preflight holds, every blocking holder is an eligible EPHEMERAL
+// cancellable Call, and at least one of them has not yet been signalled to stop.
+bool CallRuntime::collect_preempt_victims(uint32_t waiter_index, uint64_t now_us,
+                                          uint64_t durable_seq, uint32_t *out_victims,
+                                          uint32_t max_victims, uint32_t &out_count) const {
+    out_count = 0;
+    const auto &active = slots_[waiter_index].active;
+    if (!active || active->stage != Stage::queued || active->preemption == AYNI_CALL_PREEMPT_NONE ||
+        !control_.allowed(waiter_index, now_us, durable_seq)) {
+        return false;
+    }
+    std::array<resources::HeldConflict, AYNI_RESOURCE_GROUP_COUNT_MAX> conflicts{};
+    bool unavailable = false;
+    uint64_t waiter_ticket = 0;
+    auto waiter_priority = resources::Priority::background;
+    const uint32_t total = resources_.conflicting_holders(
+        active->call_id, conflicts.data(), static_cast<uint32_t>(conflicts.size()), unavailable,
+        waiter_ticket, waiter_priority);
+    if (unavailable || total == 0U || total > conflicts.size()) {
+        return false; // Quarantined/offline/faulted or overflow fails closed without preemption.
+    }
+    for (uint32_t at = 0; at < total; ++at) {
+        const auto &holder = conflicts[at];
+        // Priority enum orders foreground < normal < background; strictly greater means lower.
+        const bool priority_ok =
+            active->preemption == AYNI_CALL_PREEMPT_LOWER
+                ? holder.priority > waiter_priority
+                : (holder.priority >= waiter_priority && holder.ticket < waiter_ticket);
+        uint32_t victim_index = 0;
+        uint32_t victim_task = 0;
+        if (!priority_ok || !work_.calls.find(holder.call_id, victim_index) ||
+            !slots_[victim_index].active ||
+            !work_.tasks.find(work_.calls.identity(victim_index).task_id, victim_task)) {
+            return false;
+        }
+        const auto &victim_state = work_.calls.state(victim_index);
+        const auto &victim_contract = work_.calls.contract(victim_index);
+        if (!victim_state.ephemeral || victim_state.outcome != 0U ||
+            victim_contract.cancel == catalog::CancelMode::none) {
+            return false; // Never preempt Tier 2 DURABLE or non-cancellable holders (ADR-0111).
+        }
+        if (victim_state.cancel_cause == work::CallCancelCause::none) {
+            if (out_victims != nullptr && out_count < max_victims) {
+                out_victims[out_count] = victim_index;
+            }
+            ++out_count;
+        }
+    }
+    return out_count > 0U;
+}
+
+bool CallRuntime::preemption_ready(uint32_t waiter_index, uint64_t now_us,
+                                   uint64_t durable_seq) const {
+    uint32_t count = 0;
+    return collect_preempt_victims(waiter_index, now_us, durable_seq, nullptr, 0U, count);
+}
+
+// Issues soft stop / cancel to every uncancelled eligible EPHEMERAL holder blocking waiter_index.
+// Physical holders also enter PermitLease::Phase::stopping so ExecutionControl::advance_urgent()
+// dispatches AYNI_EXECUTOR_STOP immediately on the urgent lane (ADR-0111).
+CallRuntime::Advance CallRuntime::trigger_preemption(uint32_t waiter_index, uint64_t now_us,
+                                                     uint64_t durable_seq) {
+    std::array<uint32_t, AYNI_RESOURCE_GROUP_COUNT_MAX> victims{};
+    uint32_t count = 0;
+    if (!collect_preempt_victims(waiter_index, now_us, durable_seq, victims.data(),
+                                 static_cast<uint32_t>(victims.size()), count)) {
+        return Advance::idle;
+    }
+    for (uint32_t at = 0; at < count; ++at) {
+        const uint32_t victim_index = victims[at];
+        uint32_t victim_task = 0;
+        if (!slots_[victim_index].active ||
+            !work_.tasks.find(work_.calls.identity(victim_index).task_id, victim_task)) {
+            return Advance::internal;
+        }
+        auto &victim_active = *slots_[victim_index].active;
+        if (!submitted(victim_active.stage)) {
+            if (cancel_local(victim_index, victim_task, AYNI_REASON_PREEMPTED) !=
+                Advance::applied) {
+                return Advance::internal;
+            }
+            continue;
+        }
+        const auto status = work_.calls.request_cancel(
+            victim_index, work::CallCancelCause::preempted, {work_.ids.boot_epoch(), {0, 0}});
+        if (status != AYNI_OK) {
+            return Advance::internal;
+        }
+        const uint64_t victim_call_id = work_.calls.identity(victim_index).call_id;
+        if (control_.holds_lease(victim_call_id) && !control_.request_stop(victim_call_id)) {
+            return Advance::internal;
+        }
+        if (victim_active.delivery &&
+            cancel_transport(*victim_active.delivery) == Advance::internal) {
+            return Advance::internal;
+        }
+    }
     return Advance::applied;
 }
 
@@ -408,7 +511,15 @@ CallRuntime::Advance CallRuntime::progress_dispatch(uint32_t index, uint32_t tas
         const auto acquired = resources_.acquire(active.call_id, now_us, active.claim, on_wait);
         using Acquisition = resources::ResourceAdmission::Acquisition;
         if (acquired == Acquisition::not_selected) {
-            return Advance::idle;
+            if (active.preemption == AYNI_CALL_PREEMPT_NONE) {
+                return Advance::idle;
+            }
+            // Scene/observation preflight must pass before preemption can touch any holder
+            // (ADR-0111). A disallowed preemptor cancels locally without disturbing victims.
+            if (!control_.allowed(index, now_us, durable_seq)) {
+                return cancel_local(index, task_index);
+            }
+            return trigger_preemption(index, now_us, durable_seq);
         }
         if (acquired == Acquisition::expired) {
             return expire_wait(index, task_index, on_wait, now_us);

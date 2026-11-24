@@ -47,7 +47,8 @@ struct CallIdentity {
 };
 
 // Cancellation intent is independent of remote stop and terminal outcome.
-enum class CallCancelCause : uint32_t { none = 0, user, authority, deadline, shutdown };
+// preempted is RAM-only for EPHEMERAL Calls (ADR-0111) and never persisted.
+enum class CallCancelCause : uint32_t { none = 0, user, authority, deadline, shutdown, preempted };
 
 // One explicit owner-requested reconciliation. Its attempt never replaces the
 // original execution attempt. Finished UNKNOWN may be queried again with a new command.
@@ -177,7 +178,9 @@ class CallTable {
     // One volatile claim immediately before callback, following final owner checks.
     bool claim_dispatch(uint32_t index, uint64_t boot_epoch, uint64_t durable_seq);
     // Complete a call proven never handed to a Provider, including a queued call.
-    ayni_status_t cancel_before_dispatch(uint32_t index, ActionStamp stamp);
+    // reason is NONE except AYNI_REASON_PREEMPTED for RAM-only EPHEMERAL preemption (ADR-0111).
+    ayni_status_t cancel_before_dispatch(uint32_t index, ActionStamp stamp,
+                                         ayni_reason_t reason = AYNI_REASON_NONE);
     // Background wait expiration proves non-delivery and records EXPIRED/RESOURCE_WAIT.
     ayni_status_t skip_before_dispatch(uint32_t index, ActionStamp stamp);
     // Ephemeral pre-dispatch wait timeout ends with classified non-delivery in RAM
