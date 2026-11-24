@@ -95,6 +95,7 @@ KernelCapacities every_store_capacities() {
     capacities.observation_ingress_capacity = 2;
     capacities.reflex_capacity = 4;
     capacities.reflex_event_capacity = 8;
+    capacities.audit_capacity = 16;
     return capacities;
 }
 
@@ -152,6 +153,8 @@ TEST(KernelLayout, each_region_is_sized_by_its_stores_limits_function) {
                   CallRuntime::storage_size(call_runtime_limits(capacities)));
         EXPECT_EQ(layout[Store::provider_completions].size,
                   ProviderMailbox::storage_size(provider_mailbox_limits(capacities)));
+        EXPECT_EQ(layout[Store::audit_ring].size,
+                  AuditRing::storage_size(capacities.audit_capacity));
     }
 }
 

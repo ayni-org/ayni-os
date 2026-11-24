@@ -450,4 +450,88 @@ TEST(HistoryLoading, result_source_requires_the_same_kind_body_and_original_proo
     changed.business_contract = {other, sizeof(other)};
     EXPECT_EQ(check(changed), AYNI_REVISION_CONFLICT);
 }
+// ADR-0113: unshared small tool arguments and continuations (<= 512 B) stay inline in AYNDXI1
+// instead of spawning individual FileBodies files, while payloads > 512 B remain external refs.
+TEST(HistoryLoading, small_unshared_payloads_inline_into_history_index_and_round_trip) {
+    struct CountingStore {
+        ayni::runtime::MemoryBodies memory;
+        uint32_t writes = 0;
+        static ayni_status_t write(void *ctx, uint64_t scope, ayni_bytes_v1 bytes,
+                                   ayni_body_ref_v1 *out) {
+            auto &self = *static_cast<CountingStore *>(ctx);
+            ++self.writes;
+            const auto *inner = self.memory.store();
+            return inner->write(inner->context, scope, bytes, out);
+        }
+        static ayni_status_t read(void *ctx, const ayni_body_ref_v1 *ref, uint8_t *out,
+                                  uint32_t cap) {
+            const auto *inner = static_cast<CountingStore *>(ctx)->memory.store();
+            return inner->read(inner->context, ref, out, cap);
+        }
+        static void release(void *ctx, const ayni_body_ref_v1 *ref) {
+            const auto *inner = static_cast<CountingStore *>(ctx)->memory.store();
+            inner->release(inner->context, ref);
+        }
+    } counted;
+    ayni_body_store_v1 port{sizeof(port),
+                            0,
+                            &counted,
+                            CountingStore::write,
+                            CountingStore::read,
+                            CountingStore::release,
+                            nullptr,
+                            nullptr,
+                            nullptr,
+                            nullptr};
+
+    // Turn with 3 small tool proposals (<= 512 B arguments) + short continuation: only
+    // history_index itself is written (1 body write instead of 5).
+    std::string history(8192, '\0');
+    ayni::model::Writer writer(history.data(), static_cast<uint32_t>(history.size()));
+    writer.prefix();
+    ayni::model::Function small_calls[3]{
+        {{"c1", 2}, {"motor.run", 9}, {"{\"m1\":60,\"m2\":60}", 17}},
+        {{"c2", 2}, {"speaker.say", 11}, {"{\"text\":\"hi\"}", 13}},
+        {{"c3", 2}, {"motor.stop", 10}, {"{}", 2}},
+    };
+    writer.calls(3, {"ok", 2}, {{"cont", 4}, {"tok-123", 7}});
+    for (const auto &fn : small_calls) {
+        writer.function(fn);
+    }
+    ayni_string_v1 encoded{};
+    ASSERT_TRUE(writer.finish(encoded));
+    history.resize(encoded.size);
+
+    Turn turn;
+    turn.record.id = 7;
+    turn.history = history;
+    ASSERT_EQ(store_history(port, turn), AYNI_OK);
+    EXPECT_EQ(counted.writes, 1U); // Only the AYNDXI1 history_index body itself.
+
+    std::string restored;
+    ASSERT_EQ(load_history(port, turn.record.history, restored), AYNI_OK);
+    EXPECT_EQ(restored, history);
+
+    // Adding a large argument (> 512 B) externalizes that argument + updates history_index (+2).
+    const std::string large_arg(600, 'a');
+    std::string second_history(8192, '\0');
+    ayni::model::Writer writer2(second_history.data(),
+                                static_cast<uint32_t>(second_history.size()));
+    writer2.prefix();
+    ayni::model::Function large_call{
+        {"c4", 2}, {"big.tool", 8}, {large_arg.data(), static_cast<uint32_t>(large_arg.size())}};
+    writer2.calls(1);
+    writer2.function(large_call);
+    ASSERT_TRUE(writer2.finish(encoded));
+    second_history.resize(encoded.size);
+
+    counted.writes = 0;
+    Turn turn2;
+    turn2.record.id = 8;
+    turn2.history = second_history;
+    ASSERT_EQ(store_history(port, turn2), AYNI_OK);
+    EXPECT_EQ(counted.writes, 2U); // Large argument body + history_index.
+    ASSERT_EQ(load_history(port, turn2.record.history, restored), AYNI_OK);
+    EXPECT_EQ(restored, second_history);
+}
 } // namespace

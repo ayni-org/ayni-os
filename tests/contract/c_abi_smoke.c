@@ -1,6 +1,7 @@
 /* Uses the implemented ABI from strict C99 with caller-provided memory. */
 
 #include <ayni/arguments.h>
+#include <ayni/audit.h>
 #include <ayni/authority.h>
 #include <ayni/ayni.h>
 #include <ayni/host_authority.h>
@@ -349,6 +350,19 @@ int main(void) {
                            "reflex info links from C99");
         failures += expect(ayni_take_reflex_event(kernel, &reflex_event) == AYNI_NOT_FOUND,
                            "reflex event drain links from C99");
+    }
+    /* ADR-0113 (ABI 0.60): asynchronous RAM audit ring symbols link from C99. */
+    {
+        ayni_audit_info_v1 audit_info = {0};
+        ayni_audit_record_v1 record = {0};
+        uint32_t count = 1u;
+        audit_info.struct_size = (uint32_t)sizeof audit_info;
+        failures += expect(ayni_get_audit_info(kernel, &audit_info) == AYNI_OK &&
+                               audit_info.capacity == 0u && audit_info.pending == 0u,
+                           "audit info links from C99");
+        failures +=
+            expect(ayni_take_audit_records(kernel, &record, 1u, &count) == AYNI_OK && count == 0u,
+                   "audit take links from C99");
     }
     failures +=
         expect(ayni_begin_shutdown(kernel) == AYNI_INVALID_STATE, "shutdown in CONFIGURING");

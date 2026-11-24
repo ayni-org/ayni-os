@@ -720,7 +720,7 @@ struct EphemeralFixture {
 // in GOAL records, and refuses to decode EPHEMERAL durability from persisted CALL records.
 TEST(EphemeralExecution, Schema11RejectsSchema10VolumeAndValidatesRecordCodecs) {
     EXPECT_EQ(AYNI_STORAGE_SCHEMA_CURRENT, 11U);
-    EXPECT_EQ(AYNI_ABI_MINOR, 59U);
+    EXPECT_GE(AYNI_ABI_MINOR, 59U);
     EXPECT_EQ(ayni::work::goal_record_fixed_size, 144U);
     EXPECT_EQ(ayni::work::call_record_fixed_size, 452U);
 

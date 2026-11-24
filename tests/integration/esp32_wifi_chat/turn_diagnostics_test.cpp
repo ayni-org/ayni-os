@@ -978,8 +978,10 @@ TEST(TurnDiagnostics, ValueRolesAccountForShortMultichunkAndSharedBody) {
     const auto chunk = index(FileValueRole::body_chunk);
     const auto manifest = index(FileValueRole::owner_manifest);
     const auto before = values.metrics();
-    EXPECT_EQ(before.values[chunk].write.calls, 3U);
-    EXPECT_EQ(before.values[chunk].write.bytes, 5U + cross_chunk_bytes);
+    // ADR-0113 AYNB2: short (5 B <= 4 KiB) body is inlined into its owner_manifest (0 chunk I/O);
+    // only the cross-chunk (4097 B) body writes 2 body_chunk files.
+    EXPECT_EQ(before.values[chunk].write.calls, 2U);
+    EXPECT_EQ(before.values[chunk].write.bytes, cross_chunk_bytes);
     EXPECT_EQ(before.values[manifest].write.calls, 3U);
     EXPECT_GT(before.values[manifest].write.completion_us,
               before.values[manifest].write.service_us);
@@ -991,11 +993,31 @@ TEST(TurnDiagnostics, ValueRolesAccountForShortMultichunkAndSharedBody) {
     port->release(port->context, &large);
     drain();
     const auto cleanup = wifichat::StoragePhaseDelta::between(before, values.metrics(), 0);
-    EXPECT_EQ(cleanup.values[chunk].remove.calls, 3U);
-    EXPECT_EQ(cleanup.values[chunk].remove.bytes, 5U + cross_chunk_bytes);
+    EXPECT_EQ(cleanup.values[chunk].remove.calls, 2U);
+    EXPECT_EQ(cleanup.values[chunk].remove.bytes, cross_chunk_bytes);
     EXPECT_EQ(cleanup.values[manifest].remove.calls, 2U);
     EXPECT_GT(cleanup.values[manifest].remove.bytes, 0U);
-    EXPECT_EQ(cleanup.value_remove_calls, 5U);
+    EXPECT_EQ(cleanup.value_remove_calls, 4U);
+}
+
+// ADR-0113: deferred ordinary publication omits collected while remaining complete and additive.
+TEST(TurnDiagnostics, PublicationTimelineDeferredOrderCompletesWithoutCollectedBoundary) {
+    wifichat::PublicationTimeline timeline;
+    timeline.reset(88);
+    StorageMetrics m{};
+    timeline.mark_model_posted(100000, m);
+    ASSERT_TRUE(timeline.record_stage(12, 34, Stage::checkpoint_ready, 110000, m));
+    ASSERT_TRUE(timeline.record_stage(12, 34, Stage::publish_durable, 150000, m));
+    ASSERT_TRUE(timeline.record_stage(12, 34, Stage::record_saved, 210000, m));
+    ASSERT_TRUE(timeline.record_stage(12, 34, Stage::context_ready, 250000, m));
+    ASSERT_TRUE(timeline.record_answer_saved(252000, m));
+    const auto summary = timeline.summary();
+    EXPECT_TRUE(summary.complete);
+    EXPECT_EQ(summary.order, Order::async);
+    EXPECT_EQ(summary.segment_count, 5U);
+    EXPECT_EQ(summary.total.wall_us, 152000U);
+    EXPECT_EQ(summary.segments[3].from, Boundary::record_saved);
+    EXPECT_EQ(summary.segments[3].to, Boundary::context_ready);
 }
 
 TEST(TurnDiagnostics, PublicationTimelineAsyncOrderRecordsEachBoundaryOnceAndSumsToTotal) {

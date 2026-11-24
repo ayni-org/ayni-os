@@ -5,6 +5,7 @@
  * measured in sizeof(void *) so that the same checks fit 32-bit targets; only the native build
  * compiles them so far.
  */
+#include <ayni/audit.h>
 #include <ayni/authority.h>
 #include <ayni/ayni.h>
 #include <ayni/bodies.h>
@@ -103,11 +104,12 @@ AYNI_LAYOUT(config_grant_depth, offsetof(ayni_config_v1, grant_delegation_depth_
 AYNI_LAYOUT(config_goal_requirements, offsetof(ayni_config_v1, goal_requirement_capacity) == 104);
 AYNI_LAYOUT(config_resources, offsetof(ayni_config_v1, resource_capacity) == 108);
 AYNI_LAYOUT(config_resource_requests, offsetof(ayni_config_v1, resource_request_capacity) == 112);
-AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 196);
+AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 200);
 AYNI_LAYOUT(config_business_contract_bytes,
             offsetof(ayni_config_v1, business_contract_max_bytes) == 184);
 AYNI_LAYOUT(config_reflex_capacity, offsetof(ayni_config_v1, reflex_capacity) == 188);
 AYNI_LAYOUT(config_reflex_event_capacity, offsetof(ayni_config_v1, reflex_event_capacity) == 192);
+AYNI_LAYOUT(config_audit_capacity, offsetof(ayni_config_v1, audit_capacity) == 196);
 
 AYNI_LAYOUT(config_device_capacity, offsetof(ayni_config_v1, device_capacity) == 144);
 AYNI_LAYOUT(config_component_capacity, offsetof(ayni_config_v1, component_capacity) == 148);
@@ -1060,3 +1062,28 @@ AYNI_LAYOUT(control_session_step_active, offsetof(ayni_control_session_step_v1, 
 AYNI_LAYOUT(control_session_info_size, sizeof(ayni_control_session_info_v1) == 40);
 AYNI_LAYOUT(control_session_info_transitions,
             offsetof(ayni_control_session_info_v1, transitions) == 32);
+
+/* ABI 0.60 (ADR-0113): asynchronous RAM audit ring with zero implicit padding. */
+AYNI_LAYOUT(audit_record_struct_size, offsetof(ayni_audit_record_v1, struct_size) == 0);
+AYNI_LAYOUT(audit_record_kind, offsetof(ayni_audit_record_v1, kind) == 4);
+AYNI_LAYOUT(audit_record_seq, offsetof(ayni_audit_record_v1, seq) == 8);
+AYNI_LAYOUT(audit_record_boot_epoch, offsetof(ayni_audit_record_v1, boot_epoch) == 16);
+AYNI_LAYOUT(audit_record_at_us, offsetof(ayni_audit_record_v1, at_us) == 24);
+AYNI_LAYOUT(audit_record_subject_id, offsetof(ayni_audit_record_v1, subject_id) == 32);
+AYNI_LAYOUT(audit_record_auxiliary_id, offsetof(ayni_audit_record_v1, auxiliary_id) == 40);
+AYNI_LAYOUT(audit_record_status, offsetof(ayni_audit_record_v1, status) == 48);
+AYNI_LAYOUT(audit_record_reason, offsetof(ayni_audit_record_v1, reason) == 52);
+AYNI_LAYOUT(audit_record_detail_code, offsetof(ayni_audit_record_v1, detail_code) == 56);
+AYNI_LAYOUT(audit_record_flags, offsetof(ayni_audit_record_v1, flags) == 60);
+AYNI_LAYOUT(audit_record_label_size, offsetof(ayni_audit_record_v1, label_size) == 64);
+AYNI_LAYOUT(audit_record_reserved, offsetof(ayni_audit_record_v1, reserved) == 68);
+AYNI_LAYOUT(audit_record_label, offsetof(ayni_audit_record_v1, label) == 72);
+AYNI_LAYOUT(audit_record_size, sizeof(ayni_audit_record_v1) == 104);
+AYNI_LAYOUT(audit_info_struct_size, offsetof(ayni_audit_info_v1, struct_size) == 0);
+AYNI_LAYOUT(audit_info_capacity, offsetof(ayni_audit_info_v1, capacity) == 4);
+AYNI_LAYOUT(audit_info_pending, offsetof(ayni_audit_info_v1, pending) == 8);
+AYNI_LAYOUT(audit_info_reserved, offsetof(ayni_audit_info_v1, reserved) == 12);
+AYNI_LAYOUT(audit_info_next_seq, offsetof(ayni_audit_info_v1, next_seq) == 16);
+AYNI_LAYOUT(audit_info_dropped_overflow, offsetof(ayni_audit_info_v1, dropped_overflow) == 24);
+AYNI_LAYOUT(audit_info_drained_total, offsetof(ayni_audit_info_v1, drained_total) == 32);
+AYNI_LAYOUT(audit_info_size, sizeof(ayni_audit_info_v1) == 40);

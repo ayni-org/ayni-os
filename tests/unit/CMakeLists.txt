@@ -28,6 +28,9 @@ add_executable(ayni_unit_tests
     ephemeral_execution_test.cpp
     preemption_test.cpp
     reflex_and_session_test.cpp
+    audit_ring_test.cpp
+    audit_sink_test.cpp
+    file_bodies_v2_test.cpp
     control_gate_test.cpp
     control_session_test.cpp
     mock_provider_test.cpp
@@ -189,4 +192,11 @@ add_executable(ayni_conversation_progress_tests conversation_progress_test.cpp)
 target_link_libraries(ayni_conversation_progress_tests PRIVATE ayni_runtime_portable
     ayni_host_sim ayni_host_native ayni_warnings GTest::gtest_main)
 gtest_discover_tests(ayni_conversation_progress_tests
+    DISCOVERY_TIMEOUT ${AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS})
+
+# Portable deferred publication + preview_answer checks (ADR-0113, no OS Files dependency).
+add_executable(ayni_deferred_publication_tests deferred_publication_test.cpp)
+target_link_libraries(ayni_deferred_publication_tests PRIVATE ayni_runtime_portable
+    ayni_host_sim ayni_host_storage ayni_warnings GTest::gtest_main)
+gtest_discover_tests(ayni_deferred_publication_tests
     DISCOVERY_TIMEOUT ${AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS})
