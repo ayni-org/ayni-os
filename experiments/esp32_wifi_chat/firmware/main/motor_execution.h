@@ -82,7 +82,8 @@ class MotorExecution {
     void reject(const Pending &, ayni_status_t);
     static void worker_entry(void *);
     void run();
-    void drain_inbox();
+    void handle_message(const Message &);
+    void drain_inbox(TickType_t wait_ticks);
     void publish_snapshot();
     void release_worker_storage();
     ayni_status_t advance_owner();

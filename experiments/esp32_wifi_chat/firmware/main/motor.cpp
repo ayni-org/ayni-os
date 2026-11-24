@@ -100,7 +100,8 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
                        {sizeof(ayni_call_contract_v1), AYNI_CALL_UNARY, AYNI_CALL_TOOL, 0,
                         AYNI_CALL_IDEMPOTENT, AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_NONE, 0,
                         request_timeout_ms, AYNI_CALL_INPUT_VALUE, AYNI_CALL_RESULT_TEXT,
-                        input_bytes_max, reply_bytes_max, 0, nullptr, nullptr},
+                        input_bytes_max, reply_bytes_max, 0, nullptr, nullptr,
+                        AYNI_CALL_DURABILITY_EPHEMERAL, 0},
                        &business_[at]};
         if (at == 2) {
             auto &contract = offers_[at].contract;
@@ -159,9 +160,8 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
             "object.",
             "UNARY: use operation=\"invoke\" or omit operation; start is unsupported. "
             "Required integer motor1_percent and motor2_percent: -90..90; duration_ms: 50..60000.",
-            "ACTION: operation=\"invoke\" waits for completion. operation=\"start\" starts a "
-            "managed action; use its operation_ref to read/wait/cancel. Acceptance is not "
-            "completion. "
+            "ACTION: operation=\"invoke\" waits for completion (managed start is unsupported on "
+            "ephemeral bench motor calls). "
             "Required integers motor1_percent and motor2_percent: -90..90; duration_ms: 50..60000, "
             "multiple of 5. "
             "Zero coasts a motor; both zero is invalid. Do not call motor.stop for a pause between "

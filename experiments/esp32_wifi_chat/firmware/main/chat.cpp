@@ -577,7 +577,8 @@ ayni_status_t Chat::configure_model() {
              AYNI_CALL_EFFECT_EGRESS | AYNI_CALL_EFFECT_BILLING, AYNI_CALL_NOT_IDEMPOTENT,
              AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_REQUEST, 0, harness::request_timeout_ms,
              AYNI_CALL_INPUT_VALUE, tools ? AYNI_CALL_RESULT_TOOL_CALLS : AYNI_CALL_RESULT_TEXT,
-             input_bytes, static_cast<uint32_t>(summary_bytes), 1, &resource_, nullptr},
+             input_bytes, static_cast<uint32_t>(summary_bytes), 1, &resource_, nullptr,
+             tools ? AYNI_CALL_DURABILITY_EPHEMERAL : AYNI_CALL_DURABILITY_DURABLE, 0},
             &business_};
         if (rc == AYNI_OK) {
             rc = check("call capability",
@@ -692,6 +693,9 @@ ayni_status_t Chat::configure_strategy() {
     type.export_requirements = requirements;
     type.trigger_kinds = AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE);
     type.occurrence_wait_max_us = AYNI_OCCURRENCE_WAIT_UNBOUNDED;
+    // Interactive chat turns cancel on reboot so EPHEMERAL model/peripheral calls
+    // execute with zero intermediate WAL stalls (ADR-0110).
+    type.work_profile.recovery = AYNI_GOAL_RECOVERY_CANCEL_ON_REBOOT;
     type.tools = tools;
     type.tool_count = sizeof(tools) / sizeof(tools[0]);
     type.tool_authorization = AYNI_TOOLS_ON_DEMAND;

@@ -178,43 +178,55 @@ void MotorExecution::publish_snapshot() {
     state_notice_ = state_notice_ || value != snapshot_.load(std::memory_order_relaxed);
     snapshot_.store(value, std::memory_order_release);
 }
-void MotorExecution::drain_inbox() {
+void MotorExecution::handle_message(const Message &message) {
+    switch (message.kind) {
+    case MessageKind::start:
+        begin(message.start);
+        break;
+    case MessageKind::cancel:
+        if (pending_ && message.cancel.boot_epoch == pending_->attempt.boot_epoch &&
+            message.cancel.request_id == pending_->attempt.request_id) {
+            pending_->outcome = AYNI_CALL_CANCELLED;
+            pending_->status = AYNI_DENIED;
+        }
+        break;
+    case MessageKind::frame:
+        receive_owner(message.frame_kind, message.frame_id, message.frame.data(),
+                      message.frame_size);
+        break;
+    case MessageKind::port: {
+        auto &slot = requests_[message.port.kind - 1];
+        if (slot) {
+            ayni_executor_response_v1 response{};
+            response.struct_size = sizeof(response);
+            response.kind = message.port.kind;
+            response.request = message.port.identity;
+            response.status = AYNI_BUSY;
+            const auto rc = ayni_executor_post(message.port.completion, &response);
+            if (rc != AYNI_OK && rc != AYNI_INVALID_STATE) {
+                worker_error_.store(rc);
+                wake_owner();
+            }
+        } else {
+            slot = message.port;
+        }
+        break;
+    }
+    }
+}
+void MotorExecution::drain_inbox(TickType_t wait_ticks) {
     Message message{};
-    for (size_t at = 0; at < inbox_slots && xQueueReceive(inbox_, &message, 0) == pdTRUE; ++at) {
-        switch (message.kind) {
-        case MessageKind::start:
-            begin(message.start);
-            break;
-        case MessageKind::cancel:
-            if (pending_ && message.cancel.boot_epoch == pending_->attempt.boot_epoch &&
-                message.cancel.request_id == pending_->attempt.request_id) {
-                pending_->outcome = AYNI_CALL_CANCELLED;
-                pending_->status = AYNI_DENIED;
-            }
-            break;
-        case MessageKind::frame:
-            receive_owner(message.frame_kind, message.frame_id, message.frame.data(),
-                          message.frame_size);
-            break;
-        case MessageKind::port: {
-            auto &slot = requests_[message.port.kind - 1];
-            if (slot) {
-                ayni_executor_response_v1 response{};
-                response.struct_size = sizeof(response);
-                response.kind = message.port.kind;
-                response.request = message.port.identity;
-                response.status = AYNI_BUSY;
-                const auto rc = ayni_executor_post(message.port.completion, &response);
-                if (rc != AYNI_OK && rc != AYNI_INVALID_STATE) {
-                    worker_error_.store(rc);
-                    wake_owner();
-                }
-            } else {
-                slot = message.port;
-            }
-            break;
+    size_t drained = 0;
+    if (wait_ticks != 0) {
+        if (xQueueReceive(inbox_, &message, wait_ticks) == pdTRUE) {
+            handle_message(message);
+            drained = 1;
+        } else {
+            return;
         }
-        }
+    }
+    for (; drained < inbox_slots && xQueueReceive(inbox_, &message, 0) == pdTRUE; ++drained) {
+        handle_message(message);
     }
 }
 void MotorExecution::worker_entry(void *context) {
@@ -222,13 +234,15 @@ void MotorExecution::worker_entry(void *context) {
 }
 // This task never calls Core queries/step and never waits for the operator, touchscreen or storage.
 void MotorExecution::run() {
+    TickType_t wait_ticks = 0;
     for (;;) {
+        drain_inbox(wait_ticks);
+        wait_ticks = 1; // Wake immediately on inbox messages, bounded by 1 tick for PWM/stop poll.
         const auto now = uint64_t(esp_timer_get_time());
         if (last_cycle_us_) {
             cycle_gap_max_us_ = std::max(cycle_gap_max_us_, now - last_cycle_us_);
         }
         last_cycle_us_ = now;
-        drain_inbox();
         const auto rc = advance_owner();
         if (rc != AYNI_OK && rc != AYNI_BUSY) {
             accepting_.store(false, std::memory_order_release);
@@ -251,7 +265,6 @@ void MotorExecution::run() {
             worker_stopped_.store(true, std::memory_order_release);
             vTaskSuspend(nullptr); // Caller joins before freeing this stack/TCB.
         }
-        vTaskDelay(1);
     }
 }
 void MotorExecution::release_worker_storage() {

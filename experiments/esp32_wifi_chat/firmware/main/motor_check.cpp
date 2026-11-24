@@ -133,6 +133,7 @@ ayni_status_t MotorCheck::describe_type(uint32_t motor, ayni_goal_type_v1 &out) 
     type.trigger_kinds = AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE);
     type.occurrence_wait_max_us = AYNI_OCCURRENCE_WAIT_UNBOUNDED;
     type.work_profile.work_class = AYNI_WORK_FOREGROUND;
+    type.work_profile.recovery = AYNI_GOAL_RECOVERY_CANCEL_ON_REBOOT;
     out = type;
     return AYNI_OK;
 }

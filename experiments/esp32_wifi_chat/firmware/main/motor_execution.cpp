@@ -62,7 +62,9 @@ ayni_executor_v1 MotorExecution::ports() {
             challenge_port,
             renew_port,
             stop_port,
-            status_port};
+            status_port,
+            AYNI_EXECUTOR_FLAG_INLINE_STOP_PROOF,
+            0};
 }
 void MotorExecution::mark_output_start(uint64_t call, uint64_t at_us) {
     portENTER_CRITICAL(&output_mutex_);
@@ -399,11 +401,17 @@ ayni_status_t MotorExecution::post_result() {
                     : p.effect == Effect::complete ? AYNI_CALL_EFFECT_COMPLETE
                     : p.effect == Effect::partial  ? AYNI_CALL_EFFECT_PARTIAL
                                                    : AYNI_CALL_EFFECT_UNKNOWN;
+    ayni_executor_status_v1 exec_status{};
     if (p.outcome == AYNI_CALL_ABANDONED) {
         result.status = AYNI_RESULT_UNKNOWN;
         result.effect = AYNI_CALL_EFFECT_UNKNOWN;
     } else {
         result.result = {json, uint32_t(length)};
+        // Attach locally measured STOPPED proof from the colocated PermitGate (ADR-0110).
+        if (current_permit_ && status(current_permit_, exec_status) == AYNI_OK &&
+            exec_status.control.phase == AYNI_CONTROL_STOPPED) {
+            result.execution_status = &exec_status;
+        }
     }
     const auto posted = ayni_provider_post(p.completion, &result);
     if (posted == AYNI_OK || posted == AYNI_INVALID_STATE) {
