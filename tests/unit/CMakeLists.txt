@@ -25,6 +25,7 @@ add_executable(ayni_unit_tests
     scene_test.cpp
     managed_execution_test.cpp
     execution_facts_test.cpp
+    ephemeral_execution_test.cpp
     control_gate_test.cpp
     mock_provider_test.cpp
     mock_execution_test.cpp

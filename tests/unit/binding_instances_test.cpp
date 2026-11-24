@@ -133,7 +133,9 @@ class BindingInstances : public ::testing::Test {
                                64,
                                1,
                                &demand,
-                               nullptr};
+                               nullptr,
+                               AYNI_CALL_DURABILITY_DURABLE,
+                               0};
         ASSERT_EQ(ayni_register_call_capability(kernel, &capability), AYNI_OK);
         for (auto *endpoint : {&first, &second}) {
             ayni_provider_v1 provider{};

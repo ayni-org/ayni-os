@@ -165,7 +165,9 @@ class ToolCalls : public ::testing::Test {
                                          result_limit,
                                          model ? 1U : 0U,
                                          model ? &units : nullptr,
-                                         form == AYNI_CALL_SUBSCRIPTION ? &subscription : nullptr};
+                                         form == AYNI_CALL_SUBSCRIPTION ? &subscription : nullptr,
+                                         AYNI_CALL_DURABILITY_DURABLE,
+                                         0};
         };
         // The planner's own result bound is below the 512-byte result lane.
         ayni_call_capability_v1 planner{

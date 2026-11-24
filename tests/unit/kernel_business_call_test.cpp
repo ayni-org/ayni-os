@@ -228,7 +228,9 @@ class BusinessCall : public ::testing::Test {
                                512,
                                0,
                                nullptr,
-                               nullptr};
+                               nullptr,
+                               AYNI_CALL_DURABILITY_DURABLE,
+                               0};
         capability.business = &business;
         ASSERT_EQ(ayni_register_call_capability(kernel, &capability), AYNI_OK);
         ayni_provider_v1 provider{};

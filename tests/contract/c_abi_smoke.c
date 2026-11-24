@@ -38,7 +38,10 @@ typedef union {
 
 /* ABI 0.53 reserves owner-thread codec scratch; the query below proves this
  * caller-owned test block suffices, without prescribing a production arena. */
-enum { kernel_memory_units = 65536 };
+enum {
+    kernel_memory_bytes = 1024u * 1024u,
+    kernel_memory_units = (kernel_memory_bytes + sizeof(max_aligned_t) - 1u) / sizeof(max_aligned_t)
+};
 static max_aligned_t kernel_memory[kernel_memory_units];
 
 static int expect(int condition, const char *what) {
