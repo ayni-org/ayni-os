@@ -233,8 +233,14 @@ ayni_status_t MotorExecution::serve(PortRequest &request) {
         if (request.permit_id == current_permit_ && current_permit_) {
             if (pending_ && pending_->phase != Phase::result) {
                 end(AYNI_CALL_CANCELLED, AYNI_DENIED);
+                response.status =
+                    (pending_ && pending_->phase == Phase::result) ? AYNI_OK : AYNI_INTERNAL;
+            } else {
+                response.status = stop_output();
+                if (response.status != AYNI_OK) {
+                    mode_ = Mode::latched;
+                }
             }
-            response.status = stop_output();
         } else {
             response.status = AYNI_NOT_FOUND;
         }
@@ -264,7 +270,9 @@ void MotorExecution::reject(const Pending &request, ayni_status_t cause) {
     trace("start-refused", cause);
 }
 void MotorExecution::begin(Pending incoming) {
-    if (pending_ || terminal_notice_ || !gate_ || !live().interlocks_ok ||
+    // UI state-notice backpressure (terminal_notice_) must not deny an authorized motor start
+    // (ADR-0111); Mode::armed/gate/interlocks/output_->disabled() remain the safety gates.
+    if (pending_ || !gate_ || !live().interlocks_ok ||
         incoming.permit.permit_id <= refused_through_ ||
         !admission_.permits(incoming.permit.echoed_nonce) || !output_->disabled() ||
         incoming.command.first_percent < -int32_t(limit_) ||
@@ -371,6 +379,56 @@ void MotorExecution::stop_owner() {
         stop_output();
     }
 }
+ayni_status_t MotorExecution::soft_stop_owner() {
+    if (mode_ == Mode::closed) {
+        return AYNI_OK;
+    }
+    if (pending_ && pending_->phase != Phase::result) {
+        end(AYNI_CALL_CANCELLED, AYNI_DENIED);
+        if (pending_ && pending_->phase == Phase::result) {
+            const auto posted = post_result();
+            if (posted != AYNI_OK && posted != AYNI_BUSY) {
+                return posted;
+            }
+            return AYNI_OK;
+        }
+        // end() failed stop_output() and already escalated mode_ to Mode::latched.
+        return AYNI_INTERNAL;
+    }
+    const auto stopped = stop_output();
+    if (stopped != AYNI_OK) {
+        mode_ = Mode::latched;
+        publish_snapshot();
+    }
+    return stopped;
+}
+void MotorExecution::serve_soft_stop(const SoftStopRequest &request) {
+    soft_stop_.exchange(false, std::memory_order_acq_rel);
+    const auto stopped = soft_stop_owner();
+    const bool ok = stopped == AYNI_OK;
+    char reply[192];
+    const auto length = std::snprintf(
+        reply, sizeof(reply),
+        ok ? "{\"stop_requested\":true,\"stop_confirmed\":true,\"armed\":%s,"
+             "\"output_stop\":\"gpio-matrix-and-low-readback\"}"
+           : "{\"stop_requested\":true,\"stop_confirmed\":false,\"armed\":false,\"latched\":true}",
+        mode_ == Mode::armed ? "true" : "false");
+    ayni_provider_result_v1 result{};
+    result.struct_size = sizeof(result);
+    result.attempt = request.attempt;
+    result.outcome = ok ? AYNI_CALL_COMPLETED : AYNI_CALL_FAILED;
+    result.status = ok ? AYNI_OK : AYNI_INTERNAL;
+    result.effect = ok ? AYNI_CALL_EFFECT_COMPLETE : AYNI_CALL_EFFECT_UNKNOWN;
+    if (length > 0 && size_t(length) < sizeof(reply)) {
+        result.result = {reply, uint32_t(length)};
+    }
+    const auto posted = ayni_provider_post(request.completion, &result);
+    if (posted != AYNI_OK && posted != AYNI_INVALID_STATE) {
+        worker_error_.store(posted, std::memory_order_release);
+        wake_owner();
+    }
+    trace("soft-stop", stopped);
+}
 ayni_status_t MotorExecution::post_result() {
     auto &p = *pending_;
     char json[768];
@@ -448,6 +506,12 @@ ayni_status_t MotorExecution::advance_owner() {
     if (transport_.motor_stop_requested() ||
         local_stop_.exchange(false, std::memory_order_acq_rel)) {
         stop_owner();
+    } else if (transport_.motor_soft_stop_requested() ||
+               soft_stop_.exchange(false, std::memory_order_acq_rel)) {
+        const auto soft = soft_stop_owner();
+        if (soft != AYNI_OK && soft != AYNI_INTERNAL) {
+            return soft;
+        }
     }
     if (transport_.motor_disable_requested() && mode_ != Mode::latched && mode_ != Mode::closed) {
         admission_.disable();

@@ -38,8 +38,12 @@ class Transport {
     const ayni_body_store_v1 *bodies() const { return bodies_.load(std::memory_order_acquire); }
     void run();
     bool motor_stop_requested() { return motor_stop_.exchange(false, std::memory_order_acq_rel); }
+    bool motor_soft_stop_requested() {
+        return motor_soft_stop_.exchange(false, std::memory_order_acq_rel);
+    }
     void set_motor_active(bool active) { motor_active_.store(active, std::memory_order_release); }
     void request_motor_stop() { motor_stop_.store(true, std::memory_order_release); }
+    void request_motor_soft_stop() { motor_soft_stop_.store(true, std::memory_order_release); }
     void request_motor_disable() { motor_disable_.store(true, std::memory_order_release); }
     bool motor_disable_requested() {
         return motor_disable_.exchange(false, std::memory_order_acq_rel);
@@ -50,8 +54,9 @@ class Transport {
     Display display_;
     ModelHandoff model_;
     std::atomic<bool> motor_active_{false};
-    std::atomic<bool> motor_stop_{false};    // Stop bypasses bounded message queues.
-    std::atomic<bool> motor_disable_{false}; // Ordinary disarm also bypasses queue capacity.
+    std::atomic<bool> motor_stop_{false};      // Latched hard E-stop bypasses bounded queues.
+    std::atomic<bool> motor_soft_stop_{false}; // Recoverable soft-stop bypasses bounded queues.
+    std::atomic<bool> motor_disable_{false};   // Ordinary disarm also bypasses queue capacity.
     QueueHandle_t free_ = nullptr, output_ = nullptr, input_ = nullptr;
     std::array<Packet, packet_slots> packets_{};
     std::atomic<uint64_t> display_call_{0}; // Only the current authorized document may paint.

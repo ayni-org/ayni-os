@@ -79,9 +79,12 @@ bool Transport::post(Kind kind, uint64_t id, const void *body, size_t bytes) {
         wake_owner();
         return true;
     }
-    if ((kind == Kind::cancel && motor_active_.load(std::memory_order_acquire)) ||
-        kind == Kind::shutdown || kind == Kind::motor_power_off) {
+    if (kind == Kind::shutdown || kind == Kind::motor_power_off) {
         request_motor_stop();
+    } else if (kind == Kind::cancel && motor_active_.load(std::memory_order_acquire)) {
+        // Ordinary UI cancel performs recoverable soft-stop; touchscreen red Stop uses
+        // Kind::motor_stop / request_motor_stop() for latched hard E-stop (ADR-0111).
+        request_motor_soft_stop();
     }
     if (bytes > tx_bytes || (bytes && !body)) {
         return false;

@@ -62,6 +62,7 @@ ayni_status_t MotorCheck::configure(Owner owner) {
         p.step.version = version;
         p.step.call.binding_id = motor_text("motor.run");
         p.step.call.binding_version = motor_version;
+        p.step.call.preemption = AYNI_CALL_PREEMPT_SUPERSEDE;
         // Explicit native input avoids the scalar template's extra empty text field.
         p.step.call.input = ayni_value_v1{p.input.data(), uint32_t(p.input.size())};
         rules_[motor] = {motor_text(types[motor]), version, &p.step, 1};

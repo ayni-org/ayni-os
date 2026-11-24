@@ -154,7 +154,8 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
             "Compute a TA6586 software plan without output.",
             "Run a bounded TA6586 PWM procedure while local motor control is enabled; no "
             "per-action approval.",
-            "Request latched local motor output stop. Restart the device to rearm."};
+            "Request recoverable local motor soft-stop and confirm GPIO low readback; stays "
+            "armed unless stop fails."};
         constexpr const char *parameters[]{
             "UNARY: use operation=\"invoke\" or omit operation; start is unsupported. Empty "
             "object.",
@@ -164,9 +165,9 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
             "ephemeral bench motor calls). "
             "Required integers motor1_percent and motor2_percent: -90..90; duration_ms: 50..60000, "
             "multiple of 5. "
-            "Zero coasts a motor; both zero is invalid. Do not call motor.stop for a pause between "
-            "motions: motor.stop latches stop until device reboot; use motor.stop only for an "
-            "actual stop request. Motor 1 positive D0 PWM, "
+            "Zero coasts a motor; both zero is invalid. Do not insert motor.stop for a pause "
+            "between motions unless stopping is requested; motor.stop performs a recoverable "
+            "soft-stop (stays armed after confirmed stop). Motor 1 positive D0 PWM, "
             "negative D1 PWM; motor 2 positive D3 PWM, negative D2 PWM (board polarity corrected). "
             "This is PWM duty, not RPM; actual shaft direction is not measured. Runtime operator "
             "cap may "
@@ -176,10 +177,9 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
             "expired or "
             "unknown actions.",
             "UNARY: use operation=\"invoke\" or omit operation; start is unsupported. Empty "
-            "object. "
-            "This tool is not an independent hardware stop; the touchscreen stop "
-            "button "
-            "bypasses model execution."};
+            "object. Performs a recoverable soft-stop with GPIO low readback; "
+            "this tool is not an independent hardware stop — the touchscreen red stop button "
+            "bypasses model execution and latches until reboot."};
         const ayni_tool_field_usage_v1 descriptions[]{
             {sizeof(ayni_tool_field_usage_v1), motor1_field,
              text("Motor 1 signed PWM percent; zero coasts, no RPM measurement.")},
@@ -202,8 +202,9 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
                        "bench only; "
                        "external watchdog/reset-disable are not verified."
                  : at == 3
-                     ? "Confirms the stop request was submitted, not shaft standstill or driver "
-                       "power-off. Query motor.status for local controller state."
+                     ? "Confirms controller PWM disable and GPIO low readback (stop_confirmed) "
+                       "and whether motor stays armed; does not measure shaft standstill or "
+                       "driver power-off. Query motor.status for local controller state."
                      : "Configured wiring/supply are not electrical measurements. A plan does "
                        "not move motors."),
             text(at == 1 || at == 2
@@ -275,8 +276,8 @@ ayni_submit_result_t Motor::submit(void *ctx, const ayni_provider_request_v1 *re
         return self.execution_.submit(request, completion);
     }
     if (same(request->capability_id, identities[3])) {
-        // Request only: GPIO work happens in the owner loop after returning to Core.
-        self.execution_.request_local_stop();
+        // Recoverable soft-stop: confirm GPIO low readback on the control worker and stay armed.
+        return self.execution_.submit_soft_stop(request, completion);
     }
     char reply[reply_bytes_max];
     int size = 0;
@@ -305,9 +306,6 @@ ayni_submit_result_t Motor::submit(void *ctx, const ayni_provider_request_v1 *re
             static_cast<unsigned long>(motor_pins[2]), static_cast<unsigned long>(motor_pins[3]),
             static_cast<unsigned long>(duty[0]), static_cast<unsigned long>(duty[1]),
             static_cast<unsigned long>(duty[2]), static_cast<unsigned long>(duty[3]));
-    } else if (same(request->capability_id, identities[3])) {
-        size = std::snprintf(reply, sizeof(reply),
-                             "{\"stop_requested\":true,\"stop_confirmed\":false}");
     } else {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }

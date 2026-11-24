@@ -175,6 +175,7 @@ class Runtime {
     size_t field_ = 0, current_page_ = 0, pages_ = 1, peer_index_ = 0;
     uint64_t document_turn_ = 0; // Last turn that explicitly used the screen capability.
     uint64_t turn_ = 0, next_id_ = uint64_t(esp_random()) << 32U;
+    bool turn_accepted_ = false; // Gates model/speech requests until Chat accepts current turn_.
     static constexpr size_t stage_capacity = 8;
     std::array<std::string, stage_capacity> stages_{};
     size_t stage_count_ = 0;
@@ -327,11 +328,14 @@ void Runtime::clear_preview() {
 }
 void Runtime::cancel() {
     if (motor_.active()) {
-        motor_.stop(transport_);
+        // Ordinary UI cancel performs recoverable soft-stop (stays ARMED); touchscreen red Stop
+        // calls motor_.stop(transport_) explicitly for latched hard E-stop (ADR-0111).
+        transport_.request_motor_soft_stop();
     }
     remote_.cancel_recording();
     api_.cancel_all();
     clear_preview();
+    turn_accepted_ = false;
     if (capacity_ == Capacity::measuring) {
         message("正在取消容量测试");
         return; // No Core goal or physical operation belongs to this synthetic test.
@@ -372,8 +376,9 @@ void Runtime::send(std::string_view text, uint64_t id) {
         message("等待网络校时；未创建对话任务");
         return;
     }
-    if (!ready() || !station_.connected() || busy() || recognizing() || text.empty() ||
-        text.size() > input_bytes || restarting()) {
+    if (!ready() || !station_.connected() || motor_check_id_.has_value() ||
+        capacity_ != Capacity::idle || recognizing() || text.empty() || text.size() > input_bytes ||
+        restarting()) {
         message("会话未就绪、忙碌或输入超限，未发送");
         return;
     }
@@ -385,11 +390,20 @@ void Runtime::send(std::string_view text, uint64_t id) {
     if (!id) {
         id = ++next_id_;
     }
+    const bool barge_in = busy();
+    if (barge_in) {
+        if (motor_.active()) {
+            transport_.request_motor_soft_stop();
+        }
+        api_.cancel_all();
+        clear_preview();
+    }
     if (!transport_.post(Kind::user, id, text.data(), text.size())) {
         message("输入队列已满，未发送");
         return;
     }
     turn_ = id;
+    turn_accepted_ = false;
     speech_error_.clear();
     work_ = Work::running;
     stage_count_ = 0;
@@ -398,12 +412,12 @@ void Runtime::send(std::string_view text, uint64_t id) {
         entry.clear();
     }
     clear_preview();
-    stage("输入已提交给Ayni");
+    stage(barge_in ? "已打断旧任务，新输入已提交给Ayni" : "输入已提交给Ayni");
     transcript_.assign(text);
     answer_.clear();
     page_ = Page::history;
     current_page_ = 0;
-    message("已发送，Ayni 正在处理");
+    message(barge_in ? "已打断旧任务，正在处理新指令" : "已发送，Ayni 正在处理");
 }
 void Runtime::packets() {
     while (transport_.take_output(packet_)) {
@@ -431,7 +445,7 @@ void Runtime::packets() {
                                   notice.phase == MotorCheckNotice::Phase::failed ||
                                   notice.phase == MotorCheckNotice::Phase::cancelled;
             if (terminal) {
-                if (notice.phase != MotorCheckNotice::Phase::completed) {
+                if (notice.phase == MotorCheckNotice::Phase::failed) {
                     motor_.stop(transport_);
                 }
                 motor_check_id_.reset();
@@ -454,7 +468,7 @@ void Runtime::packets() {
             break;
         case Kind::model_request:
         case Kind::template_model_request:
-            if (!api_started_ || restarting() || work_ != Work::running ||
+            if (!api_started_ || restarting() || work_ != Work::running || !turn_accepted_ ||
                 (packet_.kind == Kind::template_model_request &&
                  capacity_ != Capacity::template_turn && capacity_ != Capacity::loop_turn) ||
                 !api_.submit(packet_.kind == Kind::template_model_request
@@ -473,7 +487,7 @@ void Runtime::packets() {
             }
             break;
         case Kind::speech_request:
-            if (!api_started_ || restarting() || work_ != Work::running ||
+            if (!api_started_ || restarting() || work_ != Work::running || !turn_accepted_ ||
                 !api_.submit(Request::speech, id, body.data(), body.size())) {
                 transport_.post(Kind::audio_error, id, nullptr, 0);
             } else {
@@ -546,7 +560,10 @@ void Runtime::packets() {
                 session_status(Session::ready, "Ayni 就绪");
                 resources(transport_.diagnostics(), "ready");
             } else if (body == "accepted") {
-                stage("Ayni已接收，准备对话");
+                if (id == turn_) {
+                    turn_accepted_ = true;
+                    stage("Ayni已接收，准备对话");
+                }
             } else if (body == "preparing input: waiting for body cleanup") {
                 stage("正在收尾上一轮资源");
             } else if (body == "preparing input: waiting for input storage") {
@@ -554,8 +571,9 @@ void Runtime::packets() {
             } else if (body == "preparing input: creating task") {
                 stage("正在创建对话任务");
             } else if (turn_status(body) == TurnStatus::complete) {
-                if (id == turn_) {
+                if (id == turn_ && work_ != Work::recognizing) {
                     work_ = Work::idle;
+                    turn_accepted_ = false;
                     if (capacity_ == Capacity::template_turn) {
                         if (api_.submit(Request::capacity, ++next_id_)) {
                             capacity_ = Capacity::measuring;
@@ -578,10 +596,13 @@ void Runtime::packets() {
                     (capacity_ == Capacity::template_turn || capacity_ == Capacity::loop_turn)) {
                     capacity_ = Capacity::idle;
                 }
-                if (id == turn_) {
+                if (id == turn_ && work_ != Work::recognizing) {
                     work_ = Work::idle;
+                    turn_accepted_ = false;
+                    message(body);
+                } else if (id == 0) {
+                    message(body);
                 }
-                message(body);
             } else if (body.find("initialize failed") != body.npos ||
                        body.find("restricted") != body.npos ||
                        body.find("stopped/held") != body.npos) {
@@ -856,6 +877,7 @@ void Runtime::web_changes() {
         if (editable && ready() && api_started_ && api_.idle() &&
             transport_.post(Kind::context_template, ++next_id_, size, sizeof(size))) {
             turn_ = next_id_;
+            turn_accepted_ = false;
             capacity_ = full_loop ? Capacity::loop_turn : Capacity::template_turn;
             work_ = Work::running;
             web_.editable(false);
@@ -1522,17 +1544,32 @@ void Runtime::run() {
             }
         }
         reset_progress();
-        remote_.allow_recording(ready() && clock_ready && connected && !busy() && !recognizing() &&
-                                !restarting() && remote_snapshot_.state == Remote::State::ready &&
+        const bool can_barge_in = ready() && clock_ready && connected && !motor_check_id_ &&
+                                  capacity_ == Capacity::idle && !voice_setting_ &&
+                                  !recognizing() && !restarting();
+        remote_.allow_recording(can_barge_in && remote_snapshot_.state == Remote::State::ready &&
                                 page_ != Page::keyboard);
         uint8_t *recording = nullptr;
         size_t bytes = 0;
         if (remote_.take_audio(recording, bytes)) {
-            if (ready() && clock_ready && connected && !busy() && !recognizing() && !restarting() &&
-                api_started_ &&
-                api_.submit(Request::recognize, ++next_id_, nullptr, 0, recording, bytes)) {
+            const bool barge_in = busy();
+            if (barge_in && can_barge_in && api_started_) {
+                if (motor_.active()) {
+                    transport_.request_motor_soft_stop();
+                }
+                api_.cancel_all();
+                clear_preview();
+                transport_.post(Kind::cancel, turn_, nullptr, 0);
+            }
+            const auto recognize_id = ++next_id_;
+            if (can_barge_in && api_started_ &&
+                api_.submit(Request::recognize, recognize_id, nullptr, 0, recording, bytes)) {
+                if (barge_in) {
+                    turn_ = recognize_id;
+                }
                 work_ = Work::recognizing;
-                message("松键录音完成，正在 ASR 转写");
+                turn_accepted_ = false;
+                message(barge_in ? "已打断旧任务，正在 ASR 转写" : "松键录音完成，正在 ASR 转写");
             } else {
                 std::memset(recording, 0, bytes);
                 heap_caps_free(recording);

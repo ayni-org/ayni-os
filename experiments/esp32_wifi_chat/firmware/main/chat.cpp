@@ -42,7 +42,8 @@ constexpr char instructions[] =
     "设备会按提交顺序逐个执行完前一步再执行下一步，不会并发争抢电机；每一步仍会独立校验"
     "参数、权限与当前状态。用户明确要求多个动作且每一步的参数和顺序都已确定时，在同一回复中"
     "按顺序一次性提交这些 invoke 调用，不要拆成多轮；顺序动作不要使用 operation=\"start\"，"
-    "动作之间也不要调用 motor.stop（motor.stop 会锁存停止，需重启恢复）。"
+    "动作之间无需调用 motor.stop；需要立即停机时可调用 motor.stop（可恢复软停，停机后仍可继续"
+    "执行新动作；触屏红色急停按钮为硬件锁存急停，需重启恢复）。"
     "后一步的选择或参数依赖前一步的观测结果时，只提交当前可以确定的步骤，收到结果后再决定其余步骤"
     "。";
 template <class T> T sized() {
@@ -494,7 +495,7 @@ ayni_status_t Chat::configure_motor_check() {
         return result;
     };
     owner.stop = [](void *context) {
-        static_cast<Chat *>(context)->transport_.request_motor_stop();
+        static_cast<Chat *>(context)->transport_.request_motor_soft_stop();
     };
     owner.notify = [](void *context, uint64_t id, const MotorCheckNotice &notice) {
         auto &self = *static_cast<Chat *>(context);
@@ -663,6 +664,7 @@ ayni_status_t Chat::configure_strategy() {
     protocol_options_.reply_encoding = ayni::model::ReplyEncoding::framed;
     config.projection = ayni::providers::model_protocol::Protocol::projection(protocol_options_);
     config.tool_observer = {this, on_tool_outcome};
+    config.tool_preemption = AYNI_CALL_PREEMPT_SUPERSEDE;
     auto status = loop_.configure(config, &workspace_);
     if (status != AYNI_OK) {
         return status;
@@ -1091,6 +1093,15 @@ void Chat::incoming(const Packet &p) {
     if (p.kind == Kind::cancel || p.kind == Kind::shutdown || p.kind == Kind::maintenance_stop) {
         motor_check_.cancel();
         reply_voice_.cancel();
+        speaker_.request_stop();
+        if (p.kind == Kind::cancel) {
+            motor_.execution().request_soft_stop();
+            if (pending_user_ && (!p.id || p.id == pending_user_->id)) {
+                pending_user_.reset();
+            }
+        } else {
+            pending_user_.reset();
+        }
     }
     if (p.kind == Kind::maintenance_stop) {
         // Keep file ports alive while the API worker exits its borrowed reads.
@@ -1107,6 +1118,7 @@ void Chat::incoming(const Packet &p) {
         // Rebuild and OTA both require confirmed STOPPED before touching their flash
         // regions. Public shutdown needs no spare command/Goal slot to cancel work.
         announced_ = false;
+        pending_user_.reset();
         stop_outputs();
         if (!kernel_ || closing_ == Closing::stopped || closing_ == Closing::kernel) {
             return; // Already closing/closed; keep the original STOPPED report authoritative.
@@ -1166,40 +1178,77 @@ void Chat::incoming(const Packet &p) {
     } else if (p.kind == Kind::display_ack && screen_ == ScreenState::waiting &&
                p.id == screen_call_) {
         screen_ = p.size == 1 && p.body[0] == 1 ? ScreenState::painted : ScreenState::failed;
-    } else if (p.kind == Kind::user || p.kind == Kind::context_template) {
-        const bool probe = p.kind == Kind::context_template;
-        if (!announced_ || turn_state_ != Turn::idle || motor_check_.active() ||
-            forget_ != Forget::none || closing_ != Closing::open || !history_.ready() ||
-            (!probe && (!p.size || p.size > input_bytes))) {
+    } else if (p.kind == Kind::user) {
+        if (!announced_ || motor_check_.active() || forget_ != Forget::none ||
+            closing_ != Closing::open || !p.size || p.size > input_bytes) {
+            status(p.id, "input refused: not ready/busy/over limit");
+            return;
+        }
+        const std::string_view incoming_text(reinterpret_cast<const char *>(p.body.data()), p.size);
+        if (turn_state_ == Turn::idle && history_.ready() && !pending_user_) {
+            start_user_turn(p.id, incoming_text);
+            return;
+        }
+        // Live barge-in (ADR-0111): immediately soft-stop in-flight outputs (stays ARMED),
+        // cancel the active turn, and retain only the newest prompt in the 1-slot buffer.
+        reply_voice_.cancel();
+        speaker_.request_stop();
+        motor_.execution().request_soft_stop();
+        const uint64_t superseded = pending_user_ ? pending_user_->id : turn_;
+        if (pending_user_) {
+            transport_.diagnostics().record(
+                "wifi barge_in_supersede dropped_turn=%llu new_turn=%llu\n",
+                static_cast<unsigned long long>(pending_user_->id),
+                static_cast<unsigned long long>(p.id));
+        }
+        pending_user_ = PendingUser{p.id, std::string(incoming_text), superseded,
+                                    uint64_t(esp_timer_get_time())};
+        if (turn_state_ == Turn::input) {
+            end_turn("turn failed/cancelled: superseded by newer input");
+        } else if (turn_state_ == Turn::answer) {
+            reply_intent_ = ReplyIntent::cancelled;
+            reply_end_ = "turn failed/cancelled; answer retained; no automatic retry";
+            turn_state_ = Turn::reply_done;
+        } else if (turn_state_ != Turn::idle) {
+            reply_intent_ = ReplyIntent::cancelled;
+            if (turn_state_ == Turn::running && (goal_ || history_.active())) {
+                if (!probe_ && history_.active() && history_.cancel() == AYNI_OK) {
+                    cancel_requested_ = false;
+                } else {
+                    cancel_requested_ = true;
+                }
+            }
+        }
+        progress_ = true;
+    } else if (p.kind == Kind::context_template) {
+        if (!announced_ || turn_state_ != Turn::idle || pending_user_.has_value() ||
+            motor_check_.active() || forget_ != Forget::none || closing_ != Closing::open ||
+            !history_.ready()) {
             status(p.id, "input refused: not ready/busy/over limit");
             return;
         }
         probe_.reset();
-        if (probe) {
-            if ((p.size != 0 && p.size != sizeof(uint32_t)) ||
-                (p.size && get32(p.body.data()) != current_history_probe &&
-                 get32(p.body.data()) > harness::model_body_bytes / SyntheticHistory::han.size())) {
-                status(p.id, "input refused: invalid diagnostic size");
-                return;
-            }
-            probe_.emplace();
-            const auto mode = p.size ? get32(p.body.data()) : 0;
-            if (mode == current_history_probe) {
-                probe_->source = ProbeTurn::Source::current_history;
-                const auto *current = history_.record();
-                transport_.diagnostics().record(
-                    "wifi probe current_history rounds=%lu history_bytes=%lu no_model_http=1\n",
-                    static_cast<unsigned long>(current ? current->round_count : 0),
-                    static_cast<unsigned long>(current ? current->history_bytes : 0));
-            } else {
-                probe_->characters = mode;
-            }
-            transport_.diagnostics().record("wifi probe template_begin history_rounds=%llu\n",
-                                            static_cast<unsigned long long>(rounds()));
-            input_ = "synthetic context diagnostic";
-        } else {
-            input_.assign(reinterpret_cast<const char *>(p.body.data()), p.size);
+        if ((p.size != 0 && p.size != sizeof(uint32_t)) ||
+            (p.size && get32(p.body.data()) != current_history_probe &&
+             get32(p.body.data()) > harness::model_body_bytes / SyntheticHistory::han.size())) {
+            status(p.id, "input refused: invalid diagnostic size");
+            return;
         }
+        probe_.emplace();
+        const auto mode = p.size ? get32(p.body.data()) : 0;
+        if (mode == current_history_probe) {
+            probe_->source = ProbeTurn::Source::current_history;
+            const auto *current = history_.record();
+            transport_.diagnostics().record(
+                "wifi probe current_history rounds=%lu history_bytes=%lu no_model_http=1\n",
+                static_cast<unsigned long>(current ? current->round_count : 0),
+                static_cast<unsigned long>(current ? current->history_bytes : 0));
+        } else {
+            probe_->characters = mode;
+        }
+        transport_.diagnostics().record("wifi probe template_begin history_rounds=%llu\n",
+                                        static_cast<unsigned long long>(rounds()));
+        input_ = "synthetic context diagnostic";
         turn_ = p.id;
         timing_ = {};
         model_requests_ = 0;
@@ -1995,8 +2044,43 @@ ayni_status_t Chat::observe_probe(const ayni_kernel_info_v1 &info) {
     }
     return AYNI_OK;
 }
+void Chat::start_user_turn(uint64_t id, std::string_view user_text) {
+    probe_.reset();
+    input_.assign(user_text.data(), user_text.size());
+    turn_ = id;
+    timing_ = {};
+    model_requests_ = 0;
+    const auto accepted = capture_phase_snapshot();
+    turn_started_ = accepted.at_us;
+    timing_.phase_started_us = turn_started_;
+    timing_.publication.reset(turn_);
+    timing_.last_motor_dispatch = motor_.execution().latest_dispatch();
+    timing_.storage = accepted.storage;
+    timing_.accepted_space = {timing_.storage.foreground_measures,
+                              timing_.storage.foreground_measure_us, timing_.storage.idle_measures,
+                              timing_.storage.idle_measure_us};
+    reply_intent_ = ReplyIntent::present;
+    hold_reported_ = false;
+    preparation_wait_ = {};
+    turn_state_ = Turn::input;
+    progress_ = true;
+    status(turn_, "accepted");
+    trace("accepted", accepted);
+}
 // One user turn: durable input body, Goal, completed Task, durable record, then the answer.
 ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
+    if (pending_user_ && turn_state_ == Turn::idle && history_.ready() && announced_ &&
+        closing_ == Closing::open && forget_ == Forget::none && !motor_check_.active()) {
+        auto next = std::move(*pending_user_);
+        pending_user_.reset();
+        const auto now_us = uint64_t(esp_timer_get_time());
+        const auto switch_ms = now_us >= next.at_us ? (now_us - next.at_us) / 1000 : 0;
+        transport_.diagnostics().record(
+            "wifi barge_in old_turn=%llu new_turn=%llu switch_ms=%llu\n",
+            static_cast<unsigned long long>(next.old_turn),
+            static_cast<unsigned long long>(next.id), static_cast<unsigned long long>(switch_ms));
+        start_user_turn(next.id, next.text);
+    }
     if (forget_ == Forget::requested && turn_state_ == Turn::idle && history_.ready()) {
         const auto rc = history_.forget(AYNI_CONTEXT_ERASE_ALL);
         if (rc == AYNI_OK) {

@@ -135,6 +135,21 @@ ayni_submit_result_t MotorExecution::submit(const ayni_provider_request_v1 *requ
     trace_handoff("dispatch", start.call, dispatched);
     return AYNI_SUBMIT_ACCEPTED;
 }
+ayni_submit_result_t MotorExecution::submit_soft_stop(const ayni_provider_request_v1 *request,
+                                                      ayni_provider_completion_t *completion) {
+    if (!request || !completion) {
+        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    }
+    Message message{};
+    message.kind = MessageKind::soft_stop;
+    message.soft_stop = {request->attempt, completion};
+    if (!send(message)) {
+        // Still engage the overflow-proof soft-stop latch so PWM stops even under inbox pressure.
+        soft_stop_.store(true, std::memory_order_release);
+        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    }
+    return AYNI_SUBMIT_ACCEPTED;
+}
 ayni_submit_result_t MotorExecution::cancel(ayni_attempt_ref_v1 attempt) {
     Message message{};
     message.kind = MessageKind::cancel;
@@ -165,6 +180,13 @@ void MotorExecution::receive(Kind kind, uint64_t id, const uint8_t *data, size_t
 void MotorExecution::request_stop() {
     local_stop_.store(true, std::memory_order_release);
 }
+void MotorExecution::request_soft_stop() {
+    soft_stop_.store(true, std::memory_order_release);
+    // Wake the control worker immediately instead of waiting for the next 1-tick inbox timeout.
+    Message message{};
+    message.kind = MessageKind::soft_stop;
+    static_cast<void>(send(message));
+}
 ayni_status_t MotorExecution::advance() {
     if (initialization_ == Initialization::failed && !worker_ && !initialization_reported_) {
         constexpr char failure[] = "motor initialization failed";
@@ -193,6 +215,11 @@ void MotorExecution::handle_message(const Message &message) {
     case MessageKind::frame:
         receive_owner(message.frame_kind, message.frame_id, message.frame.data(),
                       message.frame_size);
+        break;
+    case MessageKind::soft_stop:
+        if (message.soft_stop.completion) {
+            serve_soft_stop(message.soft_stop);
+        }
         break;
     case MessageKind::port: {
         auto &slot = requests_[message.port.kind - 1];

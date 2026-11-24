@@ -67,6 +67,7 @@ class Chat {
     ayni_status_t close_session(const ayni_kernel_info_v1 &);
     ayni_status_t observe_probe(const ayni_kernel_info_v1 &);
     ayni_status_t converse(const ayni_kernel_info_v1 &);
+    void start_user_turn(uint64_t id, std::string_view user_text);
     bool hot_tool_transition() const;
     ayni_status_t present_reply();
     void finish_voice(ayni_status_t);
@@ -156,6 +157,14 @@ class Chat {
     // One turn at a time: its text until the Goal exists, then the Goal until its answer.
     enum class Turn { idle, input, running, saving, answer, speaking, reply_done };
     Turn turn_state_ = Turn::idle;
+    // Latest-wins 1-slot live barge-in queue; promoted as soon as the cancelled turn goes idle.
+    struct PendingUser {
+        uint64_t id = 0;
+        std::string text;
+        uint64_t old_turn = 0;
+        uint64_t at_us = 0;
+    };
+    std::optional<PendingUser> pending_user_;
     struct ProbeTurn {
         enum class Source { synthetic, current_history } source = Source::synthetic;
         uint32_t characters = 0; // Zero only primes the transport template; otherwise Han text.

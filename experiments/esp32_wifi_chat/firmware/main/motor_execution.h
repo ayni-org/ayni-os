@@ -21,6 +21,10 @@ class MotorExecution {
     ayni_status_t initialize();
     ayni_executor_v1 ports();
     ayni_submit_result_t submit(const ayni_provider_request_v1 *, ayni_provider_completion_t *);
+    // Async recoverable soft-stop tool path: confirms GPIO low readback and keeps Mode::armed
+    // unless stop fails, in which case it auto-escalates to Mode::latched (ADR-0111).
+    ayni_submit_result_t submit_soft_stop(const ayni_provider_request_v1 *,
+                                          ayni_provider_completion_t *);
     ayni_submit_result_t cancel(ayni_attempt_ref_v1);
     ayni_status_t advance();
     uint64_t latest_dispatch() const { return latest_dispatch_; } // Owner thread only.
@@ -30,7 +34,8 @@ class MotorExecution {
     bool output_intervals(uint64_t from_us, uint64_t to_us, OutputIntervals &);
     void receive(Kind, uint64_t, const uint8_t *, size_t);
     void set_accepting(bool accepting) { accepting_.store(accepting, std::memory_order_release); }
-    void request_stop();
+    void request_stop();      // Latched hard E-stop (Mode::latched until reboot).
+    void request_soft_stop(); // Recoverable soft-stop (stays Mode::armed unless stop fails).
     void request_local_stop() { request_stop(); }
     int describe(char *out, size_t capacity) const;
     bool close();
@@ -59,12 +64,17 @@ class MotorExecution {
         ayni_permit_epochs_v1 epochs{};
         uint64_t permit_id = 0;
     };
-    enum class MessageKind { start, cancel, port, frame };
+    struct SoftStopRequest {
+        ayni_attempt_ref_v1 attempt{};
+        ayni_provider_completion_t *completion = nullptr;
+    };
+    enum class MessageKind { start, cancel, port, frame, soft_stop };
     struct Message {
         MessageKind kind = MessageKind::frame;
         Pending start{};
         ayni_attempt_ref_v1 cancel{};
         PortRequest port{};
+        SoftStopRequest soft_stop{};
         Kind frame_kind{};
         uint64_t frame_id = 0;
         uint32_t frame_size = 0;
@@ -89,6 +99,8 @@ class MotorExecution {
     ayni_status_t advance_owner();
     void receive_owner(Kind, uint64_t, const uint8_t *, size_t);
     void stop_owner();
+    ayni_status_t soft_stop_owner();
+    void serve_soft_stop(const SoftStopRequest &);
     bool close_owner();
     static ayni_status_t challenge_port(void *, ayni_attempt_ref_v1, const ayni_permit_epochs_v1 *,
                                         ayni_executor_completion_t *);
@@ -130,8 +142,8 @@ class MotorExecution {
     enum class Initialization { unattempted, failed, ready };
     Initialization initialization_ = Initialization::unattempted;
     // Independent latest-level interlocks bypass the command inbox.
-    std::atomic<bool> accepting_{false}, local_stop_{false}, inbox_open_{false}, closing_{false},
-        worker_stopped_{false};
+    std::atomic<bool> accepting_{false}, local_stop_{false}, soft_stop_{false}, inbox_open_{false},
+        closing_{false}, worker_stopped_{false};
     std::atomic<uint64_t> heartbeat_capture_{0};
     std::atomic<uint64_t> expected_stop_us_{0}; // Worker writes; owner reads for write pacing.
     std::atomic<ayni_status_t> worker_error_{AYNI_OK};
