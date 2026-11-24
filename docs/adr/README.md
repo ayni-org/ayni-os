@@ -170,3 +170,5 @@
 | [0108](0108-unified-conversation-and-result-storage.md) | 统一会话和结果存储，删除兼容与无限缓存 | 已接受；实施及本地验证见实验记录，不OTA | Session/FileBodies、BodyProgress、turn8/ANRV2/SQLite5 |
 
 | [0109](0109-owned-conversation-text-and-scoped-cleanup.md) | 不可变正文复用与按会话确认清理 | 已实施；本地验证及独立复查见实验记录，不OTA | Session/FileBodies、ToolLoop、ESP工具进度；ABI及持久格式不变 |
+
+| [0110](0110-ephemeral-execution-tier-and-immediate-resource-release.md) | 瞬态执行等级（Tier 0）、重启自动取消与内存即时释放资源 | 已接受并实施中（阶段 1） | ABI0.57、schema11、EPHEMERAL Call、内联停稳证明、ESP32 低时延交接 |
