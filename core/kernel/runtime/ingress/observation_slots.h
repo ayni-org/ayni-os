@@ -56,6 +56,8 @@ class ObservationSlots {
     struct Slot {
         std::atomic<uint32_t> state{none_slot << reading_shift};
         std::array<knowledge::ObservationInput, buffer_count> buffers{};
+        // Producer's validated boot_epoch stored beside buffers[i]; rejects cross-FENCED TOCTOU.
+        std::array<uint64_t, buffer_count> epochs{};
     };
 
     const catalog::ObservationSources &registry_; // Immutable after ayni_start().

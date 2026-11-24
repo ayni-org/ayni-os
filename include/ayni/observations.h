@@ -173,8 +173,9 @@ typedef struct ayni_observation_slot_info_v1 {
 } ayni_observation_slot_info_v1;
 
 /* Any non-ISR Host thread, RUNNING only. Lock-free triple-buffered latest-wins overwrite per
- * registered source; never returns BUSY under high sensor rates and wakes the Kernel owner
- * when transitioning a slot from clean to dirty. Since 0.59. */
+ * registered source; wakes the Kernel owner when transitioning a slot from clean to dirty.
+ * Single-writer per source is wait-free; under heavy multi-thread contention on the same source,
+ * returns AYNI_BUSY if the bounded writer-claim spin is exhausted. Since 0.59. */
 ayni_status_t ayni_publish_observation_latest(ayni_kernel_t *kernel,
                                               const ayni_observation_post_v1 *post);
 /* Any non-ISR thread; lock-free diagnostic snapshot of latest-wins observation slots.

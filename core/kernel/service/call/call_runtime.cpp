@@ -395,43 +395,55 @@ bool CallRuntime::collect_preempt_victims(uint32_t waiter_index, uint64_t now_us
         !control_.allowed(waiter_index, now_us, durable_seq)) {
         return false;
     }
-    std::array<resources::HeldConflict, AYNI_RESOURCE_GROUP_COUNT_MAX> conflicts{};
+    struct Check {
+        const CallRuntime *self;
+        ayni_call_preemption_t preemption;
+        uint32_t *out_victims;
+        uint32_t max_victims;
+        uint32_t *out_count;
+        uint64_t waiter_ticket = 0;
+        resources::Priority waiter_priority = resources::Priority::background;
+        bool eligible = true;
+    } check{this, active->preemption, out_victims, max_victims, &out_count};
     bool unavailable = false;
-    uint64_t waiter_ticket = 0;
-    auto waiter_priority = resources::Priority::background;
-    const uint32_t total = resources_.conflicting_holders(
-        active->call_id, conflicts.data(), static_cast<uint32_t>(conflicts.size()), unavailable,
-        waiter_ticket, waiter_priority);
-    if (unavailable || total == 0U || total > conflicts.size()) {
-        return false; // Quarantined/offline/faulted or overflow fails closed without preemption.
-    }
-    for (uint32_t at = 0; at < total; ++at) {
-        const auto &holder = conflicts[at];
-        // Priority enum orders foreground < normal < background; strictly greater means lower.
-        const bool priority_ok =
-            active->preemption == AYNI_CALL_PREEMPT_LOWER
-                ? holder.priority > waiter_priority
-                : (holder.priority >= waiter_priority && holder.ticket < waiter_ticket);
-        uint32_t victim_index = 0;
-        uint32_t victim_task = no_task;
-        if (!priority_ok || !work_.calls.find(holder.call_id, victim_index) ||
-            !slots_[victim_index].active || !resolve_call_task(victim_index, victim_task)) {
-            return false;
-        }
-        const auto &victim_state = work_.calls.state(victim_index);
-        const auto &victim_contract = work_.calls.contract(victim_index);
-        if (!victim_state.ephemeral || victim_state.outcome != 0U ||
-            victim_contract.cancel == catalog::CancelMode::none) {
-            return false; // Never preempt Tier 2 DURABLE or non-cancellable holders (ADR-0111).
-        }
-        if (victim_state.cancel_cause == work::CallCancelCause::none) {
-            if (out_victims != nullptr && out_count < max_victims) {
-                out_victims[out_count] = victim_index;
+    const uint32_t total = resources_.visit_conflicting_holders(
+        active->call_id, unavailable, check.waiter_ticket, check.waiter_priority, &check,
+        [](void *ctx, const resources::HeldConflict &holder) {
+            auto &c = *static_cast<Check *>(ctx);
+            // Priority enum orders foreground < normal < background; strictly greater means lower.
+            const bool priority_ok =
+                c.preemption == AYNI_CALL_PREEMPT_LOWER
+                    ? holder.priority > c.waiter_priority
+                    : (holder.priority >= c.waiter_priority && holder.ticket < c.waiter_ticket);
+            uint32_t victim_index = 0;
+            uint32_t victim_task = no_task;
+            if (!priority_ok || !c.self->work_.calls.find(holder.call_id, victim_index) ||
+                !c.self->slots_[victim_index].active ||
+                !c.self->resolve_call_task(victim_index, victim_task)) {
+                c.eligible = false;
+                return false;
             }
-            ++out_count;
-        }
-    }
-    return out_count > 0U;
+            const auto &victim_state = c.self->work_.calls.state(victim_index);
+            const auto &victim_contract = c.self->work_.calls.contract(victim_index);
+            if (!victim_state.ephemeral || victim_state.outcome != 0U ||
+                victim_contract.cancel == catalog::CancelMode::none) {
+                // Never preempt Tier 2 DURABLE or non-cancellable holders (ADR-0111).
+                c.eligible = false;
+                return false;
+            }
+            if (victim_state.cancel_cause == work::CallCancelCause::none) {
+                if (c.out_victims != nullptr) {
+                    if (*c.out_count >= c.max_victims) {
+                        c.eligible = false;
+                        return false;
+                    }
+                    c.out_victims[*c.out_count] = victim_index;
+                }
+                ++(*c.out_count);
+            }
+            return true;
+        });
+    return !unavailable && total > 0U && check.eligible && out_count > 0U;
 }
 
 bool CallRuntime::preemption_ready(uint32_t waiter_index, uint64_t now_us,
@@ -445,7 +457,7 @@ bool CallRuntime::preemption_ready(uint32_t waiter_index, uint64_t now_us,
 // dispatches AYNI_EXECUTOR_STOP immediately on the urgent lane (ADR-0111).
 CallRuntime::Advance CallRuntime::trigger_preemption(uint32_t waiter_index, uint64_t now_us,
                                                      uint64_t durable_seq) {
-    std::array<uint32_t, AYNI_RESOURCE_GROUP_COUNT_MAX> victims{};
+    std::array<uint32_t, AYNI_RESOURCE_REQUEST_CAPACITY_MAX> victims{};
     uint32_t count = 0;
     if (!collect_preempt_victims(waiter_index, now_us, durable_seq, victims.data(),
                                  static_cast<uint32_t>(victims.size()), count)) {

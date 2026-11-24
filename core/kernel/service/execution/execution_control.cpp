@@ -669,6 +669,11 @@ bool ExecutionControl::stopped_releasable(const resources::PermitLease &lease, u
         return false;
     }
     const auto &state = work_.calls.state(index);
+    if (mode == Mode::fenced && state.ephemeral) {
+        // Ephemeral stop facts are never persisted to WAL; once FENCED isolation stops and
+        // retires the transport borrow, release the lease so reload can proceed (ADR-0110).
+        return transport_.retiring(transport_.context, lease.call_id);
+    }
     if (!state.execution || !work::execution_stopped(*state.execution)) {
         return false;
     }
@@ -715,7 +720,7 @@ bool ExecutionControl::latch_closed_gates(uint64_t now_us, uint64_t durable_seq,
     for (uint32_t index = 0; index < permits_.capacity(); ++index) {
         const auto *lease = permits_.at(index);
         if (lease != nullptr && !lease->stopped && should_stop(*lease, now_us, durable_seq, mode) &&
-            !permits_.request_stop(lease->call_id)) {
+            !quarantine_lease(lease->call_id, lease->port_status)) {
             return false;
         }
     }

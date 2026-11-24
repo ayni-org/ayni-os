@@ -86,6 +86,7 @@ ayni_status_t ObservationSlots::publish_latest(uint64_t boot_epoch,
         ++write_idx;
     }
     slot.buffers[write_idx] = input;
+    slot.epochs[write_idx] = active_boot;
     bool overwrote = false;
     uint32_t s = slot.state.load(std::memory_order_relaxed);
     for (;;) {
@@ -128,6 +129,7 @@ bool ObservationSlots::drain(uint32_t source_index, knowledge::ObservationInput 
         }
     }
     out = slot.buffers[pinned];
+    const uint64_t sample_epoch = slot.epochs[pinned];
     s = slot.state.load(std::memory_order_relaxed);
     for (;;) {
         const uint32_t next = (s & ~(slot_mask << reading_shift)) | (none_slot << reading_shift);
@@ -135,6 +137,12 @@ bool ObservationSlots::drain(uint32_t source_index, knowledge::ObservationInput 
                                              std::memory_order_relaxed)) {
             break;
         }
+    }
+    const uint64_t active_boot = boot_.load(std::memory_order_acquire);
+    if (active_boot != 0U && sample_epoch != active_boot) {
+        // Discard a producer sample that raced a FENCED close/reload across boot epochs.
+        record_discarded();
+        return false;
     }
     return true;
 }

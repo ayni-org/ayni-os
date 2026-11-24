@@ -381,13 +381,14 @@ bool ResourceAdmission::blocks_waiter(const Entry &waiter, const Entry &held) co
     return false;
 }
 
-// Inspects every held request currently blocking waiter_call_id without mutating
-// queue state. Offline, faulted or quarantined targets fail closed so preemption
-// never fires while an actuator stop remains unconfirmed (ADR-0111).
-uint32_t ResourceAdmission::conflicting_holders(uint64_t waiter_call_id, HeldConflict *out,
-                                                uint32_t max_out, bool &out_blocked_by_unavailable,
-                                                uint64_t &out_waiter_ticket,
-                                                Priority &out_waiter_priority) const {
+// Streams every held request currently blocking waiter_call_id without mutating
+// queue state or allocating a conflict buffer. Offline, faulted or quarantined
+// targets fail closed so preemption never fires while an actuator stop remains
+// unconfirmed (ADR-0111).
+uint32_t ResourceAdmission::visit_conflicting_holders(
+    uint64_t waiter_call_id, bool &out_blocked_by_unavailable, uint64_t &out_waiter_ticket,
+    Priority &out_waiter_priority, void *context,
+    bool (*visitor)(void *, const HeldConflict &)) const {
     out_blocked_by_unavailable = false;
     out_waiter_ticket = 0;
     out_waiter_priority = Priority::background;
@@ -418,12 +419,35 @@ uint32_t ResourceAdmission::conflicting_holders(uint64_t waiter_call_id, HeldCon
         if (candidate.phase != Phase::held || !blocks_waiter(waiter, candidate)) {
             continue;
         }
-        if (out != nullptr && total < max_out) {
-            out[total] = {candidate.request.call_id, candidate.request.priority, candidate.ticket};
-        }
         ++total;
+        if (visitor != nullptr &&
+            !visitor(context,
+                     {candidate.request.call_id, candidate.request.priority, candidate.ticket})) {
+            break;
+        }
     }
     return total;
+}
+
+uint32_t ResourceAdmission::conflicting_holders(uint64_t waiter_call_id, HeldConflict *out,
+                                                uint32_t max_out, bool &out_blocked_by_unavailable,
+                                                uint64_t &out_waiter_ticket,
+                                                Priority &out_waiter_priority) const {
+    struct Capture {
+        HeldConflict *out;
+        uint32_t max_out;
+        uint32_t count;
+    } capture{out, max_out, 0};
+    return visit_conflicting_holders(waiter_call_id, out_blocked_by_unavailable, out_waiter_ticket,
+                                     out_waiter_priority, &capture,
+                                     [](void *ctx, const HeldConflict &item) {
+                                         auto &cap = *static_cast<Capture *>(ctx);
+                                         if (cap.out != nullptr && cap.count < cap.max_out) {
+                                             cap.out[cap.count] = item;
+                                         }
+                                         ++cap.count;
+                                         return true;
+                                     });
 }
 
 // Lists held Call IDs occupying resource_index or any conflict-domain partner without

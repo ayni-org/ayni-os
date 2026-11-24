@@ -2,7 +2,7 @@
 
 - **关联**：ADR-0067、ADR-0096；MA-020；C-HOST-018、C-VER-002。C ABI 0.45、schema 2 不变。
 
-当前为 ABI 0.56 / Core schema 10（共享正文与连续提交见 ADR-0104，通用工作区见 ADR-0090）；AP-06 接入及资源映射见 ADR-0087；上方版本说明保留 ADR-0067 的历史范围。Provider 用 `values.hpp` 的 `ayni::encoded_bytes`/`ayni::text_value_bytes` 测量契约的最大编码，组合根用 `runtime::fit_call_bytes` 取已注册契约的最大值，不手写信封字节。
+当前为 ABI 0.60 / Core schema 11（瞬态执行、资源抢占、控制会话/反射与异步审计环见 ADR-0110~0113，共享正文与连续提交见 ADR-0104，通用工作区见 ADR-0090）；AP-06 接入及资源映射见 ADR-0087；上方版本说明保留 ADR-0067 的历史范围。Provider 用 `values.hpp` 的 `ayni::encoded_bytes`/`ayni::text_value_bytes` 测量契约的最大编码，组合根用 `runtime::fit_call_bytes` 取已注册契约的最大值，不手写信封字节。
 
 | 编号 | 规范 | 反例 | 验证 |
 |---|---|---|---|

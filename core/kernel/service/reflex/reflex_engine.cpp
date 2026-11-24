@@ -198,20 +198,27 @@ uint64_t ReflexEngine::next_deadline_us(uint64_t now_us, uint64_t durable_seq) c
             !calls_.has_ephemeral_holder(rule.resource_index)) {
             continue;
         }
+        if ((rule.flags & AYNI_REFLEX_FLAG_EDGE_TRIGGERED) != 0U && rule.latched_active) {
+            continue; // Latched edge rule cannot refire until its trigger clears and rises again.
+        }
+        const uint64_t cooldown_end =
+            rule.has_fired && rule.cooldown_us != 0U
+                ? foundation::deadline(rule.last_fired_us, rule.cooldown_us)
+                : 0U;
         for (uint32_t at = 0; at < rule.condition_count; ++at) {
             const auto &cond = rule.conditions[at];
             ayni_observation_info_v1 info{};
-            if (observations_.info(view(cond.source), now_us, info) != AYNI_OK ||
-                info.usable == 0U) {
-                return now_us;
+            uint64_t raw_due = now_us;
+            if (observations_.info(view(cond.source), now_us, info) == AYNI_OK &&
+                info.usable != 0U) {
+                // condition_stale() uses strict age > max_age_us, so staleness starts at +1 us.
+                const uint64_t age_limit = foundation::deadline(
+                    foundation::deadline(info.captured_at_us, cond.max_age_us), 1U);
+                raw_due = age_limit < info.valid_until_us ? age_limit : info.valid_until_us;
             }
-            // condition_stale() uses strict age > max_age_us, so staleness starts at +1 us.
-            const uint64_t age_limit = foundation::deadline(
-                foundation::deadline(info.captured_at_us, cond.max_age_us), 1U);
-            const uint64_t stale_at =
-                age_limit < info.valid_until_us ? age_limit : info.valid_until_us;
-            if (stale_at < next) {
-                next = stale_at;
+            const uint64_t effective = raw_due < cooldown_end ? cooldown_end : raw_due;
+            if (effective < next) {
+                next = effective;
             }
         }
     }

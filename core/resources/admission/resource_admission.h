@@ -118,6 +118,12 @@ class ResourceAdmission {
     uint32_t conflicting_holders(uint64_t waiter_call_id, HeldConflict *out, uint32_t max_out,
                                  bool &out_blocked_by_unavailable, uint64_t &out_waiter_ticket,
                                  Priority &out_waiter_priority) const;
+    // Streams every held request blocking waiter_call_id to visitor without allocating a conflict
+    // buffer; stops early if visitor returns false (ADR-0111).
+    uint32_t visit_conflicting_holders(uint64_t waiter_call_id, bool &out_blocked_by_unavailable,
+                                       uint64_t &out_waiter_ticket, Priority &out_waiter_priority,
+                                       void *context,
+                                       bool (*visitor)(void *, const HeldConflict &)) const;
     // Lists held Call IDs occupying resource_index or any resource in its conflict
     // domain without mutating queue state (ADR-0112). Returns total matching holders.
     uint32_t holders_of_resource(uint32_t resource_index, uint64_t *out_call_ids,
