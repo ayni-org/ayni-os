@@ -1,16 +1,23 @@
-/* C-PERMIT-012/ADR-0049: gate creation/destruction links from C99 without Core. */
+/* C-PERMIT-012/ADR-0049/ADR-0112: gate and ControlSession link from C99 without Core. */
 #include <ayni/control.h>
+#include <ayni/control_session.h>
 #include <stdio.h>
 #include <stdlib.h>
 
 int main(void) {
     size_t bytes = 0;
     size_t alignment = 0;
-    if (ayni_control_memory_requirements(&bytes, &alignment) != AYNI_OK) {
+    size_t session_bytes = 0;
+    size_t session_alignment = 0;
+    if (ayni_control_memory_requirements(&bytes, &alignment) != AYNI_OK ||
+        ayni_control_session_memory_requirements(&session_bytes, &session_alignment) != AYNI_OK) {
         return 1;
     }
     void *memory = malloc(bytes);
-    if (memory == NULL) {
+    void *session_memory = malloc(session_bytes);
+    if (memory == NULL || session_memory == NULL) {
+        free(session_memory);
+        free(memory);
         return 1;
     }
     ayni_control_config_v1 config = {0};
@@ -28,10 +35,25 @@ int main(void) {
     config.limits.fields[0].unit = (ayni_catalog_name_v1){1, "u"};
     config.limits.fields[0].maximum = 1;
     ayni_control_gate_t *gate = NULL;
+    ayni_control_session_t *session = NULL;
+    ayni_control_session_info_v1 info = {0};
+    info.struct_size = sizeof(info);
     const ayni_status_t created = ayni_control_create(&config, 0, memory, bytes, &gate);
+    const ayni_status_t session_created =
+        ayni_control_session_create(session_memory, session_bytes, &session);
+    const ayni_status_t session_info = session_created == AYNI_OK
+                                           ? ayni_control_session_get_info(session, &info)
+                                           : session_created;
+    const ayni_status_t session_destroyed =
+        session_created == AYNI_OK ? ayni_control_session_destroy(session) : session_created;
     const ayni_status_t destroyed = created == AYNI_OK ? ayni_control_destroy(gate) : created;
+    free(session_memory);
     free(memory);
-    printf("control gate: %zu bytes, alignment %zu; permit: %zu bytes\n", bytes, alignment,
-           sizeof(ayni_execution_permit_v1));
-    return destroyed == AYNI_OK ? 0 : 1;
+    printf("control gate: %zu bytes, alignment %zu; session: %zu bytes, alignment %zu; permit: %zu "
+           "bytes\n",
+           bytes, alignment, session_bytes, session_alignment, sizeof(ayni_execution_permit_v1));
+    return (destroyed == AYNI_OK && session_info == AYNI_OK &&
+            info.state == AYNI_CONTROL_SESSION_IDLE && session_destroyed == AYNI_OK)
+               ? 0
+               : 1;
 }

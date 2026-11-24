@@ -5,6 +5,8 @@
 #include <ayni/ayni.h>
 #include <ayni/host_authority.h>
 #include <ayni/memory.h>
+#include <ayni/observations.h>
+#include <ayni/reflex.h>
 #include <ayni/resources.h>
 #include <ayni/storage_format.h>
 #include <ayni/values.h>
@@ -324,6 +326,29 @@ int main(void) {
             expect(ayni_get_resource(kernel, resource.resource_id, &resource_info) == AYNI_OK &&
                        resource_info.state == AYNI_RESOURCE_FREE,
                    "query resource");
+    }
+    /* ADR-0112 (ABI 0.59): lock-free observation slot and reflex rule symbols link from C99. */
+    {
+        ayni_observation_slot_info_v1 slot_info = {0};
+        ayni_reflex_rule_v1 rule = {0};
+        ayni_reflex_info_v1 reflex_info = {0};
+        ayni_reflex_event_v1 reflex_event = {0};
+        const ayni_string_v1 rule_id = {"reflex.smoke", 12u};
+        slot_info.struct_size = (uint32_t)sizeof slot_info;
+        rule.struct_size = (uint32_t)sizeof rule;
+        reflex_info.struct_size = (uint32_t)sizeof reflex_info;
+        reflex_event.struct_size = (uint32_t)sizeof reflex_event;
+        failures += expect(ayni_get_observation_slots(kernel, &slot_info) == AYNI_OK &&
+                               slot_info.source_count == 0u,
+                           "observation slot snapshot links from C99");
+        failures += expect(ayni_register_reflex_rule(kernel, &rule) == AYNI_INVALID_ARGUMENT,
+                           "reflex registration links and rejects malformed rule");
+        failures += expect(ayni_set_reflex_enabled(kernel, rule_id, 1u) == AYNI_NOT_READY,
+                           "reflex runtime toggle links from C99 in CONFIGURING");
+        failures += expect(ayni_get_reflex_info(kernel, rule_id, &reflex_info) == AYNI_NOT_FOUND,
+                           "reflex info links from C99");
+        failures += expect(ayni_take_reflex_event(kernel, &reflex_event) == AYNI_NOT_FOUND,
+                           "reflex event drain links from C99");
     }
     failures +=
         expect(ayni_begin_shutdown(kernel) == AYNI_INVALID_STATE, "shutdown in CONFIGURING");

@@ -27,7 +27,9 @@ add_executable(ayni_unit_tests
     execution_facts_test.cpp
     ephemeral_execution_test.cpp
     preemption_test.cpp
+    reflex_and_session_test.cpp
     control_gate_test.cpp
+    control_session_test.cpp
     mock_provider_test.cpp
     mock_execution_test.cpp
     mock_tools_test.cpp

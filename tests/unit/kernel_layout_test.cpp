@@ -93,6 +93,8 @@ KernelCapacities every_store_capacities() {
     capacities.scene_capacity = 2;
     capacities.observation_source_capacity = 3;
     capacities.observation_ingress_capacity = 2;
+    capacities.reflex_capacity = 4;
+    capacities.reflex_event_capacity = 8;
     return capacities;
 }
 
