@@ -40,6 +40,10 @@ enum class PublicationStage {
     context_ready     // Exact CONTEXT_ACK became durable and context returned to IDLE/usable.
 };
 enum class PublicationAck { submitted, durable };
+// Ordinary publication GC policy (ADR-0113). Synchronous waits for superseded deletes before
+// CONTEXT_ACK (C-SDK-009 default); deferred enqueues superseded deletes asynchronously so
+// ordinary turns reach ready() immediately while privacy erasure and quiesce() still drain.
+enum class PublicationCollection { synchronous, deferred };
 // Optional owner-only diagnostic callback. Never mutates Session or reenters Session.
 struct PublicationObserver {
     void *context = nullptr;
@@ -61,6 +65,7 @@ struct Config {
     UnfinishedTurn unfinished = UnfinishedTurn::retain;
     strategies::Persistence persistence = strategies::Persistence::durable;
     PublicationObserver observer{}; // Optional; null disables publication stage callbacks.
+    PublicationCollection collection_mode = PublicationCollection::synchronous;
 };
 // Caller places this bounded object in suitable RAM (it contains large records).
 // Owner-thread, no reentry. poll performs bounded public-API/queue work, never waits.
@@ -100,6 +105,11 @@ class Session {
     bool take_result(TurnResult &out);
     // Borrow only until the next owner operation. Consume after any required body read succeeds.
     const TurnResult *pending_result() const;
+    // Reads the completed publication candidate's latest answer directly from RAM once
+    // checkpoint_ready has populated candidate_ (0 ms preview before durable ACK, ADR-0113).
+    // Returns NOT_FOUND when no publication candidate is active; TurnResult::published stays
+    // false until CONTEXT_ACK is durable.
+    ayni_status_t preview_answer(std::string &out) const;
     // Last poll observed a Core Task hold; resolves on that same Task.
     bool held() const { return held_; }
     // A turn owns work/publication or a retained terminal draft; initialization/forget are
@@ -198,6 +208,9 @@ class Session {
     bool held_ = false;                         // Last poll's public Task hold observation.
     // True iff the latest confirmed conversation_root file on storage holds a non-empty draft.
     bool draft_persisted_ = false;
+    // True after a deferred ordinary publication enqueued background superseded-body collection;
+    // drained before quiesce() returns OK and observed during privacy erasure (ADR-0113).
+    bool deferred_collection_pending_ = false;
     std::optional<TurnResult> result_; // Delivered once; history itself remains queryable.
 
     hosts::storage::FileValueResult answer_{}; // Published before completed_'s release store.

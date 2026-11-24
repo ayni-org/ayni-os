@@ -63,12 +63,17 @@ class FileBodies {
 
   private:
     static constexpr uint32_t chunk_bytes = 4096; // Background quantum, independent of AYFV max.
+    // Payloads at or below inline_payload_limit are stored inline inside the AYNB2 manifest
+    // file (1 FileValue op instead of manifest + chunk0). Larger bodies still use 4 KiB chunks.
+    static constexpr uint32_t inline_payload_limit = chunk_bytes;
     static constexpr uint32_t owner_limit = 64;
     static constexpr uint32_t manifest_header = 32;
     static constexpr uint32_t owner_bytes = 16;
-    static constexpr uint32_t manifest_bytes = manifest_header + owner_limit * owner_bytes;
-    static constexpr uint32_t manifest_magic = 0x424e5941; // AYNB; ADR-0104 body format 1.
-    static constexpr uint32_t manifest_format = 1;
+    static constexpr uint32_t manifest_bytes =
+        manifest_header + owner_limit * owner_bytes + inline_payload_limit;
+    static constexpr uint32_t manifest_magic = 0x424e5941; // AYNB; ADR-0113 body format 2.
+    static constexpr uint32_t manifest_format = 2;
+    static constexpr uint32_t flag_inline_payload = 0x1u;
     static constexpr size_t entry_limit = 4096; // Bounds ownership metadata independently of bytes.
     enum class State { checking, writing, loading, ready, durable, evicted, failed };
     struct Owner {
@@ -83,6 +88,9 @@ class FileBodies {
         uint64_t digest = 0;
         uint32_t size = 0;
         std::string bytes; // One immutable resident payload, shared by all owners.
+        // Transient payload bytes loaded solely to rewrite an evicted inline manifest (outside
+        // cache_limit_ so partial release/share never fails under tight cache budgets).
+        std::string inline_staging;
         State state = State::checking;
         ayni_status_t failure = AYNI_OK;
         std::vector<Owner> owners;       // Desired ownership; loaded before a durable confirmation.
@@ -95,7 +103,8 @@ class FileBodies {
         uint64_t revision = 0, saved_revision = 0; // Owner changes vs confirmed manifest.
         uint32_t chunk = 0;                        // Next payload chunk to load/write/remove.
         bool manifest_loaded = false;
-        bool pending = false;           // Exactly one worker borrow per entry.
+        bool optimistic_attempted = false; // Set after AYNI_STALE so fallback reads disk manifest.
+        bool pending = false;              // Exactly one worker borrow per entry.
         bool persist_requested = false; // confirm schedules persistence; stage alone owns only RAM.
         bool load_payload = false; // Only read requests payload RAM; metadata operations do not.
         bool staged = false;       // Bytes were accepted locally, so reads need no disk load.
@@ -108,6 +117,9 @@ class FileBodies {
         uint64_t id = 0;
         Operation operation = Operation::manifest_read;
         uint64_t revision = 0;
+        bool optimistic_create = false;  // Direct previous_generation=0 create; STALE falls back.
+        bool reload_inline_only = false; // Manifest read only refreshes inline bytes, not owners.
+        std::vector<Owner> optimistic_owners; // Snapshot of owners written in optimistic_create.
         std::string buffer; // Private immutable write image or exclusive read buffer.
         hosts::storage::FileValueRequest request;
     };
@@ -125,6 +137,7 @@ class FileBodies {
         static_cast<FileBodies *>(context)->collect(scope, keep);
     }
     static uint64_t identity(uint64_t scope, uint64_t digest);
+    static bool inline_body(uint32_t size) { return size <= inline_payload_limit; }
     static uint32_t chunks(uint32_t size);
     static bool owns(const Entry &, uint64_t id);
     static bool entry_pending(const Entry &);
@@ -133,8 +146,11 @@ class FileBodies {
     void drop_owner(Entry &, uint64_t id);
     bool apply_release(Entry &, Entry::Release &);
     static void retire_releases(Entry &);
-    bool decode_manifest(Entry &, const std::string &);
-    static std::string encode_manifest(const Entry &);
+    static ayni_status_t decode_manifest(Entry &, const std::string &, bool load_owners,
+                                         std::string_view *inline_out);
+    static std::string encode_manifest(const Entry &, const std::vector<Owner> &owners);
+    void apply_manifest_read(Entry &, Pending &, const hosts::storage::FileValueResult &);
+    void apply_manifest_write(Entry &, const Pending &, const hosts::storage::FileValueResult &);
     bool conflicting(const ayni_body_ref_v1 &) const;
     Entry *find(const ayni_body_ref_v1 &);
     Entry *metadata(const ayni_body_ref_v1 &); // Caller rejected digest collisions under the lock.

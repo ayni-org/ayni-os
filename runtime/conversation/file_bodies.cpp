@@ -46,7 +46,9 @@ uint64_t FileBodies::identity(uint64_t scope, uint64_t digest) {
     return mixed ? mixed : 1U;
 }
 uint32_t FileBodies::chunks(uint32_t size) {
-    return size ? (size - 1U) / chunk_bytes + 1U : 1U;
+    // AYNB2 stores payloads up to inline_payload_limit inside the manifest file itself, so
+    // small bodies have zero separate chunk files on storage (ADR-0113).
+    return inline_body(size) ? 0U : (size - 1U) / chunk_bytes + 1U;
 }
 bool FileBodies::valid_ref(const ayni_body_ref_v1 *ref) {
     return ref && ref->id && !ref->reserved;
@@ -160,45 +162,94 @@ void FileBodies::retire_releases(Entry &entry) {
                              entry.releases.end());
     } // Last-owner removal completes only after payload chunks and the manifest are deleted.
 }
-std::string FileBodies::encode_manifest(const Entry &entry) {
+// AYNB2 manifest layout (contracts/host/file_values.md, ADR-0113):
+// 32 B header (magic, format=2, size, owner_count, digest, flags, reserved=0), followed by
+// owner_count * 16 B (scope, id) pairs, followed by size inline payload bytes iff
+// flag_inline_payload is set (size <= inline_payload_limit).
+std::string FileBodies::encode_manifest(const Entry &entry, const std::vector<Owner> &owners) {
+    const bool is_inline = inline_body(entry.size);
+    const uint32_t flags = is_inline ? flag_inline_payload : 0U;
     std::string out;
+    out.reserve(manifest_header + owners.size() * owner_bytes + (is_inline ? entry.size : 0U));
     integer(out, manifest_magic, word_bytes);
     integer(out, manifest_format, word_bytes);
     integer(out, entry.size, word_bytes);
-    integer(out, entry.owners.size(), word_bytes);
+    integer(out, owners.size(), word_bytes);
     integer(out, entry.digest, wide_bytes);
-    integer(out, 0, wide_bytes);
-    for (const auto &owner : entry.owners) {
+    integer(out, flags, word_bytes);
+    integer(out, 0, word_bytes);
+    for (const auto &owner : owners) {
         integer(out, owner.scope, wide_bytes);
         integer(out, owner.id, wide_bytes);
     }
+    if (is_inline && entry.size) {
+        const std::string &payload =
+            entry.bytes.size() == entry.size ? entry.bytes : entry.inline_staging;
+        out.append(payload.data(), entry.size);
+    }
     return out;
 }
-bool FileBodies::decode_manifest(Entry &entry, const std::string &bytes) {
+// Validates one AYNB2 manifest image. Legacy format 1 or any unknown format returns
+// AYNI_UNSUPPORTED_VERSION so the old file is preserved untouched (ADR-0113).
+ayni_status_t FileBodies::decode_manifest(Entry &entry, const std::string &bytes, bool load_owners,
+                                          std::string_view *inline_out) {
     if (bytes.size() < manifest_header) {
-        return false;
+        return AYNI_STORAGE_FAILED;
     }
     size_t at = 0;
-    if (take(bytes, at, word_bytes) != manifest_magic ||
-        take(bytes, at, word_bytes) != manifest_format ||
-        take(bytes, at, word_bytes) != entry.size) {
-        return false;
+    if (take(bytes, at, word_bytes) != manifest_magic) {
+        return AYNI_STORAGE_FAILED;
+    }
+    if (take(bytes, at, word_bytes) != manifest_format) {
+        return AYNI_UNSUPPORTED_VERSION;
+    }
+    if (take(bytes, at, word_bytes) != entry.size) {
+        return AYNI_STORAGE_FAILED;
     }
     const auto count = take(bytes, at, word_bytes);
-    if (!count || count > owner_limit || bytes.size() != manifest_header + count * owner_bytes ||
-        take(bytes, at, wide_bytes) != entry.digest || take(bytes, at, wide_bytes)) {
-        return false;
+    const auto digest = take(bytes, at, wide_bytes);
+    const auto flags = take(bytes, at, word_bytes);
+    const auto reserved = take(bytes, at, word_bytes);
+    const bool expected_inline = inline_body(entry.size);
+    const uint32_t expected_flags = expected_inline ? flag_inline_payload : 0U;
+    const uint64_t expected_bytes =
+        manifest_header + count * owner_bytes + (expected_inline ? entry.size : 0U);
+    if (!count || count > owner_limit || digest != entry.digest || flags != expected_flags ||
+        reserved != 0U || static_cast<uint64_t>(bytes.size()) != expected_bytes) {
+        return AYNI_STORAGE_FAILED;
+    }
+    std::vector<Owner> parsed;
+    if (load_owners) {
+        parsed.reserve(static_cast<size_t>(count));
     }
     for (uint32_t index = 0; index < count; ++index) {
         const auto scope = take(bytes, at, wide_bytes), id = take(bytes, at, wide_bytes);
-        if (id != identity(scope, entry.digest) ||
-            std::any_of(entry.owners.begin(), entry.owners.end(),
-                        [id](const auto &owner) { return owner.id == id; })) {
-            return false;
+        if (id != identity(scope, entry.digest)) {
+            return AYNI_STORAGE_FAILED;
         }
-        entry.owners.push_back({scope, id});
+        if (load_owners) {
+            if (std::any_of(parsed.begin(), parsed.end(),
+                            [id](const auto &owner) { return owner.id == id; })) {
+                return AYNI_STORAGE_FAILED;
+            }
+            parsed.push_back({scope, id});
+        }
     }
-    return true;
+    if (expected_inline) {
+        const ayni_bytes_v1 inline_bytes{
+            entry.size ? reinterpret_cast<const uint8_t *>(bytes.data() + at) : nullptr,
+            entry.size};
+        if (ayni_body_digest(inline_bytes) != entry.digest) {
+            return AYNI_STORAGE_FAILED;
+        }
+        if (inline_out) {
+            *inline_out = std::string_view(bytes.data() + at, entry.size);
+        }
+    }
+    if (load_owners) {
+        entry.owners = std::move(parsed);
+    }
+    return AYNI_OK;
 }
 // Stage accepts one immutable payload. All scope owners share those bytes and their files;
 // manifest changes are confirmed separately, so an accepted tail can be used immediately.
@@ -587,8 +638,25 @@ bool FileBodies::prepare(uint64_t id, Entry &entry) {
     using Role = hosts::storage::FileValueRole;
     request.role = Role::owner_manifest;
     if (!entry.manifest_loaded) {
-        pending.operation = Operation::manifest_read;
-        pending.buffer.resize(manifest_bytes);
+        // Brand-new small staged bodies skip the initial manifest_read probe and attempt a
+        // direct previous_generation=0 CAS create; AYNI_STALE falls back cleanly to manifest_read.
+        const bool can_optimistic = entry.staged && inline_body(entry.size) &&
+                                    !entry.optimistic_attempted && entry.persist_requested &&
+                                    !entry.deleting && !entry.additions.empty() &&
+                                    entry.releases.empty();
+        if (can_optimistic) {
+            pending.operation = Operation::manifest_write;
+            pending.optimistic_create = true;
+            pending.revision = entry.revision;
+            pending.optimistic_owners = entry.additions;
+            pending.buffer = encode_manifest(entry, pending.optimistic_owners);
+            request.kind = FileValueRequest::Kind::write;
+            request.previous_generation = 0;
+            request.generation = 1;
+        } else {
+            pending.operation = Operation::manifest_read;
+            pending.buffer.resize(manifest_bytes);
+        }
     } else if (entry.deleting) {
         pending.operation = Operation::remove;
         request.kind = FileValueRequest::Kind::remove;
@@ -600,6 +668,11 @@ bool FileBodies::prepare(uint64_t id, Entry &entry) {
         } else {
             request.logical_remove_bytes = entry.saved_manifest_bytes;
         }
+    } else if (entry.state == State::loading && inline_body(entry.size)) {
+        // Evicted inline bodies have no chunk files; re-read the AYNB2 manifest directly.
+        pending.operation = Operation::manifest_read;
+        pending.reload_inline_only = true;
+        pending.buffer.resize(manifest_bytes);
     } else if (entry.state == State::writing || entry.state == State::loading) {
         request.role = Role::body_chunk;
         const auto at = entry.chunk * chunk_bytes;
@@ -618,17 +691,26 @@ bool FileBodies::prepare(uint64_t id, Entry &entry) {
                 request.size ? reinterpret_cast<uint8_t *>(entry.bytes.data()) + at : nullptr;
         }
     } else if (entry.revision != entry.saved_revision) {
-        if (entry.generation == UINT64_MAX) {
-            entry.state = State::failed;
-            failure_ = entry.failure = AYNI_CAPACITY_EXCEEDED;
-            return false;
+        if (inline_body(entry.size) && entry.size && entry.bytes.size() != entry.size &&
+            entry.inline_staging.size() != entry.size) {
+            // An evicted inline entry undergoing share/partial-release needs its inline bytes
+            // reloaded into transient staging before writing the updated manifest.
+            pending.operation = Operation::manifest_read;
+            pending.reload_inline_only = true;
+            pending.buffer.resize(manifest_bytes);
+        } else {
+            if (entry.generation == UINT64_MAX) {
+                entry.state = State::failed;
+                failure_ = entry.failure = AYNI_CAPACITY_EXCEEDED;
+                return false;
+            }
+            pending.operation = Operation::manifest_write;
+            pending.revision = entry.revision;
+            pending.buffer = encode_manifest(entry, entry.owners);
+            request.kind = FileValueRequest::Kind::write;
+            request.previous_generation = entry.generation;
+            request.generation = entry.generation + 1U;
         }
-        pending.operation = Operation::manifest_write;
-        pending.revision = entry.revision;
-        pending.buffer = encode_manifest(entry);
-        request.kind = FileValueRequest::Kind::write;
-        request.previous_generation = entry.generation;
-        request.generation = entry.generation + 1U;
     } else {
         return false;
     }
@@ -670,6 +752,145 @@ void FileBodies::flush() {
         pending_.clear(); // Rejection retains neither buffers nor request; retry on owner progress.
     }
 }
+// Handles completion of both initial manifest discovery and inline payload reload.
+void FileBodies::apply_manifest_read(Entry &entry, Pending &pending,
+                                     const FileValueResult &result) {
+    const bool missing = result.status == AYNI_NOT_FOUND;
+    pending.buffer.resize(missing ? 0 : result.size);
+    std::string_view inline_slice;
+    if (pending.reload_inline_only) {
+        const auto decoded =
+            missing ? AYNI_NOT_FOUND : decode_manifest(entry, pending.buffer, false, &inline_slice);
+        if (decoded != AYNI_OK) {
+            entry.state = State::failed;
+            failure_ = entry.failure = decoded;
+            return;
+        }
+        if (entry.state == State::loading && !entry.deleting) {
+            if (entry.size) {
+                std::memcpy(entry.bytes.data(), inline_slice.data(), entry.size);
+            }
+            entry.state = State::ready;
+        } else if (entry.size && !entry.deleting) {
+            entry.inline_staging.assign(inline_slice.data(), inline_slice.size());
+        }
+        return;
+    }
+    if (!missing) {
+        const auto decoded = decode_manifest(entry, pending.buffer, true, &inline_slice);
+        if (decoded != AYNI_OK) {
+            entry.state = State::failed;
+            failure_ = entry.failure = decoded;
+            return;
+        }
+    }
+    if (missing && !entry.staged && entry.releases.empty()) {
+        entry.state = State::failed;
+        entry.failure = AYNI_NOT_FOUND;
+        std::string{}.swap(
+            entry.bytes); // Negative queries accepted no content and consume no quota.
+        return;
+    }
+    entry.manifest_loaded = true;
+    entry.generation = missing ? 0 : result.generation;
+    entry.saved_manifest_bytes = missing ? 0 : result.size;
+    // Merge local references into the durable owner set; repeated staging is idempotent.
+    for (const auto &owner : entry.additions) {
+        if (std::none_of(entry.owners.begin(), entry.owners.end(),
+                         [&](const auto &other) { return other.id == owner.id; })) {
+            entry.owners.push_back(owner);
+        }
+    }
+    entry.additions.clear();
+    if (entry.owners.size() > owner_limit) {
+        entry.state = State::failed;
+        failure_ = entry.failure = AYNI_CAPACITY_EXCEEDED;
+        return;
+    }
+    for (auto &release : entry.releases) {
+        if (!apply_release(entry, release)) {
+            break;
+        }
+        if (missing) {
+            release.revision = entry.saved_revision;
+        } // A missing manifest already proves absence; shared staged bytes stay RAM-only.
+    }
+    retire_releases(entry);
+    if (entry.owners.empty()) {
+        entry.deleting = true;
+        std::string{}.swap(entry.inline_staging);
+    }
+    if (entry.state == State::failed) {
+        return; // Preserve capacity failure from applying the cold ownership removals.
+    }
+    if (entry.staged) {
+        entry.state = (missing && !inline_body(entry.size)) ? State::writing : State::durable;
+    } else if (!entry.deleting) {
+        if (inline_body(entry.size)) {
+            if (entry.load_payload) {
+                if (entry.size) {
+                    std::memcpy(entry.bytes.data(), inline_slice.data(), entry.size);
+                }
+                entry.state = State::ready;
+            } else {
+                entry.state = State::evicted;
+                if (entry.size && entry.revision != entry.saved_revision) {
+                    entry.inline_staging.assign(inline_slice.data(), inline_slice.size());
+                }
+            }
+        } else {
+            entry.state = entry.load_payload ? State::loading : State::evicted;
+        }
+    }
+}
+// Handles completion of normal CAS manifest updates and optimistic previous_generation=0 creates.
+void FileBodies::apply_manifest_write(Entry &entry, const Pending &pending,
+                                      const FileValueResult &result) {
+    if (pending.optimistic_create && result.status == AYNI_STALE) {
+        // Content digest already exists on storage; fall back to standard manifest_read merge.
+        entry.optimistic_attempted = true;
+        entry.state = State::checking;
+        return;
+    }
+    if (result.status != AYNI_OK) {
+        entry.state = State::failed;
+        failure_ = entry.failure = result.status;
+        return;
+    }
+    entry.generation = result.generation;
+    entry.saved_manifest_bytes = pending.request.size;
+    entry.saved_revision = pending.revision;
+    if (pending.optimistic_create) {
+        entry.manifest_loaded = true;
+        entry.owners = pending.optimistic_owners;
+        for (const auto &owner : entry.additions) {
+            if (std::none_of(entry.owners.begin(), entry.owners.end(),
+                             [&](const auto &other) { return other.id == owner.id; })) {
+                entry.owners.push_back(owner);
+            }
+        }
+        entry.additions.clear();
+        if (entry.owners.size() > owner_limit) {
+            entry.state = State::failed;
+            failure_ = entry.failure = AYNI_CAPACITY_EXCEEDED;
+            return;
+        }
+        for (auto &release : entry.releases) {
+            if (!apply_release(entry, release)) {
+                break;
+            }
+        }
+        if (entry.owners.empty()) {
+            entry.deleting = true;
+        } else if (entry.state != State::failed) {
+            entry.state = State::durable;
+        }
+    }
+    retire_releases(entry);
+    if (entry.saved_revision == entry.revision || entry.deleting) {
+        std::string{}.swap(entry.inline_staging);
+    }
+}
 // Completion only updates the borrowed entry. An ownership update that raced the write stays
 // dirty; it cannot confirm until a later CAS writes the new complete owner set.
 void FileBodies::complete(void *context, const FileValueResult &result) noexcept {
@@ -680,65 +901,18 @@ void FileBodies::complete(void *context, const FileValueResult &result) noexcept
     self.scan_needed_ = true;
     auto &entry = self.entries_.at(pending->id);
     entry.pending = false;
-    const bool missing =
-        pending->operation == Operation::manifest_read && result.status == AYNI_NOT_FOUND;
+    const bool missing = pending->operation == Operation::manifest_read &&
+                         !pending->reload_inline_only && result.status == AYNI_NOT_FOUND;
+    const bool optimistic_stale = pending->operation == Operation::manifest_write &&
+                                  pending->optimistic_create && result.status == AYNI_STALE;
     bool erased = false;
-    if (result.status != AYNI_OK && !missing) {
+    if (result.status != AYNI_OK && !missing && !optimistic_stale) {
         entry.state = State::failed;
         self.failure_ = entry.failure = result.status;
     } else if (pending->operation == Operation::manifest_read) {
-        pending->buffer.resize(missing ? 0 : result.size);
-        if (!missing && !self.decode_manifest(entry, pending->buffer)) {
-            entry.state = State::failed;
-            self.failure_ = entry.failure = AYNI_STORAGE_FAILED;
-        } else if (missing && !entry.staged && entry.releases.empty()) {
-            entry.state = State::failed;
-            entry.failure = AYNI_NOT_FOUND;
-            std::string{}.swap(
-                entry.bytes); // Negative queries accepted no content and consume no quota.
-        } else {
-            entry.manifest_loaded = true;
-            entry.generation = missing ? 0 : result.generation;
-            entry.saved_manifest_bytes = missing ? 0 : result.size;
-            // Merge local references into the durable owner set; repeated staging is idempotent.
-            for (const auto &owner : entry.additions) {
-                if (std::none_of(entry.owners.begin(), entry.owners.end(),
-                                 [&](const auto &other) { return other.id == owner.id; })) {
-                    entry.owners.push_back(owner);
-                }
-            }
-            entry.additions.clear();
-            if (entry.owners.size() > owner_limit) {
-                entry.state = State::failed;
-                self.failure_ = entry.failure = AYNI_CAPACITY_EXCEEDED;
-            } else {
-                for (auto &release : entry.releases) {
-                    if (!self.apply_release(entry, release)) {
-                        break;
-                    }
-                    if (missing) {
-                        release.revision = entry.saved_revision;
-                    } // A missing manifest already proves absence; shared staged bytes stay
-                      // RAM-only.
-                }
-                self.retire_releases(entry);
-                if (entry.owners.empty()) {
-                    entry.deleting = true;
-                }
-                if (entry.state == State::failed) {
-                    // Preserve capacity failure from applying the cold ownership removals.
-                } else if (entry.staged) {
-                    entry.state = missing ? State::writing : State::durable;
-                } else if (!entry.deleting) {
-                    entry.state = entry.load_payload ? State::loading : State::evicted;
-                }
-            }
-        }
+        self.apply_manifest_read(entry, *pending, result);
     } else if (pending->operation == Operation::manifest_write) {
-        entry.generation = result.generation;
-        entry.saved_manifest_bytes = pending->request.size;
-        entry.saved_revision = pending->revision;
-        self.retire_releases(entry);
+        self.apply_manifest_write(entry, *pending, result);
     } else if (pending->operation == Operation::remove) {
         if (entry.chunk++ == chunks(entry.size)) {
             self.entries_.erase(pending->id);
@@ -763,14 +937,18 @@ void FileBodies::complete(void *context, const FileValueResult &result) noexcept
     }
     if (!erased && entry.awaited) {
         const bool manifest_done = pending->operation == Operation::manifest_read &&
-                                   entry.manifest_loaded && !entry.deleting &&
-                                   entry.state != State::loading && entry.state != State::writing &&
-                                   entry.releases.empty() && entry.saved_revision == entry.revision;
+                                   !pending->reload_inline_only && entry.manifest_loaded &&
+                                   !entry.deleting && entry.state != State::loading &&
+                                   entry.state != State::writing && entry.releases.empty() &&
+                                   entry.saved_revision == entry.revision;
+        const bool reload_done = pending->reload_inline_only && entry.state == State::ready;
         const bool read_done =
             pending->operation == Operation::payload_read && entry.state == State::ready;
         const bool write_done = pending->operation == Operation::manifest_write &&
-                                !entry.deleting && entry.saved_revision == entry.revision;
-        if (entry.state == State::failed || manifest_done || read_done || write_done) {
+                                entry.manifest_loaded && !entry.deleting &&
+                                entry.saved_revision == entry.revision;
+        if (entry.state == State::failed || manifest_done || reload_done || read_done ||
+            write_done) {
             entry.awaited = false;
         }
     }

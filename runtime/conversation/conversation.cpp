@@ -659,6 +659,15 @@ ayni_status_t Session::poll_step(bool *again) {
             phase_ = Phase::failed;
         } // An idle failed queue can be disposed, but cannot acknowledge a clean close.
     }
+    if (deferred_collection_pending_ && config_.bodies.collected) {
+        const auto drained = config_.bodies.collected(config_.bodies.context, current_.id);
+        if (drained == AYNI_OK) {
+            deferred_collection_pending_ = false;
+        } else if (drained != AYNI_BUSY) {
+            failure_ = drained;
+            phase_ = Phase::failed;
+        }
+    }
     if (phase_ == Phase::failed) {
         return failure_;
     }
@@ -755,7 +764,16 @@ ayni_status_t Session::poll_step(bool *again) {
     case Phase::collect:
         status = collect_superseded(*superseded_);
         if (status == AYNI_OK) {
-            phase_ = Phase::collecting;
+            if (save_ == Save::publication &&
+                config_.collection_mode == PublicationCollection::deferred) {
+                // Ordinary publication lets superseded deletes drain in the background so
+                // CONTEXT_ACK and ready() do not block on old file removal (ADR-0113).
+                superseded_.reset();
+                deferred_collection_pending_ = true;
+                phase_ = Phase::acknowledge;
+            } else {
+                phase_ = Phase::collecting;
+            }
         }
         break;
     case Phase::collecting:
@@ -768,6 +786,7 @@ ayni_status_t Session::poll_step(bool *again) {
                      : AYNI_OK;
         if (status == AYNI_OK) {
             superseded_.reset();
+            deferred_collection_pending_ = false;
             phase_ = save_ == Save::discard    ? Phase::ready
                      : save_ == Save::retained ? Phase::terminal
                                                : Phase::acknowledge;
@@ -995,8 +1014,33 @@ ayni_status_t Session::quiesce() {
     if (!ready() && phase_ != Phase::terminal) {
         return AYNI_BUSY;
     }
+    if (deferred_collection_pending_ && config_.bodies.collected) {
+        const auto drained = config_.bodies.collected(config_.bodies.context, current_.id);
+        if (drained != AYNI_OK) {
+            return drained;
+        }
+        deferred_collection_pending_ = false;
+    }
     return !config_.bodies.ready || config_.bodies.ready(config_.bodies.context, 0) ? AYNI_OK
                                                                                     : AYNI_BUSY;
+}
+ayni_status_t Session::preview_answer(std::string &out) const {
+    if (phase_ == Phase::empty) {
+        return AYNI_INVALID_STATE;
+    }
+    if (phase_ == Phase::failed) {
+        return failure_;
+    }
+    const bool in_publication = phase_ == Phase::prepare_publication ||
+                                phase_ == Phase::publishing ||
+                                (save_ == Save::publication &&
+                                 (phase_ == Phase::save || phase_ == Phase::saving ||
+                                  phase_ == Phase::collect || phase_ == Phase::collecting ||
+                                  phase_ == Phase::acknowledge || phase_ == Phase::acknowledged));
+    if (!in_publication || !candidate_.rounds.id) {
+        return AYNI_NOT_FOUND;
+    }
+    return Conversation::latest_answer(*config_.bodies.store, candidate_, out);
 }
 const TurnResult *Session::pending_result() const {
     if ((!ready() && phase_ != Phase::terminal) || !result_) {
