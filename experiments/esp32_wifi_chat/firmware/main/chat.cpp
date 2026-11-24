@@ -585,21 +585,27 @@ void Chat::drain_reflex_events() {
 }
 void Chat::drain_audit_records() {
     constexpr uint32_t batch_limit = 8;
+    constexpr uint32_t max_batches = 4;
     std::array<ayni_audit_record_v1, batch_limit> records{};
-    uint32_t count = 0;
-    if (ayni_take_audit_records(kernel_, records.data(), batch_limit, &count) != AYNI_OK) {
-        return;
-    }
-    for (uint32_t at = 0; at < count; ++at) {
-        const auto &rec = records[at];
-        transport_.diagnostics().record_ram(
-            "wifi audit seq=%llu kind=%lu subj=%llu aux=%llu status=%ld reason=%lu detail=%lu "
-            "flags=0x%lx label=%.*s\n",
-            static_cast<unsigned long long>(rec.seq), static_cast<unsigned long>(rec.kind),
-            static_cast<unsigned long long>(rec.subject_id),
-            static_cast<unsigned long long>(rec.auxiliary_id), long(rec.status),
-            static_cast<unsigned long>(rec.reason), static_cast<unsigned long>(rec.detail_code),
-            static_cast<unsigned long>(rec.flags), int(rec.label_size), rec.label);
+    for (uint32_t batch = 0; batch < max_batches; ++batch) {
+        uint32_t count = 0;
+        if (ayni_take_audit_records(kernel_, records.data(), batch_limit, &count) != AYNI_OK) {
+            return;
+        }
+        for (uint32_t at = 0; at < count; ++at) {
+            const auto &rec = records[at];
+            transport_.diagnostics().record_ram(
+                "wifi audit seq=%llu kind=%lu subj=%llu aux=%llu status=%ld reason=%lu detail=%lu "
+                "flags=0x%lx label=%.*s\n",
+                static_cast<unsigned long long>(rec.seq), static_cast<unsigned long>(rec.kind),
+                static_cast<unsigned long long>(rec.subject_id),
+                static_cast<unsigned long long>(rec.auxiliary_id), long(rec.status),
+                static_cast<unsigned long>(rec.reason), static_cast<unsigned long>(rec.detail_code),
+                static_cast<unsigned long>(rec.flags), int(rec.label_size), rec.label);
+        }
+        if (count < batch_limit) {
+            break;
+        }
     }
     auto audit_info = sized<ayni_audit_info_v1>();
     if (ayni_get_audit_info(kernel_, &audit_info) == AYNI_OK &&
@@ -1921,7 +1927,9 @@ ayni_status_t Chat::prepare_history(const ayni_kernel_info_v1 &info) {
     rc = history_.poll_with_progress(session_again);
     progress_ = progress_ || session_again;
     if (rc != AYNI_OK && rc != AYNI_BUSY && !history_.held()) {
-        status(turn_, "conversation store failed; no answer shown");
+        status(turn_, answer_presented_early_
+                          ? "conversation store failed; answer shown but not saved"
+                          : "conversation store failed; no answer shown");
         return rc;
     }
     if (!announced_ && !commands_.pending() && history_.ready()) {

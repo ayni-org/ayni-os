@@ -525,7 +525,7 @@ void Runtime::packets() {
                     page_ = Page::history;
                     current_page_ = 0;
                 }
-                message("回答已保存");
+                message("回答已生成，正在保存");
             }
             break;
         case Kind::status:
@@ -1553,16 +1553,19 @@ void Runtime::run() {
         size_t bytes = 0;
         if (remote_.take_audio(recording, bytes)) {
             const bool barge_in = busy();
+            bool barge_in_cancelled = true;
             if (barge_in && can_barge_in && api_started_) {
                 if (motor_.active()) {
                     transport_.request_motor_soft_stop();
                 }
-                api_.cancel_all();
-                clear_preview();
-                transport_.post(Kind::cancel, turn_, nullptr, 0);
+                barge_in_cancelled = transport_.post(Kind::cancel, turn_, nullptr, 0);
+                if (barge_in_cancelled) {
+                    api_.cancel_all();
+                    clear_preview();
+                }
             }
             const auto recognize_id = ++next_id_;
-            if (can_barge_in && api_started_ &&
+            if (can_barge_in && api_started_ && barge_in_cancelled &&
                 api_.submit(Request::recognize, recognize_id, nullptr, 0, recording, bytes)) {
                 if (barge_in) {
                     turn_ = recognize_id;
