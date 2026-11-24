@@ -210,8 +210,9 @@ class PublicationTimeline {
 
     bool has_session_stage() const { return (seen_ & session_stage_mask) != 0U; }
     bool complete() const {
-        return has_model_posted_ && seen_ == all_mask && order_ != Order::unknown &&
-               count_ == max_samples;
+        const bool synchronous = seen_ == all_mask && count_ == max_samples;
+        const bool deferred = seen_ == deferred_mask && count_ == max_samples - 1U;
+        return has_model_posted_ && order_ != Order::unknown && (synchronous || deferred);
     }
     size_t sample_count() const { return count_; }
     size_t segment_count() const { return count_ > 1U ? count_ - 1U : 0U; }
@@ -401,6 +402,9 @@ class PublicationTimeline {
     static constexpr uint8_t session_stage_mask = static_cast<uint8_t>((1U << stage_count) - 1U);
     static constexpr uint8_t answer_saved_bit = static_cast<uint8_t>(1U << stage_count);
     static constexpr uint8_t all_mask = static_cast<uint8_t>((1U << (stage_count + 1U)) - 1U);
+    static constexpr uint8_t collected_bit =
+        static_cast<uint8_t>(1U << static_cast<size_t>(Stage::collected));
+    static constexpr uint8_t deferred_mask = static_cast<uint8_t>(all_mask & ~collected_bit);
 
     static constexpr uint64_t delta(uint64_t earlier, uint64_t later) {
         return later >= earlier ? later - earlier : 0;

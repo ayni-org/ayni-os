@@ -583,6 +583,37 @@ void Chat::drain_reflex_events() {
         event.struct_size = sizeof(event);
     }
 }
+void Chat::drain_audit_records() {
+    constexpr uint32_t batch_limit = 8;
+    std::array<ayni_audit_record_v1, batch_limit> records{};
+    uint32_t count = 0;
+    if (ayni_take_audit_records(kernel_, records.data(), batch_limit, &count) != AYNI_OK) {
+        return;
+    }
+    for (uint32_t at = 0; at < count; ++at) {
+        const auto &rec = records[at];
+        transport_.diagnostics().record_ram(
+            "wifi audit seq=%llu kind=%lu subj=%llu aux=%llu status=%ld reason=%lu detail=%lu "
+            "flags=0x%lx label=%.*s\n",
+            static_cast<unsigned long long>(rec.seq), static_cast<unsigned long>(rec.kind),
+            static_cast<unsigned long long>(rec.subject_id),
+            static_cast<unsigned long long>(rec.auxiliary_id), long(rec.status),
+            static_cast<unsigned long>(rec.reason), static_cast<unsigned long>(rec.detail_code),
+            static_cast<unsigned long>(rec.flags), int(rec.label_size), rec.label);
+    }
+    auto audit_info = sized<ayni_audit_info_v1>();
+    if (ayni_get_audit_info(kernel_, &audit_info) == AYNI_OK &&
+        audit_info.dropped_overflow > audit_dropped_reported_) {
+        const auto lost = audit_info.dropped_overflow - audit_dropped_reported_;
+        audit_dropped_reported_ = audit_info.dropped_overflow;
+        transport_.diagnostics().record_ram(
+            "wifi audit_drop lost=%llu total_dropped=%llu pending=%lu/%lu\n",
+            static_cast<unsigned long long>(lost),
+            static_cast<unsigned long long>(audit_info.dropped_overflow),
+            static_cast<unsigned long>(audit_info.pending),
+            static_cast<unsigned long>(audit_info.capacity));
+    }
+}
 // Two model capabilities on one Provider and one slot: tool-calling turns for the ToolLoop and
 // text-only summaries for its compaction. Both egress to this boot's fixed destination.
 ayni_status_t Chat::configure_model() {
@@ -1632,6 +1663,7 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
         }
         if (rc == AYNI_OK) {
             drain_reflex_events();
+            drain_audit_records();
             rc = ayni_get_kernel_info(kernel_, &info);
             if (rc == AYNI_OK && turn_) {
                 emit_tool_decisions(info.durable_seq, elapsed, report);
@@ -1869,6 +1901,7 @@ ayni_status_t Chat::prepare_history(const ayni_kernel_info_v1 &info) {
         config.unfinished = ayni::runtime::conversation::UnfinishedTurn::discard;
         config.persistence = ayni::strategies::Persistence::background;
         config.observer = {this, on_publication_stage, on_publication_ack};
+        config.collection_mode = ayni::runtime::conversation::PublicationCollection::deferred;
         rc = history_.configure(config);
         if (rc != AYNI_OK) {
             return rc;
@@ -1981,6 +2014,8 @@ void Chat::end_turn(const char *message) {
     reply_deadline_ = 0;
     reply_end_ = nullptr;
     reply_intent_ = ReplyIntent::present;
+    answer_presented_early_ = false;
+    early_answer_at_us_ = 0;
     goal_ = turn_ = 0;
     cancel_requested_ = false;
     turn_state_ = Turn::idle;
@@ -2129,6 +2164,8 @@ void Chat::start_user_turn(uint64_t id, std::string_view user_text) {
                               timing_.storage.foreground_measure_us, timing_.storage.idle_measures,
                               timing_.storage.idle_measure_us};
     reply_intent_ = ReplyIntent::present;
+    answer_presented_early_ = false;
+    early_answer_at_us_ = 0;
     hold_reported_ = false;
     preparation_wait_ = {};
     turn_state_ = Turn::input;
@@ -2254,6 +2291,20 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
             }
             return AYNI_OK;
         }
+        // 0 ms early answer delivery (ADR-0113): once checkpoint_ready populates the publication
+        // candidate in RAM, push Kind::answer to UI immediately while FileBodies/CONTEXT_ACK
+        // drain asynchronously in the background. Auto-TTS still binds after durable CONTEXT_ACK.
+        if (!answer_presented_early_ && reply_intent_ == ReplyIntent::present &&
+            closing_ == Closing::open) {
+            std::string preview;
+            if (history_.preview_answer(preview) == AYNI_OK && !preview.empty() &&
+                preview.size() <= tx_bytes &&
+                transport_.send(Kind::answer, turn_, preview.data(), preview.size())) {
+                answer_presented_early_ = true;
+                early_answer_at_us_ = uint64_t(esp_timer_get_time());
+                progress_ = true;
+            }
+        }
         ayni::runtime::conversation::TurnResult result;
         if (!history_.take_result(result)) {
             return AYNI_OK;
@@ -2265,6 +2316,14 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
                           long(result.status), static_cast<unsigned long>(result.reason));
             end_turn(detail);
             return AYNI_OK;
+        }
+        if (answer_presented_early_) {
+            const auto now_us = uint64_t(esp_timer_get_time());
+            const auto lead_ms =
+                now_us >= early_answer_at_us_ ? (now_us - early_answer_at_us_) / 1000 : 0;
+            transport_.diagnostics().record_ram("wifi early_answer turn=%llu lead_ms=%llu\n",
+                                                static_cast<unsigned long long>(turn_),
+                                                static_cast<unsigned long long>(lead_ms));
         }
         turn_state_ = Turn::saving;
     }
@@ -2305,7 +2364,9 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
 ayni_status_t Chat::present_reply() {
     if (turn_state_ == Turn::answer) {
         if (reply_intent_ == ReplyIntent::cancelled) {
-            reply_end_ = "turn failed/cancelled; answer retained; no automatic retry";
+            reply_end_ = answer_presented_early_
+                             ? "reply completed"
+                             : "turn failed/cancelled; answer retained; no automatic retry";
             turn_state_ = Turn::reply_done;
         } else if (uint64_t(esp_timer_get_time()) >= reply_deadline_) {
             reply_end_ = "turn failed: answer delivery timed out; answer retained";
@@ -2313,7 +2374,8 @@ ayni_status_t Chat::present_reply() {
         } else if (answer_.empty() || answer_.size() > tx_bytes) {
             reply_end_ = "turn failed: answer exceeds chat capacity";
             turn_state_ = Turn::reply_done;
-        } else if (transport_.send(Kind::answer, turn_, answer_.data(), answer_.size())) {
+        } else if (answer_presented_early_ ||
+                   transport_.send(Kind::answer, turn_, answer_.data(), answer_.size())) {
             reply_end_ = "reply completed";
             if (voice_reply_enabled_) {
                 reply_voice_.observe({this, on_voice_stage});

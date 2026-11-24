@@ -58,6 +58,9 @@ inline ayni_config_v1 chat_config(uint32_t call_input_bytes, uint32_t call_resul
     c.observation_source_capacity = 2;
     c.reflex_capacity = 2;
     c.reflex_event_capacity = 8;
+    // Bounded RAM audit ring (ADR-0113): ~6.5 KiB PSRAM, drained to DiagnosticLog with 0 Flash
+    // wear.
+    c.audit_capacity = 64;
     c.storage_write_interval_us = 1000;
     return c;
 }

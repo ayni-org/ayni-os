@@ -7,6 +7,7 @@
 #include "transport.h"
 #include "turn_diagnostics.h"
 #include <array>
+#include <ayni/audit.h>
 #include <ayni/authority.h>
 #include <ayni/ayni.hpp>
 #include <ayni/calls.h>
@@ -58,6 +59,7 @@ class Chat {
     ayni_status_t configure_motor_check();
     ayni_status_t configure_reflexes();
     void drain_reflex_events();
+    void drain_audit_records();
     ayni_status_t command(ayni_intent_kind_t, const void *, uint64_t * = nullptr, uint32_t = 0,
                           ayni_reason_t * = nullptr);
     ayni_status_t receipt();
@@ -154,6 +156,11 @@ class Chat {
     uint64_t grant_ = 0, goal_ = 0, turn_ = 0;
     bool announced_ = false, hold_reported_ = false, cancel_requested_ = false;
     bool progress_ = false; // A command or state change this tick that Core has not stepped.
+    // True once the current turn's answer text was pushed to UI early from RAM at checkpoint_ready
+    // (0 ms display while background publication drains, ADR-0113).
+    bool answer_presented_early_ = false;
+    uint64_t early_answer_at_us_ = 0;
+    uint64_t audit_dropped_reported_ = 0; // Last observed Core audit ring dropped_overflow count.
     enum class ReplyIntent { present, cancelled };
     ReplyIntent reply_intent_ = ReplyIntent::present; // Independent of Core Goal cancellation.
     // One turn at a time: its text until the Goal exists, then the Goal until its answer.
