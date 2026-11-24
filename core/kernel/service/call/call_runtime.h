@@ -7,6 +7,7 @@
 #include "kernel/ports/attempt_sequence.h"
 #include "kernel/ports/provider_mailbox.h"
 #include "kernel/ports/subscription_ingress_port.h"
+#include "kernel/service/audit/audit_ring.h"
 #include "kernel/service/execution/execution_control.h"
 #include "kernel/service/model/work_model.h"
 #include "knowledge/observation/observation_table.h"
@@ -37,7 +38,8 @@ class CallRuntime {
                 resources::ResourceAdmission &resources, resources::PermitTable &permits,
                 knowledge::ObservationTable &observations,
                 SubscriptionIngressPort subscription_ingress, ProviderMailbox &mailbox,
-                ExecutorMailbox &executors, AttemptSequence &attempts, const ayni_host_v1 &host);
+                ExecutorMailbox &executors, AttemptSequence &attempts, const ayni_host_v1 &host,
+                AuditRing &audit);
     CallRuntime(const CallRuntime &) = delete;
     CallRuntime &operator=(const CallRuntime &) = delete;
 
@@ -306,6 +308,11 @@ class CallRuntime {
     // Bound all newly accepted Call-owned and Task-owned storage before mutation.
     authority::GrantCheck check_call_capacity(uint32_t task_index, const Proposal &,
                                               const catalog::CallContract &) const;
+    // Decode proposal input, check authority/memory export, and prepare physical execution.
+    authority::GrantCheck check_proposal_authority(uint32_t task_index, Proposal &,
+                                                   const catalog::CallContract &, uint64_t now_us,
+                                                   uint64_t durable_seq,
+                                                   knowledge::MemoryDependencies &);
     // Commit existing-operation controls; never allocates another Call identity.
     bool accept_control(uint32_t task_index, foundation::TransitionStamp, uint64_t now_us);
     // ADR-0086: queued, unresolved or borrowed action occupies this Task's single slot.
@@ -482,6 +489,15 @@ class CallRuntime {
     static bool submitted(Stage stage) {
         return stage == Stage::submitted || stage == Stage::waiting_stop;
     }
+    // Emits Call terminal, authority denial, and preemption records to AuditRing (ADR-0113).
+    void audit_call_terminal(uint32_t index, uint64_t now_us) const;
+    authority::GrantCheck audit_proposal_denial(uint32_t task_index, const Proposal &proposal,
+                                                authority::GrantCheck check, uint64_t now_us) const;
+    void audit_authority_denied(uint64_t subject_id, uint64_t auxiliary_id, ayni_status_t status,
+                                ayni_reason_t reason, const catalog::Binding &binding,
+                                const catalog::CallContract &contract, uint64_t now_us) const;
+    void audit_preempted(uint64_t victim_call_id, uint64_t preemptor_call_id, ayni_reason_t reason,
+                         bool physical, ayni_string_v1 label, uint64_t now_us) const;
 
     knowledge::ObservationTable
         &observations_; // Borrowed knowledge owner, never copied sample state.
@@ -494,6 +510,7 @@ class CallRuntime {
     AttemptSequence &attempts_;               // Shared Host/Provider attempt identity allocator.
     const ayni_host_v1
         &host_;           // Bounded callback clock/lock/wake services, lifetime held by Kernel.
+    AuditRing &audit_;    // Kernel-owned asynchronous RAM audit ring (ADR-0113).
     Limits limits_;       // Immutable arena dimensions, shared bounds with CallTable/mailbox.
     Slot *slots_;         // One optional volatile owner per stable call slot.
     uint8_t *staging_;    // Canonical proposed input, copied while callback views are alive.

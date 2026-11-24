@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 59u
+#define AYNI_ABI_MINOR 60u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -203,7 +203,13 @@ typedef struct ayni_config_v1 {
     uint32_t reflex_capacity;
     /* Since 0.59. Bounded fired-reflex event ring; 0 selects default when reflex_capacity > 0. */
     uint32_t reflex_event_capacity;
+    /* Since 0.60 (ADR-0113). Bounded RAM audit ring slots; 0 disables with zero arena bytes. */
+    uint32_t audit_capacity;
 } ayni_config_v1;
+
+/* Bounded asynchronous RAM audit ring capacities. Since 0.60. */
+#define AYNI_AUDIT_CAPACITY_DEFAULT 0u
+#define AYNI_AUDIT_CAPACITY_MAX 1024u
 
 /* Original machine schemas and execution/projection proof per fact. Since 0.48. */
 #define AYNI_BUSINESS_CONTRACT_BYTES_DEFAULT 4096u

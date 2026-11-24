@@ -5,6 +5,7 @@
 #ifndef AYNI_CORE_KERNEL_REFLEX_REFLEX_ENGINE_H
 #define AYNI_CORE_KERNEL_REFLEX_REFLEX_ENGINE_H
 
+#include "kernel/service/audit/audit_ring.h"
 #include "kernel/service/call/call_runtime.h"
 #include "kernel/service/model/work_model.h"
 #include "kernel/service/reflex/reflex_table.h"
@@ -18,8 +19,9 @@ class ReflexEngine {
   public:
     // Borrowed owners outlive this evaluator; no arena allocation of its own.
     ReflexEngine(ReflexTable &table, const WorkModel &work,
-                 const knowledge::ObservationTable &observations, CallRuntime &calls)
-        : table_(table), work_(work), observations_(observations), calls_(calls) {}
+                 const knowledge::ObservationTable &observations, CallRuntime &calls,
+                 AuditRing &audit)
+        : table_(table), work_(work), observations_(observations), calls_(calls), audit_(audit) {}
     ReflexEngine(const ReflexEngine &) = delete;
     ReflexEngine &operator=(const ReflexEngine &) = delete;
 
@@ -43,6 +45,7 @@ class ReflexEngine {
     const WorkModel &work_;                           // Read-only Scene/Grant/Agent owner.
     const knowledge::ObservationTable &observations_; // Latest owner-thread observations.
     CallRuntime &calls_;                              // Resource preemption and reflex Call owner.
+    AuditRing &audit_;                                // Kernel-owned RAM audit ring (ADR-0113).
 };
 
 } // namespace ayni::kernel

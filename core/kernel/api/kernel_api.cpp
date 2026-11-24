@@ -202,6 +202,9 @@ constexpr CapacityField capacity_fields[] = {
     {&ayni_config_v1::reflex_event_capacity,
      {0U, AYNI_REFLEX_EVENT_CAPACITY_MAX},
      &KernelCapacities::reflex_event_capacity},
+    {&ayni_config_v1::audit_capacity,
+     {0U, AYNI_AUDIT_CAPACITY_MAX},
+     &KernelCapacities::audit_capacity},
 };
 
 // Read each bounded capacity once, then let validate_config resolve storage

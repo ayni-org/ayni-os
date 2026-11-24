@@ -106,6 +106,8 @@ void place_execution_context(Placer &placer, const KernelCapacities &capacities)
                  knowledge::ContextTable::storage_size(context_capacity(capacities)));
     placer.place(Store::provenance, work::ProvenanceTable::storage_alignment,
                  work::ProvenanceTable::storage_size(provenance_limits(capacities)));
+    placer.place(Store::audit_ring, AuditRing::storage_alignment,
+                 AuditRing::storage_size(capacities.audit_capacity));
 }
 
 } // namespace

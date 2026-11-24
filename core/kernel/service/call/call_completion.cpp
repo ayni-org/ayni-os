@@ -205,6 +205,10 @@ ayni_status_t CallRuntime::apply_delivery(uint32_t index, uint32_t task_index,
          work_.calls.state(index).result_body.id != message.body_ref.id)) {
         release_body(message.body_ref);
     }
+    if (applied == AYNI_OK && terminal && work_.calls.occupied(index) &&
+        work_.calls.state(index).outcome != 0U) {
+        audit_call_terminal(index, host_.monotonic_now_us(host_.ctx));
+    }
     return applied;
 }
 

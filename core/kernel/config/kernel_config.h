@@ -57,6 +57,7 @@ struct KernelCapacities {
         0;                              // Bytes per original proof; zero with no call catalogs.
     uint32_t reflex_capacity = 0;       // Static ReflexRules; zero disables (ADR-0112).
     uint32_t reflex_event_capacity = 0; // Bounded reflex event ring; zero when reflex disabled.
+    uint32_t audit_capacity = 0;        // Bounded RAM audit ring; zero disables (ADR-0113).
 };
 
 // Validated limits from ayni_config_v1 that do not change the layout.
@@ -118,6 +119,7 @@ enum class Store : uint32_t {
     memories,             // MemoryTable: owned facts and fixed UTF-8 bodies.
     contexts,             // ContextTable: one file/version/source anchor per Agent.
     provenance,           // ProvenanceTable: exact Goal/Task content sources and erasure state.
+    audit_ring,           // AuditRing: fixed RAM overwrite-oldest audit buffer (ADR-0113).
     count,                // Not a store: the number of stores.
 };
 

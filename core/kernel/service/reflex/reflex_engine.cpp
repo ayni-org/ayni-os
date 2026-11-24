@@ -133,6 +133,19 @@ ayni_status_t ReflexEngine::execute_rule(uint32_t index, uint64_t now_us, uint64
     event.trigger_source = source;
     event.trigger_value = value;
     table_.push_event(event);
+    AuditEntry audit{};
+    audit.kind = AYNI_AUDIT_REFLEX_EVENT;
+    audit.boot_epoch = work_.ids.boot_epoch();
+    audit.at_us = now_us;
+    audit.subject_id = spawned != 0U ? spawned : affected;
+    audit.auxiliary_id = affected;
+    audit.status = status;
+    audit.reason = status == AYNI_OK ? AYNI_REASON_REFLEX : AYNI_REASON_NONE;
+    audit.detail_code = rule.action;
+    audit.flags = AYNI_AUDIT_FLAG_EPHEMERAL |
+                  (status == AYNI_OK ? AYNI_AUDIT_FLAG_PREEMPTED : AYNI_AUDIT_FLAG_DENIED);
+    audit.label = view(rule.rule_id);
+    audit_.emit(audit);
     return AYNI_OK;
 }
 

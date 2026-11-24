@@ -90,6 +90,7 @@ ayni_status_t ayni_kernel::start() {
     }
     ingress.open();
     lifecycle = AYNI_LIFECYCLE_RECOVERING;
+    audit_lifecycle(AYNI_LIFECYCLE_RECOVERING);
     return AYNI_OK;
 }
 
@@ -181,6 +182,7 @@ ayni_status_t ayni_kernel::step(uint32_t max_items, uint32_t max_time_us,
         !revocation_ready()) {
         events_discarded += ingress.close();
         lifecycle = AYNI_LIFECYCLE_STOPPED;
+        audit_lifecycle(AYNI_LIFECYCLE_STOPPED);
     }
 
     report_step(progress, report);
@@ -521,6 +523,7 @@ ayni_status_t ayni_kernel::begin_shutdown() {
         observation_ingress.close();
         observation_slots.close();
         lifecycle = AYNI_LIFECYCLE_DRAINING;
+        audit_lifecycle(AYNI_LIFECYCLE_DRAINING);
         return AYNI_OK;
     }
 }
@@ -591,11 +594,25 @@ void ayni_kernel::journal(uint64_t first_seq) {
     refresh_storage();
 }
 
+void ayni_kernel::audit_lifecycle(ayni_lifecycle_t next, ayni_restriction_t reason) {
+    constexpr char label[] = "kernel";
+    ayni::kernel::AuditEntry entry{};
+    entry.kind = AYNI_AUDIT_LIFECYCLE;
+    entry.boot_epoch = boot.boot_epoch();
+    entry.at_us = now_us();
+    entry.status = reason == AYNI_RESTRICTION_NONE ? AYNI_OK : AYNI_INVALID_STATE;
+    entry.reason = static_cast<ayni_reason_t>(reason);
+    entry.detail_code = next;
+    entry.label = {label, static_cast<uint32_t>(sizeof(label) - 1U)};
+    audit_ring.emit(entry);
+}
+
 void ayni_kernel::enter_restricted(ayni_restriction_t reason) {
     observation_ingress.close();
     observation_slots.close();
     lifecycle = AYNI_LIFECYCLE_RESTRICTED;
     restriction_ = reason;
+    audit_lifecycle(AYNI_LIFECYCLE_RESTRICTED, reason);
 }
 
 // RESTRICTED stores nothing more, also once it drains; the batches still
@@ -703,6 +720,7 @@ void ayni_kernel::enter_running() {
     log_started_ = true;
     ingress.establish_incarnation(boot.boot_epoch());
     lifecycle = AYNI_LIFECYCLE_RUNNING;
+    audit_lifecycle(AYNI_LIFECYCLE_RUNNING);
     if (!reconcile_recovered_revocations()) {
         enter_restricted(AYNI_RESTRICTION_LOG_CORRUPT);
         return;
@@ -730,6 +748,7 @@ void ayni_kernel::enter_fenced(ayni_restriction_t reason) {
     observation_slots.close();
     lifecycle = AYNI_LIFECYCLE_FENCED;
     restriction_ = reason;
+    audit_lifecycle(AYNI_LIFECYCLE_FENCED, reason);
     maintenance.end();
     budget.cancel_compaction();
     boot.isolate(log.writer_epoch() + 1U);

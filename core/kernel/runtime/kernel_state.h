@@ -19,6 +19,7 @@
 #include "kernel/runtime/step_context.h"
 #include "kernel/runtime/storage/storage_budget.h"
 #include "kernel/runtime/storage/storage_maintenance.h"
+#include "kernel/service/audit/audit_ring.h"
 #include "kernel/service/call/call_runtime.h"
 #include "kernel/service/decision/decision.h"
 #include "kernel/service/intent/intent.h"
@@ -86,14 +87,15 @@ struct ayni_kernel {
                               host, capacities.call_capacity),
           observation_slots(storage[ayni::kernel::Store::observation_slots],
                             capacities.observation_source_capacity, catalogs.observation_sources),
+          audit_ring(storage[ayni::kernel::Store::audit_ring], capacities.audit_capacity),
           calls(storage[ayni::kernel::Store::call_runtime],
                 ayni::kernel::call_runtime_limits(capacities), work, catalogs, resources, permits,
                 observations, observation_ingress.subscription_port(), provider_completions,
-                executor_completions, attempts, host),
+                executor_completions, attempts, host, audit_ring),
           reflex_table(storage[ayni::kernel::Store::reflex_rules], capacities.reflex_capacity,
                        capacities.call_input_max_bytes, storage[ayni::kernel::Store::reflex_events],
                        capacities.reflex_event_capacity),
-          reflex_engine(reflex_table, work, observations, calls),
+          reflex_engine(reflex_table, work, observations, calls, audit_ring),
           batch_max(ayni::kernel::transition_batch_max(capacities)) {}
 
     // Lifecycle transitions (contracts/domain/lifecycles.md, ADR-0016). The
@@ -216,6 +218,11 @@ struct ayni_kernel {
     // Owner-thread diagnostics and bounded event ring drain for ReflexRules.
     ayni_status_t get_reflex_info(ayni_string_v1 rule_id, ayni_reflex_info_v1 &out) const;
     ayni_status_t take_reflex_event(ayni_reflex_event_v1 &out);
+    // Owner-thread asynchronous audit ring counters and FIFO batch drain (ADR-0113).
+    void describe_audit(ayni_audit_info_v1 &out) const { audit_ring.describe(out); }
+    uint32_t take_audit_records(ayni_audit_record_v1 *out, uint32_t capacity) {
+        return audit_ring.take(out, capacity);
+    }
     // Owner sessions and volatile publications; persistence still goes through submit_intent.
     ayni_status_t open_session(const ayni::authority::Principal &principal, ayni_channel_t channel,
                                uint64_t &out_session_id);
@@ -286,6 +293,8 @@ struct ayni_kernel {
         observation_ingress; // Owns Host sample queue/gap lanes, no knowledge facts.
     // Lock-free triple-buffered latest observation slots drained at step start (ADR-0112).
     ayni::kernel::ObservationSlots observation_slots;
+    // Bounded RAM overwrite-oldest audit ring; declared before services that borrow it (ADR-0113).
+    ayni::kernel::AuditRing audit_ring;
     // Bounded cross-owner call coordination; workers only access the two mailboxes.
     ayni::kernel::CallRuntime calls;
     // Registered static ReflexRules and asynchronous bounded event ring (ADR-0112).
@@ -306,6 +315,8 @@ struct ayni_kernel {
     void settle_recovery();
     void enter_running();
     void enter_restricted(ayni_restriction_t reason);
+    // Records one lifecycle transition in the RAM audit ring without WAL traffic (ADR-0113).
+    void audit_lifecycle(ayni_lifecycle_t next, ayni_restriction_t reason = AYNI_RESTRICTION_NONE);
     // Owner thread: whether a transition may start now.
     bool has_room() const { return storage_has_room(); }
     // Enters FENCED after the RUNNING writer exhausts its retries.

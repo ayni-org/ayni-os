@@ -18,15 +18,15 @@ CallRuntime::CallRuntime(void *storage, Limits limits, WorkModel &work, const Ca
                          knowledge::ObservationTable &observations,
                          SubscriptionIngressPort subscription_ingress, ProviderMailbox &mailbox,
                          ExecutorMailbox &executors, AttemptSequence &attempts,
-                         const ayni_host_v1 &host)
+                         const ayni_host_v1 &host, AuditRing &audit)
     : observations_(observations), subscription_ingress_(subscription_ingress), work_(work),
       catalogs_(catalogs), resources_(resources), mailbox_(mailbox), attempts_(attempts),
-      host_(host), limits_(limits), slots_(static_cast<Slot *>(storage)),
+      host_(host), audit_(audit), limits_(limits), slots_(static_cast<Slot *>(storage)),
       staging_(limits.capacity == 0U ? nullptr
                                      : reinterpret_cast<uint8_t *>(slots_ + limits.capacity)),
       receipt_(limits.capacity == 0U ? nullptr : staging_ + limits.input_bytes),
       normalized_(limits.capacity == 0U ? nullptr : receipt_ + limits.result_bytes),
-      control_(work, resources, permits, observations, executors, attempts, host,
+      control_(work, resources, permits, observations, executors, attempts, host, audit,
                {this, transport_holds, transport_retiring, transport_retire}) {
     work_.calls.set_runtime_retention(this, runtime_retains);
     static_assert(alignof(Slot) <= storage_alignment, "arena aligns call runtime slots");
@@ -151,9 +151,96 @@ bool CallRuntime::has_ephemeral_holder(uint32_t resource_index) const {
     return false;
 }
 
+// Emits one Call-terminal audit record covering both EPHEMERAL and DURABLE outcomes (ADR-0113).
+void CallRuntime::audit_call_terminal(uint32_t index, uint64_t now_us) const {
+    if (!work_.calls.occupied(index)) {
+        return;
+    }
+    const auto &id = work_.calls.identity(index);
+    const auto &state = work_.calls.state(index);
+    uint32_t flags = 0;
+    if (state.ephemeral) {
+        flags |= AYNI_AUDIT_FLAG_EPHEMERAL;
+    }
+    if (state.execution.has_value()) {
+        flags |= AYNI_AUDIT_FLAG_PHYSICAL;
+    }
+    if (state.cancel_cause == work::CallCancelCause::preempted ||
+        state.cancel_cause == work::CallCancelCause::reflex) {
+        flags |= AYNI_AUDIT_FLAG_PREEMPTED;
+    }
+    AuditEntry entry{};
+    entry.kind = AYNI_AUDIT_CALL_TERMINAL;
+    entry.boot_epoch = work_.ids.boot_epoch();
+    entry.at_us = now_us;
+    entry.subject_id = id.call_id;
+    entry.auxiliary_id = id.task_id;
+    entry.status = state.status;
+    entry.reason = state.reason;
+    entry.detail_code = state.outcome;
+    entry.flags = flags;
+    entry.label = {id.capability_id.data(), id.capability_id.size()};
+    audit_.emit(entry);
+}
+
+void CallRuntime::audit_authority_denied(uint64_t subject_id, uint64_t auxiliary_id,
+                                         ayni_status_t status, ayni_reason_t reason,
+                                         const catalog::Binding &binding,
+                                         const catalog::CallContract &contract,
+                                         uint64_t now_us) const {
+    uint32_t flags = AYNI_AUDIT_FLAG_DENIED;
+    if (contract.is_ephemeral()) {
+        flags |= AYNI_AUDIT_FLAG_EPHEMERAL;
+    }
+    if ((contract.effects & catalog::call_effect_physical) != 0U) {
+        flags |= AYNI_AUDIT_FLAG_PHYSICAL;
+    }
+    AuditEntry entry{};
+    entry.kind = AYNI_AUDIT_AUTHORITY_DENIED;
+    entry.boot_epoch = work_.ids.boot_epoch();
+    entry.at_us = now_us;
+    entry.subject_id = subject_id;
+    entry.auxiliary_id = auxiliary_id;
+    entry.status = status;
+    entry.reason = reason;
+    entry.flags = flags;
+    entry.label = {binding.capability.data(), binding.capability.size()};
+    audit_.emit(entry);
+}
+
+authority::GrantCheck CallRuntime::audit_proposal_denial(uint32_t task_index,
+                                                         const Proposal &proposal,
+                                                         authority::GrantCheck check,
+                                                         uint64_t now_us) const {
+    if (check.status == AYNI_DENIED) {
+        const auto &task = work_.tasks.at(task_index);
+        audit_authority_denied(task.task_id, task.goal_id, check.status, check.reason,
+                               catalogs_.bindings.at(proposal.binding_index),
+                               proposal.links.contract, now_us);
+    }
+    return check;
+}
+
+void CallRuntime::audit_preempted(uint64_t victim_call_id, uint64_t preemptor_call_id,
+                                  ayni_reason_t reason, bool physical, ayni_string_v1 label,
+                                  uint64_t now_us) const {
+    AuditEntry entry{};
+    entry.kind = AYNI_AUDIT_RESOURCE_PREEMPTED;
+    entry.boot_epoch = work_.ids.boot_epoch();
+    entry.at_us = now_us;
+    entry.subject_id = victim_call_id;
+    entry.auxiliary_id = preemptor_call_id;
+    entry.status = AYNI_OK;
+    entry.reason = reason;
+    entry.flags = AYNI_AUDIT_FLAG_EPHEMERAL | AYNI_AUDIT_FLAG_PREEMPTED |
+                  (physical ? AYNI_AUDIT_FLAG_PHYSICAL : 0U);
+    entry.label = label;
+    audit_.emit(entry);
+}
+
 // Soft-stops and cancels every eligible uncancelled EPHEMERAL holder on resource_index.
 // Tier 2 DURABLE and non-cancellable holders are never preempted (ADR-0111/0112).
-ayni_status_t CallRuntime::preempt_resource(uint32_t resource_index, uint64_t,
+ayni_status_t CallRuntime::preempt_resource(uint32_t resource_index, uint64_t now_us,
                                             work::CallCancelCause cause, uint64_t &out_affected) {
     out_affected = 0;
     std::array<uint64_t, AYNI_RESOURCE_REQUEST_CAPACITY_MAX> holders{};
@@ -168,6 +255,8 @@ ayni_status_t CallRuntime::preempt_resource(uint32_t resource_index, uint64_t,
     bool saw_stopping = false;
     const ayni_reason_t reason =
         cause == work::CallCancelCause::reflex ? AYNI_REASON_REFLEX : AYNI_REASON_PREEMPTED;
+    const auto &res_id = catalogs_.resources.at(resource_index).id;
+    const ayni_string_v1 res_label{res_id.data(), res_id.size()};
     for (uint32_t at = 0; at < limit; ++at) {
         uint32_t index = 0;
         uint32_t task_index = no_task;
@@ -184,6 +273,7 @@ ayni_status_t CallRuntime::preempt_resource(uint32_t resource_index, uint64_t,
             saw_stopping = true;
             continue;
         }
+        const bool physical = state.execution.has_value();
         auto &active = *slots_[index].active;
         if (!submitted(active.stage)) {
             if (cancel_local(index, task_index, reason) != Advance::applied) {
@@ -201,6 +291,7 @@ ayni_status_t CallRuntime::preempt_resource(uint32_t resource_index, uint64_t,
                 return AYNI_INTERNAL;
             }
         }
+        audit_preempted(holders[at], 0U, reason, physical, res_label, now_us);
         if (out_affected == 0U) {
             out_affected = holders[at];
         }
@@ -238,6 +329,7 @@ CallRuntime::Advance CallRuntime::expire_wait(uint32_t index, uint32_t task_inde
                 work_.tasks.end_volatile_call(task_index, call_id);
             }
         }
+        audit_call_terminal(index, now_us);
         release(index, now_us);
         return Advance::applied;
     }
@@ -253,6 +345,7 @@ CallRuntime::Advance CallRuntime::expire_wait(uint32_t index, uint32_t task_inde
                                    {work_.ids.boot_epoch(), stamp}) != AYNI_OK) {
             return Advance::internal;
         }
+        audit_call_terminal(index, now_us);
     } else {
         work_.tasks.pause_resource_wait(task_index, stamp);
     }
@@ -266,6 +359,7 @@ CallRuntime::Advance CallRuntime::cancel_local(uint32_t index, uint32_t task_ind
     if (active && active->delivery && !mailbox_.withdraw(active->delivery->reservation)) {
         return Advance::internal; // No submit has occurred; a receipt here violates ownership.
     }
+    const uint64_t now_us = host_.monotonic_now_us(host_.ctx);
     if (work_.calls.state(index).ephemeral) {
         if (work_.calls.cancel_before_dispatch(index, {work_.ids.boot_epoch(), {0, 0}}, reason) !=
             AYNI_OK) {
@@ -274,7 +368,8 @@ CallRuntime::Advance CallRuntime::cancel_local(uint32_t index, uint32_t task_ind
         if (task_index != no_task) {
             work_.tasks.end_volatile_call(task_index, work_.calls.identity(index).call_id);
         }
-        release(index, host_.monotonic_now_us(host_.ctx));
+        audit_call_terminal(index, now_us);
+        release(index, now_us);
         return Advance::applied;
     }
     const auto stamp = work_.transitions.next();
@@ -283,7 +378,8 @@ CallRuntime::Advance CallRuntime::cancel_local(uint32_t index, uint32_t task_ind
         !work::end_task_call(work_.calls, work_.tasks, index, task_index, stamp)) {
         return Advance::internal;
     }
-    release(index, host_.monotonic_now_us(host_.ctx));
+    audit_call_terminal(index, now_us);
+    release(index, now_us);
     return Advance::applied;
 }
 
@@ -366,10 +462,16 @@ CallRuntime::Advance CallRuntime::trigger_preemption(uint32_t waiter_index, uint
         const auto cancel_cause =
             by_reflex ? work::CallCancelCause::reflex : work::CallCancelCause::preempted;
         const auto cancel_reason = by_reflex ? AYNI_REASON_REFLEX : AYNI_REASON_PREEMPTED;
+        const uint64_t victim_call_id = work_.calls.identity(victim_index).call_id;
+        const uint64_t waiter_call_id = work_.calls.identity(waiter_index).call_id;
+        const auto victim_cap = work_.calls.identity(victim_index).capability_id;
+        const bool physical = work_.calls.state(victim_index).execution.has_value();
         if (!submitted(victim_active.stage)) {
             if (cancel_local(victim_index, victim_task, cancel_reason) != Advance::applied) {
                 return Advance::internal;
             }
+            audit_preempted(victim_call_id, waiter_call_id, cancel_reason, physical,
+                            {victim_cap.data(), victim_cap.size()}, now_us);
             continue;
         }
         const auto status = work_.calls.request_cancel(victim_index, cancel_cause,
@@ -377,7 +479,6 @@ CallRuntime::Advance CallRuntime::trigger_preemption(uint32_t waiter_index, uint
         if (status != AYNI_OK) {
             return Advance::internal;
         }
-        const uint64_t victim_call_id = work_.calls.identity(victim_index).call_id;
         if (control_.holds_lease(victim_call_id) && !control_.request_stop(victim_call_id)) {
             return Advance::internal;
         }
@@ -385,6 +486,8 @@ CallRuntime::Advance CallRuntime::trigger_preemption(uint32_t waiter_index, uint
             cancel_transport(*victim_active.delivery) == Advance::internal) {
             return Advance::internal;
         }
+        audit_preempted(victim_call_id, waiter_call_id, cancel_reason, physical,
+                        {victim_cap.data(), victim_cap.size()}, now_us);
     }
     return Advance::applied;
 }

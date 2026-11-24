@@ -124,6 +124,7 @@ ayni_add_core_module(work
 
 ayni_add_core_module(kernel
     SOURCES
+        kernel/api/audit_api.cpp
         kernel/api/call_api.cpp
         kernel/api/directory_api.cpp
         kernel/api/calendar_api.cpp
@@ -142,6 +143,7 @@ ayni_add_core_module(kernel
         kernel/api/scene_api.cpp
         kernel/api/work_api.cpp
         kernel/runtime/boot/boot_sequence.cpp
+        kernel/service/audit/audit_ring.cpp
         kernel/service/call/call_admission.cpp
         kernel/service/call/call_operations.cpp
         kernel/service/call/call_directory.cpp

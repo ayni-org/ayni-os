@@ -514,7 +514,8 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
     const auto &contract = proposal.links.contract;
     if (contract.is_ephemeral() &&
         !work_.goals.at(task.goal_index).work_profile.cancel_on_reboot()) {
-        return {AYNI_DENIED, AYNI_REASON_INTENT_UNSUPPORTED};
+        return audit_proposal_denial(task_index, proposal,
+                                     {AYNI_DENIED, AYNI_REASON_INTENT_UNSUPPORTED}, now_us);
     }
     if (!contract.is_ephemeral() && contract.category == catalog::CallClass::model &&
         task.commit_seq > durable_seq) {
@@ -526,6 +527,16 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
         capacity.status != AYNI_OK) {
         return capacity;
     }
+    return check_proposal_authority(task_index, proposal, contract, now_us, durable_seq,
+                                    dependencies);
+}
+
+// Decodes the staged proposal input, validates authority and memory export permissions, and
+// prepares physical execution facts; logs non-OK denials to the RAM AuditRing (ADR-0113).
+authority::GrantCheck CallRuntime::check_proposal_authority(
+    uint32_t task_index, Proposal &proposal, const catalog::CallContract &contract, uint64_t now_us,
+    uint64_t durable_seq, knowledge::MemoryDependencies &dependencies) {
+    const auto &task = work_.tasks.at(task_index);
     const auto domain = catalogs_.capabilities.domain_view(proposal.links.capability);
     auto input_lease = work_.workspace.make<work::CallInputView>();
     if (!input_lease) {
@@ -551,16 +562,20 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
         proposal.redecide =
             proposal.authorization.grant_id != 0 &&
             work_.check_task_authority(task_index, now_us, durable_seq).status == AYNI_OK;
-        return authority;
+        return audit_proposal_denial(task_index, proposal, authority, now_us);
     }
     const auto exported =
         memory_export_permissions({work_, now_us, durable_seq}, task.owner_instance_id,
                                   catalogs_.bindings.at(proposal.binding_index), dependencies);
     if (exported != AYNI_OK) {
-        return {exported, memory_reason(exported)};
+        return audit_proposal_denial(task_index, proposal, {exported, memory_reason(exported)},
+                                     now_us);
     }
-    return control_.prepare(contract, catalogs_.bindings.at(proposal.binding_index), domain, input,
-                            *proof, now_us, durable_seq, task.task_id, proposal_->execution);
+    return audit_proposal_denial(
+        task_index, proposal,
+        control_.prepare(contract, catalogs_.bindings.at(proposal.binding_index), domain, input,
+                         *proof, now_us, durable_seq, task.task_id, proposal.execution),
+        now_us);
 }
 
 // All bounded storage, lifecycle reserve and unique-source checks precede acceptance.
@@ -917,12 +932,18 @@ ayni_status_t CallRuntime::submit_reflex_call(uint64_t owner_agent_id, uint32_t 
     work::AuthorityReference authorization{};
     if (!select_reflex_grant(agent->instance_id, binding, domain, *input_lease, links.contract,
                              *proof_lease, now_us, durable_seq, authorization)) {
+        audit_authority_denied(owner_agent_id, agent->instance_id, AYNI_DENIED,
+                               AYNI_REASON_GRANT_SCOPE, binding, links.contract, now_us);
         return AYNI_DENIED;
     }
     std::optional<work::ExecutionFact> execution;
     const auto exec_check = control_.prepare(links.contract, binding, domain, *input_lease,
                                              *proof_lease, now_us, durable_seq, 0U, execution);
     if (exec_check.status != AYNI_OK) {
+        if (exec_check.status == AYNI_DENIED) {
+            audit_authority_denied(owner_agent_id, agent->instance_id, exec_check.status,
+                                   exec_check.reason, binding, links.contract, now_us);
+        }
         return exec_check.status;
     }
     if (!work_.calls.has_room() || !resources_.has_room() ||
