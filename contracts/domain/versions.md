@@ -108,3 +108,7 @@ ABI0.56（ADR-0107）将 `ayni_tool_calls_read` 直接改为一次顺序visitor�
 ADR-0108直接删除C++ HistoryPort/ArchivedResult及Native独立会话/归档控制器，所有调用方改用共享Session/FileBodies与BodyProgress；FileBodies配置须显式正数预算。当前ABI0.56、Core schema10、ATC3、ConversationRecord6保持，私有turn升级8、结果视图ANRV升级2、SQLite值端口升级5（无旧reader或迁移）。旧格式保留并拒绝；版本布局及回退边界见storage/records.md与host/native_conversation.md。
 
 ADR-0109直接升级C++ BodyCollection：异步实现须提供collected(scope)证明该scope已请求释放的持久完成，可用progress推进工作；ready/idle仍表示全局排空。所有仓库调用方同步更新，无旧端口适配层。C ABI0.56及上述持久版本保持，turn8摘要引用字段顺序不变；无需迁移或擦除。
+
+ABI 0.57–0.59（ADR-0110/0111/0112）依次升级Core存储至schema 11，新增`EPHEMERAL`执行等级、`CANCEL_ON_REBOOT`、内联停稳证明、资源抢占策略、`ControlSession`、`ObservationSlots`与`ReflexRule`；0.x调用方重编译。
+
+ABI 0.60（ADR-0113）在`ayni_config_v1`尾部追加`audit_capacity`（`sizeof == 200`，默认0禁用且零arena开销），新增严格C99头文件`<ayni/audit.h>`（`ayni_audit_record_v1` 104 B、`ayni_audit_info_v1` 40 B、`ayni_get_audit_info`、`ayni_take_audit_records`）；Core `storage_schema`保持11不变，无新增WAL记录或迁移。外层`FileBodies`正文manifest独立升为AYNB格式2（`<= 4096 B`内联存储），旧格式1拒绝返回`AYNI_UNSUPPORTED_VERSION`并保留原文件；可选Host `AuditSink`使用独立`AYAU`格式1轮转文件。所有0.x调用方重编译。
