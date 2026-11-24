@@ -44,6 +44,7 @@ TEST(MotorCheck, PublicRulesRequestsOneFixedMotorThroughTheNormalCallBoundary) {
             EXPECT_EQ(std::string_view(call->binding_id.data, call->binding_id.size), "motor.run");
             EXPECT_EQ(call->binding_version, motor_version);
             EXPECT_EQ(call->mode, AYNI_CALL_MODE_FOREGROUND);
+            EXPECT_EQ(call->preemption, AYNI_CALL_PREEMPT_SUPERSEDE);
             EXPECT_EQ(call->value.node_count, 4U);
             auto nodes = motor_run_schema();
             const ayni_schema_v1 schema{nodes.data(), uint32_t(nodes.size())};

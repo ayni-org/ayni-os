@@ -806,6 +806,10 @@ AYNI_LAYOUT(ayni_call_request_v1_binding_id,
 AYNI_LAYOUT(ayni_call_request_v1_arguments,
             offsetof(ayni_call_request_v1, arguments) == 16 + 4 * AYNI_PTR);
 AYNI_LAYOUT(ayni_call_request_v1_text, offsetof(ayni_call_request_v1, text) == 24 + 5 * AYNI_PTR);
+AYNI_LAYOUT(ayni_call_request_v1_mode, offsetof(ayni_call_request_v1, mode) == 24 + 9 * AYNI_PTR);
+/* Since 0.58 (ADR-0111): preemption replaces mode_reserved with zero struct size change. */
+AYNI_LAYOUT(ayni_call_request_v1_preemption,
+            offsetof(ayni_call_request_v1, preemption) == 28 + 9 * AYNI_PTR);
 AYNI_LAYOUT(ayni_call_request_v1_size, sizeof(ayni_call_request_v1) == 32 + 9 * AYNI_PTR);
 
 AYNI_LAYOUT(ayni_task_call_result_v1_struct_size,

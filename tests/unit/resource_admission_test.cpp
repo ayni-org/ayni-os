@@ -368,4 +368,61 @@ TEST_F(ConflictDomainTest, self_conflicting_group_is_rejected_without_partial_ad
     EXPECT_EQ(admission.info(1).used, 0U);
     EXPECT_EQ(admission.info(2).used, 0U);
 }
+
+// ADR-0111: conflicting_holders reports direct and conflict-domain holders and unavailable gates.
+TEST_F(ConflictDomainTest, conflicting_holders_reports_direct_domain_and_unavailable) {
+    auto invalid = request(99, 1, 2);
+    invalid.preemption = AYNI_CALL_PREEMPT_SUPERSEDE + 1U;
+    EXPECT_EQ(admission.enqueue(invalid, 0), AYNI_INVALID_ARGUMENT);
+
+    // Call 1 holds shared resource 1 (in shared.bus conflict domain with motor resource 2).
+    queue(request(1, 1, 1));
+    take(1);
+    auto waiter = request(2, 2, 2);
+    waiter.preemption = AYNI_CALL_PREEMPT_SUPERSEDE;
+    queue(waiter);
+    std::array<HeldConflict, 4> conflicts{};
+    bool unavailable = false;
+    uint64_t waiter_ticket = 0;
+    Priority waiter_priority = Priority::background;
+    uint32_t count = admission.conflicting_holders(2, conflicts.data(), conflicts.size(),
+                                                   unavailable, waiter_ticket, waiter_priority);
+    EXPECT_FALSE(unavailable);
+    EXPECT_EQ(waiter_priority, Priority::normal);
+    EXPECT_GT(waiter_ticket, 0U);
+    ASSERT_EQ(count, 1U);
+    EXPECT_EQ(conflicts[0].call_id, 1U);
+    EXPECT_EQ(conflicts[0].priority, Priority::normal);
+    EXPECT_LT(conflicts[0].ticket, waiter_ticket);
+
+    // Quarantine on motor resource 2 blocks acquisition as unavailable (not preemptable).
+    ASSERT_TRUE(release(1));
+    take(2);
+    ASSERT_TRUE(release(2));
+    auto waiter3 = request(3, 3, 1);
+    waiter3.preemption = AYNI_CALL_PREEMPT_SUPERSEDE;
+    queue(waiter3);
+    unavailable = false;
+    count = admission.conflicting_holders(3, conflicts.data(), conflicts.size(), unavailable,
+                                          waiter_ticket, waiter_priority);
+    EXPECT_TRUE(unavailable);
+    EXPECT_EQ(count, 0U);
+}
+
+// ADR-0111: an eligible preempting waiter is selected ahead of an older ordinary same-priority
+// waiter.
+TEST_F(ResourceAdmissionTest,
+       preempting_waiter_is_selected_ahead_of_ordinary_same_priority_waiter) {
+    queue(request(1, 1, 0));
+    take(1);
+    queue(request(2, 2, 0));
+    auto preemptor = request(3, 3, 0);
+    preemptor.preemption = AYNI_CALL_PREEMPT_SUPERSEDE;
+    queue(preemptor);
+    ASSERT_TRUE(release(1));
+    // Preemptor (call 3) takes the freed slot ahead of ordinary waiter (call 2).
+    take(3);
+    ASSERT_TRUE(release(3));
+    take(2);
+}
 } // namespace

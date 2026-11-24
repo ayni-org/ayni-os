@@ -126,6 +126,9 @@ class Node {
         table_.storage_fence_writers = port;
     }
 
+    // Before create(): attach a host body store to the Host table.
+    void set_bodies(const ayni_body_store_v1 *bodies) { table_.bodies = bodies; }
+
     // Called on each new kernel right after ayni_create, so that a reboot
     // registers the same catalog again.
     void on_create(std::function<void(ayni_kernel_t *)> registration) {
