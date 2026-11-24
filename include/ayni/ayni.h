@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 58u
+#define AYNI_ABI_MINOR 59u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -199,6 +199,10 @@ typedef struct ayni_config_v1 {
      * BUSINESS_CONTRACT_BYTES_DEFAULT when call catalogs are enabled;
      * otherwise no proof byte region is allocated. Separate from Scope bytes. */
     uint32_t business_contract_max_bytes;
+    /* Since 0.59. Static deterministic ReflexRule slots; 0 disables (max 32). */
+    uint32_t reflex_capacity;
+    /* Since 0.59. Bounded fired-reflex event ring; 0 selects default when reflex_capacity > 0. */
+    uint32_t reflex_event_capacity;
 } ayni_config_v1;
 
 /* Original machine schemas and execution/projection proof per fact. Since 0.48. */
@@ -1059,6 +1063,9 @@ typedef struct ayni_error_v1 {
 #define AYNI_REASON_BOOT_RESET ((ayni_reason_t)82)
 /* CANCELLED: in-flight EPHEMERAL Call superseded by an authorized preempting Call. Since 0.58. */
 #define AYNI_REASON_PREEMPTED ((ayni_reason_t)83)
+/* CANCELLED: in-flight EPHEMERAL Call soft-stopped or preempted by a local ReflexRule. Since 0.59.
+ */
+#define AYNI_REASON_REFLEX ((ayni_reason_t)84)
 
 /* Principals: who a session acts for (C-AUTH-010). */
 typedef uint32_t ayni_principal_kind_t;
