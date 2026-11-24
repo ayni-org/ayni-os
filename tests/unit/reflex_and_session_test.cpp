@@ -1459,4 +1459,75 @@ TEST(ReflexAndSession, ReflexRuntimeToggleAndSchema11Compatibility) {
     EXPECT_EQ(after_boot.fire_count, 0U);
 }
 
+// Test 7 (ADR-0112): STALE_OR_GAP rules in cooldown or EDGE_TRIGGERED latch must not report
+// next_deadline_us <= now_us / more_ready == 1 while an EPHEMERAL holder remains active.
+TEST(ReflexAndSession, StaleOrGapCooldownAndEdgeLatchDoNotBusySpinOwner) {
+    constexpr uint64_t cooldown_us = 250000;
+    // Subcase A: cooldown_us clamps next_deadline_us until cooldown expires.
+    {
+        ReflexFixture fix;
+        fix.executor.auto_cancel_with_proof = false; // Keep holder active after soft-stop signal.
+        fix.extra_configure = [](ayni_kernel_t *kernel) {
+            const ayni_observation_condition_v1 cond{text("sensor.obstacle_mm"), 1, 0, 0, 0, 50000};
+            ayni_reflex_rule_v1 rule{};
+            rule.struct_size = sizeof(rule);
+            rule.version = 1;
+            rule.rule_id = text("reflex.stale_cool");
+            rule.action = AYNI_REFLEX_SOFT_STOP_RESOURCE;
+            rule.trigger_mode = AYNI_REFLEX_TRIGGER_STALE_OR_GAP;
+            rule.flags = AYNI_REFLEX_FLAG_ENABLED_BY_DEFAULT;
+            rule.cooldown_us = cooldown_us;
+            rule.condition_count = 1;
+            rule.conditions = &cond;
+            rule.resource_id = text("motor.actuator");
+            ASSERT_EQ(ayni_register_reflex_rule(kernel, &rule), AYNI_OK);
+        };
+        fix.start();
+        fix.grant_motor(agent_a);
+        fix.set_scene(true);
+        // No obstacle sample published -> immediately stale/missing.
+        fix.start_motor_goal({{30, 30, 1500}}, "cool1");
+        for (int i = 0; i < 12 && fix.reflex_info("reflex.stale_cool").fire_count == 0U; ++i) {
+            fix.step();
+        }
+        ASSERT_EQ(fix.reflex_info("reflex.stale_cool").fire_count, 1U);
+        const uint64_t fired_at = fix.reflex_info("reflex.stale_cool").last_fired_us;
+        // Drain any remaining transport work, then verify owner is NOT stuck busy-spinning.
+        const auto idle_report = fix.step(1000);
+        EXPECT_EQ(idle_report.more_ready, 0U);
+        EXPECT_GE(idle_report.next_deadline_us, fired_at + cooldown_us);
+    }
+
+    // Subcase B: EDGE_TRIGGERED latched_active does not schedule immediate STALE_OR_GAP wakeups.
+    {
+        ReflexFixture fix;
+        fix.executor.auto_cancel_with_proof = false;
+        fix.extra_configure = [](ayni_kernel_t *kernel) {
+            const ayni_observation_condition_v1 cond{text("sensor.obstacle_mm"), 1, 0, 0, 0, 50000};
+            ayni_reflex_rule_v1 rule{};
+            rule.struct_size = sizeof(rule);
+            rule.version = 1;
+            rule.rule_id = text("reflex.stale_edge");
+            rule.action = AYNI_REFLEX_SOFT_STOP_RESOURCE;
+            rule.trigger_mode = AYNI_REFLEX_TRIGGER_STALE_OR_GAP;
+            rule.flags = AYNI_REFLEX_FLAG_ENABLED_BY_DEFAULT | AYNI_REFLEX_FLAG_EDGE_TRIGGERED;
+            rule.condition_count = 1;
+            rule.conditions = &cond;
+            rule.resource_id = text("motor.actuator");
+            ASSERT_EQ(ayni_register_reflex_rule(kernel, &rule), AYNI_OK);
+        };
+        fix.start();
+        fix.grant_motor(agent_a);
+        fix.set_scene(true);
+        fix.start_motor_goal({{30, 30, 1500}}, "edge1");
+        for (int i = 0; i < 12 && fix.reflex_info("reflex.stale_edge").fire_count == 0U; ++i) {
+            fix.step();
+        }
+        ASSERT_EQ(fix.reflex_info("reflex.stale_edge").fire_count, 1U);
+        const auto idle_report = fix.step(1000);
+        EXPECT_EQ(idle_report.more_ready, 0U);
+        EXPECT_GT(idle_report.next_deadline_us, fix.now_us);
+    }
+}
+
 } // namespace

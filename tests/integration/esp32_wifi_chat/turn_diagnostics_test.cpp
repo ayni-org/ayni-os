@@ -385,7 +385,8 @@ EndToEndSample run_fixed_text_turn(const EndToEndOptions &opts) {
                      AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_REQUEST, 0,
                      wifichat::harness::request_timeout_ms, AYNI_CALL_INPUT_VALUE,
                      tools ? AYNI_CALL_RESULT_TOOL_CALLS : AYNI_CALL_RESULT_TEXT, input_bytes,
-                     static_cast<uint32_t>(wifichat::summary_bytes), 1, &call_resource, nullptr},
+                     static_cast<uint32_t>(wifichat::summary_bytes), 1, &call_resource, nullptr,
+                     AYNI_CALL_DURABILITY_DURABLE, 0},
                     &business};
         EXPECT_EQ(ayni_register_call_capability(kernel.get(), &caps[at]), AYNI_OK);
     }

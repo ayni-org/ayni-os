@@ -368,4 +368,37 @@ TEST_F(ControlSessionTest, OpenRejectsInvalidSegmentsWithoutArmingGateAndRejects
     EXPECT_EQ(ayni_control_session_replace_target(session, &good_pair[1], 20), AYNI_INVALID_STATE);
 }
 
+// ADR-0112: end-of-trajectory tick() and advance_segment() must check PermitGate::observe() before
+// reporting COMPLETED so interlock drops or lease expirations stay fail-closed with true
+// stop_cause.
+TEST_F(ControlSessionTest, EndOfTrajectoryChecksGateObserveBeforeCompleting) {
+    // Subcase A: timed final segment finishes simultaneously with interlock drop.
+    const auto p1 = make_permit(AYNI_FORM_SESSION, 60, 0, 500, -50, 50);
+    const auto seg = make_segment(20, 20, 100);
+    ASSERT_EQ(ayni_control_session_open(session, gate, &p1, &seg, 1, 0, &live), AYNI_OK);
+    ayni_control_session_step_v1 step{};
+    step.struct_size = sizeof(step);
+    ASSERT_EQ(ayni_control_session_tick(session, 0, &live, &step), AYNI_OK);
+    auto unsafe = live;
+    unsafe.interlocks_ok = 0;
+    EXPECT_EQ(ayni_control_session_tick(session, 100, &unsafe, &step), AYNI_DENIED);
+    EXPECT_EQ(step.state, AYNI_CONTROL_SESSION_STOPPING);
+    EXPECT_EQ(gate_info().phase, AYNI_CONTROL_STOPPING);
+    EXPECT_EQ(gate_info().stop_cause, AYNI_CONTROL_STOP_INTERLOCK);
+    ASSERT_EQ(ayni_control_session_confirm_stopped(session, 110), AYNI_OK);
+    EXPECT_EQ(gate_info().stop_cause, AYNI_CONTROL_STOP_INTERLOCK);
+
+    // Subcase B: hardware-timed final segment finishes after lease expiration.
+    const auto p2 = make_permit(AYNI_FORM_SESSION, 61, 200, 300, -50, 50); // expires at 500
+    const auto hw_seg = make_segment(25, 25, 0);                           // hardware-timed
+    ASSERT_EQ(ayni_control_session_open(session, gate, &p2, &hw_seg, 1, 200, &live), AYNI_OK);
+    ASSERT_EQ(ayni_control_session_tick(session, 200, &live, &step), AYNI_OK);
+    EXPECT_EQ(ayni_control_session_advance_segment(session, 600, &live, &step), AYNI_EXPIRED);
+    EXPECT_EQ(step.state, AYNI_CONTROL_SESSION_STOPPING);
+    EXPECT_EQ(gate_info().phase, AYNI_CONTROL_STOPPING);
+    EXPECT_EQ(gate_info().stop_cause, AYNI_CONTROL_STOP_EXPIRED);
+    ASSERT_EQ(ayni_control_session_confirm_stopped(session, 610), AYNI_OK);
+    EXPECT_EQ(gate_info().stop_cause, AYNI_CONTROL_STOP_EXPIRED);
+}
+
 } // namespace

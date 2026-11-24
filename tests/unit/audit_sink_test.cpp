@@ -313,4 +313,74 @@ TEST(AuditSink, recovers_from_stale_slot_isolates_failures_and_validates_format)
     EXPECT_EQ(decode_audit_batch(bad_ver.data(), 8, parsed), AYNI_STORAGE_FAILED);
 }
 
+// ADR-0113: records arriving while a full-slot write is in flight survive slot rotation without
+// silent loss, and decode_audit_batch rejects 32-bit multiplication-overflow counts cleanly.
+TEST(AuditSink, preserves_records_ingested_during_in_flight_full_slot_write_and_rejects_overflow) {
+    QueuedPort port;
+    AuditSink sink;
+    AuditSink::Config cfg{};
+    cfg.files = port.port();
+    cfg.slot_max_bytes = audit_batch_header_bytes + 3U * audit_batch_record_bytes;
+    cfg.flush_threshold = 3;
+    cfg.flush_interval_us = 1000000;
+    ASSERT_EQ(sink.configure(cfg), AYNI_OK);
+
+    // Fill slot 1 (seq 1..3) and submit write WITHOUT completing the worker yet.
+    for (uint64_t seq = 1; seq <= 3; ++seq) {
+        const auto rec = make_record(seq, "slot1.full");
+        sink.ingest(&rec, 1, seq * 1000);
+    }
+    sink.poll(3000);
+    ASSERT_FALSE(sink.idle());
+
+    // While slot 1 write is still in flight, ingest seq 4..5 -> must queue for slot 2.
+    for (uint64_t seq = 4; seq <= 5; ++seq) {
+        const auto rec = make_record(seq, "slot2.next");
+        sink.ingest(&rec, 1, seq * 1000);
+    }
+
+    // Complete slot 1 write, rotate to slot 2, and force-flush seq 4..5 into slot 2.
+    port.drain_all();
+    sink.flush(10000);
+    port.drain_all();
+    sink.poll(10000);
+    EXPECT_TRUE(sink.idle());
+
+    const auto st = sink.stats();
+    EXPECT_EQ(st.drained, 5U);
+    EXPECT_EQ(st.flushed_records, 5U);
+    EXPECT_EQ(st.dropped_records, 0U);
+    EXPECT_EQ(st.slot_rotations, 1U);
+
+    const auto slot_a = port.read_slot(AuditSink::default_owner, 1);
+    const auto slot_b = port.read_slot(AuditSink::default_owner, 2);
+    ASSERT_EQ(slot_a.size(), 3U);
+    ASSERT_EQ(slot_b.size(), 2U);
+    EXPECT_EQ(slot_a[0].seq, 1U);
+    EXPECT_EQ(slot_a[2].seq, 3U);
+    EXPECT_EQ(slot_b[0].seq, 4U);
+    EXPECT_EQ(slot_b[1].seq, 5U);
+
+    // 32-bit overflow trigger: 0x028F5C29u * 100 == 4 (mod 2^32) -> 32 + 4 = 36 B packet.
+    std::vector<uint8_t> overflow_pkt(audit_batch_header_bytes + 4U, 0);
+    overflow_pkt[0] = 'A';
+    overflow_pkt[1] = 'Y';
+    overflow_pkt[2] = 'A';
+    overflow_pkt[3] = 'U';
+    overflow_pkt[4] = 1; // format = 1
+    overflow_pkt[8] = 0x29;
+    overflow_pkt[9] = 0x5C;
+    overflow_pkt[10] = 0x8F;
+    overflow_pkt[11] = 0x02; // count = 42949673
+    std::vector<ayni_audit_record_v1> parsed;
+    EXPECT_EQ(decode_audit_batch(overflow_pkt.data(), overflow_pkt.size(), parsed),
+              AYNI_STORAGE_FAILED);
+    overflow_pkt[8] = 0xFF;
+    overflow_pkt[9] = 0xFF;
+    overflow_pkt[10] = 0xFF;
+    overflow_pkt[11] = 0xFF; // count = UINT32_MAX
+    EXPECT_EQ(decode_audit_batch(overflow_pkt.data(), overflow_pkt.size(), parsed),
+              AYNI_STORAGE_FAILED);
+}
+
 } // namespace

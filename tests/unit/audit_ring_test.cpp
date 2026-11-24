@@ -808,4 +808,32 @@ TEST(AuditRing, overflow_overwrites_oldest_and_disabled_ring_has_zero_overhead) 
     EXPECT_EQ(out_count, 0U);
 }
 
+// ADR-0113: closing a live physical gate via Scene disable (latch_closed_gates) must still emit
+// paired ACTUATOR_QUARANTINE and ACTUATOR_RELEASE audit records.
+TEST(AuditRing, quarantine_and_release_pair_on_scene_disable) {
+    AuditFixture fx;
+    fx.setup(64);
+    fx.grant_all();
+    fx.set_scene(true);
+    fx.hold_motor = true;
+    fx.drain_audit();
+    fx.captured.clear();
+
+    fx.start_motor("m_scene_close");
+    for (int i = 0; i < 12 && !fx.active.has_value(); ++i) {
+        fx.step();
+    }
+    ASSERT_TRUE(fx.active.has_value());
+
+    // Disabling Scene closes the live gate via latch_closed_gates().
+    fx.set_scene(false);
+    for (int i = 0; i < 12; ++i) {
+        fx.step();
+    }
+    fx.drain_audit();
+
+    EXPECT_NE(fx.find(AYNI_AUDIT_ACTUATOR_QUARANTINE, AYNI_AUDIT_FLAG_PHYSICAL), nullptr);
+    EXPECT_NE(fx.find(AYNI_AUDIT_ACTUATOR_RELEASE, AYNI_AUDIT_FLAG_PHYSICAL), nullptr);
+}
+
 } // namespace

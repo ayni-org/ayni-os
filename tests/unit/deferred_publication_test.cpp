@@ -350,4 +350,37 @@ TEST_F(DeferredPublicationTest,
     ASSERT_TRUE(until([&] { return session.quiesce() == AYNI_OK; }));
 }
 
+// ADR-0111/0113: volatile discard during a cold-cache turn retries Conversation::references()
+// asynchronously and reclaims the cancelled draft so FileBodies never leaks staged RAM.
+TEST_F(DeferredPublicationTest,
+       volatile_discard_after_cold_cache_trim_retries_cleanup_and_reclaims_draft) {
+    // Seed 1 durable turn so current_.history and current_.rounds are populated on disk.
+    ASSERT_EQ(session.begin(text("first durable turn")), AYNI_OK);
+    ASSERT_TRUE(until([&] { return session.ready(); }));
+    conversation::TurnResult r1{};
+    ASSERT_TRUE(session.take_result(r1));
+    ASSERT_TRUE(r1.published);
+    ASSERT_EQ(session.record()->round_count, 1U);
+    ASSERT_TRUE(until([&] { return session.quiesce() == AYNI_OK; }));
+
+    // Evict all cached payloads so Conversation::references() returns AYNI_NOT_READY on discard.
+    auto *bodies = static_cast<FileBodies *>(profile.bodies()->context);
+    ASSERT_EQ(bodies->trim_cache(), AYNI_OK);
+    ASSERT_EQ(bodies->cached_bytes(), 0U);
+
+    // Stage a brand-new draft and immediately cancel while history/rounds are evicted.
+    ASSERT_EQ(session.begin(text("cold cancelled turn text")), AYNI_OK);
+    ASSERT_EQ(session.cancel(), AYNI_OK);
+    ASSERT_TRUE(until([&] { return session.ready(); }));
+    conversation::TurnResult r2{};
+    ASSERT_TRUE(session.take_result(r2));
+    EXPECT_FALSE(r2.published);
+    EXPECT_EQ(session.record()->round_count, 1U);
+
+    // Deferred cold-cache cleanup must complete before quiesce() and free the staged draft.
+    ASSERT_TRUE(until([&] { return session.quiesce() == AYNI_OK; }));
+    EXPECT_EQ(bodies->trim_cache(), AYNI_OK);
+    EXPECT_EQ(bodies->cached_bytes(), 0U);
+}
+
 } // namespace

@@ -161,7 +161,8 @@ class ReplyVoiceKernel : public testing::Test {
                  text("speaker.speech"),
                  {sizeof(ayni_call_contract_v1), AYNI_CALL_UNARY, AYNI_CALL_TOOL, 0,
                   AYNI_CALL_NOT_IDEMPOTENT, AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_REQUEST, 0, 1000,
-                  AYNI_CALL_INPUT_VALUE, AYNI_CALL_RESULT_TEXT, 2048, 64, 0, nullptr, nullptr},
+                  AYNI_CALL_INPUT_VALUE, AYNI_CALL_RESULT_TEXT, 2048, 64, 0, nullptr, nullptr,
+                  AYNI_CALL_DURABILITY_DURABLE, 0},
                  &business};
         ASSERT_EQ(ayni_register_call_capability(kernel.get(), &offer), AYNI_OK);
         const ayni_provider_v1 provider{sizeof(provider),

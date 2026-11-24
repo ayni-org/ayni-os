@@ -1170,4 +1170,55 @@ TEST(EphemeralExecution, MixedEphemeralAndDurableCallsPreserveDurabilityAndRepla
     EXPECT_EQ(std::string(reinterpret_cast<char *>(cp), cp_size), "done");
 }
 
+// Test 8 (ADR-0110): FENCED reload must not deadlock when an active EPHEMERAL physical Call has
+// no inline stop proof (or finishes ABANDONED) and relies on async AYNI_EXECUTOR_STATUS stop proof.
+TEST(EphemeralExecution, FencedReloadCompletesForEphemeralPhysicalCallWithoutInlineStopProof) {
+    EphemeralFixture fix;
+    fix.motor_exec.flags = 0; // Disable inline stop proof so stop uses async STOP + STATUS.
+    fix.motor_exec.proof_mode = InlineTestExecutor::ProofMode::omit;
+    fix.motor_exec.auto_complete = false;
+    bool dispatched = false;
+    fix.work.strategy().answer = [&](const ayni_task_snapshot_v1 &snap,
+                                     ayni_policy_output_v1 &out) {
+        if (!dispatched) {
+            dispatched = true;
+            return EphemeralFixture::stage_motor_call("e_fenced", 25, out);
+        }
+        return report(AYNI_POLICY_REPORT_COMPLETION, snap, out);
+    };
+    fix.start();
+    const uint64_t motor_goal = fix.create_goal("ephemeral_goal");
+    ASSERT_NE(motor_goal, 0U);
+    for (int i = 0; i < 30 && !fix.motor_exec.active.has_value(); ++i) {
+        fix.pump(1, true);
+    }
+    ASSERT_TRUE(fix.motor_exec.active.has_value());
+
+    // Inject transient append faults on an unrelated durable goal to push Kernel into FENCED.
+    using ayni::hosts::sim::StorageFault;
+    using ayni::hosts::sim::StoragePort;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        fix.work.node().sim().inject_fault(StoragePort::append, StorageFault::unavailable);
+    }
+    static_cast<void>(fix.create_goal("resume_goal"));
+    for (int i = 0; i < 40 && fix.work.node().lifecycle() == AYNI_LIFECYCLE_RUNNING; ++i) {
+        fix.work.node().sim().advance_us(AYNI_STORAGE_WRITE_INTERVAL_US_DEFAULT);
+        fix.work.node().sim().complete_storage();
+        fix.work.node().step(1);
+    }
+    ASSERT_EQ(fix.work.node().lifecycle(), AYNI_LIFECYCLE_FENCED);
+
+    // Deliver ABANDONED terminal without inline stop proof; ExecutionControl stops via STATUS,
+    // releases the ephemeral lease, exits FENCED into RECOVERING, and reloads cleanly to RUNNING.
+    fix.motor_exec.finish_active(AYNI_CALL_ABANDONED, AYNI_RESULT_UNKNOWN, AYNI_CALL_EFFECT_UNKNOWN,
+                                 nullptr);
+    for (int i = 0; i < 80 && fix.work.node().lifecycle() != AYNI_LIFECYCLE_RUNNING; ++i) {
+        fix.work.node().sim().advance_us(poll_period_us);
+        fix.work.node().sim().complete_storage();
+        fix.work.node().step();
+    }
+    EXPECT_EQ(fix.work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    EXPECT_GT(fix.motor_exec.stop_calls, 0U);
+}
+
 } // namespace
