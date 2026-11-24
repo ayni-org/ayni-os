@@ -23,7 +23,8 @@ constexpr uint16_t goal_record_version = 1;
 constexpr uint16_t goal_snapshot_record_version = 2;
 constexpr uint32_t goal_options_size = 2 * sizeof(uint32_t); // authority + provenance markers.
 constexpr uint32_t goal_group_tail_size = sizeof(uint32_t);  // Current immutable pause group.
-constexpr uint32_t goal_work_profile_size = 12; // u32 class + u64 period floor, records.md.
+constexpr uint32_t goal_work_profile_size =
+    16; // u32 class + u32 recovery + u64 period floor, schema 11 records.md.
 constexpr uint16_t goal_state_record_type = durability::record_type::goal_state;
 constexpr uint16_t goal_state_record_version = 1;
 // Cross-record proof for this state transition, explicit in schema 4 rather than
@@ -42,7 +43,7 @@ struct GoalRecordOptions {
 };
 // A GOAL record without its goal type id, trigger source and parameters.
 constexpr uint32_t goal_record_fixed_size =
-    132 + catalog::tool_policy_header_bytes; // Complete schema 5 creation, records.md.
+    136 + catalog::tool_policy_header_bytes; // Complete schema 11 creation, records.md.
 constexpr uint32_t goal_state_record_size =
     48 + sizeof(uint32_t); // Full state then GoalRecordChange.
 

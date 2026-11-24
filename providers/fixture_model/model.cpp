@@ -52,7 +52,8 @@ Provider::Provider(Variant variant, Service service, void *context, uint64_t (*n
                     AYNI_CALL_IDEMPOTENT, AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_REQUEST, 0,
                     timeout_ms, AYNI_CALL_INPUT_VALUE,
                     tools ? AYNI_CALL_RESULT_TOOL_CALLS : AYNI_CALL_RESULT_TEXT,
-                    call_input_bytes(bodies != nullptr), call_result_bytes, 1, &resource_, nullptr},
+                    call_input_bytes(bodies != nullptr), call_result_bytes, 1, &resource_, nullptr,
+                    AYNI_CALL_DURABILITY_DURABLE, 0},
                    &business_};
     descriptor_ = {
         sizeof(descriptor_),

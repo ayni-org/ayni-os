@@ -41,7 +41,9 @@ FakeTransport::FakeTransport() {
                             0,
                             1,
                             &resource_,
-                            nullptr};
+                            nullptr,
+                            AYNI_CALL_DURABILITY_DURABLE,
+                            0};
     input_schema_[0].kind = AYNI_VALUE_OBJECT;
     input_schema_[0].subtree_end = 2;
     auto &route = input_schema_[1];

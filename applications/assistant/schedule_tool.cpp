@@ -127,7 +127,9 @@ ScheduleTool::ScheduleTool() {
                             schedule_result_max,
                             0,
                             nullptr,
-                            nullptr};
+                            nullptr,
+                            AYNI_CALL_DURABILITY_DURABLE,
+                            0};
     build_input_schema();
     build_result_schema();
     business_ = {{input_schema_.data(), static_cast<uint32_t>(input_schema_.size())},

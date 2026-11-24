@@ -62,6 +62,10 @@ typedef struct ayni_executor_response_v1 {
     ayni_executor_output_v1 output; /* Read only for CHALLENGE or STATUS answered OK. */
 } ayni_executor_response_v1;
 
+/* Trusted colocated executor may supply verified stop status inline with Provider terminal posts.
+ * Since 0.57. */
+#define AYNI_EXECUTOR_FLAG_INLINE_STOP_PROOF 0x1u
+
 /* Trusted registration, copied except the runtime-owned callback context. Since 0.35.
  * Callbacks exchange typed facts; a remote executor carries them over its own link.
  * Since 0.36 every port is a request (ADR-0052). OK keeps it: exactly one
@@ -103,6 +107,9 @@ typedef struct ayni_executor_v1 {
     /* Required. Since 0.36, a request answered with fresh exact local facts. */
     ayni_status_t (*status)(void *ctx, ayni_attempt_ref_v1 request, uint64_t permit_id,
                             ayni_executor_completion_t *completion);
+    /* Since 0.57. Zero or AYNI_EXECUTOR_FLAG_* bits; zero keeps independent STOP/STATUS polling. */
+    uint32_t flags;
+    uint32_t flags_reserved; /* Since 0.57. Must be zero. */
 } ayni_executor_v1;
 
 /* Any non-ISR thread, including inside the request port; copies the answer.

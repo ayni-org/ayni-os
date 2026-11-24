@@ -89,7 +89,33 @@ ayni_status_t ActionRecord::prepare(const ActionIdentity &identity, ActionStamp 
     return AYNI_OK;
 }
 
+ayni_status_t ActionRecord::prepare_ephemeral(const ActionIdentity &identity, uint64_t boot_epoch,
+                                              std::optional<ActionRecord> &out) {
+    if (!foundation::is_kernel_id(identity.operation_id) ||
+        !foundation::is_kernel_id(identity.logical_call_id) ||
+        identity.operation_id == identity.logical_call_id || identity.binding_id.size() == 0U ||
+        identity.binding_version == 0U || boot_epoch == 0U ||
+        boot_epoch > foundation::max_boot_epoch ||
+        foundation::id_boot_epoch(identity.operation_id) > boot_epoch ||
+        foundation::id_boot_epoch(identity.logical_call_id) > boot_epoch) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    if (out) {
+        return AYNI_INVALID_STATE;
+    }
+    const ActionStamp stamp{boot_epoch, {0, 0}};
+    out.emplace();
+    out->fact_ = {identity, ActionPhase::prepared, ActionEffect::none, ActionEvidence::none, stamp,
+                  stamp};
+    out->ephemeral_ = true;
+    return AYNI_OK;
+}
+
 bool ActionRecord::advances(ActionStamp stamp) const {
+    if (ephemeral_) {
+        return stamp.boot_epoch == fact_.latest.boot_epoch &&
+               stamp.transition.transition_id == 0U && stamp.transition.commit_seq == 0U;
+    }
     const bool restored =
         delivery_ == Delivery::restored_prepared || delivery_ == Delivery::restored;
     return valid_stamp(stamp) &&
@@ -100,6 +126,7 @@ bool ActionRecord::advances(ActionStamp stamp) const {
 
 void ActionRecord::restore_validated(const ActionFact &fact) {
     fact_ = fact;
+    ephemeral_ = false;
     // A persisted barrier proves possible delivery, never permission to repeat it.
     delivery_ =
         fact.phase == ActionPhase::prepared ? Delivery::restored_prepared : Delivery::restored;
@@ -121,7 +148,7 @@ ayni_status_t ActionRecord::begin_dispatch(ActionStamp stamp) {
 bool ActionRecord::claim_dispatch(uint64_t current_boot, uint64_t durable_seq) {
     if (fact_.phase != ActionPhase::dispatching || delivery_ != Delivery::unclaimed ||
         current_boot != fact_.latest.boot_epoch ||
-        durable_seq < fact_.latest.transition.commit_seq) {
+        (!ephemeral_ && durable_seq < fact_.latest.transition.commit_seq)) {
         return false;
     }
     delivery_ = Delivery::claimed;

@@ -54,6 +54,13 @@ void CallRuntime::release(uint32_t index, uint64_t now_us) {
         return;
     }
     if (control_.holds_lease(active->call_id)) {
+        if (work_.calls.occupied(index) && work_.calls.state(index).ephemeral &&
+            control_.release_ephemeral_stopped(active->call_id)) {
+            // Confirmed ephemeral physical stop lifts RAM quarantine immediately (ADR-0110).
+            active.reset();
+            work_.forget_due_work();
+            return;
+        }
         active->delivery.reset();
         active->stage = Stage::retiring; // Stop fact must become durable before the exact
                                          // quarantine is released.
@@ -85,6 +92,15 @@ bool CallRuntime::idle() const {
     return true;
 }
 
+bool CallRuntime::ephemeral_idle() const {
+    for (uint32_t at = 0; at < limits_.capacity; ++at) {
+        if (slots_[at].active && slots_[at].active->ephemeral) {
+            return false;
+        }
+    }
+    return true;
+}
+
 bool CallRuntime::privacy_released() const {
     for (uint32_t index = 0; index < limits_.capacity; ++index) {
         if (work_.calls.occupied(index) && work_.calls.state(index).content_erased &&
@@ -99,6 +115,28 @@ CallRuntime::Advance CallRuntime::expire_wait(uint32_t index, uint32_t task_inde
                                               resources::WaitAction action, uint64_t now_us) {
     if (action == resources::WaitAction::wait) {
         return Advance::internal; // An unbounded waiter cannot be an expired queue choice.
+    }
+    if (work_.calls.state(index).ephemeral) {
+        const uint64_t call_id = work_.calls.identity(index).call_id;
+        if (action == resources::WaitAction::skip) {
+            if (work_.calls.skip_before_dispatch(index, {work_.ids.boot_epoch(), {0, 0}}) !=
+                AYNI_OK) {
+                return Advance::internal;
+            }
+            work_.tasks.end_volatile_call(task_index, call_id);
+            work_.tasks.skip_queued_call(task_index, work_.transitions.next());
+        } else {
+            // Never set durable waiting_for_resource() for a RAM-only call; report failure
+            // in RAM so the strategy observes EXPIRED/RESOURCE_WAIT without replay drift.
+            if (work_.calls.fail_before_dispatch_ephemeral(index, AYNI_EXPIRED,
+                                                           AYNI_REASON_RESOURCE_WAIT,
+                                                           work_.ids.boot_epoch()) != AYNI_OK) {
+                return Advance::internal;
+            }
+            work_.tasks.end_volatile_call(task_index, call_id);
+        }
+        release(index, now_us);
+        return Advance::applied;
     }
     if (action == resources::WaitAction::pause &&
         work::TaskTable::waiting_for_resource(work_.tasks.at(task_index))) {
@@ -123,6 +161,15 @@ CallRuntime::Advance CallRuntime::cancel_local(uint32_t index, uint32_t task_ind
     auto &active = slots_[index].active;
     if (active && active->delivery && !mailbox_.withdraw(active->delivery->reservation)) {
         return Advance::internal; // No submit has occurred; a receipt here violates ownership.
+    }
+    if (work_.calls.state(index).ephemeral) {
+        if (work_.calls.cancel_before_dispatch(index, {work_.ids.boot_epoch(), {0, 0}}) !=
+            AYNI_OK) {
+            return Advance::internal;
+        }
+        work_.tasks.end_volatile_call(task_index, work_.calls.identity(index).call_id);
+        release(index, host_.monotonic_now_us(host_.ctx));
+        return Advance::applied;
     }
     const auto stamp = work_.transitions.next();
     if (work_.calls.cancel_before_dispatch(index, {work_.ids.boot_epoch(), stamp}) != AYNI_OK ||
@@ -199,7 +246,8 @@ CallRuntime::Advance CallRuntime::advance(uint64_t now_us, uint64_t durable_seq,
 // C-COMMIT-006: this pass may write PREPARED or DISPATCHING. Control and ordinary
 // Call work keep their own lanes, including the only path that can dispatch.
 CallRuntime::Advance CallRuntime::prepare_accepted(const AcceptedCalls &accepted,
-                                                   uint64_t deadline_us, uint64_t durable_seq) {
+                                                   uint64_t deadline_us, uint64_t durable_seq,
+                                                   bool ephemeral_only) {
     const auto now_us = host_.monotonic_now_us(host_.ctx);
     if (now_us >= deadline_us || mailbox_.in_flight() == limits_.capacity ||
         control_ready(now_us, durable_seq, Mode::running) ||
@@ -210,7 +258,8 @@ CallRuntime::Advance CallRuntime::prepare_accepted(const AcceptedCalls &accepted
     if (selection_us >= deadline_us) {
         return Advance::idle;
     }
-    const auto candidate = next_accepted_preparation(accepted, selection_us, durable_seq);
+    const auto candidate =
+        next_accepted_preparation(accepted, selection_us, durable_seq, ephemeral_only);
     if (!candidate) {
         return Advance::idle;
     }
@@ -243,7 +292,8 @@ CallRuntime::Advance CallRuntime::prepare_accepted(const AcceptedCalls &accepted
 // precedence. Among fresh Calls, finish a prepared Call before taking a new claim.
 std::optional<uint32_t> CallRuntime::next_accepted_preparation(const AcceptedCalls &accepted,
                                                                uint64_t now_us,
-                                                               uint64_t durable_seq) const {
+                                                               uint64_t durable_seq,
+                                                               bool ephemeral_only) const {
     resources::AdmissionChoice choice{};
     const bool chosen = resources_.next(now_us, choice);
     std::optional<uint32_t> candidate;
@@ -258,6 +308,9 @@ std::optional<uint32_t> CallRuntime::next_accepted_preparation(const AcceptedCal
         }
         if (ready == CallReady::other || !accepted.contains(work_.calls.identity(at).call_id)) {
             return std::nullopt;
+        }
+        if (ephemeral_only && !work_.calls.state(at).ephemeral) {
+            continue;
         }
         if (!candidate || ready == CallReady::prepared) {
             candidate = at;
@@ -317,7 +370,10 @@ CallRuntime::Advance CallRuntime::advance_call(uint32_t index, uint64_t now_us,
     if (active.call_id != id.call_id) {
         return Advance::internal;
     }
-    const auto authority = work_.check_task_authority(task_index, now_us, durable_seq);
+    const auto task_authority = work_.check_task_authority(task_index, now_us, durable_seq);
+    const auto authority = task_authority.status == AYNI_OK
+                               ? work_.check_ephemeral_call_authority(index, now_us, durable_seq)
+                               : task_authority;
     const bool user_stop = (active.delivery && active.delivery->inhibition) ||
                            task.call.end != work::TaskCall::End::none ||
                            task.lifecycle == AYNI_TASK_PAUSED ||
@@ -362,8 +418,9 @@ CallRuntime::Advance CallRuntime::progress_dispatch(uint32_t index, uint32_t tas
     if (active.stage == Stage::prepared) {
         return prepare_barrier(index);
     }
+    const auto &state = work_.calls.state(index);
     return active.stage == Stage::barrier &&
-                   work_.calls.state(index).latest.transition.commit_seq <= durable_seq
+                   (state.ephemeral || state.latest.transition.commit_seq <= durable_seq)
                ? dispatch(index, task_index, now_us, durable_seq)
                : Advance::idle;
 }
@@ -371,8 +428,11 @@ CallRuntime::Advance CallRuntime::progress_dispatch(uint32_t index, uint32_t tas
 CallRuntime::Advance CallRuntime::record_preparation(uint32_t index) {
     slots_[index].active->stage = Stage::prepared;
     // A readmitted Call can retain its existing PREPARED fact (ADR-0045).
+    const foundation::TransitionStamp stamp = work_.calls.state(index).ephemeral
+                                                  ? foundation::TransitionStamp{0, 0}
+                                                  : work_.transitions.next();
     if (work_.calls.action(index) == nullptr &&
-        work_.calls.prepare(index, {work_.ids.boot_epoch(), work_.transitions.next()}) != AYNI_OK) {
+        work_.calls.prepare(index, {work_.ids.boot_epoch(), stamp}) != AYNI_OK) {
         return Advance::internal;
     }
     return Advance::applied;
@@ -399,8 +459,10 @@ CallRuntime::Advance CallRuntime::prepare_barrier(uint32_t index) {
     if (mailbox_.reserve(attempt, reservation, written_limit) != AYNI_OK) {
         return Advance::internal;
     }
-    if (work_.calls.begin_dispatch(index, attempt,
-                                   {work_.ids.boot_epoch(), work_.transitions.next()}) != AYNI_OK) {
+    const foundation::TransitionStamp stamp = work_.calls.state(index).ephemeral
+                                                  ? foundation::TransitionStamp{0, 0}
+                                                  : work_.transitions.next();
+    if (work_.calls.begin_dispatch(index, attempt, {work_.ids.boot_epoch(), stamp}) != AYNI_OK) {
         static_cast<void>(mailbox_.withdraw(reservation));
         return Advance::internal;
     }

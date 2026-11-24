@@ -17,7 +17,8 @@ ayni_status_t decode_contract(const ayni_call_contract_v1 &input, CallContract &
         return status;
     }
     if (input.resource_count > resource_group_max ||
-        (input.resource_count != 0U && input.resources == nullptr)) {
+        (input.resource_count != 0U && input.resources == nullptr) ||
+        input.durability_reserved != 0U) {
         return AYNI_INVALID_ARGUMENT;
     }
     CallContract value{};
@@ -33,6 +34,7 @@ ayni_status_t decode_contract(const ayni_call_contract_v1 &input, CallContract &
     value.result_format = input.result_format;
     value.input_text_limit = input.input_text_limit;
     value.result_text_limit = input.result_text_limit;
+    value.durability = static_cast<CallDurability>(input.durability);
     value.resource_count = input.resource_count;
     // Nested layouts are checked before reading their tails; typed normalization
     // then applies the same rules as durable records and internal contracts.

@@ -33,6 +33,10 @@ bool known_cancel(CancelMode cancel) {
            cancel == CancelMode::confirmed;
 }
 
+bool known_durability(CallDurability durability) {
+    return durability == CallDurability::durable || durability == CallDurability::ephemeral;
+}
+
 // Canonical sorted requirement groups have one meaning regardless of registration
 // array order. Duplicate resources are invalid, not silently summed or deduplicated.
 bool normalize_resources(CallContract &value) {
@@ -65,12 +69,19 @@ bool normalize_resources(CallContract &value) {
 ayni_status_t normalize_call_contract(const CallContract &input, CallContract &out) {
     if (!known_form(input.form) || !known_class(input.category) ||
         (input.effects & ~call_effect_mask) != 0U || !known_idempotency(input.idempotency) ||
-        !known_query(input.query) || !known_cancel(input.cancel) || input.timeout_ms == 0U ||
+        !known_query(input.query) || !known_cancel(input.cancel) ||
+        !known_durability(input.durability) || input.timeout_ms == 0U ||
         input.input_text_limit > AYNI_CALL_INPUT_BYTES_MAX ||
         input.result_text_limit > AYNI_CALL_RESULT_BYTES_MAX ||
         input.resource_count > resource_group_max ||
         input.business_contract.size > AYNI_BUSINESS_CONTRACT_BYTES_MAX ||
         (input.business_contract.size != 0U && input.business_contract.data == nullptr)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    // Phase 1 EPHEMERAL calls have no durable reconciliation ledger or subscription lease
+    // (ADR-0110).
+    if (input.durability == CallDurability::ephemeral &&
+        (input.form == CallForm::subscription || input.query != QueryAuthority::none)) {
         return AYNI_INVALID_ARGUMENT;
     }
     if (input.input_format != call_value_input_format ||
@@ -109,8 +120,9 @@ bool same_call_semantics(const CallContract &left, const CallContract &right) {
     if (left.form != right.form || left.category != right.category ||
         left.effects != right.effects || left.idempotency != right.idempotency ||
         left.query != right.query || left.cancel != right.cancel ||
-        left.dedupe_window_ms != right.dedupe_window_ms || left.timeout_ms != right.timeout_ms ||
-        left.input_format != right.input_format || left.result_format != right.result_format ||
+        left.durability != right.durability || left.dedupe_window_ms != right.dedupe_window_ms ||
+        left.timeout_ms != right.timeout_ms || left.input_format != right.input_format ||
+        left.result_format != right.result_format ||
         left.input_text_limit != right.input_text_limit ||
         left.result_text_limit != right.result_text_limit ||
         left.resource_count != right.resource_count ||

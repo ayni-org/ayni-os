@@ -8,10 +8,10 @@
 #include "work/call/call_table.h"
 
 namespace ayni::work {
-// One complete current row in journal and snapshot (schema 10).
+// One complete current row in journal and snapshot (schema 11).
 constexpr uint16_t call_record_type = durability::record_type::call;
 constexpr uint16_t call_record_version = 2;
-constexpr uint16_t call_delta_version = 3;        // Journal updates only; schema 10, records.md.
+constexpr uint16_t call_delta_version = 3;        // Journal updates only; schema 11, records.md.
 constexpr uint32_t call_delta_identity_bytes = 8; // Original logical Call ID.
 constexpr uint32_t call_delta_fixed_size = 264;   // Mutable layout plus ID, records.md.
 constexpr uint32_t call_subscription_fixed_bytes = 44; // Attachment now belongs to common state.
@@ -23,7 +23,7 @@ constexpr uint32_t call_mode_attachment_bytes = 8; // Two u32, contracts/storage
 // Result body reference (id, digest, size) and its tool call count; schema 10 (ADR-0104).
 constexpr uint32_t call_result_body_bytes = 24;
 constexpr uint32_t call_record_fixed_size =
-    292 + call_metadata_tail_size + call_authorization_size + call_mode_attachment_bytes +
+    296 + call_metadata_tail_size + call_authorization_size + call_mode_attachment_bytes +
     model_context_record_bytes + model_usage_record_bytes + call_result_body_bytes;
 constexpr uint32_t call_record_id_count =
     6; // Step, binding, capability, provider, endpoint, destination.

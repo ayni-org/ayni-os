@@ -26,7 +26,9 @@ ActionService::ActionService(ayni_call_query_authority_t query_authority) {
                             0,
                             0,
                             nullptr,
-                            nullptr};
+                            nullptr,
+                            AYNI_CALL_DURABILITY_DURABLE,
+                            0};
     input_schema_.kind = result_schema_.kind = AYNI_VALUE_TEXT;
     input_schema_.subtree_end = result_schema_.subtree_end = 1;
     business_ = {{&input_schema_, 1}, {&result_schema_, 1}, 0, 0, nullptr};

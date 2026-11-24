@@ -103,6 +103,13 @@ class ExecutionControl {
     // absence may later prove it never started; false without a lease.
     bool delivery_ended(uint64_t call_id);
     bool request_stop(uint64_t call_id); // Asks the executor to stop; false without a lease.
+    // Validates and applies an inline stop status attached to a terminal Provider
+    // receipt for an executor declaring AYNI_EXECUTOR_FLAG_INLINE_STOP_PROOF (ADR-0110).
+    // Returns false on any mismatch so the caller falls back to STOP + STATUS polling.
+    bool accept_inline_stop(uint32_t index, const ayni_executor_status_v1 &status);
+    // Releases a confirmed stopped EPHEMERAL lease immediately in RAM without waiting
+    // on durable_seq, closing its executor lanes; false unless stopped and ephemeral.
+    bool release_ephemeral_stopped(uint64_t call_id);
     // The executor measured the stop and commit_stop has yet to record it.
     bool stop_measured(uint64_t call_id) const;
     // Records the measured stop in the call's facts at a new stamp; the

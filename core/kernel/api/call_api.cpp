@@ -46,8 +46,10 @@ ayni_status_t ayni_copy_call_result(const ayni_kernel_t *kernel, uint64_t logica
     }
     const auto &state = calls.state(index);
     // Use the current writer's prefix, never the monotonic floor during fencing.
+    // Completed RAM-only EPHEMERAL calls are readable immediately without durable_seq.
     if (kernel->state() == AYNI_LIFECYCLE_FENCED || kernel->state() == AYNI_LIFECYCLE_RECOVERING ||
-        state.outcome == 0U || state.latest.transition.commit_seq > kernel->writer_durable_seq()) {
+        state.outcome == 0U ||
+        (!state.ephemeral && state.latest.transition.commit_seq > kernel->writer_durable_seq())) {
         return AYNI_BUSY;
     }
     if (state.outcome == AYNI_CALL_ABANDONED) {

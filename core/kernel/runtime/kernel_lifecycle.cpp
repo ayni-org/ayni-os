@@ -276,6 +276,7 @@ ayni::kernel::CallRuntime::AcceptedCalls ayni_kernel::apply_ready_work(StepConte
     ayni::kernel::CallRuntime::AcceptedCalls accepted;
     if (lifecycle == AYNI_LIFECYCLE_RUNNING) {
         const uint64_t ready_before = work.transitions.next_commit_seq();
+        const uint64_t volatile_before = work.tasks.next_volatile_generation();
         while (lifecycle == AYNI_LIFECYCLE_RUNNING && progress.available() && has_room() &&
                run_transition([&] {
                    return ended(ayni::kernel::do_due_work(work, progress.started_us,
@@ -288,7 +289,7 @@ ayni::kernel::CallRuntime::AcceptedCalls ayni_kernel::apply_ready_work(StepConte
                run_transition([&] {
                    return ended(ayni::kernel::decide_next(
                        work, decisions, ready_before, progress.started_us, log.durable_seq(),
-                       {host.ctx, host.monotonic_now_us}, calls, call_id));
+                       {host.ctx, host.monotonic_now_us}, calls, call_id, volatile_before));
                })) {
             accepted.include(call_id);
             progress.applied();
@@ -300,13 +301,17 @@ ayni::kernel::CallRuntime::AcceptedCalls ayni_kernel::apply_ready_work(StepConte
 void ayni_kernel::prepare_accepted_calls(StepContext &progress,
                                          const ayni::kernel::CallRuntime::AcceptedCalls &accepted) {
     // Append the available prefix immediately if optional preparation cannot fit or yield work.
+    // RAM-only EPHEMERAL calls consume no WAL bytes and may prepare even when the log is idle.
     while (accepted.first && lifecycle == AYNI_LIFECYCLE_RUNNING && progress.available() &&
-           has_room() && log.can_extend_group(progress.now_us()) &&
            completions.posted_count() == 0 && !revocation_ready() &&
-           !work.authority_cleanup.ready() && !privacy_ready() && run_transition([&] {
-               return ended(
-                   calls.prepare_accepted(accepted, progress.cutoff_us(), log.durable_seq()));
-           })) {
+           !work.authority_cleanup.ready() && !privacy_ready()) {
+        const bool ephemeral_only = !(has_room() && log.can_extend_group(progress.now_us()));
+        if (!run_transition([&] {
+                return ended(calls.prepare_accepted(accepted, progress.cutoff_us(),
+                                                    log.durable_seq(), ephemeral_only));
+            })) {
+            break;
+        }
         progress.applied();
     }
 }
@@ -608,7 +613,7 @@ void ayni_kernel::settle_recovery() {
         // only once every request is complete, since a Host may still read
         // the buffers they borrowed (ADR-0027 decision 14); recovery then
         // reads what is durable, under the epoch the fence installed.
-        if (completions.in_flight() == 0U) {
+        if (completions.in_flight() == 0U && calls.ephemeral_idle()) {
             const uint32_t epoch = boot.writer_epoch();
             replay.discard_for_reload();
             log_started_ = false;

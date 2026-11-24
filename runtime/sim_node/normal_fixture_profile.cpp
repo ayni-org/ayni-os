@@ -79,7 +79,9 @@ Counter::Counter(const char *capability, Effect effect) {
                             0,
                             1,
                             &resource_,
-                            nullptr};
+                            nullptr,
+                            AYNI_CALL_DURABILITY_DURABLE,
+                            0};
     input_schema_.kind = result_schema_.kind = AYNI_VALUE_TEXT;
     input_schema_.subtree_end = result_schema_.subtree_end = 1;
     input_schema_.max_count = text_limit;

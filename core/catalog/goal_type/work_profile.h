@@ -7,6 +7,8 @@ namespace ayni::catalog {
 // Owns a normalized class and its background period floor; no runtime queue state.
 struct WorkProfile {
     ayni_work_class_t kind = AYNI_WORK_ORDINARY; // Trusted class, never proposed by a model.
+    // Reboot recovery policy: RESUME (0) or CANCEL_ON_REBOOT (1, ADR-0110).
+    ayni_goal_recovery_t recovery = AYNI_GOAL_RECOVERY_RESUME;
     uint64_t background_period_us =
         0; // Zero outside BACKGROUND; positive finite microseconds there.
     // Decode once at the ABI boundary; zero selects the documented background default.
@@ -21,14 +23,20 @@ struct WorkProfile {
                : kind == AYNI_WORK_BACKGROUND ? wait_us <= AYNI_RESOURCE_WAIT_DEFAULT_US
                                               : true;
     }
-    // Default retains the old Goal record layout and ordinary call behavior.
-    bool is_default() const { return kind == AYNI_WORK_ORDINARY && background_period_us == 0; }
+    // Default retains ordinary durable recovery and call behavior.
+    bool is_default() const {
+        return kind == AYNI_WORK_ORDINARY && recovery == AYNI_GOAL_RECOVERY_RESUME &&
+               background_period_us == 0;
+    }
+    // True when unfinished work is cancelled on a new boot and may run EPHEMERAL calls.
+    bool cancel_on_reboot() const { return recovery == AYNI_GOAL_RECOVERY_CANCEL_ON_REBOOT; }
     // Complete immutable semantic identity, used when resolving a Goal after restart.
     bool operator==(const WorkProfile &other) const {
-        return kind == other.kind && background_period_us == other.background_period_us;
+        return kind == other.kind && recovery == other.recovery &&
+               background_period_us == other.background_period_us;
     }
     // Copied diagnostics; no catalog pointer escapes.
-    ayni_work_profile_v1 snapshot() const { return {kind, 0, background_period_us}; }
+    ayni_work_profile_v1 snapshot() const { return {kind, recovery, background_period_us}; }
 };
 } // namespace ayni::catalog
 #endif

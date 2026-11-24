@@ -349,6 +349,45 @@ bool ExecutionControl::request_stop(uint64_t call_id) {
     return permits_.request_stop(call_id);
 }
 
+bool ExecutionControl::accept_inline_stop(uint32_t index, const ayni_executor_status_v1 &status) {
+    const auto &saved = work_.calls.state(index).execution;
+    if (!saved || work::execution_stopped(*saved)) {
+        return false;
+    }
+    uint32_t executor = 0;
+    if (!executor_of(*saved, executor)) {
+        return false;
+    }
+    const auto &ports = work_.catalogs.execution.executor(executor).ports;
+    if ((ports.flags & AYNI_EXECUTOR_FLAG_INLINE_STOP_PROOF) == 0U ||
+        status.control.phase != AYNI_CONTROL_STOPPED) {
+        return false;
+    }
+    const auto call_id = work_.calls.identity(index).call_id;
+    return permits_.observe(call_id, status) && stop_measured(call_id);
+}
+
+bool ExecutionControl::release_ephemeral_stopped(uint64_t call_id) {
+    uint32_t call_index = 0;
+    if (!work_.calls.find(call_id, call_index)) {
+        return false;
+    }
+    const auto &state = work_.calls.state(call_index);
+    const auto *lease = permits_.find(call_id);
+    if (!state.ephemeral || !state.execution || !work::execution_stopped(*state.execution) ||
+        lease == nullptr || !lease->stopped) {
+        return false;
+    }
+    const uint32_t executor = lease->executor_index;
+    if (!permits_.release_stopped(call_id)) {
+        return false;
+    }
+    for (auto lane : {ExecutorLane::control, ExecutorLane::stop, ExecutorLane::status}) {
+        executors_.close(executor, lane);
+    }
+    return true;
+}
+
 bool ExecutionControl::stop_measured(uint64_t call_id) const {
     const auto *lease = permits_.find(call_id);
     return lease != nullptr && lease->stopped.has_value();
@@ -384,16 +423,19 @@ bool ExecutionControl::stop_unsent(const resources::PermitLease &lease) const {
 }
 
 // Durable work facts retain measured stop independently of Provider completion.
-// Resource quarantine is lifted only by the independent consumer after this stamp persists.
+// Resource quarantine is lifted only by the independent consumer after this stamp persists,
+// except for RAM-only EPHEMERAL calls whose stop fact never enters the WAL (ADR-0110).
 RuntimeAdvance ExecutionControl::commit_stop(uint32_t index) {
     const auto *lease = permits_.find(work_.calls.identity(index).call_id);
     if (lease == nullptr || !lease->stopped) {
         return Advance::internal;
     }
     const auto &fact = *lease->stopped;
+    const foundation::TransitionStamp stamp = work_.calls.state(index).ephemeral
+                                                  ? foundation::TransitionStamp{0, 0}
+                                                  : work_.transitions.next();
     return work_.calls.confirm_execution(index, fact.phase, fact.cause, fact.target,
-                                         {work_.ids.boot_epoch(), work_.transitions.next()}) ==
-                   AYNI_OK
+                                         {work_.ids.boot_epoch(), stamp}) == AYNI_OK
                ? Advance::applied
                : Advance::internal;
 }
@@ -567,12 +609,17 @@ bool ExecutionControl::stopped_releasable(const resources::PermitLease &lease, u
         return transport_.retiring(transport_.context, lease.call_id);
     }
     uint32_t index = 0;
-    if (mode == Mode::fenced || !work_.calls.find(lease.call_id, index)) {
+    if (!work_.calls.find(lease.call_id, index)) {
         return false;
     }
     const auto &state = work_.calls.state(index);
-    return state.execution && work::execution_stopped(*state.execution) &&
-           state.latest.transition.commit_seq <= durable_seq;
+    if (!state.execution || !work::execution_stopped(*state.execution)) {
+        return false;
+    }
+    if (state.ephemeral) {
+        return true; // Confirmed physical stop lifts RAM quarantine without durable_seq (ADR-0110).
+    }
+    return mode != Mode::fenced && state.latest.transition.commit_seq <= durable_seq;
 }
 
 // All execution gates share the same decision for renewal and immediate stopping.
@@ -591,9 +638,10 @@ bool ExecutionControl::should_stop(const resources::PermitLease &lease, uint64_t
     }
     const auto &task = work_.tasks.at(task_index);
     return expired || task.call.end != work::TaskCall::End::none ||
-           task.lifecycle == AYNI_TASK_PAUSED ||
+           !work::TaskTable::is_live(task.lifecycle) || task.lifecycle == AYNI_TASK_PAUSED ||
            work_.calls.state(index).cancel_cause != work::CallCancelCause::none ||
            work_.check_task_authority(task_index, now_us, durable_seq).status != AYNI_OK ||
+           work_.check_ephemeral_call_authority(index, now_us, durable_seq).status != AYNI_OK ||
            !allowed(index, now_us, durable_seq) || !resources_.executable(lease.claim);
 }
 

@@ -5,13 +5,27 @@
 
 namespace ayni::kernel {
 // These ports/leases are volatile owners independent of replayed Task slots.
-// Fencing cancels borrowers but keeps every pending result for the new writer.
+// Fencing cancels borrowers and drains RAM-only ephemeral receipts while keeping
+// durable receipts intact for the new writer after reload.
 CallRuntime::Advance CallRuntime::drain_transport(Mode mode) {
-    if (mode == Mode::closing && mailbox_.has_pending()) {
+    ProviderMailbox::BlockedSlots fenced_blocked{};
+    const ProviderMailbox::BlockedSlots *filter = nullptr;
+    if (mode == Mode::fenced) {
+        fenced_blocked.fill(true);
+        for (uint32_t at = 0; at < limits_.capacity; ++at) {
+            const auto &active = slots_[at].active;
+            if (active && active->ephemeral && active->delivery) {
+                fenced_blocked[active->delivery->reservation.index] = false;
+            }
+        }
+        filter = &fenced_blocked;
+    }
+    if ((mode == Mode::closing || mode == Mode::fenced) && mailbox_.has_pending(filter)) {
         ProviderMessage message{};
         ProviderReceipt receipt{};
         uint32_t size = 0;
-        if (mailbox_.read_next(receipt_, limits_.result_bytes, size, message, receipt) != AYNI_OK) {
+        if (mailbox_.read_next(receipt_, limits_.result_bytes, size, message, receipt, filter) !=
+            AYNI_OK) {
             return Advance::internal;
         }
         const bool terminal = provider_terminal(message.kind);
@@ -19,7 +33,7 @@ CallRuntime::Advance CallRuntime::drain_transport(Mode mode) {
             return Advance::internal;
         }
         if (message.body_ref.id != 0U) {
-            release_body(message.body_ref); // Closing never records this result.
+            release_body(message.body_ref); // Closing/fenced discard never persists this result.
         }
         if (terminal) {
             for (uint32_t at = 0; at < limits_.capacity; ++at) {
@@ -29,6 +43,10 @@ CallRuntime::Advance CallRuntime::drain_transport(Mode mode) {
                         receipt.reservation.attempt.request_id) {
                     // Exact ended borrow also permits authoritative absence.
                     static_cast<void>(control_.delivery_ended(active->call_id));
+                    if (active->ephemeral && message.execution_status &&
+                        control_.accept_inline_stop(at, *message.execution_status)) {
+                        static_cast<void>(control_.commit_stop(at));
+                    }
                     // An unwritable close records no conclusive subscription fact.
                     // Keep its units until the longest requested finite lease ends.
                     if (active->collection) {
@@ -87,6 +105,19 @@ CallRuntime::Advance CallRuntime::cancel_transport(Delivery &delivery) {
 bool CallRuntime::transport_ready(Mode mode) const {
     if (mode == Mode::closing && mailbox_.has_pending()) {
         return true;
+    }
+    if (mode == Mode::fenced) {
+        ProviderMailbox::BlockedSlots fenced_blocked{};
+        fenced_blocked.fill(true);
+        for (uint32_t at = 0; at < limits_.capacity; ++at) {
+            const auto &active = slots_[at].active;
+            if (active && active->ephemeral && active->delivery) {
+                fenced_blocked[active->delivery->reservation.index] = false;
+            }
+        }
+        if (mailbox_.has_pending(&fenced_blocked)) {
+            return true;
+        }
     }
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         const auto &active = slots_[at].active;

@@ -10,6 +10,7 @@
 #include <ayni/authority.h>
 #include <ayni/capability_values.h>
 #include <ayni/control.h>
+#include <ayni/execution.h>
 #include <ayni/resources.h>
 #include <ayni/subscriptions.h>
 
@@ -56,6 +57,13 @@ typedef uint32_t ayni_call_cancel_mode_t;
 #define AYNI_CALL_CANCEL_REQUEST ((ayni_call_cancel_mode_t)2)
 /* Can confirm remote cancellation; distinct from actuator stop. Since 0.31. */
 #define AYNI_CALL_CANCEL_CONFIRMED ((ayni_call_cancel_mode_t)3)
+typedef uint32_t ayni_call_durability_t;
+/* Default Tier 2: WAL ledger, DISPATCHING durability barrier and UNKNOWN reconciliation. Since
+ * 0.57. */
+#define AYNI_CALL_DURABILITY_DURABLE ((ayni_call_durability_t)0)
+/* Tier 0: boot-volatile execution with zero WAL/barrier and immediate RAM resource release on stop;
+ * allowed only inside CANCEL_ON_REBOOT Goals (ADR-0110). Since 0.57. */
+#define AYNI_CALL_DURABILITY_EPHEMERAL ((ayni_call_durability_t)1)
 /* Schema-normalized business value; authority is derived from it. Since 0.48. */
 #define AYNI_CALL_INPUT_VALUE 2u
 /* A MODEL body may keep the strategy's instructions apart from the data it
@@ -217,6 +225,9 @@ typedef struct ayni_call_contract_v1 {
     const ayni_call_resource_v1 *resources; /* Null only when resource_count is zero. */
     /* Since 0.43. Required for SUBSCRIPTION, null for every other form. Copied. */
     const ayni_subscription_contract_v1 *subscription;
+    /* Since 0.57. DURABLE (0, default) or EPHEMERAL (1, Tier 0 zero-WAL execution). */
+    ayni_call_durability_t durability;
+    uint32_t durability_reserved; /* Since 0.57. Must be zero. */
 } ayni_call_contract_v1;
 
 /* Supplements the authority descriptor of the same exact ID/version. */
@@ -317,6 +328,10 @@ typedef struct ayni_provider_result_v1 {
      * Core requests persistence. The producer owns it until post succeeds and must
      * release it when cancellation or expiry replaces an undelivered result. */
     ayni_body_ref_v1 body;
+    /* Since 0.57. Optional local stop proof copied by value during ayni_provider_post.
+     * Accepted only on terminal posts for executors registered with
+     * AYNI_EXECUTOR_FLAG_INLINE_STOP_PROOF; null otherwise. */
+    const ayni_executor_status_v1 *execution_status;
 } ayni_provider_result_v1;
 
 /* Pure producer sizing of a complete proposal list and its optional assistant text;

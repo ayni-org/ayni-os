@@ -83,7 +83,8 @@ struct Executor::Impl {
                       {sizeof(ayni_call_contract_v1), AYNI_CALL_ACTION, AYNI_CALL_TOOL,
                        AYNI_CALL_EFFECT_PHYSICAL, AYNI_CALL_NOT_IDEMPOTENT, AYNI_CALL_QUERY_NONE,
                        AYNI_CALL_CANCEL_REQUEST, 0, config.call_timeout_ms, AYNI_CALL_INPUT_VALUE,
-                       AYNI_CALL_RESULT_TEXT, 0, call_result_bytes, 1, &resource, nullptr},
+                       AYNI_CALL_RESULT_TEXT, 0, call_result_bytes, 1, &resource, nullptr,
+                       AYNI_CALL_DURABILITY_DURABLE, 0},
                       nullptr};
         const uint32_t count = config.limits.count;
         input_schema[0].kind = AYNI_VALUE_OBJECT;
@@ -153,7 +154,9 @@ struct Executor::Impl {
                     request_challenge,
                     request_renew,
                     request_stop,
-                    request_status};
+                    request_status,
+                    0,
+                    0};
         return AYNI_OK;
     }
     // The trusted Core supplies its new boot at the first challenge. This gate is
@@ -446,7 +449,8 @@ struct Executor::Impl {
             nullptr,
             {},
             {},
-            {}};
+            {},
+            nullptr};
         // Kernel power loss ends the borrow, while the independent physical gate
         // continues until its existing lease/interlocks stop it (C-PERMIT-009).
         const auto posted =

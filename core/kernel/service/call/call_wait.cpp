@@ -80,8 +80,9 @@ ayni_call_wait_t CallRuntime::waiting(uint32_t index, uint64_t now_us, uint64_t 
         return AYNI_CALL_WAIT_PROVIDER;
     }
     if (state.outcome != 0U) {
-        return state.latest.transition.commit_seq > durable_seq ? AYNI_CALL_WAIT_DURABILITY
-                                                                : AYNI_CALL_WAIT_NONE;
+        return !state.ephemeral && state.latest.transition.commit_seq > durable_seq
+                   ? AYNI_CALL_WAIT_DURABILITY
+                   : AYNI_CALL_WAIT_NONE;
     }
     const auto &active = slots_[index].active;
     if (active && active->stage == Stage::blocked) {
@@ -111,7 +112,8 @@ ayni_call_wait_t CallRuntime::waiting(uint32_t index, uint64_t now_us, uint64_t 
     if (active && active->stage == Stage::submitted) {
         return AYNI_CALL_WAIT_PROVIDER;
     }
-    return state.latest.transition.commit_seq > durable_seq ? AYNI_CALL_WAIT_DURABILITY
-                                                            : AYNI_CALL_WAIT_NONE;
+    return !state.ephemeral && state.latest.transition.commit_seq > durable_seq
+               ? AYNI_CALL_WAIT_DURABILITY
+               : AYNI_CALL_WAIT_NONE;
 }
 } // namespace ayni::kernel

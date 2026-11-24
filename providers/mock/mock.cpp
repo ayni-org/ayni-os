@@ -104,7 +104,9 @@ struct Provider::Impl {
                                call_result_bytes(config),
                                1,
                                &resource,
-                               nullptr};
+                               nullptr,
+                               AYNI_CALL_DURABILITY_DURABLE,
+                               0};
         input_schema[0].kind = model ? AYNI_VALUE_OBJECT : AYNI_VALUE_TEXT;
         input_schema[0].subtree_end = model ? 2U : 1U;
         if (model) {
@@ -239,7 +241,8 @@ struct Provider::Impl {
                                                        nullptr,
                                                        {},
                                                        {},
-                                                       {}};
+                                                       {},
+                                                       nullptr};
                 const auto status = ayni_provider_post(slot.completion, &progress);
                 if (status == AYNI_OK) {
                     slot.phase = Phase::progressed;
@@ -271,7 +274,8 @@ struct Provider::Impl {
                                        nullptr,
                                        {},
                                        {},
-                                       {}};
+                                       {},
+                                       nullptr};
         if (tool_answer && answer.status != AYNI_OK) {
             // The model ran; its output could not become a typed answer.
             result.outcome = AYNI_CALL_FAILED;

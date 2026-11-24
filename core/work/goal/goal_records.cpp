@@ -52,6 +52,7 @@ void write_goal_record(const Goal &goal, ayni_bytes_v1 parameters, uint8_t *body
     writer.u64(goal.occurrence_wait_max_us);
     writer.bytes(parameters.data, parameters.size);
     writer.u32(goal.work_profile.kind);
+    writer.u32(goal.work_profile.recovery);
     writer.u64(goal.work_profile.background_period_us);
     writer.u32(goal.pause_group);
     writer.u32(options.authority ? 1U : 0U);
@@ -93,6 +94,7 @@ bool read_goal_record(const uint8_t *body, uint32_t size, GoalRecord &out) {
     const uint8_t *parameters = reader.bytes(size, parameter_size);
     out.goal.parameters = {parameters, parameter_size};
     out.goal.work_profile.kind = reader.u32();
+    out.goal.work_profile.recovery = reader.u32();
     out.goal.work_profile.background_period_us = reader.u64();
     out.goal.pause_group = reader.u32();
     if (!PauseGroups::valid_membership(out.goal.pause_group)) {

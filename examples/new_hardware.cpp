@@ -109,7 +109,9 @@ struct Button {
                                0,
                                1,
                                &resource,
-                               &collection};
+                               &collection,
+                               AYNI_CALL_DURABILITY_DURABLE,
+                               0};
         input_schema.kind = result_schema.kind = AYNI_VALUE_TEXT;
         input_schema.subtree_end = result_schema.subtree_end = 1;
         business = {{&input_schema, 1}, {&result_schema, 1}, 0, 0, nullptr};

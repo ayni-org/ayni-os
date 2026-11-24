@@ -152,7 +152,8 @@ ayni_status_t ExecutionRegistry::add_executor(const ayni_executor_v1 &input) {
         input.session_lease_max_us == 0 || input.command_age_max_us == 0 ||
         input.poll_period_us == 0 || input.poll_period_us > input.procedure_max_us ||
         input.poll_period_us > input.session_lease_max_us || input.challenge == nullptr ||
-        input.renew == nullptr || input.stop == nullptr || input.status == nullptr) {
+        input.renew == nullptr || input.stop == nullptr || input.status == nullptr ||
+        (input.flags & ~AYNI_EXECUTOR_FLAG_INLINE_STOP_PROOF) != 0U || input.flags_reserved != 0U) {
         return AYNI_INVALID_ARGUMENT;
     }
     for (uint32_t at = 0; at < executors_.size(); ++at) {

@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 56u
+#define AYNI_ABI_MINOR 57u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -1055,6 +1055,8 @@ typedef struct ayni_error_v1 {
 #define AYNI_REASON_TIME_UNTRUSTED ((ayni_reason_t)80)
 /* INVALID_STATE: independent group suspension; skipped autonomous backlog. Since 0.44. */
 #define AYNI_REASON_PAUSE_GROUP ((ayni_reason_t)81)
+/* CANCELLED: unfinished CANCEL_ON_REBOOT work cancelled on new boot epoch. Since 0.57. */
+#define AYNI_REASON_BOOT_RESET ((ayni_reason_t)82)
 
 /* Principals: who a session acts for (C-AUTH-010). */
 typedef uint32_t ayni_principal_kind_t;
@@ -1215,10 +1217,17 @@ typedef uint32_t ayni_work_class_t;
 /* Ordinary/foreground/background resource wait, in microseconds. Since 0.33. */
 #define AYNI_RESOURCE_WAIT_DEFAULT_US UINT64_C(30000000)
 
-/* Trusted GoalType scheduling profile; all zero preserves ordinary behavior. Since 0.33. */
+typedef uint32_t ayni_goal_recovery_t;
+/* Default durable recovery: resume unfinished work across restarts. Since 0.57. */
+#define AYNI_GOAL_RECOVERY_RESUME ((ayni_goal_recovery_t)0)
+/* Session-ephemeral recovery: cancel unfinished work on new boot; permits EPHEMERAL calls. Since
+ * 0.57. */
+#define AYNI_GOAL_RECOVERY_CANCEL_ON_REBOOT ((ayni_goal_recovery_t)1)
+
+/* Trusted GoalType scheduling profile; all zero preserves ordinary durable behavior. Since 0.33. */
 typedef struct ayni_work_profile_v1 {
     ayni_work_class_t work_class;      /* One of WORK_*; never selected by a policy intent. */
-    uint32_t reserved;                 /* Must be zero. */
+    ayni_goal_recovery_t recovery;     /* Since 0.57. RESUME (0) or CANCEL_ON_REBOOT (1). */
     uint64_t background_period_min_us; /* BACKGROUND: 0 selects default, otherwise finite >= trigger
                                           minimum; other classes: 0. */
 } ayni_work_profile_v1;

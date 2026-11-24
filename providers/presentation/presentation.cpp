@@ -67,7 +67,9 @@ struct Provider::Impl {
                                call_result_bytes,
                                static_cast<uint32_t>(resources.size()),
                                resources.data(),
-                               nullptr};
+                               nullptr,
+                               AYNI_CALL_DURABILITY_DURABLE,
+                               0};
         input_schema.kind = result_schema.kind = AYNI_VALUE_TEXT;
         input_schema.subtree_end = result_schema.subtree_end = 1;
         input_schema.max_count = text_bytes_max;

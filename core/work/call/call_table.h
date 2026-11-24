@@ -86,6 +86,7 @@ struct CallState {
     uint32_t result_body_calls = 0; // Tool calls in that body's list; zero for a text body.
     std::optional<ActionStamp> content_erased; // None retains bodies; otherwise irreversible
                                                // privacy stamp, independent of outcome.
+    bool ephemeral = false; // True iff RAM-only Tier 0 call (ADR-0110); never journaled.
 };
 
 // Borrowed terminal input already matched to the original attempt by the caller.
@@ -145,6 +146,11 @@ class CallTable {
     ayni_status_t insert(const CallIdentity &identity, const catalog::CallContract &contract,
                          ayni_bytes_v1 domain, ayni_bytes_v1 input, ActionStamp stamp,
                          uint32_t &index);
+    // In-RAM Tier 0 EPHEMERAL admission (ADR-0110): requires contract.is_ephemeral()
+    // and foreground mode; never journaled or included in compaction snapshots.
+    ayni_status_t insert_ephemeral(const CallIdentity &identity,
+                                   const catalog::CallContract &contract, ayni_bytes_v1 domain,
+                                   ayni_bytes_v1 input, uint64_t boot_epoch, uint32_t &index);
     // Confirm exactly the next start/renew ACK and detach initial Task admission atomically.
     ayni_status_t confirm_subscription(uint32_t index, uint64_t sequence, ActionStamp stamp);
     // Stop this generation; desired distinguishes a pause from explicit intent closure.
@@ -174,6 +180,10 @@ class CallTable {
     ayni_status_t cancel_before_dispatch(uint32_t index, ActionStamp stamp);
     // Background wait expiration proves non-delivery and records EXPIRED/RESOURCE_WAIT.
     ayni_status_t skip_before_dispatch(uint32_t index, ActionStamp stamp);
+    // Ephemeral pre-dispatch wait timeout ends with classified non-delivery in RAM
+    // rather than setting durable Task::waiting_for_resource().
+    ayni_status_t fail_before_dispatch_ephemeral(uint32_t index, ayni_status_t status,
+                                                 ayni_reason_t reason, uint64_t boot_epoch);
     // Only the submit caller may assert NOT_RETAINED, after checking no receipt contradicted it.
     ayni_status_t rejected_not_retained(uint32_t index, ActionStamp stamp);
     // First request wins; caller rechecks Task/authority and submits cancellation separately.
@@ -298,7 +308,8 @@ class CallTable {
     // One mode rule for live admission and record input; managed mode is TOOL action/subscription
     // only.
     static bool valid_mode(const CallIdentity &, const catalog::CallContract &);
-    static bool valid_identity(const CallIdentity &identity, ActionStamp stamp);
+    static bool valid_identity(const CallIdentity &identity, ActionStamp stamp,
+                               bool ephemeral = false);
     static bool advances(const Entry &entry, ActionStamp stamp); // Strict stamp order in this boot.
     ayni_status_t check_result(ayni::foundation::Workspace &workspace, uint32_t index,
                                const CallResult &result)

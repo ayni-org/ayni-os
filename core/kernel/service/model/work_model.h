@@ -118,6 +118,10 @@ struct WorkModel {
     // Check the Task's own admitted identities against its immutable Goal ceiling.
     authority::GrantCheck check_task_authority(uint32_t task_index, uint64_t now_us,
                                                uint64_t durable_seq) const;
+    // Live Grant check for an in-RAM EPHEMERAL on-demand tool call whose Grant
+    // is retained on CallIdentity rather than persisted in task_authority (ADR-0110).
+    authority::GrantCheck check_ephemeral_call_authority(uint32_t call_index, uint64_t now_us,
+                                                         uint64_t durable_seq) const;
     // Frozen optional policy restrictions apply through every ancestor, independent of Grants.
     bool tool_policy_allows(uint32_t goal_index, const catalog::Binding &binding) const;
     bool child_tool_policy_allowed(uint64_t parent_id, const catalog::ToolPolicy &policy) const;
@@ -221,6 +225,9 @@ struct WorkModel {
     // consumes its Task's bounded step capacity and cannot be disguised as local progress.
     uint32_t accepted_step_count(uint32_t task_index) const;
     bool step_taken(uint32_t task_index, ayni_string_v1 key) const;
+    // Live CANCEL_ON_REBOOT Goals created in an earlier boot must cancel before
+    // any Task decision or Call dispatch may run in this boot (ADR-0110).
+    bool goal_boot_reset_pending(uint32_t goal_index) const;
 
     // Runs call, which calls caller code (a goal type's validator or
     // requirement export, a strategy's decide function, a Provider or an

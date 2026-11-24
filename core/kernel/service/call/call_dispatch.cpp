@@ -84,8 +84,10 @@ CallRuntime::Advance CallRuntime::restore_wait(uint32_t index, uint32_t task_ind
     }
     // Expired waits persist through shutdown. User pause is independent and
     // also prevents a resumed call from joining the queue until released.
+    // Old-boot CANCEL_ON_REBOOT Goals wait for do_due_work() to cancel them (ADR-0110).
     // Only never-dispatched calls reach this gate (ADR-0047).
-    if (work::TaskTable::is_held(task) || task.lifecycle == AYNI_TASK_PAUSED) {
+    if (work::TaskTable::is_held(task) || task.lifecycle == AYNI_TASK_PAUSED ||
+        work_.goal_boot_reset_pending(task.goal_index)) {
         return Advance::idle;
     }
     catalog::BindingLinks links{};
@@ -150,10 +152,12 @@ CallRuntime::Advance CallRuntime::stop(uint32_t index, uint32_t task_index, Mode
     }
     const auto &state = work_.calls.state(index);
     if (state.cancel_cause == work::CallCancelCause::none && mode != Mode::fenced) {
-        return work_.calls.request_cancel(
-                   index, cause, {work_.ids.boot_epoch(), work_.transitions.next()}) == AYNI_OK
-                   ? Advance::applied
-                   : Advance::internal;
+        const foundation::TransitionStamp stamp =
+            state.ephemeral ? foundation::TransitionStamp{0, 0} : work_.transitions.next();
+        if (work_.calls.request_cancel(index, cause, {work_.ids.boot_epoch(), stamp}) != AYNI_OK) {
+            return Advance::internal;
+        }
+        return state.ephemeral ? cancel_transport(*active.delivery) : Advance::applied;
     }
     return cancel_transport(*active.delivery);
 }
@@ -284,10 +288,19 @@ CallRuntime::Advance CallRuntime::submit_provider(uint32_t index, uint32_t task_
                                                                  : Advance::internal;
     }
     if (submitted == AYNI_SUBMIT_REJECTED_NOT_RETAINED && mailbox_.withdraw(delivery.reservation)) {
-        const auto stamp = work_.transitions.next();
-        if (work_.calls.rejected_not_retained(index, {work_.ids.boot_epoch(), stamp}) != AYNI_OK ||
-            !work::end_task_call(work_.calls, work_.tasks, index, task_index, stamp)) {
-            return Advance::internal;
+        if (work_.calls.state(index).ephemeral) {
+            if (work_.calls.rejected_not_retained(index, {work_.ids.boot_epoch(), {0, 0}}) !=
+                AYNI_OK) {
+                return Advance::internal;
+            }
+            work_.tasks.end_volatile_call(task_index, id.call_id);
+        } else {
+            const auto stamp = work_.transitions.next();
+            if (work_.calls.rejected_not_retained(index, {work_.ids.boot_epoch(), stamp}) !=
+                    AYNI_OK ||
+                !work::end_task_call(work_.calls, work_.tasks, index, task_index, stamp)) {
+                return Advance::internal;
+            }
         }
         release(index, now_us);
     } else if (submitted != AYNI_SUBMIT_ACCEPTED && submitted != AYNI_SUBMIT_ACCEPT_UNKNOWN &&

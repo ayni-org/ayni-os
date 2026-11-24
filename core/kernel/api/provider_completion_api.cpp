@@ -84,6 +84,32 @@ ayni_status_t post_reference(ayni_provider_completion_t &completion,
                                                 : ayni::work::CallResultKind::text;
     return completion.pool->post({completion.index, result.attempt}, message);
 }
+
+// Validates and copies an optional colocated execution stop proof into message (ADR-0110).
+ayni_status_t copy_inline_execution_status(const ayni_provider_result_v1 &result,
+                                           ayni::kernel::ProviderMessageKind kind,
+                                           ayni::kernel::ProviderMessage &message) {
+    if (result.execution_status == nullptr) {
+        return AYNI_OK;
+    }
+    if (!ayni::kernel::provider_terminal(kind) || result.outcome == AYNI_CALL_ABANDONED) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto exec_shape = ayni::catalog::check_struct_size(result.execution_status->struct_size,
+                                                             sizeof(*result.execution_status),
+                                                             sizeof(*result.execution_status));
+    if (exec_shape != AYNI_OK) {
+        return exec_shape;
+    }
+    const auto ctrl_shape = ayni::catalog::check_struct_size(
+        result.execution_status->control.struct_size, sizeof(result.execution_status->control),
+        sizeof(result.execution_status->control));
+    if (ctrl_shape != AYNI_OK) {
+        return ctrl_shape;
+    }
+    message.execution_status = *result.execution_status;
+    return AYNI_OK;
+}
 } // namespace
 
 // The target is immutable for the pool lifetime. A reused slot is identified
@@ -115,6 +141,10 @@ extern "C" ayni_status_t ayni_provider_post(ayni_provider_completion_t *completi
         result->effect,
         result->query_result};
     message.model_usage = result->model_usage;
+    const auto exec_copy = copy_inline_execution_status(*result, *kind, message);
+    if (exec_copy != AYNI_OK) {
+        return exec_copy;
+    }
     if (by_reference(*result)) {
         return post_reference(*completion, *result, message);
     }

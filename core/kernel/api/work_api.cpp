@@ -218,12 +218,12 @@ void write_task_info(const ayni_kernel &kernel, uint32_t index, ayni_task_info_v
     info.calendar_utc_s = task.calendar_utc_s;
     info.hold_status = ayni::work::TaskTable::effective_hold_status(task);
     info.hold_reason = ayni::work::TaskTable::effective_hold_reason(task);
-    info.step_count = task.step_count;
-    info.model_calls_used = task.model_calls.used;
+    info.step_count = ayni::work::TaskTable::live_step_count(task);
+    info.model_calls_used = ayni::work::TaskTable::live_model_calls_used(task);
     info.model_call_limit = task.model_calls.limit;
     info.model_call_hard_limit = AYNI_MAX_TURNS_MAX;
     info.model_call_limit_reached = task.model_calls.blocked ? 1U : 0U;
-    info.logical_call_id = task.call.id;
+    info.logical_call_id = ayni::work::TaskTable::live_call_id(task);
     if (task.operation_wait) {
         info.wait_logical_call_id = task.operation_wait->call_id;
         info.wait_generation = task.operation_wait->generation;

@@ -77,7 +77,7 @@ struct SubscriptionProvider::Impl {
                        AYNI_CALL_IDEMPOTENT, AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_CONFIRMED, 0,
                        request_timeout_ms, AYNI_CALL_INPUT_VALUE, AYNI_CALL_RESULT_TEXT,
                        subscription_input_bytes(), subscription_result_bytes, 1, &resource,
-                       &subscription},
+                       &subscription, AYNI_CALL_DURABILITY_DURABLE, 0},
                       nullptr};
         input_schema.kind = result_schema.kind = AYNI_VALUE_TEXT;
         input_schema.subtree_end = result_schema.subtree_end = 1;

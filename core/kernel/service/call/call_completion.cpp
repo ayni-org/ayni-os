@@ -103,12 +103,9 @@ std::optional<CallRuntime::Advance> CallRuntime::consume(uint64_t now_us, uint64
     const bool terminal_message = provider_terminal(message.kind);
     const auto &execution = work_.calls.state(index).execution;
     if (!query && terminal_message && execution && !work::execution_stopped(*execution)) {
-        const auto call_id = work_.calls.identity(index).call_id;
-        if (!control_.delivery_ended(call_id)) {
-            return Advance::internal;
+        if (const auto gated = settle_execution_terminal(index, message)) {
+            return *gated;
         }
-        slots_[index].active->stage = Stage::waiting_stop;
-        return control_.request_stop(call_id) ? Advance::applied : Advance::internal;
     }
     bool terminal = false;
     const auto applied = apply_delivery(index, task_index, message, durable_seq, terminal);
@@ -122,13 +119,40 @@ std::optional<CallRuntime::Advance> CallRuntime::consume(uint64_t now_us, uint64
     return Advance::applied;
 }
 
+// Handles physical execution stop confirmation when a terminal Provider receipt arrives.
+// Returns std::nullopt iff an EPHEMERAL inline stop proof completed immediately so the caller
+// can proceed to apply_delivery in the same step; otherwise returns the step advance result.
+std::optional<CallRuntime::Advance>
+CallRuntime::settle_execution_terminal(uint32_t index, const ProviderMessage &message) {
+    const auto call_id = work_.calls.identity(index).call_id;
+    if (!control_.delivery_ended(call_id)) {
+        return Advance::internal;
+    }
+    // Colocated inline stop proof skips redundant STOP + STATUS round-trips (ADR-0110).
+    // Any flag, identity or phase mismatch fails closed into normal quarantine polling.
+    if (message.execution_status && control_.accept_inline_stop(index, *message.execution_status)) {
+        if (work_.calls.state(index).ephemeral) {
+            if (control_.commit_stop(index) != Advance::applied) {
+                return Advance::internal;
+            }
+            return std::nullopt;
+        }
+        slots_[index].active->stage = Stage::waiting_stop;
+        return control_.commit_stop(index);
+    }
+    slots_[index].active->stage = Stage::waiting_stop;
+    return control_.request_stop(call_id) ? Advance::applied : Advance::internal;
+}
+
 // Validate the original Provider evidence first, including UTF-8 and proposal shape.
 // Privacy may discard a valid late body; it must never turn malformed evidence into success.
 ayni_status_t CallRuntime::apply_delivery(uint32_t index, uint32_t task_index,
                                           const ProviderMessage &message, uint64_t durable_seq,
                                           bool &terminal) {
-    const auto applied =
-        apply_receipt(index, task_index, message, work_.transitions.next(), terminal);
+    const bool ephemeral = work_.calls.state(index).ephemeral;
+    const foundation::TransitionStamp stamp =
+        ephemeral ? foundation::TransitionStamp{0, 0} : work_.transitions.next();
+    const auto applied = apply_receipt(index, task_index, message, stamp, terminal);
     if (applied == AYNI_OK && terminal && work_.calls.state(index).outcome != 0U &&
         (!task_content_current({work_, host_.monotonic_now_us(host_.ctx), durable_seq},
                                task_index) ||
@@ -136,7 +160,9 @@ ayni_status_t CallRuntime::apply_delivery(uint32_t index, uint32_t task_index,
                                 host_.monotonic_now_us(host_.ctx), durable_seq))) {
         work_.calls.discard_unusable_result(index);
     }
-    if (applied == AYNI_OK && terminal && host_.bodies && host_.bodies->stage &&
+    // RAM-only EPHEMERAL results stay inline or in the body store's volatile cache;
+    // skipping intermediate stage/confirm avoids per-tool Flash writes (ADR-0110).
+    if (!ephemeral && applied == AYNI_OK && terminal && host_.bodies && host_.bodies->stage &&
         host_.bodies->confirm && (host_.bodies->reserved & AYNI_BODY_STORE_SHARED_RESULTS) != 0U &&
         work_.calls.contract(index).category != catalog::CallClass::model &&
         work_.calls.state(index).outcome == AYNI_CALL_COMPLETED &&
@@ -164,7 +190,7 @@ ayni_status_t CallRuntime::apply_delivery(uint32_t index, uint32_t task_index,
             // the conversation store reports its capacity/persistence failure before progression.
         }
     }
-    if (applied == AYNI_OK && terminal && host_.bodies && host_.bodies->confirm &&
+    if (!ephemeral && applied == AYNI_OK && terminal && host_.bodies && host_.bodies->confirm &&
         message.body_ref.id != 0U &&
         work_.calls.state(index).result_body.id == message.body_ref.id) {
         // Preserve the raw model proposal once; conversation fields share or reference it.
@@ -317,12 +343,41 @@ ayni_status_t CallRuntime::apply_receipt(uint32_t index, uint32_t task_index,
                                           {}},
                                          action_stamp);
         }
-        if (applied == AYNI_OK &&
-            !work::end_task_call(work_.calls, work_.tasks, index, task_index, stamp)) {
-            return AYNI_INTERNAL;
+        if (applied == AYNI_OK) {
+            if (work_.calls.state(index).ephemeral) {
+                applied = finish_ephemeral_task_call(index, task_index);
+            } else if (!work::end_task_call(work_.calls, work_.tasks, index, task_index, stamp)) {
+                return AYNI_INTERNAL;
+            }
         }
     }
     return applied;
+}
+
+// Finishes a RAM-only Tier 0 EPHEMERAL call on its Task. Completed calls append a volatile
+// step key with zero WAL traffic; ABANDONED persists an explicit UNKNOWN hold without
+// setting task.call_unknown so reboot replay never looks up an unpersisted call row.
+ayni_status_t CallRuntime::finish_ephemeral_task_call(uint32_t index, uint32_t task_index) {
+    const auto &final_state = work_.calls.state(index);
+    const auto &task = work_.tasks.at(task_index);
+    const auto call_id = work_.calls.identity(index).call_id;
+    if (final_state.outcome == AYNI_CALL_ABANDONED) {
+        work_.tasks.end_volatile_call(task_index, call_id);
+        if (work::TaskTable::is_live(task.lifecycle)) {
+            work_.tasks.fold_volatile_model_calls(task_index);
+            work_.tasks.hold(task_index, AYNI_RESULT_UNKNOWN, final_state.reason,
+                             work_.transitions.next());
+        }
+        return AYNI_OK;
+    }
+    if (work::TaskTable::is_live(task.lifecycle) && final_state.outcome == AYNI_CALL_COMPLETED) {
+        const auto &step = work_.calls.identity(index).step_key;
+        if (!work_.tasks.add_volatile_step(task_index, {step.data(), step.size()})) {
+            return AYNI_INTERNAL;
+        }
+    }
+    work_.tasks.end_volatile_call(task_index, call_id);
+    return AYNI_OK;
 }
 
 uint64_t CallRuntime::next_deadline_us() const {
@@ -458,7 +513,8 @@ CallRuntime::CallReady CallRuntime::call_readiness(uint32_t at, uint64_t now_us,
              task.lifecycle == AYNI_TASK_PAUSED)) {
             return CallReady::other;
         }
-        if (work::TaskTable::is_held(task) || task.lifecycle == AYNI_TASK_PAUSED) {
+        if (work::TaskTable::is_held(task) || task.lifecycle == AYNI_TASK_PAUSED ||
+            work_.goal_boot_reset_pending(task.goal_index)) {
             return CallReady::idle;
         }
         if (mode != Mode::fenced && resources_.has_room()) {
@@ -466,16 +522,8 @@ CallRuntime::CallReady CallRuntime::call_readiness(uint32_t at, uint64_t now_us,
         }
         return CallReady::idle;
     }
-    const auto authority = work_.check_task_authority(task_index, now_us, durable_seq);
-    const bool stopping = (active->delivery && active->delivery->inhibition) ||
-                          !task_content_current({work_, now_us, durable_seq}, task_index) ||
-                          mode != Mode::running || task.call.end != work::TaskCall::End::none ||
-                          task.lifecycle == AYNI_TASK_PAUSED ||
-                          !work::TaskTable::is_live(task.lifecycle) ||
-                          state.cancel_cause != work::CallCancelCause::none ||
-                          (authority.status != AYNI_OK && authority.status != AYNI_BUSY) ||
-                          delivery_expired(at, now_us);
-    if (stopping) {
+    authority::GrantCheck authority{AYNI_OK, AYNI_REASON_NONE};
+    if (active_call_stopping(at, task_index, now_us, durable_seq, mode, authority)) {
         const bool actionable = submitted(active->stage)
                                     ? active->delivery->cancel == Delivery::Cancel::none
                                     : mode != Mode::fenced;
@@ -492,9 +540,29 @@ CallRuntime::CallReady CallRuntime::call_readiness(uint32_t at, uint64_t now_us,
         return CallReady::prepared;
     }
     return active->stage == Stage::barrier && control_.issue_ready(at, now_us) &&
-                   state.latest.transition.commit_seq <= durable_seq
+                   (state.ephemeral || state.latest.transition.commit_seq <= durable_seq)
                ? CallReady::other
                : CallReady::idle;
+}
+
+// Evaluates all authority, lifecycle, content and timeout stop conditions for an active call.
+bool CallRuntime::active_call_stopping(uint32_t at, uint32_t task_index, uint64_t now_us,
+                                       uint64_t durable_seq, Mode mode,
+                                       authority::GrantCheck &out_authority) const {
+    const auto &state = work_.calls.state(at);
+    const auto &task = work_.tasks.at(task_index);
+    const auto &active = slots_[at].active;
+    const auto task_authority = work_.check_task_authority(task_index, now_us, durable_seq);
+    out_authority = task_authority.status == AYNI_OK
+                        ? work_.check_ephemeral_call_authority(at, now_us, durable_seq)
+                        : task_authority;
+    return (active->delivery && active->delivery->inhibition) ||
+           !task_content_current({work_, now_us, durable_seq}, task_index) ||
+           mode != Mode::running || task.call.end != work::TaskCall::End::none ||
+           task.lifecycle == AYNI_TASK_PAUSED || !work::TaskTable::is_live(task.lifecycle) ||
+           state.cancel_cause != work::CallCancelCause::none ||
+           (out_authority.status != AYNI_OK && out_authority.status != AYNI_BUSY) ||
+           delivery_expired(at, now_us);
 }
 
 } // namespace ayni::kernel

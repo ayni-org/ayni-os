@@ -76,6 +76,8 @@ struct ProviderMessage {
     // A completed result's body in the host store instead of a payload; copied, never read.
     ayni_body_ref_v1 body_ref{};
     uint32_t body_calls = 0; // Tool calls in that body's list; zero for text.
+    // Optional colocated executor stop status copied by value on terminal receipts (ADR-0110).
+    std::optional<ayni_executor_status_v1> execution_status{};
 };
 
 // Identity of one reserved slot/attempt, scoped to this mailbox's lifetime.
@@ -170,6 +172,7 @@ class ProviderMailbox {
         ayni_model_usage_v1 model_usage{}; // Copied terminal statistics; no payload pointers.
         ayni_body_ref_v1 body_ref{};       // Fixed-size receipt of a body kept outside Core.
         uint32_t body_calls = 0;
+        std::optional<ayni_executor_status_v1> execution_status{}; // Terminal inline stop proof.
     };
     // Keep acknowledged cancellation identity until terminal so duplicate control
     // cannot be accepted again. Separate stages do not overload payload length.

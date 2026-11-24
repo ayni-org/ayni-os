@@ -126,6 +126,10 @@ ayni_status_t CallRuntime::stage_business(const ayni_call_request_v1 &request, P
     const auto &task = work_.tasks.at(decision_->task_index);
     const auto &binding = catalogs_.bindings.at(proposal.binding_index);
     const auto &contract = proposal.links.contract;
+    if (contract.is_ephemeral() &&
+        !work_.goals.at(task.goal_index).work_profile.cancel_on_reboot()) {
+        return AYNI_DENIED; // Tier 0 EPHEMERAL requires CANCEL_ON_REBOOT Goal (ADR-0110).
+    }
     const auto form = check_call_form(task.task_id, request, contract);
     if (form != AYNI_OK) {
         return form;
@@ -155,7 +159,7 @@ ayni_status_t CallRuntime::stage_business(const ayni_call_request_v1 &request, P
         return status;
     }
     if (contract.category == catalog::CallClass::tool) {
-        if (on_demand_tool(decision_->task_index, binding, contract) &&
+        if (!contract.is_ephemeral() && on_demand_tool(decision_->task_index, binding, contract) &&
             !work_.task_authority.can_bind_tool(task.slot)) {
             return AYNI_CAPACITY_EXCEEDED;
         }
@@ -179,8 +183,9 @@ ayni_status_t CallRuntime::stage_business(const ayni_call_request_v1 &request, P
 // Mode/category and single-action occupancy are one admission rule for every tool route.
 ayni_status_t CallRuntime::check_call_form(uint64_t task_id, const ayni_call_request_v1 &request,
                                            const catalog::CallContract &contract) const {
-    if (request.mode == AYNI_CALL_MODE_MANAGED && (contract.category != catalog::CallClass::tool ||
-                                                   contract.form == catalog::CallForm::unary)) {
+    if (request.mode == AYNI_CALL_MODE_MANAGED &&
+        (contract.category != catalog::CallClass::tool ||
+         contract.form == catalog::CallForm::unary || contract.is_ephemeral())) {
         return AYNI_INVALID_ARGUMENT;
     }
     if (contract.category == catalog::CallClass::tool &&
@@ -340,6 +345,11 @@ CallRuntime::check_input(uint32_t task_index, const catalog::Binding &binding, a
     }
     const auto &task = work_.tasks.at(task_index);
     if (source_call_id) {
+        uint32_t call_index = 0;
+        if (work_.calls.find(source_call_id, call_index) &&
+            work_.calls.state(call_index).ephemeral) {
+            return work_.check_ephemeral_call_authority(call_index, now_us, durable_seq);
+        }
         const auto saved = work_.task_authority.at(task.slot);
         for (uint32_t at = 0; at < saved.tool_count; ++at) {
             if (saved.tools[at].source_call_id == source_call_id) {
@@ -495,14 +505,18 @@ authority::GrantCheck CallRuntime::check_proposal(uint32_t task_index,
         return {AYNI_EXPIRED, AYNI_REASON_NONE};
     }
     const auto &contract = proposal.links.contract;
-    if (contract.category == catalog::CallClass::model && task.commit_seq > durable_seq) {
-        proposal.redecide = true;
-        return {
-            AYNI_BUSY,
-            AYNI_REASON_NONE}; // Handles/controls cannot be externally visible before durability.
+    if (contract.is_ephemeral() &&
+        !work_.goals.at(task.goal_index).work_profile.cancel_on_reboot()) {
+        return {AYNI_DENIED, AYNI_REASON_INTENT_UNSUPPORTED};
     }
-    const auto capacity = check_call_capacity(task_index, proposal, contract);
-    if (capacity.status != AYNI_OK) {
+    if (!contract.is_ephemeral() && contract.category == catalog::CallClass::model &&
+        task.commit_seq > durable_seq) {
+        // Durable handles/controls cannot be externally visible before durability.
+        proposal.redecide = true;
+        return {AYNI_BUSY, AYNI_REASON_NONE};
+    }
+    if (const auto capacity = check_call_capacity(task_index, proposal, contract);
+        capacity.status != AYNI_OK) {
         return capacity;
     }
     const auto domain = catalogs_.capabilities.domain_view(proposal.links.capability);
@@ -547,17 +561,24 @@ authority::GrantCheck
 CallRuntime::check_call_capacity(uint32_t task_index, const Proposal &proposal,
                                  const catalog::CallContract &contract) const {
     const auto &task = work_.tasks.at(task_index);
-    if (task.call.id != 0U || work_.step_taken(task_index, view(proposal.step))) {
+    if (work::TaskTable::live_call_id(task) != 0U ||
+        work_.step_taken(task_index, view(proposal.step))) {
         return {AYNI_INVALID_ARGUMENT, AYNI_REASON_STEP_TAKEN};
     }
-    const bool detaches =
-        proposal.mode == AYNI_CALL_MODE_MANAGED || contract.subscription.has_value();
-    if (detaches ? !work_.tasks.can_begin_background_call(task)
-                 : !work_.tasks.can_begin_with_calls(task)) {
-        return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_REVISION_EXHAUSTED};
+    if (contract.is_ephemeral()) {
+        if (!work::TaskTable::can_begin_volatile_call(task)) {
+            return {AYNI_INVALID_STATE, AYNI_REASON_POLICY_INTENT};
+        }
+    } else {
+        const bool detaches =
+            proposal.mode == AYNI_CALL_MODE_MANAGED || contract.subscription.has_value();
+        if (detaches ? !work_.tasks.can_begin_background_call(task)
+                     : !work_.tasks.can_begin_with_calls(task)) {
+            return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_REVISION_EXHAUSTED};
+        }
     }
     if (contract.category == catalog::CallClass::model &&
-        task.model_calls.used >= task.model_calls.limit) {
+        work::TaskTable::live_model_calls_used(task) >= task.model_calls.limit) {
         return {AYNI_CAPACITY_EXCEEDED, AYNI_REASON_TASK_MODEL_CALL_LIMIT};
     }
     if (work_.accepted_step_count(task_index) >= work_.tasks.step_capacity()) {
@@ -644,6 +665,55 @@ bool CallRuntime::accept(uint32_t task_index, foundation::TransitionStamp stamp,
         work_.task_authority.bind_tool_validated(task.slot,
                                                  {identity.call_id, identity.authorization}, stamp);
     }
+    proposal_.reset();
+    accepted_call = identity.call_id;
+    return true;
+}
+
+// Accepts a preflighted Tier 0 EPHEMERAL Call purely in RAM (0 WAL transitions).
+// Authority, Scene, resource admission, and max_turns were verified in check_proposal().
+bool CallRuntime::accept_ephemeral(uint32_t task_index, uint64_t now_us, uint64_t &accepted_call) {
+    const auto &proposal = *proposal_;
+    const auto &binding = catalogs_.bindings.at(proposal.binding_index);
+    const auto &contract = proposal.links.contract;
+    const auto &task = work_.tasks.at(task_index);
+    work::CallIdentity identity{};
+    if (!work_.ids.allocate(identity.call_id) || !work_.ids.allocate(identity.operation_id)) {
+        return false;
+    }
+    identity.authorization = proposal.authorization;
+    identity.mode = proposal.mode;
+    identity.model_context = proposal.model_context;
+    identity.task_id = task.task_id;
+    identity.owner_instance_id = task.owner_instance_id;
+    identity.step_key = proposal.step;
+    identity.binding_id = binding.id;
+    identity.binding_version = binding.version;
+    identity.capability_id = binding.capability;
+    identity.capability_version = binding.capability_version;
+    identity.provider_id = binding.provider;
+    identity.provider_version = binding.provider_version;
+    identity.endpoint = binding.endpoint;
+    identity.destination = binding.destination;
+    uint32_t index = 0;
+    if (work_.calls.insert_ephemeral(
+            identity, contract, catalogs_.capabilities.domain_view(proposal.links.capability),
+            {staging_, proposal.input_size}, work_.ids.boot_epoch(), index) != AYNI_OK ||
+        resources_.enqueue(resource_request(identity.call_id, task.owner_instance_id,
+                                            proposal.links, contract,
+                                            work_.goals.at(task.goal_index).work_profile),
+                           now_us) != AYNI_OK) {
+        return false;
+    }
+    if (proposal.execution) {
+        work_.calls.attach_execution(index, *proposal.execution);
+    }
+    slots_[index].active =
+        Active{identity.call_id, Stage::queued, {}, std::nullopt, std::nullopt, true};
+    work_.tasks.begin_volatile_call(task_index, identity.call_id,
+                                    contract.category == catalog::CallClass::model
+                                        ? work::TaskTable::CallKind::model
+                                        : work::TaskTable::CallKind::tool);
     proposal_.reset();
     accepted_call = identity.call_id;
     return true;

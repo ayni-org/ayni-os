@@ -55,10 +55,17 @@ class CallRuntime {
                                          knowledge::MemoryDependencies &dependencies);
     // A stale staged input asks the strategy to decide again without committing a hold.
     bool proposal_needs_redecision() const { return proposal_ && proposal_->redecide; }
+    // True iff the checked proposal creates a RAM-only Tier 0 EPHEMERAL Call (ADR-0110).
+    bool proposal_ephemeral() const {
+        return proposal_ && !proposal_->operation_index && !proposal_->wait_basis &&
+               !proposal_->subscription_index && proposal_->links.contract.is_ephemeral();
+    }
     // Accepts one checked intent. New Call identity, queue entry and Task state
     // share its transition; writes the new stable ID only when it creates a Call.
     bool accept(uint32_t task_index, foundation::TransitionStamp stamp, uint64_t now_us,
                 uint64_t &accepted_call);
+    // Accepts one checked Tier 0 EPHEMERAL Call purely in RAM (0 WAL transitions).
+    bool accept_ephemeral(uint32_t task_index, uint64_t now_us, uint64_t &accepted_call);
 
     // Range of monotonic Call IDs admitted by this step's decision pass. Only that pass
     // allocates Calls; IDs between the ends can also belong to other entity types.
@@ -89,7 +96,9 @@ class CallRuntime {
     using Mode = RuntimeMode;
     using Advance = RuntimeAdvance;
     // C-COMMIT-006: one journal-only transition for a fresh Call, after higher priority work.
-    Advance prepare_accepted(const AcceptedCalls &, uint64_t deadline_us, uint64_t durable_seq);
+    // ephemeral_only restricts preparation to RAM-only Calls when log grouping cannot extend.
+    Advance prepare_accepted(const AcceptedCalls &, uint64_t deadline_us, uint64_t durable_seq,
+                             bool ephemeral_only = false);
     Advance advance(uint64_t now_us, uint64_t durable_seq, Mode mode);
     // Independent local stop/lease ports run even when persistence cannot admit work.
     enum class JournalAdmission { available, blocked }; // Kernel's current commit capacity.
@@ -119,6 +128,8 @@ class CallRuntime {
                              uint64_t &waited_us) const;
     uint64_t next_deadline_us() const; // Monotonic; UINT64_MAX when no timer is pending.
     bool idle() const; // No retained delivery/queued runtime, independent of durable history.
+    // True iff no RAM-only EPHEMERAL call still holds transport or lease ownership.
+    bool ephemeral_idle() const;
     // Every erased call has released its local transport/Provider borrow; unrelated calls may run.
     bool privacy_released() const;
     // After an automatic storage reload, map retained transport handles back to
@@ -170,7 +181,8 @@ class CallRuntime {
         std::optional<Delivery>
             delivery; // Present in barrier/submitted/waiting_stop, never lease_stop.
         std::optional<CollectionLease>
-            collection{}; // Subscription lease outlives an uncertain ended borrow.
+            collection{};       // Subscription lease outlives an uncertain ended borrow.
+        bool ephemeral = false; // True iff this active slot owns a RAM-only Tier 0 call.
     };
     struct Slot {
         std::optional<Active> active; // Exact boot-local delivery/claim owner, absent when idle.
@@ -362,6 +374,15 @@ class CallRuntime {
     // Applies one exact receipt to its invariant owner, before mailbox acknowledgement.
     ayni_status_t apply_receipt(uint32_t index, uint32_t task_index, const ProviderMessage &message,
                                 foundation::TransitionStamp stamp, bool &terminal);
+    // Validates inline stop proof or starts fallback STOP polling for a physical terminal.
+    std::optional<Advance> settle_execution_terminal(uint32_t index,
+                                                     const ProviderMessage &message);
+    // Applies RAM-only Task completion or durable UNKNOWN hold for a finished EPHEMERAL call.
+    ayni_status_t finish_ephemeral_task_call(uint32_t index, uint32_t task_index);
+    // True when an active call must stop/cancel before any further dispatch progress.
+    bool active_call_stopping(uint32_t at, uint32_t task_index, uint64_t now_us,
+                              uint64_t durable_seq, Mode mode,
+                              authority::GrantCheck &out_authority) const;
     Advance advance_query(uint32_t index, uint64_t now_us, uint64_t durable_seq, Mode mode);
     Advance prepare_query(uint32_t index);
     Advance dispatch_query(uint32_t index, uint64_t now_us);
@@ -382,7 +403,8 @@ class CallRuntime {
     bool ready_before_calls(uint64_t now_us, uint64_t durable_seq, Mode mode) const;
     // Pick one new Call to prepare only if no older or higher-priority Call can advance.
     std::optional<uint32_t> next_accepted_preparation(const AcceptedCalls &, uint64_t now_us,
-                                                      uint64_t durable_seq) const;
+                                                      uint64_t durable_seq,
+                                                      bool ephemeral_only) const;
     Advance advance_call(uint32_t index, uint64_t now_us, uint64_t durable_seq, Mode mode);
     Advance restore_wait(uint32_t index, uint32_t task_index, uint64_t now_us, uint64_t durable_seq,
                          Mode mode);

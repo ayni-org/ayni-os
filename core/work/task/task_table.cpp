@@ -191,6 +191,15 @@ void TaskTable::apply(uint32_t index, TaskChange change, foundation::TransitionS
     }
     if (!is_live(task.lifecycle)) {
         task.operation_wait.reset();
+        // Discard unpersisted volatile checkpoint bytes (invariant: checkpoint_seq == 0).
+        if (task.volatile_state.checkpoint_dirty) {
+            std::memset(checkpoints_ + static_cast<std::size_t>(task.slot) * checkpoint_max_bytes_,
+                        0, checkpoint_max_bytes_);
+            task.volatile_state.checkpoint_dirty = false;
+            task.volatile_state.checkpoint_size = 0;
+            task.volatile_state.checkpoint_writer_version = 0;
+            task.volatile_state.checkpoint_writer_id = {};
+        }
     }
     ++task.revision;
     task.commit_seq = stamp.commit_seq;
@@ -245,6 +254,8 @@ void TaskTable::accept_model_call(uint32_t index, foundation::TransitionStamp st
 void TaskTable::hold_model_calls(uint32_t index, foundation::TransitionStamp stamp) {
     auto &task = tasks_[index];
     const bool held = still_held(task);
+    // Fold unpersisted EPHEMERAL model counts so durable blocked implies used == limit.
+    fold_volatile_model_calls(index);
     task.model_calls.blocked = true;
     if (!held && still_held(task)) {
         ++held_count_;
@@ -254,6 +265,7 @@ void TaskTable::hold_model_calls(uint32_t index, foundation::TransitionStamp sta
 
 void TaskTable::begin_call(uint32_t index, uint64_t call_id, CallKind kind,
                            foundation::TransitionStamp stamp) {
+    fold_volatile_model_calls(index);
     if (kind == CallKind::model) {
         accept_model_call(index, stamp);
     } else {
@@ -262,6 +274,78 @@ void TaskTable::begin_call(uint32_t index, uint64_t call_id, CallKind kind,
     auto &task = tasks_[index];
     task.call = {call_id, TaskCall::End::none};
     task.lifecycle = AYNI_TASK_RUNNING;
+}
+
+void TaskTable::begin_volatile_call(uint32_t index, uint64_t call_id, CallKind kind) {
+    auto &task = tasks_[index];
+    if (kind == CallKind::model) {
+        ++task.volatile_state.model_calls_used;
+    }
+    task.volatile_state.call_id = call_id;
+    task.volatile_state.generation = volatile_clock_++;
+}
+
+void TaskTable::end_volatile_call(uint32_t index, uint64_t call_id) {
+    auto &task = tasks_[index];
+    if (task.volatile_state.call_id == call_id) {
+        task.volatile_state.call_id = 0;
+        task.volatile_state.generation = volatile_clock_++;
+    }
+}
+
+bool TaskTable::add_volatile_step(uint32_t index, ayni_string_v1 key) {
+    auto &task = tasks_[index];
+    if (live_step_count(task) == step_capacity_ || has_step(index, key)) {
+        return false;
+    }
+    const uint32_t slot_pos = step_capacity_ - 1U - task.volatile_state.step_count;
+    if (!steps_of(index)[slot_pos].assign(key)) {
+        return false;
+    }
+    ++task.volatile_state.step_count;
+    task.volatile_state.generation = volatile_clock_++;
+    return true;
+}
+
+void TaskTable::set_volatile_checkpoint(uint32_t index, const catalog::CatalogId &writer_id,
+                                        uint32_t writer_version, ayni_bytes_v1 state) {
+    auto &task = tasks_[index];
+    uint8_t *slot_bytes =
+        checkpoints_ + static_cast<std::size_t>(task.slot) * checkpoint_max_bytes_;
+    if (state.size > 0U) {
+        std::memcpy(slot_bytes, state.data, state.size);
+    }
+    std::memset(slot_bytes + state.size, 0, checkpoint_max_bytes_ - state.size);
+    task.volatile_state.checkpoint_dirty = true;
+    task.volatile_state.checkpoint_size = state.size;
+    task.volatile_state.checkpoint_writer_id = writer_id;
+    task.volatile_state.checkpoint_writer_version = writer_version;
+    task.volatile_state.generation = volatile_clock_++;
+}
+
+void TaskTable::volatile_progress(uint32_t index) {
+    tasks_[index].volatile_state.generation = volatile_clock_++;
+}
+
+void TaskTable::promote_volatile_checkpoint(uint32_t index, foundation::TransitionStamp stamp) {
+    auto &task = tasks_[index];
+    if (!task.volatile_state.checkpoint_dirty) {
+        return;
+    }
+    task.checkpoint_size = task.volatile_state.checkpoint_size;
+    task.checkpoint_writer_id = task.volatile_state.checkpoint_writer_id;
+    task.checkpoint_writer_version = task.volatile_state.checkpoint_writer_version;
+    task.checkpoint_seq = stamp.commit_seq;
+    task.volatile_state.checkpoint_dirty = false;
+    task.volatile_state.checkpoint_size = 0;
+    task.volatile_state.checkpoint_writer_version = 0;
+    task.volatile_state.checkpoint_writer_id = {};
+}
+
+void TaskTable::fold_volatile_model_calls(uint32_t index) {
+    auto &task = tasks_[index];
+    task.model_calls.used += task.volatile_state.model_calls_used;
+    task.volatile_state.model_calls_used = 0;
 }
 
 // Known terminal knowledge releases the selected reference. Cancellation does
@@ -392,7 +476,7 @@ void TaskTable::hold(uint32_t index, ayni_status_t status, ayni_reason_t reason,
 
 bool TaskTable::add_step(uint32_t index, ayni_string_v1 key, foundation::TransitionStamp stamp) {
     Task &task = tasks_[index];
-    if (task.step_count == step_capacity_ || has_step(index, key) ||
+    if (live_step_count(task) == step_capacity_ || has_step(index, key) ||
         !steps_of(index)[task.step_count].assign(key)) {
         return false;
     }
@@ -409,6 +493,10 @@ void TaskTable::erase_checkpoint(uint32_t index) {
     std::memset(checkpoints_ + static_cast<std::size_t>(task.slot) * checkpoint_max_bytes_, 0,
                 checkpoint_max_bytes_);
     task.checkpoint_size = 0;
+    task.volatile_state.checkpoint_dirty = false;
+    task.volatile_state.checkpoint_size = 0;
+    task.volatile_state.checkpoint_writer_version = 0;
+    task.volatile_state.checkpoint_writer_id = {};
 }
 void TaskTable::set_checkpoint(uint32_t index, const catalog::CatalogId &writer_id,
                                uint32_t writer_version, ayni_bytes_v1 state,
@@ -426,6 +514,10 @@ void TaskTable::set_checkpoint(uint32_t index, const catalog::CatalogId &writer_
     task.checkpoint_writer_id = writer_id;
     task.checkpoint_writer_version = writer_version;
     task.checkpoint_seq = stamp.commit_seq;
+    task.volatile_state.checkpoint_dirty = false;
+    task.volatile_state.checkpoint_size = 0;
+    task.volatile_state.checkpoint_writer_version = 0;
+    task.volatile_state.checkpoint_writer_id = {};
 }
 
 void TaskTable::progress(uint32_t index, foundation::TransitionStamp stamp) {
@@ -435,7 +527,8 @@ void TaskTable::progress(uint32_t index, foundation::TransitionStamp stamp) {
 }
 
 bool TaskTable::can_wait_operation(const Task &task) {
-    return task.lifecycle == AYNI_TASK_READY && task.call.id == 0 && !task.operation_wait &&
+    return task.lifecycle == AYNI_TASK_READY && task.call.id == 0 &&
+           task.volatile_state.call_id == 0 && !task.operation_wait &&
            max_revision - task.revision >= subscription_wait_revisions;
 }
 void TaskTable::wait_operation(uint32_t index, const OperationWait &basis,
@@ -461,10 +554,24 @@ const catalog::CatalogId &TaskTable::step(uint32_t index, uint32_t step) const {
     return steps_of(index)[step];
 }
 
+const catalog::CatalogId &TaskTable::live_step(uint32_t index, uint32_t pos) const {
+    const Task &task = tasks_[index];
+    if (pos < task.step_count) {
+        return steps_of(index)[pos];
+    }
+    return steps_of(index)[step_capacity_ - 1U - (pos - task.step_count)];
+}
+
 bool TaskTable::has_step(uint32_t index, ayni_string_v1 key) const {
+    const Task &task = tasks_[index];
     const catalog::CatalogId *steps = steps_of(index);
-    for (uint32_t step = 0; step < tasks_[index].step_count; ++step) {
+    for (uint32_t step = 0; step < task.step_count; ++step) {
         if (steps[step].equals(key)) {
+            return true;
+        }
+    }
+    for (uint32_t step = 0; step < task.volatile_state.step_count; ++step) {
+        if (steps[step_capacity_ - 1U - step].equals(key)) {
             return true;
         }
     }
@@ -475,6 +582,13 @@ ayni_bytes_v1 TaskTable::checkpoint(uint32_t index) const {
     const Task &task = tasks_[index];
     return {checkpoints_ + static_cast<std::size_t>(task.slot) * checkpoint_max_bytes_,
             task.checkpoint_size};
+}
+
+ayni_bytes_v1 TaskTable::live_checkpoint(uint32_t index) const {
+    const Task &task = tasks_[index];
+    const uint32_t size = task.volatile_state.checkpoint_dirty ? task.volatile_state.checkpoint_size
+                                                               : task.checkpoint_size;
+    return {checkpoints_ + static_cast<std::size_t>(task.slot) * checkpoint_max_bytes_, size};
 }
 
 // The tasks hold fewer than capacity distinct slots, so one of 0 to size()
@@ -600,15 +714,22 @@ bool TaskTable::can_wait_with_calls(const Task &task) const {
 }
 
 bool TaskTable::can_begin_call(const Task &task) {
-    return task.call.id == 0U && max_revision - task.revision >= call_acceptance_revisions;
+    return task.call.id == 0U && task.volatile_state.call_id == 0U &&
+           max_revision - task.revision >= call_acceptance_revisions;
 }
 
-bool TaskTable::next_ready(uint64_t ready_before, uint32_t &out_index, ReadyFilter filter) const {
+bool TaskTable::can_begin_volatile_call(const Task &task) {
+    return task.lifecycle == AYNI_TASK_READY && task.call.id == 0U &&
+           task.volatile_state.call_id == 0U && !task.operation_wait && !is_held(task);
+}
+
+bool TaskTable::next_ready(uint64_t ready_before, uint32_t &out_index, ReadyFilter filter,
+                           uint64_t volatile_before) const {
     uint32_t next = no_index;
     for (uint32_t index = 0; index < tasks_.size(); ++index) {
         const Task &task = tasks_[index];
         if (effective_lifecycle(task) != AYNI_TASK_READY || task.commit_seq >= ready_before ||
-            at_revision_limit(task) ||
+            task.volatile_state.generation >= volatile_before || at_revision_limit(task) ||
             (filter.accepts != nullptr && !filter.accepts(filter.context, task))) {
             continue;
         }
@@ -845,6 +966,7 @@ void TaskTable::reanchor(uint64_t now_us) {
 void TaskTable::clear() {
     tasks_.clear();
     held_count_ = 0;
+    volatile_clock_ = 1;
 }
 
 bool TaskTable::is_live(ayni_task_lifecycle_t lifecycle) {
