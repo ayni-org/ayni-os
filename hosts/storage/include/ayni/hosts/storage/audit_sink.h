@@ -78,7 +78,8 @@ class AuditSink {
     static void on_complete(void *context, const FileValueResult &result) noexcept;
     void reap();
     void submit_next(uint64_t now_us, bool force_flush);
-    std::string encode_batch(const std::vector<ayni_audit_record_v1> &records) const;
+    std::string encode_batch(const std::vector<ayni_audit_record_v1> &records,
+                             uint32_t count) const;
 
     Config config_{};
     bool configured_ = false;
@@ -86,16 +87,20 @@ class AuditSink {
     uint32_t active_slot_ = 0;
     std::array<uint64_t, slot_count> generation_{0, 0};
     std::array<bool, slot_count> needs_reset_{false, false};
-    std::vector<ayni_audit_record_v1> slot_records_; // Confirmed+pending records in active_slot_.
-    uint32_t slot_flushed_count_ = 0;                // Prefix of slot_records_ already durable.
-    uint64_t oldest_unflushed_us_ = 0;               // Timestamp of first unflushed record; 0 none.
+    // Prefix [0..slot_flushed_count_) is durable in active_slot_; while a write is in flight,
+    // up to one extra slot of newer records may queue behind [0..in_flight_prefix_) so full-slot
+    // rotation never drops concurrent arrivals.
+    std::vector<ayni_audit_record_v1> slot_records_;
+    uint32_t slot_flushed_count_ = 0;  // Prefix of slot_records_ already durable in active_slot_.
+    uint64_t oldest_unflushed_us_ = 0; // Timestamp of first unflushed record; 0 when none.
 
     // Borrowed worker state: mutated only while !in_flight_ or inside on_complete() before release.
     bool in_flight_ = false;
     bool in_flight_remove_ = false;
+    bool in_flight_full_ = false; // True iff the active write fills active_slot_ and triggers roll.
     uint32_t in_flight_slot_ = 0;
-    uint32_t in_flight_record_count_ = 0;
-    uint32_t in_flight_delta_ = 0;
+    uint32_t in_flight_prefix_ = 0; // Prefix of slot_records_ encoded into write_buffer_.
+    uint32_t in_flight_delta_ = 0;  // Newly durable records credited on AYNI_OK.
     std::string write_buffer_;
     FileValueResult completion_{};
     std::atomic<bool> completed_{false};

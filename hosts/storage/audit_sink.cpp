@@ -1,6 +1,7 @@
 // Optional low-priority asynchronous rolling A/B audit file sink (ADR-0113).
 #include <ayni/hosts/storage/audit_sink.h>
 
+#include <algorithm>
 #include <cstring>
 
 namespace ayni::hosts::storage {
@@ -44,9 +45,10 @@ ayni_status_t decode_audit_batch(const uint8_t *data, std::size_t size,
     const auto reserved = static_cast<uint32_t>(read_le(data, at, word_bytes));
     const uint64_t first_seq = read_le(data, at, wide_bytes);
     const uint64_t last_seq = read_le(data, at, wide_bytes);
-    const std::size_t expected =
-        audit_batch_header_bytes + std::size_t{count} * audit_batch_record_bytes;
-    if (reserved != 0U || size != expected ||
+    // Use overflow-free division/modulo so 32-bit targets cannot wrap count * record_bytes.
+    const std::size_t payload = size - audit_batch_header_bytes;
+    if (reserved != 0U || payload % audit_batch_record_bytes != 0U ||
+        count != payload / audit_batch_record_bytes ||
         (count == 0U && (first_seq != 0U || last_seq != 0U)) ||
         (count != 0U && first_seq > last_seq)) {
         return AYNI_STORAGE_FAILED;
@@ -95,7 +97,7 @@ ayni_status_t AuditSink::configure(Config config) {
     config_ = config;
     max_records_per_slot_ =
         (config_.slot_max_bytes - audit_batch_header_bytes) / audit_batch_record_bytes;
-    slot_records_.reserve(max_records_per_slot_);
+    slot_records_.reserve(static_cast<std::size_t>(max_records_per_slot_) * 2U);
     configured_ = true;
     return AYNI_OK;
 }
@@ -106,16 +108,18 @@ void AuditSink::on_complete(void *context, const FileValueResult &result) noexce
     self.completed_.store(true, std::memory_order_release);
 }
 
-std::string AuditSink::encode_batch(const std::vector<ayni_audit_record_v1> &records) const {
+std::string AuditSink::encode_batch(const std::vector<ayni_audit_record_v1> &records,
+                                    uint32_t count) const {
     std::string out;
-    out.reserve(audit_batch_header_bytes + records.size() * audit_batch_record_bytes);
+    out.reserve(audit_batch_header_bytes + std::size_t{count} * audit_batch_record_bytes);
     append_le(out, audit_batch_magic, word_bytes);
     append_le(out, audit_batch_format, word_bytes);
-    append_le(out, records.size(), word_bytes);
+    append_le(out, count, word_bytes);
     append_le(out, 0, word_bytes);
-    append_le(out, records.empty() ? 0U : records.front().seq, wide_bytes);
-    append_le(out, records.empty() ? 0U : records.back().seq, wide_bytes);
-    for (const auto &rec : records) {
+    append_le(out, count == 0U ? 0U : records.front().seq, wide_bytes);
+    append_le(out, count == 0U ? 0U : records[count - 1U].seq, wide_bytes);
+    for (uint32_t index = 0; index < count; ++index) {
+        const auto &rec = records[index];
         append_le(out, rec.kind, word_bytes);
         append_le(out, rec.seq, wide_bytes);
         append_le(out, rec.boot_epoch, wide_bytes);
@@ -150,24 +154,35 @@ void AuditSink::reap() {
     }
     if (completion_.status == AYNI_OK) {
         generation_[in_flight_slot_] = completion_.generation;
-        if (in_flight_slot_ == active_slot_) {
-            slot_flushed_count_ = in_flight_record_count_;
-        }
         stats_.flushed_records += in_flight_delta_;
         ++stats_.flushes_completed;
-        if (slot_flushed_count_ >= slot_records_.size()) {
-            oldest_unflushed_us_ = 0;
+        if (in_flight_slot_ == active_slot_) {
+            if (in_flight_full_) {
+                // Retain any newer records queued behind the full-slot write for the next slot.
+                const auto erase_count =
+                    std::min<std::size_t>(in_flight_prefix_, slot_records_.size());
+                slot_records_.erase(slot_records_.begin(),
+                                    slot_records_.begin() +
+                                        static_cast<std::ptrdiff_t>(erase_count));
+                active_slot_ = (active_slot_ + 1U) % slot_count;
+                slot_flushed_count_ = 0;
+                if (slot_records_.empty()) {
+                    oldest_unflushed_us_ = 0;
+                }
+                ++stats_.slot_rotations;
+            } else {
+                slot_flushed_count_ = in_flight_prefix_;
+                if (slot_flushed_count_ >= slot_records_.size()) {
+                    oldest_unflushed_us_ = 0;
+                }
+            }
         }
-        // Roll over to the alternate A/B slot once the active slot reaches full capacity.
-        if (in_flight_slot_ == active_slot_ && slot_flushed_count_ >= max_records_per_slot_) {
-            active_slot_ = (active_slot_ + 1U) % slot_count;
-            slot_records_.clear();
-            slot_flushed_count_ = 0;
-            oldest_unflushed_us_ = 0;
-            ++stats_.slot_rotations;
-        }
+        in_flight_full_ = false;
+        in_flight_prefix_ = 0;
         return;
     }
+    in_flight_full_ = false;
+    in_flight_prefix_ = 0;
     if (completion_.status == AYNI_STALE) {
         // Previous boot owned this rolling slot with an unknown generation; remove before rewrite.
         needs_reset_[in_flight_slot_] = true;
@@ -180,16 +195,32 @@ void AuditSink::ingest(const ayni_audit_record_v1 *records, uint32_t count, uint
     if (!configured_ || records == nullptr || count == 0U) {
         return;
     }
+    // While a write is in flight, hold up to one additional slot of new records after the
+    // immutable [0..in_flight_prefix_) batch so concurrent arrivals roll into the next slot.
+    const std::size_t limit =
+        in_flight_ ? static_cast<std::size_t>(max_records_per_slot_) * 2U : max_records_per_slot_;
     for (uint32_t index = 0; index < count; ++index) {
-        if (slot_records_.size() >= max_records_per_slot_) {
+        while (slot_records_.size() >= limit) {
             if (!in_flight_ && slot_flushed_count_ >= max_records_per_slot_) {
+                const auto erase_count =
+                    std::min<std::size_t>(max_records_per_slot_, slot_records_.size());
+                slot_records_.erase(slot_records_.begin(),
+                                    slot_records_.begin() +
+                                        static_cast<std::ptrdiff_t>(erase_count));
                 active_slot_ = (active_slot_ + 1U) % slot_count;
-                slot_records_.clear();
                 slot_flushed_count_ = 0;
-                oldest_unflushed_us_ = 0;
+                if (slot_records_.empty()) {
+                    oldest_unflushed_us_ = 0;
+                }
                 ++stats_.slot_rotations;
+            } else if (in_flight_ && slot_records_.size() > in_flight_prefix_) {
+                // Preserve [0..in_flight_prefix_) untouched for retry/rotation; drop oldest queued
+                // unwritten record beyond the in-flight batch.
+                slot_records_.erase(slot_records_.begin() +
+                                    static_cast<std::ptrdiff_t>(in_flight_prefix_));
+                ++stats_.dropped_records;
             } else {
-                // Staging full while storage is busy/failing: drop oldest record to preserve bound.
+                // Storage idle/failing at capacity: drop oldest staged record to preserve bound.
                 slot_records_.erase(slot_records_.begin());
                 if (slot_flushed_count_ > 0U) {
                     --slot_flushed_count_;
@@ -197,7 +228,7 @@ void AuditSink::ingest(const ayni_audit_record_v1 *records, uint32_t count, uint
                 ++stats_.dropped_records;
             }
         }
-        if (slot_records_.size() == slot_flushed_count_) {
+        if (oldest_unflushed_us_ == 0U) {
             oldest_unflushed_us_ = now_us;
         }
         slot_records_.push_back(records[index]);
@@ -226,17 +257,19 @@ void AuditSink::submit_next(uint64_t now_us, bool force_flush) {
         }
         return;
     }
-    const uint32_t unflushed = static_cast<uint32_t>(slot_records_.size() - slot_flushed_count_);
-    if (unflushed == 0U) {
+    const uint32_t batch_count =
+        std::min<uint32_t>(static_cast<uint32_t>(slot_records_.size()), max_records_per_slot_);
+    if (batch_count <= slot_flushed_count_) {
         return;
     }
+    const uint32_t unflushed = batch_count - slot_flushed_count_;
     const bool interval_due = oldest_unflushed_us_ != 0U && now_us >= oldest_unflushed_us_ &&
                               now_us - oldest_unflushed_us_ >= config_.flush_interval_us;
-    const bool slot_full = slot_records_.size() >= max_records_per_slot_;
+    const bool slot_full = batch_count >= max_records_per_slot_;
     if (!force_flush && !slot_full && unflushed < config_.flush_threshold && !interval_due) {
         return;
     }
-    write_buffer_ = encode_batch(slot_records_);
+    write_buffer_ = encode_batch(slot_records_, batch_count);
     FileValueRequest request{};
     request.kind = FileValueRequest::Kind::write;
     request.priority = FileValueRequest::Priority::background;
@@ -251,8 +284,9 @@ void AuditSink::submit_next(uint64_t now_us, bool force_flush) {
     if (config_.files.submit(config_.files.context, &request) == AYNI_SUBMIT_ACCEPTED) {
         in_flight_ = true;
         in_flight_remove_ = false;
+        in_flight_full_ = slot_full;
         in_flight_slot_ = active_slot_;
-        in_flight_record_count_ = static_cast<uint32_t>(slot_records_.size());
+        in_flight_prefix_ = batch_count;
         in_flight_delta_ = unflushed;
     } else {
         ++stats_.write_failures;

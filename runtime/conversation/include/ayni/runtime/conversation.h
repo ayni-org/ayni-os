@@ -172,6 +172,7 @@ class Session {
     ayni_status_t turn(const ayni_context_info_v1 &, uint64_t durable);
     ayni_status_t cancel_turn(uint64_t durable);
     ayni_status_t discard();
+    ayni_status_t run_volatile_cleanup();
     bool volatile_discard() const;
     ayni_status_t unfinished();
     ayni_status_t settled(uint64_t durable) const;
@@ -211,6 +212,10 @@ class Session {
     // True after a deferred ordinary publication enqueued background superseded-body collection;
     // drained before quiesce() returns OK and observed during privacy erasure (ADR-0113).
     bool deferred_collection_pending_ = false;
+    // True after a volatile discard hit cold-cache AYNI_NOT_READY while walking history refs;
+    // retried on poll_step() and before quiesce() so cancelled drafts never leak.
+    bool volatile_cleanup_pending_ = false;
+    std::vector<strategies::BodyRef> pending_discarded_drafts_;
     std::optional<TurnResult> result_; // Delivered once; history itself remains queryable.
 
     hosts::storage::FileValueResult answer_{}; // Published before completed_'s release store.

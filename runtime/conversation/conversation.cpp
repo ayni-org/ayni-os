@@ -659,6 +659,13 @@ ayni_status_t Session::poll_step(bool *again) {
             phase_ = Phase::failed;
         } // An idle failed queue can be disposed, but cannot acknowledge a clean close.
     }
+    if (volatile_cleanup_pending_ && phase_ != Phase::failed) {
+        const auto cleaned = run_volatile_cleanup();
+        if (cleaned != AYNI_OK && cleaned != AYNI_NOT_READY) {
+            failure_ = cleaned;
+            phase_ = Phase::failed;
+        }
+    }
     if (deferred_collection_pending_ && config_.bodies.collected) {
         const auto drained = config_.bodies.collected(config_.bodies.context, current_.id);
         if (drained == AYNI_OK) {
@@ -1014,6 +1021,18 @@ ayni_status_t Session::quiesce() {
     if (!ready() && phase_ != Phase::terminal) {
         return AYNI_BUSY;
     }
+    if (volatile_cleanup_pending_) {
+        const auto cleaned = run_volatile_cleanup();
+        if (cleaned == AYNI_NOT_READY) {
+            if (config_.bodies.progress) {
+                static_cast<void>(config_.bodies.progress(config_.bodies.context, 0));
+            }
+            return AYNI_BUSY;
+        }
+        if (cleaned != AYNI_OK) {
+            return cleaned;
+        }
+    }
     if (deferred_collection_pending_ && config_.bodies.collected) {
         const auto drained = config_.bodies.collected(config_.bodies.context, current_.id);
         if (drained != AYNI_OK) {
@@ -1082,13 +1101,47 @@ bool Session::volatile_discard() const {
     return config_.persistence == strategies::Persistence::background &&
            config_.unfinished == UnfinishedTurn::discard;
 }
+ayni_status_t Session::run_volatile_cleanup() {
+    if (!volatile_cleanup_pending_) {
+        return AYNI_OK;
+    }
+    const auto *store = config_.bodies.store;
+    std::vector<strategies::BodyRef> keep;
+    const auto status = Conversation::references(*store, current_, keep);
+    if (status == AYNI_NOT_READY) {
+        return AYNI_NOT_READY;
+    }
+    if (status != AYNI_OK) {
+        return status;
+    }
+    if (const auto unique = unique_references(keep); unique != AYNI_OK) {
+        return unique;
+    }
+    for (const auto &draft : pending_discarded_drafts_) {
+        const bool draft_shared =
+            draft.id != 0U && std::any_of(keep.begin(), keep.end(),
+                                          [&](const auto &ref) { return ref.id == draft.id; });
+        if (draft.id != 0U && !draft_shared) {
+            if (store->release_temporary) {
+                store->release_temporary(store->context, &draft);
+            } else if (store->release) {
+                store->release(store->context, &draft);
+            }
+        }
+    }
+    pending_discarded_drafts_.clear();
+    volatile_cleanup_pending_ = false;
+    config_.bodies.collect(config_.bodies.context, current_.id, keep);
+    deferred_collection_pending_ = true;
+    return AYNI_OK;
+}
 ayni_status_t Session::discard() {
     input_.clear();
     if (volatile_discard() && !draft_persisted_) {
         // The interrupted draft never crossed into the persisted conversation_root file,
         // so clearing it in RAM preserves the exact durable history with zero Flash writes
         // (ADR-0111). Any staged turn bodies not referenced by published history are released
-        // asynchronously without blocking Phase::ready.
+        // asynchronously without blocking Phase::ready; cold-cache NOT_READY retries in poll_step.
         const auto discarded_draft = current_.draft;
         current_.draft = {};
         candidate_ = current_;
@@ -1096,22 +1149,17 @@ ayni_status_t Session::discard() {
         end_request_ = EndRequest::none;
         held_ = false;
         phase_ = Phase::ready;
-        const auto *store = config_.bodies.store;
-        std::vector<strategies::BodyRef> keep;
-        if (Conversation::references(*store, current_, keep) == AYNI_OK &&
-            unique_references(keep) == AYNI_OK) {
-            const bool draft_shared = discarded_draft.id != 0U &&
-                                      std::any_of(keep.begin(), keep.end(), [&](const auto &ref) {
-                                          return ref.id == discarded_draft.id;
-                                      });
-            if (discarded_draft.id != 0U && !draft_shared) {
-                if (store->release_temporary) {
-                    store->release_temporary(store->context, &discarded_draft);
-                } else if (store->release) {
-                    store->release(store->context, &discarded_draft);
-                }
-            }
-            config_.bodies.collect(config_.bodies.context, current_.id, keep);
+        if (discarded_draft.id != 0U &&
+            std::none_of(pending_discarded_drafts_.begin(), pending_discarded_drafts_.end(),
+                         [&](const auto &ref) { return ref.id == discarded_draft.id; })) {
+            pending_discarded_drafts_.push_back(discarded_draft);
+        }
+        volatile_cleanup_pending_ = true;
+        const auto cleaned = run_volatile_cleanup();
+        if (cleaned != AYNI_OK && cleaned != AYNI_NOT_READY) {
+            failure_ = cleaned;
+            phase_ = Phase::failed;
+            return cleaned;
         }
         return AYNI_OK;
     }

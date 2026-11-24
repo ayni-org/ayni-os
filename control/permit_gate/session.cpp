@@ -261,6 +261,14 @@ ayni_status_t ayni_control_session_tick(ayni_control_session_t *session, uint64_
             session->segment_started_us = elapsed_end;
             transitioned = true;
         } else {
+            // Re-verify gate clock, lease deadline, epochs, and interlocks before reporting
+            // COMPLETED so end-of-trajectory faults stay fail-closed with their true stop_cause.
+            const auto obs = session->gate->observe(now_us, live);
+            if (obs != AYNI_OK || session->gate->phase() != AYNI_CONTROL_ACTIVE) {
+                session->state = AYNI_CONTROL_SESSION_STOPPING;
+                session->describe_step(now_us, false, *out_step);
+                return obs != AYNI_OK ? obs : AYNI_INVALID_STATE;
+            }
             session->state = AYNI_CONTROL_SESSION_COMPLETED;
             session->describe_step(now_us, false, *out_step);
             return AYNI_OK;
@@ -291,6 +299,12 @@ ayni_status_t ayni_control_session_advance_segment(ayni_control_session_t *sessi
         return AYNI_INVALID_STATE;
     }
     if (session->segment_index + 1U >= session->segment_count) {
+        const auto obs = session->gate->observe(now_us, live);
+        if (obs != AYNI_OK || session->gate->phase() != AYNI_CONTROL_ACTIVE) {
+            session->state = AYNI_CONTROL_SESSION_STOPPING;
+            session->describe_step(now_us, false, *out_step);
+            return obs != AYNI_OK ? obs : AYNI_INVALID_STATE;
+        }
         session->state = AYNI_CONTROL_SESSION_COMPLETED;
         session->describe_step(now_us, false, *out_step);
         return AYNI_OK;
