@@ -83,14 +83,12 @@ class MotorExecution {
         std::array<uint8_t, sizeof(uint32_t)> frame{};
     };
     static constexpr size_t inbox_slots = 8;
-    // Two-channel 5-second bench runs plus normal shutdown used 6156 bytes on IDF6.0.3.
-    // Keep 6132 bytes above that measured peak while restoring radio upload headroom.
     static constexpr uint32_t worker_stack_bytes = 12288, worker_priority = 7;
     static constexpr uint32_t snapshot_limit_mask = 0xff, snapshot_mode_shift = 8,
                               snapshot_mode_mask = 0xf, snapshot_busy = 1u << 12;
     ayni_status_t initialize_owner();
     bool send(const Message &);
-    void begin(Pending);
+    void begin(const Pending &);
     void reject(const Pending &, ayni_status_t);
     static void worker_entry(void *);
     void run();
@@ -167,6 +165,8 @@ class MotorExecution {
     uint64_t last_cycle_us_ = 0, cycle_gap_max_us_ = 0;
     uint32_t limit_ = motor_percent_max;
     std::optional<Pending> pending_;
+    // Worker-owned staging copied by session_open. Keep the bounded array out of the task stack.
+    std::array<ayni_control_segment_v1, motor_segments_max> session_segments_{};
     std::array<std::optional<PortRequest>, 4> requests_{};
 };
 } // namespace wifichat

@@ -304,7 +304,7 @@ void MotorExecution::reject(const Pending &request, ayni_status_t cause) {
     }
     trace("start-refused", cause);
 }
-void MotorExecution::begin(Pending incoming) {
+void MotorExecution::begin(const Pending &incoming) {
     // UI state-notice backpressure (terminal_notice_) must not deny an authorized motor start
     // (ADR-0111); Mode::armed/gate/interlocks/output_->disabled() remain the safety gates.
     bool within_limit = valid_motor_trajectory(incoming.trajectory);
@@ -322,28 +322,26 @@ void MotorExecution::begin(Pending incoming) {
         return;
     }
     const auto limits = motor_limits();
-    std::array<ayni_control_segment_v1, motor_segments_max> segments{};
     for (uint32_t at = 0; at < incoming.trajectory.count; ++at) {
         const auto &cmd = incoming.trajectory.segments[at];
         const int64_t vals[]{cmd.first_percent, cmd.second_percent, cmd.duration_ms};
-        segments[at].struct_size = sizeof(segments[at]);
-        segments[at].field_count = limits.count;
+        auto &segment = session_segments_[at];
+        segment.struct_size = sizeof(segment);
+        segment.field_count = limits.count;
         // Hardware RMT loop counts time each segment; ControlSession advances via advance_segment.
-        segments[at].duration_us = 0;
+        segment.duration_us = 0;
         for (uint32_t f = 0; f < limits.count; ++f) {
-            segments[at].fields[f] = {limits.fields[f].field_id, limits.fields[f].unit, vals[f]};
+            segment.fields[f] = {limits.fields[f].field_id, limits.fields[f].unit, vals[f]};
         }
     }
     const auto observation = live();
     const auto started =
-        ayni_control_session_open(session_, gate_, &incoming.permit, segments.data(),
+        ayni_control_session_open(session_, gate_, &incoming.permit, session_segments_.data(),
                                   incoming.trajectory.count, now(), &observation);
     if (started != AYNI_OK) {
         reject(incoming, started);
         return;
     }
-    incoming.segment_index = 0;
-    incoming.segments_completed = 0;
     pending_ = incoming;
     current_permit_ = incoming.permit.permit_id;
     sequence_ = 0;
