@@ -98,19 +98,19 @@ class IndependentOperations : public testing::Test {
         };
         provider.cancel = [](void *ctx, ayni_attempt_ref_v1 attempt) {
             auto &self = *static_cast<IndependentOperations *>(ctx);
-            for (auto &pending : self.pending) {
-                if (pending && pending->attempt.boot_epoch == attempt.boot_epoch &&
-                    pending->attempt.request_id == attempt.request_id) {
+            for (auto &retained : self.pending) {
+                if (retained && retained->attempt.boot_epoch == attempt.boot_epoch &&
+                    retained->attempt.request_id == attempt.request_id) {
                     ++self.cancels;
-                    ayni_provider_result_v1 result{};
-                    result.struct_size = sizeof(result);
-                    result.attempt = attempt;
-                    result.outcome = AYNI_CALL_CANCELLED;
-                    result.status = AYNI_OK;
-                    result.effect = AYNI_CALL_EFFECT_NONE;
-                    const auto code = ayni_provider_post(pending->completion, &result);
+                    ayni_provider_result_v1 completion_result{};
+                    completion_result.struct_size = sizeof(completion_result);
+                    completion_result.attempt = attempt;
+                    completion_result.outcome = AYNI_CALL_CANCELLED;
+                    completion_result.status = AYNI_OK;
+                    completion_result.effect = AYNI_CALL_EFFECT_NONE;
+                    const auto code = ayni_provider_post(retained->completion, &completion_result);
                     if (code == AYNI_OK || code == AYNI_INVALID_STATE) {
-                        pending.reset();
+                        retained.reset();
                     }
                     return AYNI_SUBMIT_ACCEPTED;
                 }
