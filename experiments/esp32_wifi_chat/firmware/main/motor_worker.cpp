@@ -259,9 +259,15 @@ void MotorExecution::publish_snapshot() {
         limit_ | (uint32_t(mode_) << snapshot_mode_shift) | (pending_ ? snapshot_busy : 0);
     state_notice_ = state_notice_ || value != snapshot_.load(std::memory_order_relaxed);
     snapshot_.store(value, std::memory_order_release);
+    ControlSessionTarget desired;
+    if (pending_ && pending_->streaming && pending_->phase != Phase::result) {
+        desired = {pending_->session_goal, pending_->target_seq,
+                   int32_t(session_segments_[0].fields[0].value),
+                   int32_t(session_segments_[0].fields[1].value)};
+    }
     transport_.control_mailbox().publish_mode(
         uint8_t(mode_), pending_ && pending_->phase == Phase::running,
-        pending_ && pending_->streaming && hold_scale_ < AYNI_CONTROL_LOOP_FULL_SCALE);
+        pending_ && pending_->streaming && hold_scale_ < AYNI_CONTROL_LOOP_FULL_SCALE, desired);
 }
 void MotorExecution::handle_message(const Message &message) {
     switch (message.kind) {

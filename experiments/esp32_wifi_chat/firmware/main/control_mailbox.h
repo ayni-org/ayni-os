@@ -18,6 +18,8 @@ enum class ControlRejectReason : uint32_t {
 enum class ControlMode : uint8_t { disarmed, armed, latched, closed };
 enum class ControlStopKind : uint32_t { soft_stop = 1, hard_estop = 2 };
 enum class ControlTargetSource : uint8_t { structured = 1, authorized_model = 2 };
+// Local PWM edits preserve the current expiry; model steer retains its shorten-only contract.
+enum class ControlTargetDeadline : uint8_t { shorten, preserve };
 // A desired setpoint only; the executor still requires the live Core session envelope.
 struct ControlTarget {
     uint64_t seq = 0, accepted_at_us = 0;
@@ -26,9 +28,17 @@ struct ControlTarget {
     ControlTargetSource source = ControlTargetSource::structured;
     uint64_t session_goal =
         0; // 0 selects the sole active structured session; model targets are exact.
+    ControlTargetDeadline deadline =
+        ControlTargetDeadline::shorten; // preserve requires exact local session, duration_ms=0.
+};
+// Worker-accepted desired values, distinct from shaped/applied PWM. goal=0 means no live stream.
+struct ControlSessionTarget {
+    uint64_t goal = 0, seq = 0;
+    int32_t motor1 = 0, motor2 = 0;
 };
 // Receipt and execution frontiers are independent: receiving never implies hardware application.
 struct ControlFeedbackSnapshot {
+    ControlSessionTarget desired{};
     uint64_t accepted_seq = 0, superseded_seq = 0, superseded_count = 0;
     uint64_t applied_seq = 0, rejected_seq = 0, stop_requested_seq = 0, stop_confirmed_seq = 0;
     uint64_t accepted_at_us = 0, applied_at_us = 0, rejected_at_us = 0, stopped_at_us = 0;
@@ -117,7 +127,7 @@ class ControlMailbox {
                 return true;
             },
             [](const auto &, bool, const auto &) {});
-        return {seq, kind};
+        return {seq, hard_stop_requested() ? ControlStopKind::hard_estop : kind};
     }
     ControlStopRequest stop_request() const {
         return {stop_.load(std::memory_order_acquire), hard_stop_.load(std::memory_order_acquire)
@@ -206,11 +216,14 @@ class ControlMailbox {
         execution_.rejected_at_us = at_us;
         feedback_.publish(execution_);
     }
-    void publish_mode(uint8_t mode, bool busy, bool held) {
+    void publish_mode(uint8_t mode, bool busy, bool held, ControlSessionTarget desired = {}) {
         if (execution_.control_mode == mode && execution_.busy == busy &&
-            execution_.hold_active == held) {
+            execution_.hold_active == held && execution_.desired.goal == desired.goal &&
+            execution_.desired.seq == desired.seq && execution_.desired.motor1 == desired.motor1 &&
+            execution_.desired.motor2 == desired.motor2) {
             return;
         }
+        execution_.desired = desired;
         execution_.control_mode = mode;
         execution_.busy = busy;
         execution_.hold_active = held;

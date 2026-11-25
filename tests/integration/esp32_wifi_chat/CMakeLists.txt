@@ -23,6 +23,7 @@ gtest_discover_tests(ayni_esp32_chat_integration_tests NO_PRETTY_VALUES PROPERTI
 # Exercise production executor/Chat logic with MotorOutput, Display and ESP Host substitutes.
 # RMT/DMA implementation and physical waveform timing are outside this host target.
 add_executable(ayni_esp32_motor_execution_tests motor_execution_test.cpp chat_tick_test.cpp transport_test_support.cpp
+    "${AYNI_ROOT}/experiments/esp32_wifi_chat/firmware/wifi/motor_panel.cpp"
     "${AYNI_ROOT}/experiments/esp32_wifi_chat/firmware/main/chat.cpp"
     "${AYNI_ROOT}/experiments/esp32_wifi_chat/firmware/main/screen.cpp"
     "${AYNI_ROOT}/experiments/esp32_wifi_chat/firmware/main/motor.cpp"
@@ -39,6 +40,6 @@ target_include_directories(ayni_esp32_motor_execution_tests PRIVATE transport_sh
     "${AYNI_ROOT}/hosts/esp_idf/include" "${AYNI_ROOT}/tests/unit")
 target_link_libraries(ayni_esp32_motor_execution_tests PRIVATE Ayni::Core Ayni::PermitGate
     Ayni::ModelProtocol Ayni::OperationSession Ayni::Conversation Ayni::Strategies ayni_markdown
-    ayni_core_internal ayni_host_sim ayni_warnings GTest::gtest_main)
+    ayni_core_internal ayni_host_sim yyjson ayni_warnings GTest::gtest_main)
 gtest_discover_tests(ayni_esp32_motor_execution_tests NO_PRETTY_VALUES PROPERTIES TIMEOUT 30
     DISCOVERY_TIMEOUT ${AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS})

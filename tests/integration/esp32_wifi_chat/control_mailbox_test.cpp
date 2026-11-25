@@ -52,6 +52,8 @@ TEST(ControlMailbox, StopSurvivesPollingAndEarlierConfirmationCannotClearNewerOr
     EXPECT_TRUE(mailbox.stop_pending());
     const auto again = mailbox.request_stop(ControlStopKind::soft_stop);
     EXPECT_EQ(mailbox.stop_request().kind, ControlStopKind::hard_estop);
+    EXPECT_EQ(again.kind, ControlStopKind::hard_estop);
+    EXPECT_GT(again.seq, hard.seq);
     mailbox.confirm_stop(hard, ControlMode::latched, 0, 3);
     EXPECT_TRUE(mailbox.stop_pending());
     mailbox.confirm_stop(again, ControlMode::latched, 0, 4);

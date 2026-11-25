@@ -154,7 +154,7 @@ void draw_motor_steering(Canvas &canvas, int32_t first, int32_t second, std::str
         canvas.button(88, top, 64, 44, "0%");
         canvas.button(168, top, 64, 44, "+10%");
     }
-    canvas.label(8, 218, "目标期限500ms，只缩短", Canvas::muted);
+    canvas.label(8, 218, "仅改PWM，保留会话期限", Canvas::muted);
     canvas.document(status, 0, 240, 278);
     canvas.button(8, 284, 224, 30, "急停", Canvas::danger, Canvas::background);
 }

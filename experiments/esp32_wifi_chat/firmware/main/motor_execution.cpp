@@ -482,9 +482,16 @@ void MotorExecution::apply_target(const ControlTarget &target) {
         return;
     }
     auto &p = *pending_;
-    const MotorCommand command{target.motor1, target.motor2, target.duration_ms};
-    if (!valid_motor_command(command) || !within_operator_limit(command) ||
-        target.duration_ms > p.trajectory.segments[0].duration_ms) {
+    const bool preserve = target.deadline == ControlTargetDeadline::preserve;
+    const auto original_ms = p.trajectory.segments[0].duration_ms;
+    const MotorCommand command{target.motor1, target.motor2,
+                               preserve ? original_ms : target.duration_ms};
+    // Preserve is a local edit of this exact live session, never an alternative model lifetime.
+    if ((preserve && (target.source != ControlTargetSource::structured || !target.session_goal ||
+                      target.duration_ms != 0)) ||
+        (!preserve && target.deadline != ControlTargetDeadline::shorten) ||
+        !valid_motor_command(command) || !within_operator_limit(command) ||
+        command.duration_ms > original_ms) {
         mailbox.mark_rejected(target.seq, ControlRejectReason::out_of_envelope, AYNI_DENIED, now());
         return;
     }
@@ -499,7 +506,9 @@ void MotorExecution::apply_target(const ControlTarget &target) {
     session_segments_[0] = desired;
     p.target_seq = target.seq;
     p.accepted_at_us = target.accepted_at_us;
-    p.deadline_us = std::min(p.deadline_us, now() + uint64_t(target.duration_ms) * 1000U);
+    if (!preserve) {
+        p.deadline_us = std::min(p.deadline_us, now() + uint64_t(target.duration_ms) * 1000U);
+    }
     if (target.seq > last_hold_seq_) {
         hold_scale_ = AYNI_CONTROL_LOOP_FULL_SCALE;
     }

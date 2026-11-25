@@ -30,11 +30,14 @@ bool MotorPanel::packet(const Packet &packet) {
 void MotorPanel::stop(Transport &transport) {
     transport.request_motor_stop(); // Independent of command queue capacity.
     control_.stop();
+    steering_ = {};
     message_ = "正在停机，等待硬件确认";
 }
 bool MotorPanel::tick(Transport &transport, bool healthy, int64_t now) {
     const auto feedback = transport.control_mailbox().snapshot();
-    const bool changed = feedback.accepted_seq != feedback_.accepted_seq ||
+    const bool changed = feedback.desired.goal != feedback_.desired.goal ||
+                         feedback.desired.seq != feedback_.desired.seq ||
+                         feedback.accepted_seq != feedback_.accepted_seq ||
                          feedback.superseded_count != feedback_.superseded_count ||
                          feedback.applied_seq != feedback_.applied_seq ||
                          feedback.rejected_seq != feedback_.rejected_seq ||
@@ -67,6 +70,7 @@ bool MotorPanel::tick(Transport &transport, bool healthy, int64_t now) {
             (unsigned long long)feedback.rejected_seq, reason, motor_output_text(feedback));
         feedback_text_ = text;
     }
+    sync_steering();
     if (!healthy && active()) {
         stop(transport);
         return true;
@@ -86,6 +90,21 @@ bool MotorPanel::tick(Transport &transport, bool healthy, int64_t now) {
     }
     return changed;
 }
+// Rebase from the worker's desired target, not hold/sensor-shaped output. Keep rapid local
+// clicks optimistic until their latest sequence settles; session identity fences old drafts.
+void MotorPanel::sync_steering() {
+    const auto &current = feedback_.desired;
+    if (!active() || !feedback_.busy || !current.goal ||
+        feedback_.stop_requested_seq > feedback_.stop_confirmed_seq) {
+        steering_ = {};
+    } else if (steering_.goal != current.goal || current.seq >= steering_.seq ||
+               feedback_.rejected_seq >= steering_.seq ||
+               feedback_.superseded_seq >= steering_.seq) {
+        steering_ = current;
+        steering_.motor1 = std::clamp(steering_.motor1, -int32_t(limit_), int32_t(limit_));
+        steering_.motor2 = std::clamp(steering_.motor2, -int32_t(limit_), int32_t(limit_));
+    }
+}
 MotorPanel::Tap MotorPanel::tap(Transport &transport, int x, int y, bool healthy) {
     if (x < 8 || x >= 232) {
         return Tap::none;
@@ -94,23 +113,34 @@ MotorPanel::Tap MotorPanel::tap(Transport &transport, int x, int y, bool healthy
         page_ = page_ == Page::control    ? Page::feedback
                 : page_ == Page::feedback ? Page::steering
                                           : Page::control;
+        if (page_ == Page::steering) {
+            steering_ = {};
+            sync_steering();
+        }
         return Tap::none;
     }
     if (page_ == Page::steering && ((y >= 100 && y < 144) || (y >= 166 && y < 210))) {
-        if (!healthy || !active()) {
+        sync_steering();
+        if (!healthy || !steering_.goal) {
             message_ = "请先启用并打开许可会话";
             return Tap::none;
         }
-        auto &desired = y < 160 ? desired_first_ : desired_second_;
-        desired = x < 80     ? std::max(desired - 10, -int32_t(limit_))
-                  : x >= 160 ? std::min(desired + 10, int32_t(limit_))
-                             : 0;
+        auto edited = steering_;
+        auto &desired = y < 160 ? edited.motor1 : edited.motor2;
+        desired += x < 80 ? -10 : x >= 160 ? 10 : -desired;
+        edited.motor1 = std::clamp(edited.motor1, -int32_t(limit_), int32_t(limit_));
+        edited.motor2 = std::clamp(edited.motor2, -int32_t(limit_), int32_t(limit_));
         ControlTarget target;
-        target.motor1 = desired_first_;
-        target.motor2 = desired_second_;
-        target.duration_ms = 500;
-        message_ =
-            transport.submit_motor_target(target) ? "已受理，应用结果见反馈" : "邮箱忙，请重试";
+        target.motor1 = edited.motor1;
+        target.motor2 = edited.motor2;
+        target.session_goal = edited.goal;
+        target.deadline = ControlTargetDeadline::preserve;
+        if (transport.submit_motor_target(target, &edited.seq)) {
+            steering_ = edited;
+            message_ = "已受理，应用结果见反馈";
+        } else {
+            message_ = "邮箱忙，请重试";
+        }
         return Tap::none;
     }
     if (page_ != Page::control && !(y >= 284 && y < 314)) {
@@ -132,6 +162,7 @@ MotorPanel::Tap MotorPanel::tap(Transport &transport, int x, int y, bool healthy
     } else if (y >= 62 && y < 142) {
         if (control_.active()) {
             control_.disable();
+            steering_ = {};
             transport.set_motor_active(false);
             transport.request_motor_disable();
             message_ = "正在停用";
@@ -152,7 +183,7 @@ MotorPanel::Tap MotorPanel::tap(Transport &transport, int x, int y, bool healthy
 }
 void MotorPanel::draw(Canvas &canvas) const {
     if (page_ == Page::steering) {
-        draw_motor_steering(canvas, desired_first_, desired_second_, message_);
+        draw_motor_steering(canvas, steering_.motor1, steering_.motor2, message_);
     } else if (page_ == Page::feedback) {
         draw_motor_feedback(canvas, message_,
                             feedback_text_.empty() ? "等待控制指令" : feedback_text_);

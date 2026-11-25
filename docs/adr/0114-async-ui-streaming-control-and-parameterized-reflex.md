@@ -59,7 +59,8 @@ Reflex 在启动规范化输入后解析精确 I64 字节位置，拒绝重复�
 - applied_at_us 保留每个受理身份首次实际应用时间，重复有效输出不发布新反馈；同一身份的后续传感整形可更新实际占空比。hold/stop 的收据另保留时间；紧急停止永不等待遥测写者，遥测争用丢失时对应时间为 0（未知）。
 - 原 steer 契约保持“只缩短当前剩余期限”。更长的后续 steer 不能恢复已缩短期限；未引入自动 SUPERSEDE，独立授权的 durable barrier 也保留。
 - DiagnosticLog 生产者只做有界 RAM 捕获；独立优先级 1 日志任务分批输出 UART，不在 Chat 收尾或控制线程排空。目标邮箱争用保留 steer 并以 BUSY 触发 owner 1 ms 后重试，不自旋等待被抢占写者。
-- 电机页的“反馈→调速”提供结构化双电机正/负 PWM 热改，目标期限 500 ms、仅缩短；只能调整已有独立许可会话，未启用、无会话、超包络或停止屏障均拒绝，不从本地控件自由起动。
+- 用户在后续回归中授权最小修复：电机页的“反馈→调速”只改 PWM、保留已有截止时间，取消固定 500 ms。内部 preserve 模式仅接受精确会话身份的本地目标，duration_ms 必须为 0；模型 steer 仍使用原只缩短期限规则。未启用、无会话、超包络或停止屏障均拒绝，不从本地控件自由起动。
+- 调速草稿绑定 worker 发布的会话身份和 desired 目标，不从 hold 后的 applied PWM 反推目标。新会话、拒收、停用和停止会校正或清理草稿；连续点击保留本地最新目标，双轴均受限幅约束，迟到的旧会话点击拒收。
 
 ### 调度与时延边界
 
@@ -81,10 +82,12 @@ ObservationSlot 从 clean 到 dirty 直接 wake；ESP task notification 保留�
 
 新增执行器 CPU 时延样本使用真实 Gate/ControlLoop/执行器，MotorOutput/Display/ESP Host/任务调度为替身；短波形规则与生产驱动共用。实际 RMT 波形、换向死区、DMA、GPIO 读回和板端逐跳时延仍须实测。调速页通过[原生渲染预览](../../experiments/esp32_wifi_chat/screenshots/motor-steering-preview.png)视觉检查。
 
+调速页后续回归将真实 MotorPanel 点击代码接入同一主机执行器 target，覆盖单轴点击、快速合并、当前期限保持、模型缩短期限后不恢复、hold 前后 desired、拒收校正、未读到 idle 的会话切换、旧点击迟到及本地双轴限幅和停用/急停。主机测试替换图形端点，不把渲染替身当作真实 Canvas/DMA 证据；原生预览另使用生产 Canvas/app_menu。
+
 正常便携 Core/control/策略/ABI 与 Wi-Fi 集成检查通过 ASan/UBSan；Wi-Fi 主机检查通过。目标邮箱和 ObservationSlot 的既有并发用例通过 TSan。Release/ASan 的真实主机闭环、目标接收、参数反射及短/中/长历史微基准通过已实现的主机门槛；无设备的软件 Binding 证明同一独立生命周期可复用，生产电机注册及正常关闭交接通过。按工作流完成独立只读审查与设计自查，修正停止屏障、关闭借用、失败分类、TTL、ASR 顺序及历史停止展示问题。
 
 最终 Xtensa/ESP-IDF 固件在全部实现和主机检查结束后编译通过，未出现编译警告或错误；上游 Kconfig 弃用提示保留。C ABI、契约、依赖与机械可读性检查通过。Reflex 参数元数据在本机每 slot 增加 360 B，关闭该可选目录时不增加其 arena 区；最大内存测量现包含 Reflex/event/audit 容量。
 
-本轮未创建远程 PR，详细命令、墙钟样本、工具版本与四项 Review 记录位于工作区外临时文件 `/tmp/ayni-0114-validation.md`，基线日志在 `/tmp/ayni-0114-*`，审查修复日志在 `/tmp/ayni-fixes-*`，不是仓库持久证据。代码及正常场景可由仓库测试复核。当前 macOS 使用 SDK 便携检查组合，未运行 Linux Native 完整 preset/CI；ASan 未启用泄漏检查。
+本轮未创建远程 PR，详细命令、墙钟样本、工具版本与四项 Review 记录位于工作区外临时文件 `/tmp/ayni-0114-validation.md`，基线日志在 `/tmp/ayni-0114-*`，审查修复日志在 `/tmp/ayni-fixes-*`，本地调速回归日志在 `/tmp/ayni-panel-fix-*`，不是仓库持久证据。代码及正常场景可由仓库测试复核。当前 macOS 使用 SDK 便携检查组合，未运行 Linux Native 完整 preset/CI；ASan 未启用泄漏检查。
 
 没有运行 OTA、真实运动、实体传感避障或硬件停止链专项；只补本轮用户授权的审查缺陷回归，没有启动通用故障/恢复/变异活动。设备上的完整关闭链、满队列排空与调度、真实 hold/同向/换向/停机逐跳时延、独立硬件链及耐久仍未验证；主机证据和静态调用顺序审查不冒充这些结果。
