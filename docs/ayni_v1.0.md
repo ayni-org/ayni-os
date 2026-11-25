@@ -1,12 +1,12 @@
 # Ayni：通用原生 AgentOS 基础能力与实验实施计划
 
 > **文档性质**：工程实施计划与待实现契约，不代表已有软件能力。\
-> **文档版本**：v1.127 · 2026-11-25；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
+> **文档版本**：v1.128 · 2026-11-25；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
 > **产品定位**：跨平台、跨设备的通用原生 AgentOS；宿主与扩展决定提供哪些设备或软件能力，统一助理只是应用示例。\
 > **架构路线**：按 Ayni 的共享 Agent 状态、授权、资源及恢复需求设计原生 Core，复用宿主 OS，模型优先通过外部 API 获得；架构图仅参考 AIOS 的分层分组表达样式。\
 > **实施顺序**：先完成基础通用能力，再开展 ESP32-S3、Linux 系统等实验；设备与能力组合按实验目标选取，不要求宿主具备语音、视觉、运动或特定外设。\
 > **基准投入**：单人全职；阶段周期是相对工作量估算，不是开工日期或交付日期承诺。\
-> **当前状态**：通用基础与独立源码SDK已交付，Native/Sim 基线见[基础报告](../reports/core/foundation-acceptance.md)与[独立接入报告](../reports/core/independent-consumption.md)。当前分支ABI0.61/schema11，新增通用独立授权操作会话、异步LCD与独立控制邮箱、ControlLoop及参数化Reflex，见[ADR-0114](adr/0114-async-ui-streaming-control-and-parameterized-reflex.md)。正常主机检查、ASan/UBSan、目标并发TSan、独立复查及最终固件编译通过；没有新增OTA、真实动作或硬件停止链验收。来源回合与独立操作分别授权；长期操作的撤权、绝对到期与显式停止仍有效。板端时延、实体传感避障、完整128K峰值、新格式异常恢复及独立硬件停止链仍待对应证据。
+> **当前状态**：通用基础与独立源码SDK已交付，Native/Sim 基线见[基础报告](../reports/core/foundation-acceptance.md)与[独立接入报告](../reports/core/independent-consumption.md)。当前分支ABI0.61/schema11，通用独立授权操作、异步LCD、控制邮箱、ControlLoop及参数化Reflex已实现；后续审查发现的急停竞态、热改越限、待派发操作停止及owner日志阻塞已修复，见[ADR-0114](adr/0114-async-ui-streaming-control-and-parameterized-reflex.md)。相关主机回归、ASan/UBSan、目标并发TSan、独立复查及最后的固件编译通过。来源回合与独立操作分别授权，撤权、绝对到期与显式停止仍有效。没有新增OTA或真实动作；板端时延、实体传感避障、完整128K峰值、新格式异常恢复、硬件停止链及耐久仍待对应证据。
 
 > **本轮范围**：用户2026-10-31要求实施[独立工程接入与验收计划](architecture/independent-consumption-plan.md)：通用源码SDK、低栈工作区、Native/ESP存储及Host、共同应用和验收。平台适配保持独立目录，必要接口直接升级，正常存储和最小重开获授权；实机操作、付费模型及其他新专项不启动。
 

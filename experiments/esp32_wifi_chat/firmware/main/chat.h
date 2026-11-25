@@ -51,6 +51,7 @@ class Chat {
     }
 
   private:
+    friend struct ChatTickTestPeer; // Host regression uses the real owner tick and terminal drain.
     // The ToolLoop, held back until the session policy announced readiness: restored work
     // waits for its cancellation instead of proposing model or device calls.
     static ayni_status_t decide(void *, const ayni_task_snapshot_v1 *, ayni_policy_output_v1 *);

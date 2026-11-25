@@ -28,6 +28,7 @@ class Motor {
     ayni_status_t drain_sessions();
 
   private:
+    friend struct MotorSessionTestPeer; // White-box pause between activation and physical dispatch.
     using Activity = ayni::runtime::OperationSession;
     ayni_status_t advance_opening(ayni_kernel_t *, uint64_t boot);
     ayni_status_t deliver_opening(const Activity::Snapshot &);
@@ -64,6 +65,7 @@ class Motor {
         ayni_provider_completion_t *completion = nullptr;
         uint64_t source_call = 0;
         MotorStreamInput input;
+        uint64_t start_seq = 0; // Reserved at source admission, before independent Goal creation.
         enum class Phase { queued, creating, rollback } phase = Phase::queued;
     };
     struct Execute {
@@ -82,6 +84,7 @@ class Motor {
         ayni_status_t status = AYNI_OK;
     };
     enum class SessionAdmission { open, closing } session_admission_ = SessionAdmission::open;
+    uint64_t active_start_seq_ = 0; // Keeps pre-dispatch operations behind the stop barrier.
     std::optional<Steering> steering_;
     std::optional<Opening> opening_;
     std::optional<Execute> execute_;

@@ -101,7 +101,8 @@ bool Transport::take_output(Packet &out) {
 }
 void Transport::request_motor_stop() {
     const auto at = uint64_t(esp_timer_get_time());
-    const auto request = control_.request_stop(ControlStopKind::hard_estop);
+    const auto request = control_.request_stop(ControlStopKind::hard_estop, at);
+    wake_owner();
     if (wake_motor_) {
         wake_motor_(motor_context_);
     }
@@ -110,7 +111,8 @@ void Transport::request_motor_stop() {
 }
 void Transport::request_motor_soft_stop() {
     const auto at = uint64_t(esp_timer_get_time());
-    const auto request = control_.request_stop(ControlStopKind::soft_stop);
+    const auto request = control_.request_stop(ControlStopKind::soft_stop, at);
+    wake_owner();
     if (wake_motor_) {
         wake_motor_(motor_context_);
     }
@@ -127,7 +129,7 @@ bool Transport::submit_motor_target(ControlTarget target, uint64_t *seq) {
 bool Transport::request_motor_hold(uint32_t percent) {
     uint32_t seq = 0;
     const auto at = uint64_t(esp_timer_get_time());
-    const bool sent = control_.request_hold(percent, &seq);
+    const bool sent = control_.request_hold(percent, &seq, at);
     if (sent && wake_motor_) {
         wake_motor_(motor_context_);
     }
@@ -146,15 +148,16 @@ bool Transport::set_barge_in_policy(BargeInPolicy policy, uint32_t percent) {
     barge_in_.store((uint32_t(policy) << policy_shift) | percent, std::memory_order_release);
     return true;
 }
-void Transport::apply_barge_in() {
+bool Transport::apply_barge_in() {
     const auto settings = barge_in_.load(std::memory_order_acquire);
     const auto policy = BargeInPolicy(settings >> policy_shift);
     if (policy == BargeInPolicy::stop) {
         request_motor_soft_stop();
     } else {
-        request_motor_hold(policy == BargeInPolicy::hold ? settings & policy_mask
-                                                         : AYNI_CONTROL_LOOP_FULL_SCALE);
+        return request_motor_hold(policy == BargeInPolicy::hold ? settings & policy_mask
+                                                                : AYNI_CONTROL_LOOP_FULL_SCALE);
     }
+    return true;
 }
 bool Transport::post(Kind kind, uint64_t id, const void *body, size_t bytes) {
     if (bytes > tx_bytes || (bytes && !body)) {
@@ -195,7 +198,10 @@ bool Transport::post(Kind kind, uint64_t id, const void *body, size_t bytes) {
     // before changing control policy, and publish the hold/stop before owner can read the input.
     if ((kind == Kind::user || kind == Kind::barge_in) &&
         motor_active_.load(std::memory_order_acquire)) {
-        apply_barge_in();
+        if (!apply_barge_in()) {
+            xQueueSend(input_free_, &slot, 0);
+            return false;
+        }
     }
     if (xQueueSend(input_, &slot, 0) != pdTRUE) {
         xQueueSend(input_free_, &slot, 0);
@@ -215,6 +221,9 @@ bool Transport::paint(uint64_t call, const uint8_t *pixels, size_t bytes, uint32
                call, pages, pixels, bytes, this,
                [](void *context, uint64_t id, uint32_t count, bool painted, uint8_t &stage) {
                    auto &transport = *static_cast<Transport *>(context);
+                   if (!transport.display_allowed(id)) {
+                       return true;
+                   }
                    if (stage == 0) {
                        uint8_t body[sizeof(uint32_t)];
                        put32(body, count);

@@ -165,7 +165,8 @@ ayni_submit_result_t MotorExecution::submit_stream(ayni_attempt_ref_v1 attempt, 
                                                    ayni_provider_completion_t *completion,
                                                    const ayni_execution_permit_v1 &permit,
                                                    const MotorCommand &initial,
-                                                   uint64_t session_goal, uint64_t expires_at_us) {
+                                                   uint64_t session_goal, uint64_t expires_at_us,
+                                                   uint64_t start_seq) {
     if (!completion || !session_goal || !valid_motor_command(initial) ||
         permit.form != AYNI_FORM_SESSION) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
@@ -182,8 +183,9 @@ ayni_submit_result_t MotorExecution::submit_stream(ayni_attempt_ref_v1 attempt, 
     start.streaming = true;
     start.deadline_us = expires_at_us;
     start.session_goal = session_goal;
-    start.target_seq = transport_.control_mailbox().reserve_start();
-    if (!start.target_seq || !send(message)) {
+    start.target_seq = start_seq;
+    if (!start.target_seq || transport_.control_mailbox().target_blocked(start_seq) ||
+        !send(message)) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     latest_dispatch_ = call;
@@ -224,7 +226,7 @@ void MotorExecution::receive(Kind kind, uint64_t id, const uint8_t *data, size_t
     message.kind = MessageKind::frame;
     message.frame_kind = kind;
     message.frame_id = id;
-    message.frame_size = size;
+    message.frame_size = uint32_t(size);
     if (size) {
         std::memcpy(message.frame.data(), data, size);
     }

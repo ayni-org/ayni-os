@@ -50,7 +50,7 @@ class Transport {
     bool request_motor_hold(uint32_t percent);
     // Atomic configuration snapshot; default hold at 25%, no language parsing.
     bool set_barge_in_policy(BargeInPolicy, uint32_t hold_percent = default_hold_scale_percent);
-    void apply_barge_in();
+    bool apply_barge_in();
     void set_motor_active(bool active) { motor_active_.store(active, std::memory_order_release); }
     // Startup before the I/O task; context has the composition's boot lifetime.
     void attach_motor_wake(void *context, void (*wake)(void *)) {

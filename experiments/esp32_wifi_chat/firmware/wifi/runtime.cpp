@@ -1553,10 +1553,10 @@ void Runtime::run() {
         size_t bytes = 0;
         if (remote_.take_audio(recording, bytes)) {
             const bool barge_in = busy();
-            if (!barge_in && can_barge_in && motor_.active()) {
-                transport_.apply_barge_in();
-            }
             bool barge_in_cancelled = true;
+            if (!barge_in && can_barge_in && api_started_ && motor_.active()) {
+                barge_in_cancelled = transport_.apply_barge_in();
+            }
             if (barge_in && can_barge_in && api_started_) {
                 barge_in_cancelled = transport_.post(Kind::barge_in, turn_, nullptr, 0);
                 if (barge_in_cancelled) {

@@ -99,7 +99,8 @@ class ReflexTable {
     ReflexRuleEntry &entry(uint32_t index) { return rules_[index]; }
     const ReflexRuleEntry &entry(uint32_t index) const { return rules_[index]; }
     ayni_bytes_v1 input(uint32_t index) const;
-    // Owner-only scratch borrow through synchronous Call admission; no trigger-time decoding.
+    // Owner-only scratch borrow through synchronous Call admission; no decoding during byte
+    // patching (Call admission still validates the patched value).
     ayni_bytes_v1
     projected_input(uint32_t index,
                     const std::array<int64_t, AYNI_REFLEX_CONDITION_COUNT_MAX> &values);

@@ -265,7 +265,7 @@ esp_err_t MotorOutput::start(const MotorCommand &command) {
         return last_error_;
     }
     last_error_ = ESP_OK;
-    if (!valid_motor_command(command)) {
+    if (!valid_motor_waveform(command)) {
         return ESP_ERR_INVALID_ARG;
     }
     expected_ = {};
@@ -293,7 +293,7 @@ esp_err_t MotorOutput::transition(const MotorCommand &next) {
         last_error_ = ESP_ERR_INVALID_STATE;
         return last_error_;
     }
-    if (!valid_motor_command(next)) {
+    if (!valid_motor_waveform(next)) {
         return ESP_ERR_INVALID_ARG;
     }
     return apply_segment(next);
@@ -301,7 +301,7 @@ esp_err_t MotorOutput::transition(const MotorCommand &next) {
 // RMT borrows waveform memory until completion/disable. Never patch a live buffer.
 // IDF 6.0.3 rmt_tx_disable synchronously stops TX and returns its interrupted descriptor.
 esp_err_t MotorOutput::replace_active(const MotorCommand &next) {
-    if (state_ != State::running || !valid_motor_command(next)) {
+    if (state_ != State::running || !valid_motor_waveform(next)) {
         return state_ == State::running ? ESP_ERR_INVALID_ARG : ESP_ERR_INVALID_STATE;
     }
     const auto began = uint64_t(esp_timer_get_time());
@@ -326,8 +326,12 @@ esp_err_t MotorOutput::replace_active(const MotorCommand &next) {
         for (size_t at = 0; at < expected_.size(); ++at) {
             expected_[at] = uint32_t(measured[at]);
         }
-        for (auto &output : outputs_) {
-            if (output.channel) {
+        for (size_t at = 0; at < outputs_.size(); ++at) {
+            auto &output = outputs_[at];
+            // Reversing/coasting channels remain disabled until detach_motor removes them.
+            // Only same-direction channels are reused by apply_segment.
+            if (output.channel && wanted[at] && active_percent_[at] &&
+                motor_input(at, wanted[at]) == motor_input(at, active_percent_[at])) {
                 retain_error(rc, rmt_enable(output.channel));
             }
         }

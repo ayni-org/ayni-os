@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <ayni/control.h>
 #include <limits>
+#include <optional>
 
 namespace wifichat {
 enum class ControlRejectReason : uint32_t {
@@ -43,6 +44,7 @@ struct ControlStopRequest {
 };
 struct ControlHold {
     uint32_t seq = 0, scale_percent = 100;
+    uint64_t accepted_at_us = 0;
 };
 // Multiple non-ISR request producers; single executor and single UI snapshot reader.
 // Sequence exhaustion refuses ordinary commands and permanently latches a hard stop.
@@ -87,72 +89,113 @@ class ControlMailbox {
         return sent;
     }
     bool take_target(ControlTarget &out) { return targets_.read(out); }
-    bool target_blocked(uint64_t seq) const { return stop_pending() || seq <= stop_request().seq; }
-    // No clear-on-read. An unconfirmed stop remains visible through any number of polls.
-    ControlStopRequest request_stop(ControlStopKind kind) {
-        const auto seq = next_sequence();
-        auto state = stop_.load(std::memory_order_acquire);
-        for (;;) {
-            const auto severity = std::max(state & kind_mask, uint32_t(kind));
-            const auto frontier = std::max(state >> stop_shift, seq ? seq : exhausted_sequence);
-            const auto next = (frontier << stop_shift) | severity;
-            if (stop_.compare_exchange_weak(state, next, std::memory_order_acq_rel,
-                                            std::memory_order_acquire)) {
-                return {frontier, ControlStopKind(severity)};
-            }
+    bool target_blocked(uint64_t seq) const {
+        return hard_stop_.load(std::memory_order_acquire) || stop_pending() ||
+               seq <= stop_request().seq;
+    }
+    // Severity is a boot-lifetime latch independent of the ordered frontier. Publishing it
+    // first also prevents a preempted hard-stop producer from admitting a fresh start.
+    ControlStopRequest request_stop(ControlStopKind kind, uint64_t at_us = 0) {
+        if (kind == ControlStopKind::hard_estop) {
+            hard_stop_.store(true, std::memory_order_release);
         }
+        const auto issued = next_sequence();
+        const auto seq = issued ? issued : exhausted_sequence;
+        auto previous = stop_.load(std::memory_order_acquire);
+        while (previous < seq &&
+               !stop_.compare_exchange_weak(previous, seq, std::memory_order_acq_rel,
+                                            std::memory_order_acquire)) {
+        }
+        // Telemetry may drop under producer contention; the safety frontier never does.
+        stop_receipts_.write(
+            [&](ControlHold &out) {
+                if (seq < stop_receipt_seq_) {
+                    return false;
+                }
+                stop_receipt_seq_ = seq;
+                out = {seq, 0, at_us};
+                return true;
+            },
+            [](const auto &, bool, const auto &) {});
+        return {seq, kind};
     }
     ControlStopRequest stop_request() const {
-        const auto state = stop_.load(std::memory_order_acquire);
-        return {state >> stop_shift, ControlStopKind(state & kind_mask)};
+        return {stop_.load(std::memory_order_acquire), hard_stop_.load(std::memory_order_acquire)
+                                                           ? ControlStopKind::hard_estop
+                                                           : ControlStopKind::soft_stop};
     }
-    bool stop_pending() const {
-        return confirmed_.load(std::memory_order_acquire) < stop_request().seq;
-    }
-    // Executor-only AFTER GPIO low readback and PermitGate STOPPED confirmation.
-    // Confirming an earlier request never clears one that arrived during the hardware stop.
-    void confirm_stop(uint32_t seq, bool armed, uint32_t cause, uint64_t stopped_us) {
-        if (!seq || seq > stop_request().seq) {
-            return;
+    std::optional<ControlStopRequest> pending_stop() const {
+        const auto request = stop_request();
+        if (confirmed_.load(std::memory_order_acquire) < request.seq ||
+            (request.kind == ControlStopKind::hard_estop &&
+             !hard_confirmed_.load(std::memory_order_acquire))) {
+            return request;
         }
-        execution_.stop_confirmed_seq = std::max<uint64_t>(execution_.stop_confirmed_seq, seq);
+        return std::nullopt;
+    }
+    bool stop_pending() const { return pending_stop().has_value(); }
+    bool hard_stop_requested() const { return hard_stop_.load(std::memory_order_acquire); }
+    // Executor-only, AFTER GPIO low readback and Gate STOPPED. Only acknowledge the exact
+    // snapshot actually handled; a newly arrived hard stop cannot be acknowledged as armed.
+    bool confirm_stop(ControlStopRequest request, ControlMode mode, uint32_t cause,
+                      uint64_t stopped_us) {
+        if (request.seq > stop_.load(std::memory_order_acquire) ||
+            ((request.kind == ControlStopKind::hard_estop ||
+              hard_stop_.load(std::memory_order_acquire)) &&
+             mode != ControlMode::latched)) {
+            return false;
+        }
+        execution_.stop_confirmed_seq =
+            std::max<uint64_t>(execution_.stop_confirmed_seq, request.seq);
         execution_.stopped_at_us = stopped_us;
         execution_.stop_cause = cause;
-        execution_.control_mode = armed ? uint8_t(ControlMode::armed) : execution_.control_mode;
+        execution_.control_mode = uint8_t(mode);
         execution_.busy = 0;
         feedback_.publish(execution_);
         confirmed_.store(uint32_t(execution_.stop_confirmed_seq), std::memory_order_release);
+        if (request.kind == ControlStopKind::hard_estop && mode == ControlMode::latched) {
+            hard_confirmed_.store(true, std::memory_order_release);
+        }
+        return true;
     }
-    bool request_hold(uint32_t percent, uint32_t *out_seq = nullptr) {
+    bool request_hold(uint32_t percent, uint32_t *out_seq = nullptr, uint64_t at_us = 0) {
         if (percent > full_scale) {
             return false;
         }
-        const auto seq = next_sequence();
-        if (!seq) {
-            return false;
-        }
-        auto state = hold_.load(std::memory_order_acquire);
-        while ((state >> hold_shift) < seq) {
-            if (hold_.compare_exchange_weak(state, (seq << hold_shift) | percent,
-                                            std::memory_order_release, std::memory_order_acquire)) {
-                if (out_seq) {
-                    *out_seq = seq;
+        uint32_t issued = 0;
+        const bool sent = holds_.write(
+            [&](ControlHold &out) {
+                issued = next_sequence();
+                if (!issued) {
+                    return false;
                 }
+                out = {issued, percent, at_us};
                 return true;
-            }
+            },
+            [&](const auto &, bool, const auto &out) { hold_receipts_.publish(out); });
+        if (sent && out_seq) {
+            *out_seq = issued;
         }
-        return false;
+        return sent;
     }
-    ControlHold hold() const {
-        const auto state = hold_.load(std::memory_order_acquire);
-        return {state >> hold_shift, state & hold_mask};
+    // Single executor reader. UI has its own lane and never shares a reader pin.
+    ControlHold hold() {
+        holds_.read(executor_hold_, false);
+        return executor_hold_;
     }
     // Executor-only frontiers are retained in a separate triple buffer from producer receipts.
     void mark_applied(uint64_t seq, int32_t first, int32_t second, uint64_t at_us) {
+        if (execution_.applied_seq == seq && execution_.applied_motor1 == first &&
+            execution_.applied_motor2 == second) {
+            return;
+        }
+        // Preserve the first hardware-application timestamp for each accepted command.
+        if (execution_.applied_seq != seq) {
+            execution_.applied_at_us = at_us;
+        }
         execution_.applied_seq = seq;
         execution_.applied_motor1 = first;
         execution_.applied_motor2 = second;
-        execution_.applied_at_us = at_us;
         feedback_.publish(execution_);
     }
     void mark_rejected(uint64_t seq, ControlRejectReason reason, ayni_status_t code,
@@ -185,25 +228,26 @@ class ControlMailbox {
         }
         out.superseded_seq = ui_receipt_.superseded_seq;
         out.superseded_count = ui_receipt_.superseded_count;
-        const auto held = hold();
+        hold_receipts_.read(ui_hold_, false);
+        stop_receipts_.read(ui_stop_, false);
+        const auto held = ui_hold_;
         const auto stop = stop_request();
         if (held.seq > out.accepted_seq) {
             out.accepted_seq = held.seq;
             out.accepted_kind = hold_kind;
-            out.accepted_at_us = 0; // Atomic hold/stop lanes carry no timestamp payload.
+            out.accepted_at_us = held.accepted_at_us;
         }
         if (stop.seq > out.accepted_seq) {
             out.accepted_seq = stop.seq;
             out.accepted_kind = stop.kind == ControlStopKind::hard_estop ? hard_kind : soft_kind;
-            out.accepted_at_us = 0;
+            out.accepted_at_us = ui_stop_.seq == stop.seq ? ui_stop_.accepted_at_us : 0;
         }
         out.stop_requested_seq = stop.seq;
         return out;
     }
 
   private:
-    static constexpr uint32_t stop_shift = 2, kind_mask = 3, hold_shift = 8, hold_mask = 255;
-    static constexpr uint32_t exhausted_sequence = UINT32_MAX >> hold_shift,
+    static constexpr uint32_t exhausted_sequence = UINT32_MAX,
                               max_sequence = exhausted_sequence - 1U, full_scale = 100;
     static constexpr uint8_t target_kind = 1, hold_kind = 2, soft_kind = 3, hard_kind = 4;
     uint32_t next_sequence() {
@@ -213,11 +257,15 @@ class ControlMailbox {
                 return current + 1U;
             }
         }
-        stop_.store((exhausted_sequence << stop_shift) | uint32_t(ControlStopKind::hard_estop),
-                    std::memory_order_release);
+        hard_stop_.store(true, std::memory_order_release);
+        stop_.store(exhausted_sequence, std::memory_order_release);
         return 0;
     }
-    std::atomic<uint32_t> sequence_{0}, stop_{0}, confirmed_{0}, hold_{full_scale};
+    std::atomic<uint32_t> sequence_{0}, stop_{0}, confirmed_{0};
+    std::atomic<bool> hard_stop_{false}, hard_confirmed_{false};
+    LatestSlot<ControlHold> holds_, hold_receipts_, stop_receipts_;
+    uint32_t stop_receipt_seq_ = 0; // Serialized by stop_receipts_' producer claim.
+    ControlHold executor_hold_{}, ui_hold_{}, ui_stop_{};
     LatestSlot<ControlTarget> targets_;
     LatestSlot<ControlFeedbackSnapshot> receipts_, feedback_;
     ControlFeedbackSnapshot receipt_{}, execution_{}; // Target writer / executor, respectively.

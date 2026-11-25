@@ -1,6 +1,7 @@
 #include "motor_panel.h"
 #include "app_menu.h"
 #include "motor_panel_text.h"
+#include <algorithm>
 #include <cstdio>
 #include <yyjson.h>
 namespace wifichat::wifi {
@@ -90,10 +91,29 @@ MotorPanel::Tap MotorPanel::tap(Transport &transport, int x, int y, bool healthy
         return Tap::none;
     }
     if (x >= 150 && y >= 32 && y < 58) {
-        feedback_page_ = !feedback_page_;
+        page_ = page_ == Page::control    ? Page::feedback
+                : page_ == Page::feedback ? Page::steering
+                                          : Page::control;
         return Tap::none;
     }
-    if (feedback_page_ && !(y >= 284 && y < 314)) {
+    if (page_ == Page::steering && ((y >= 100 && y < 144) || (y >= 166 && y < 210))) {
+        if (!healthy || !active()) {
+            message_ = "请先启用并打开许可会话";
+            return Tap::none;
+        }
+        auto &desired = y < 160 ? desired_first_ : desired_second_;
+        desired = x < 80     ? std::max(desired - 10, -int32_t(limit_))
+                  : x >= 160 ? std::min(desired + 10, int32_t(limit_))
+                             : 0;
+        ControlTarget target;
+        target.motor1 = desired_first_;
+        target.motor2 = desired_second_;
+        target.duration_ms = 500;
+        message_ =
+            transport.submit_motor_target(target) ? "已受理，应用结果见反馈" : "邮箱忙，请重试";
+        return Tap::none;
+    }
+    if (page_ != Page::control && !(y >= 284 && y < 314)) {
         return Tap::none;
     }
     if (y >= 284 && y < 314) {
@@ -131,13 +151,18 @@ MotorPanel::Tap MotorPanel::tap(Transport &transport, int x, int y, bool healthy
     return Tap::none;
 }
 void MotorPanel::draw(Canvas &canvas) const {
-    if (feedback_page_) {
+    if (page_ == Page::steering) {
+        draw_motor_steering(canvas, desired_first_, desired_second_, message_);
+    } else if (page_ == Page::feedback) {
         draw_motor_feedback(canvas, message_,
                             feedback_text_.empty() ? "等待控制指令" : feedback_text_);
     } else {
         draw_motor_preferences(canvas, active(), limit_, message_);
     }
-    canvas.button(150, 32, 80, 26, feedback_page_ ? "控制" : "反馈");
+    canvas.button(150, 32, 80, 26,
+                  page_ == Page::control    ? "反馈"
+                  : page_ == Page::feedback ? "调速"
+                                            : "控制");
 }
 void MotorPanel::test_notice(const MotorCheckNotice &notice) {
     char text[160];

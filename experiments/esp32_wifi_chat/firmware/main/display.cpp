@@ -104,24 +104,29 @@ bool Display::submit_tool_frame(uint64_t call, uint32_t pages, const uint8_t *pi
                                 void *context, Completion completion) {
     return call && completion && submit(call, pages, pixels, bytes, context, completion);
 }
-// The short metadata/copy lock never covers SPI or callbacks. Producers fail immediately on
+// The metadata lock never covers the PSRAM copy, SPI or callbacks. Producers fail immediately on
 // contention; ordinary UI retries/latest-wins, and reliable tool callers retain their request.
 bool Display::submit(uint64_t call, uint32_t pages, const uint8_t *pixels, size_t bytes,
                      void *context, Completion completion) {
     if (!worker_ || !pixels || bytes != screen_bytes || xSemaphoreTake(frames_lock_, 0) != pdTRUE) {
         return false;
     }
-    if (pending_ && frames_[*pending_].call) {
+    if (writing_ || (pending_ && frames_[*pending_].call)) {
         xSemaphoreGive(frames_lock_);
         return false; // A pending authorized tool is never overwritten by an ordinary UI frame.
     }
     const size_t index = pending_ ? *pending_ : active_ ? 1U - *active_ : 0;
+    writing_ = index;
+    pending_.reset(); // Consumer cannot acquire the producer-owned buffer.
+    xSemaphoreGive(frames_lock_);
     auto &frame = frames_[index];
     std::memcpy(frame.pixels, pixels, bytes);
     frame.call = call;
     frame.pages = pages;
     frame.context = context;
     frame.completion = completion;
+    xSemaphoreTake(frames_lock_, portMAX_DELAY);
+    writing_.reset();
     pending_ = index;
     xSemaphoreGive(frames_lock_);
     xTaskNotifyGive(worker_);

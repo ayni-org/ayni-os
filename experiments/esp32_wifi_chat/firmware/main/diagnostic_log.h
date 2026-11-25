@@ -20,29 +20,30 @@ class DiagnosticLog {
         boot_ = boot;
         clock_ = clock;
     }
+    // Producers only capture RAM. The composition logger alone performs serial I/O.
     void record(const char *format, ...) __attribute__((format(printf, 2, 3))) {
         va_list args;
         va_start(args, format);
-        write(stdout, false, format, args);
+        write(true, format, args);
         va_end(args);
     }
     // Bounded formatting and RAM capture for additional owner timing metadata.
     void record_ram(const char *format, ...) __attribute__((format(printf, 2, 3))) {
         va_list args;
         va_start(args, format);
-        write(nullptr, false, format, args);
+        write(false, format, args);
         va_end(args);
     }
     // Retain one RAM event now and emit its exact serial copy outside the measured window.
     void record_deferred(const char *format, ...) __attribute__((format(printf, 2, 3))) {
         va_list args;
         va_start(args, format);
-        write(nullptr, true, format, args);
+        write(true, format, args);
         va_end(args);
     }
     template <class Sink> void drain_serial(Sink sink) {
         std::array<char, line_bytes> line;
-        for (size_t count = 0; count < slots && take_serial(line); ++count) {
+        for (size_t count = 0; count < batch && take_serial(line); ++count) {
             sink(line.data());
         }
     }
@@ -128,15 +129,12 @@ class DiagnosticLog {
         return false;
     }
 
-    void write(std::FILE *serial, bool deferred, const char *format, va_list args) {
+    void write(bool deferred, const char *format, va_list args) {
         char text[line_bytes]{};
         const auto size = std::vsnprintf(text, sizeof(text), format, args);
         if (size <= 0 || size_t(size) >= sizeof(text)) {
             dropped_.fetch_add(1, std::memory_order_relaxed);
             return;
-        }
-        if (serial) {
-            std::fputs(text, serial);
         }
         capture_line({text, size_t(size)}, deferred);
     }

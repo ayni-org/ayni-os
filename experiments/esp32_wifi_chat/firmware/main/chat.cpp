@@ -366,12 +366,13 @@ ayni_status_t Chat::initialize(const ModelSelection &selection) {
     }
     bodies_.set_shared_call_results();
     transport_.attach_bodies(bodies_.store());
-    const uint32_t input_bytes = std::max({model_input_bytes(destination_), screen_input_bytes(),
-                                           Speaker::input_bytes(), motor_input_bytes_max});
+    const uint32_t call_input_bytes =
+        std::max({model_input_bytes(destination_), screen_input_bytes(), Speaker::input_bytes(),
+                  motor_input_bytes_max});
     const uint32_t result_bytes =
         std::max({static_cast<uint32_t>(summary_bytes), static_cast<uint32_t>(summary_bytes),
                   Speaker::result_bytes});
-    auto c = chat_config(input_bytes, result_bytes);
+    auto c = chat_config(call_input_bytes, result_bytes);
     size_t bytes = 0, alignment = 0;
     rc = ayni_kernel_memory_requirements(&c, &bytes, &alignment);
     if (rc != AYNI_OK) {
@@ -658,7 +659,7 @@ ayni_status_t Chat::configure_model() {
     }
     resource_ = {text("model.slot"), 1, 0};
     input_schema_[0].kind = AYNI_VALUE_OBJECT;
-    input_schema_[0].subtree_end = input_schema_.size();
+    input_schema_[0].subtree_end = uint32_t(input_schema_.size());
     auto &destination = input_schema_[1];
     destination.kind = AYNI_VALUE_IDENTIFIER;
     destination.field_id = AYNI_MODEL_DESTINATION_FIELD_ID;
@@ -670,7 +671,7 @@ ayni_status_t Chat::configure_model() {
     auto &body = input_schema_[2];
     body.kind = AYNI_VALUE_TEXT;
     body.field_id = AYNI_MODEL_BODY_FIELD_ID;
-    body.subtree_end = input_schema_.size();
+    body.subtree_end = uint32_t(input_schema_.size());
     body.name = text("body");
     body.flags = AYNI_SCHEMA_REQUIRED | AYNI_SCHEMA_EXTERNAL;
     body.max_count = harness::model_body_bytes;
@@ -685,7 +686,7 @@ ayni_status_t Chat::configure_model() {
                  1,
                  0,
                  &projection_};
-    const uint32_t input_bytes = model_input_bytes(destination_);
+    const uint32_t call_input_bytes = model_input_bytes(destination_);
     for (uint32_t at = 0; at < capabilities_.size(); ++at) {
         const bool tools = at == 1;
         capabilities_[at] = {
@@ -696,7 +697,7 @@ ayni_status_t Chat::configure_model() {
              AYNI_CALL_EFFECT_EGRESS | AYNI_CALL_EFFECT_BILLING, AYNI_CALL_NOT_IDEMPOTENT,
              AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_REQUEST, 0, harness::request_timeout_ms,
              AYNI_CALL_INPUT_VALUE, tools ? AYNI_CALL_RESULT_TOOL_CALLS : AYNI_CALL_RESULT_TEXT,
-             input_bytes, static_cast<uint32_t>(summary_bytes), 1, &resource_, nullptr,
+             call_input_bytes, static_cast<uint32_t>(summary_bytes), 1, &resource_, nullptr,
              tools ? AYNI_CALL_DURABILITY_EPHEMERAL : AYNI_CALL_DURABILITY_DURABLE, 0},
             &business_};
         if (rc == AYNI_OK) {
@@ -1993,7 +1994,6 @@ void Chat::end_turn(const char *message) {
     // here, outside automatic speech startup and playback.
     flush_publication_diagnostics();
     emit_phase_trace("terminal", ended_snapshot);
-    transport_.diagnostics().drain_serial([](const char *line) { std::fputs(line, stdout); });
     input_.clear();
     answer_.clear();
     reply_voice_.reset();

@@ -193,7 +193,8 @@ ayni_control_observation_v1 MotorExecution::live() const {
     const auto heartbeat = heartbeat_capture_.load(std::memory_order_acquire);
     return {epochs,
             uint32_t(accepting_.load(std::memory_order_acquire) && mode_ == Mode::armed &&
-                     heartbeat && now() - heartbeat < heartbeat_us),
+                     !transport_.control_mailbox().hard_stop_requested() && heartbeat &&
+                     now() - heartbeat < heartbeat_us),
             0};
 }
 ayni_status_t MotorExecution::challenge(const ayni_permit_epochs_v1 &expected,
@@ -313,9 +314,7 @@ void MotorExecution::begin(const Pending &incoming) {
             : valid_motor_trajectory(incoming.trajectory);
     for (uint32_t at = 0; within_limit && at < incoming.trajectory.count; ++at) {
         const auto &seg = incoming.trajectory.segments[at];
-        within_limit =
-            seg.first_percent >= -int32_t(limit_) && seg.first_percent <= int32_t(limit_) &&
-            seg.second_percent >= -int32_t(limit_) && seg.second_percent <= int32_t(limit_);
+        within_limit = within_operator_limit(seg);
     }
     if (pending_ || transport_.control_mailbox().target_blocked(incoming.target_seq) || !gate_ ||
         !session_ || !live().interlocks_ok || incoming.permit.permit_id <= refused_through_ ||
@@ -372,7 +371,7 @@ ayni_status_t MotorExecution::hardware_command(const MotorCommand &desired,
         const auto remaining_ms =
             pending_->deadline_us > at ? (pending_->deadline_us - at) / 1000U : 0;
         out.duration_ms = uint32_t(remaining_ms / motor_duration_step_ms) * motor_duration_step_ms;
-        if (out.duration_ms < motor_duration_ms_min) {
+        if (out.duration_ms < motor_duration_step_ms) {
             return AYNI_EXPIRED;
         }
     }
@@ -483,7 +482,8 @@ void MotorExecution::apply_target(const ControlTarget &target) {
         return;
     }
     auto &p = *pending_;
-    if (!valid_motor_command({target.motor1, target.motor2, target.duration_ms}) ||
+    const MotorCommand command{target.motor1, target.motor2, target.duration_ms};
+    if (!valid_motor_command(command) || !within_operator_limit(command) ||
         target.duration_ms > p.trajectory.segments[0].duration_ms) {
         mailbox.mark_rejected(target.seq, ControlRejectReason::out_of_envelope, AYNI_DENIED, now());
         return;
@@ -504,6 +504,10 @@ void MotorExecution::apply_target(const ControlTarget &target) {
         hold_scale_ = AYNI_CONTROL_LOOP_FULL_SCALE;
     }
 }
+bool MotorExecution::within_operator_limit(const MotorCommand &command) const {
+    return command.first_percent >= -int32_t(limit_) && command.first_percent <= int32_t(limit_) &&
+           command.second_percent >= -int32_t(limit_) && command.second_percent <= int32_t(limit_);
+}
 void MotorExecution::apply_hold() {
     const auto held = transport_.control_mailbox().hold();
     if (held.seq == last_hold_seq_) {
@@ -523,8 +527,10 @@ void MotorExecution::apply_hold() {
         transport_.request_motor_soft_stop();
     }
 }
-ayni_status_t MotorExecution::stop_output() {
-    const auto requested = transport_.control_mailbox().stop_request();
+ayni_status_t MotorExecution::stop_output(std::optional<ControlStopRequest> requested) {
+    if (requested && requested->kind == ControlStopKind::hard_estop) {
+        mode_ = Mode::latched;
+    }
     admission_.disable(); // Any start carrying a pre-stop handshake is permanently refused.
     ayni_status_t stopped = AYNI_OK;
     if (session_ && gate_ && current_permit_) {
@@ -545,24 +551,26 @@ ayni_status_t MotorExecution::stop_output() {
         stopped = session_ ? ayni_control_session_confirm_stopped(session_, now())
                            : ayni_control_confirm_stopped(gate_, current_permit_, now());
     }
-    if (stopped == AYNI_OK && requested.seq) {
+    if (stopped == AYNI_OK && requested) {
         ayni_control_info_v1 info{};
         info.struct_size = sizeof(info);
         if (!current_permit_ || (ayni_control_get_info(gate_, &info) == AYNI_OK &&
                                  info.phase == AYNI_CONTROL_STOPPED)) {
             const auto confirmed_at_us = now();
-            transport_.control_mailbox().confirm_stop(requested.seq, mode_ == Mode::armed,
-                                                      info.stop_cause, confirmed_at_us);
-            transport_.diagnostics().record_deferred(
-                "wifi control_stop seq=%lu phase=stop_confirmed hw_low_readback_us=%llu "
-                "confirmed_at_us=%llu\n",
-                (unsigned long)requested.seq, (unsigned long long)readback_at_us,
-                (unsigned long long)confirmed_at_us);
+            if (transport_.control_mailbox().confirm_stop(*requested, mode_, info.stop_cause,
+                                                          confirmed_at_us)) {
+                transport_.diagnostics().record_deferred(
+                    "wifi control_stop seq=%lu phase=stop_confirmed hw_low_readback_us=%llu "
+                    "confirmed_at_us=%llu\n",
+                    (unsigned long)requested->seq, (unsigned long long)readback_at_us,
+                    (unsigned long long)confirmed_at_us);
+            }
         }
     }
     return stopped;
 }
-void MotorExecution::end(ayni_call_outcome_t outcome, ayni_status_t status) {
+void MotorExecution::end(ayni_call_outcome_t outcome, ayni_status_t status,
+                         std::optional<ControlStopRequest> requested) {
     if (!pending_) {
         return;
     }
@@ -570,7 +578,7 @@ void MotorExecution::end(ayni_call_outcome_t outcome, ayni_status_t status) {
     p.outcome = outcome;
     p.status = status;
     trace("execution-end", status);
-    if (stop_output() != AYNI_OK) {
+    if (stop_output(requested) != AYNI_OK) {
         mode_ = Mode::latched;
         p.outcome = AYNI_CALL_ABANDONED;
         p.status = AYNI_RESULT_UNKNOWN;
@@ -596,23 +604,23 @@ void MotorExecution::end(ayni_call_outcome_t outcome, ayni_status_t status) {
     p.phase = Phase::result; // Local output-stop fact ends a timed PWM session; target stays
                              // unverified.
 }
-void MotorExecution::stop_owner() {
+void MotorExecution::stop_owner(std::optional<ControlStopRequest> requested) {
     if (mode_ == Mode::closed) {
         return;
     }
     mode_ = Mode::latched;
     if (pending_ && pending_->phase != Phase::result) {
-        end(AYNI_CALL_CANCELLED, AYNI_DENIED);
+        end(AYNI_CALL_CANCELLED, AYNI_DENIED, requested);
     } else {
-        stop_output();
+        stop_output(requested);
     }
 }
-ayni_status_t MotorExecution::soft_stop_owner() {
+ayni_status_t MotorExecution::soft_stop_owner(std::optional<ControlStopRequest> requested) {
     if (mode_ == Mode::closed) {
         return AYNI_OK;
     }
     if (pending_ && pending_->phase != Phase::result) {
-        end(AYNI_CALL_CANCELLED, AYNI_DENIED);
+        end(AYNI_CALL_CANCELLED, AYNI_DENIED, requested);
         if (pending_ && pending_->phase == Phase::result) {
             const auto posted = post_result();
             if (posted != AYNI_OK && posted != AYNI_BUSY) {
@@ -623,7 +631,7 @@ ayni_status_t MotorExecution::soft_stop_owner() {
         // end() failed stop_output() and already escalated mode_ to Mode::latched.
         return AYNI_INTERNAL;
     }
-    const auto stopped = stop_output();
+    const auto stopped = stop_output(requested);
     if (stopped != AYNI_OK) {
         mode_ = Mode::latched;
         publish_snapshot();
@@ -631,7 +639,11 @@ ayni_status_t MotorExecution::soft_stop_owner() {
     return stopped;
 }
 void MotorExecution::serve_soft_stop(const SoftStopRequest &request) {
-    const auto stopped = soft_stop_owner();
+    const auto requested = transport_.control_mailbox().pending_stop();
+    if (requested && requested->kind == ControlStopKind::hard_estop) {
+        mode_ = Mode::latched;
+    }
+    const auto stopped = soft_stop_owner(requested);
     const bool ok = stopped == AYNI_OK;
     char reply[192];
     const auto length = std::snprintf(
@@ -732,18 +744,27 @@ ayni_status_t MotorExecution::advance_owner() {
         return AYNI_OK;
     }
     auto &mailbox = transport_.control_mailbox();
-    const auto stop_request = mailbox.stop_request();
-    if (mailbox.stop_pending()) {
-        if (stop_request.kind == ControlStopKind::hard_estop) {
-            stop_owner();
+    if (const auto stop_request = mailbox.pending_stop()) {
+        if (stop_request->kind == ControlStopKind::hard_estop) {
+            stop_owner(stop_request);
         } else {
-            const auto soft = soft_stop_owner();
+            const auto soft = soft_stop_owner(stop_request);
             if (soft != AYNI_OK && soft != AYNI_INTERNAL) {
                 return soft;
             }
         }
     }
     apply_hold();
+    // Hold on a dialogue-owned run requests an immediate soft stop. Process it before
+    // another sample can emit a reduced pulse or overwrite the hold rejection reason.
+    if (const auto requested = mailbox.pending_stop()) {
+        if (requested->kind == ControlStopKind::hard_estop) {
+            stop_owner(requested);
+        } else if (const auto stopped = soft_stop_owner(requested);
+                   stopped != AYNI_OK && stopped != AYNI_INTERNAL) {
+            return stopped;
+        }
+    }
     ControlTarget target;
     if (mailbox.take_target(target)) {
         apply_target(target);
@@ -804,8 +825,11 @@ ayni_status_t MotorExecution::advance_pending() {
         }
         end(AYNI_CALL_CANCELLED, AYNI_DENIED);
     } else if (p.phase == Phase::prepared) {
-        if (sample() != AYNI_OK) {
-            end(AYNI_CALL_FAILED, AYNI_DENIED);
+        if (const auto sampled = sample(); sampled != AYNI_OK) {
+            if (sampled == AYNI_INTERNAL) {
+                mode_ = Mode::latched;
+            }
+            end(AYNI_CALL_FAILED, sampled);
         } else {
             MotorCommand hardware;
             const auto bounded = hardware_command(p.effective, hardware);
@@ -837,8 +861,11 @@ ayni_status_t MotorExecution::advance_pending() {
         if (p.streaming && now() >= p.deadline_us) {
             p.effect = Effect::complete; // The bounded session completed, not a fixed wheel target.
             end(AYNI_CALL_COMPLETED, AYNI_OK);
-        } else if (sample() != AYNI_OK) {
-            end(AYNI_CALL_CANCELLED, AYNI_EXPIRED);
+        } else if (const auto sampled = sample(); sampled != AYNI_OK) {
+            if (sampled == AYNI_INTERNAL) {
+                mode_ = Mode::latched;
+            }
+            end(AYNI_CALL_FAILED, sampled);
         } else {
             const auto state = output_->poll_segment();
             if (state == MotorOutput::Poll::completed && p.streaming) {

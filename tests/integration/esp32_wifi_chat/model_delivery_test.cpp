@@ -10,68 +10,6 @@
 #include <memory>
 #include <vector>
 
-// Only the platform queues/notification and unused hardware endpoints are substituted.
-// The real model completion, Transport packet pool, queue ordering and receive code are linked.
-struct TestQueue {
-    size_t capacity, item_size;
-    std::mutex mutex;
-    std::deque<std::vector<uint8_t>> contents;
-};
-QueueHandle_t xQueueCreate(size_t capacity, size_t item_size) {
-    static std::vector<std::unique_ptr<TestQueue>> queues;
-    auto queue = std::make_unique<TestQueue>();
-    queue->capacity = capacity;
-    queue->item_size = item_size;
-    queues.push_back(std::move(queue));
-    return queues.back().get();
-}
-int xQueueSend(QueueHandle_t queue, const void *in, TickType_t) {
-    std::lock_guard<std::mutex> lock(queue->mutex);
-    if (queue->contents.size() == queue->capacity) {
-        return 0;
-    }
-    auto bytes = static_cast<const uint8_t *>(in);
-    queue->contents.emplace_back(bytes, bytes + queue->item_size);
-    return pdTRUE;
-}
-int xQueuePeek(QueueHandle_t queue, void *out, TickType_t) {
-    std::lock_guard<std::mutex> lock(queue->mutex);
-    if (queue->contents.empty()) {
-        return 0;
-    }
-    std::memcpy(out, queue->contents.front().data(), queue->item_size);
-    return pdTRUE;
-}
-int xQueueReceive(QueueHandle_t queue, void *out, TickType_t) {
-    std::lock_guard<std::mutex> lock(queue->mutex);
-    if (queue->contents.empty()) {
-        return 0;
-    }
-    std::memcpy(out, queue->contents.front().data(), queue->item_size);
-    queue->contents.pop_front();
-    return pdTRUE;
-}
-namespace wifichat {
-bool Display::initialize() {
-    return true;
-}
-bool Display::submit_ui_frame(const uint8_t *, size_t) {
-    return true;
-}
-bool Display::submit_tool_frame(uint64_t, uint32_t, const uint8_t *, size_t, void *, Completion) {
-    return true;
-}
-bool Speaker::receive(Kind, uint64_t, const uint8_t *, size_t) {
-    return false;
-}
-AudioWrite Speaker::append_audio(uint64_t, uint32_t, const uint8_t *, size_t) {
-    return AudioWrite::rejected;
-}
-namespace wifi {
-void run(Transport &) {}
-} // namespace wifi
-} // namespace wifichat
-
 namespace {
 using namespace wifichat;
 class ModelDelivery : public testing::Test {
@@ -157,3 +95,26 @@ TEST_F(ModelDelivery, UnclassifiedFailureWakesOwnerOnceAndWorkerCanDeliverNextCa
     EXPECT_TRUE(matches_model_delivery(received, 42, transport.api_generation()));
 }
 } // namespace
+
+namespace wifichat {
+extern Display::Completion display_test_completion;
+extern void *display_test_context;
+} // namespace wifichat
+TEST(ModelDeliveryCancellation, CancelledDisplayCompletionRetiresEvenWhenInputIsFull) {
+    // ADR-0114: stale DMA completion must release lcd-display instead of retrying forever.
+    using namespace wifichat;
+    ControlMailbox mailbox;
+    Transport transport(mailbox);
+    ASSERT_TRUE(transport.initialize());
+    transport.allow_display(42);
+    ASSERT_TRUE(
+        transport.paint(42, nullptr, 0)); // SDK display is replaced; production callback retained.
+    for (size_t at = 0; at < input_packet_slots; ++at) {
+        ASSERT_TRUE(transport.post(Kind::motor_heartbeat, at, nullptr, 0));
+    }
+    uint8_t stage = 0;
+    ASSERT_NE(display_test_completion, nullptr);
+    EXPECT_FALSE(display_test_completion(display_test_context, 42, 1, true, stage));
+    transport.allow_display(0);
+    EXPECT_TRUE(display_test_completion(display_test_context, 42, 1, true, stage));
+}

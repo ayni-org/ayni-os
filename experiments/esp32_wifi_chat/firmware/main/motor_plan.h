@@ -32,6 +32,16 @@ inline bool valid_motor_command(const MotorCommand &command) {
            command.duration_ms <= motor_plan_duration_ms_max &&
            command.duration_ms % motor_duration_step_ms == 0;
 }
+// Provider commands retain the 50 ms minimum. Executor-bounded waveforms may use the last
+// 5 ms RMT block; all PWM and maximum-duration checks still share the public validator.
+inline bool valid_motor_waveform(const MotorCommand &command) {
+    auto public_command = command;
+    if (public_command.duration_ms < motor_duration_ms_min) {
+        public_command.duration_ms = motor_duration_ms_min;
+    }
+    return valid_motor_command(public_command) && command.duration_ms >= motor_duration_step_ms &&
+           command.duration_ms % motor_duration_step_ms == 0;
+}
 inline uint32_t total_duration_ms(const MotorTrajectory &trajectory) {
     uint64_t total = 0;
     const uint32_t limit = trajectory.count <= motor_segments_max ? trajectory.count : 0;

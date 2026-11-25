@@ -78,7 +78,11 @@ ayni_submit_result_t Motor::open_session(const ayni_provider_request_v1 &request
         !read_motor_stream(request.value, input)) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
-    opening_ = Opening{request.attempt, completion, request.logical_call_id, input};
+    const auto start_seq = transport_.control_mailbox().reserve_start();
+    if (!start_seq || transport_.control_mailbox().target_blocked(start_seq)) {
+        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    }
+    opening_ = Opening{request.attempt, completion, request.logical_call_id, input, start_seq};
     return AYNI_SUBMIT_ACCEPTED;
 }
 ayni_submit_result_t Motor::steer(const ayni_provider_request_v1 &request,
@@ -112,6 +116,16 @@ ayni_submit_result_t Motor::steer(const ayni_provider_request_v1 &request,
 ayni_status_t Motor::advance_sessions(ayni_kernel_t *kernel, uint64_t boot, uint64_t durable) {
     if (session_admission_ == SessionAdmission::closing) {
         close_sessions();
+    }
+    // A stop closes independently authorized work even before its internal physical Call is
+    // dispatched. A later explicit open reserves a newer identity and is admitted normally.
+    auto &mailbox = transport_.control_mailbox();
+    if (opening_ && mailbox.target_blocked(opening_->start_seq)) {
+        opening_->phase = Opening::Phase::rollback;
+        activity_.close_all();
+    }
+    if (active_stream_ && mailbox.target_blocked(active_start_seq_)) {
+        activity_.close_all();
     }
     auto status = advance_opening(kernel, boot);
     if (status == AYNI_OK) {
@@ -188,6 +202,7 @@ ayni_status_t Motor::deliver_opening(const Activity::Snapshot &snapshot) {
         const auto delivered = post(opening_->completion, opening_->attempt, AYNI_OK, body);
         if (delivered == AYNI_OK) {
             active_stream_ = opening_->input;
+            active_start_seq_ = opening_->start_seq;
             const auto status = activity_.activate(snapshot.handle, uint64_t(esp_timer_get_time()));
             opening_.reset(); // Handle delivery is final even when its finite lifetime just ended.
             if (status != AYNI_OK) {
@@ -217,10 +232,10 @@ ayni_status_t Motor::advance_execute(ayni_kernel_t *kernel) {
                               uint64_t(esp_timer_get_time()) < current.expires_at_us &&
                               source.task_id == current.task &&
                               source.owner_instance_id == current.handle.owner;
-        if (admitted &&
-            execution_.submit_stream(execute_->attempt, execute_->call, execute_->completion,
-                                     execute_->permit, execute_->initial, current.handle.goal,
-                                     current.expires_at_us) == AYNI_SUBMIT_ACCEPTED) {
+        if (admitted && execution_.submit_stream(
+                            execute_->attempt, execute_->call, execute_->completion,
+                            execute_->permit, execute_->initial, current.handle.goal,
+                            current.expires_at_us, active_start_seq_) == AYNI_SUBMIT_ACCEPTED) {
             execute_.reset();
         } else {
             const auto delivered =
@@ -251,7 +266,7 @@ ayni_status_t Motor::advance_steering(ayni_kernel_t *kernel) {
                        steer.target.duration_ms > active_stream_->initial.duration_ms) {
                 steer.status = AYNI_DENIED;
             } else if (!transport_.submit_motor_target(steer.target, &steer.seq)) {
-                return AYNI_OK;
+                return AYNI_BUSY; // Retained contention retries after the owner's 1 ms busy wait.
             }
         }
         const auto status = complete_steering();

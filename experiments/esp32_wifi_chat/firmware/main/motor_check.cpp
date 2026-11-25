@@ -42,12 +42,12 @@ ayni_status_t MotorCheck::configure(Owner owner) {
     for (uint32_t motor = 0; motor < type_count; ++motor) {
         auto &p = profiles_[motor];
         p.input[0].kind = AYNI_VALUE_OBJECT;
-        p.input[0].subtree_end = p.input.size();
+        p.input[0].subtree_end = uint32_t(p.input.size());
         p.input[1].kind = AYNI_VALUE_LIST;
         p.input[1].field_id = 1;
-        p.input[1].subtree_end = p.input.size();
+        p.input[1].subtree_end = uint32_t(p.input.size());
         p.input[2].kind = AYNI_VALUE_OBJECT;
-        p.input[2].subtree_end = p.input.size();
+        p.input[2].subtree_end = uint32_t(p.input.size());
         for (uint32_t at = 0; at < field_count; ++at) {
             auto &f = p.fields[at];
             f.struct_size = sizeof(f);
@@ -222,12 +222,9 @@ void MotorCheck::cancel_goal(const ayni_goal_info_v1 &goal) {
     if (goal.lifecycle == AYNI_GOAL_ACTIVE || goal.lifecycle == AYNI_GOAL_PAUSED ||
         goal.lifecycle == AYNI_GOAL_PROPOSED) {
         const ayni_goal_target_v1 target{sizeof(target), 0, goal.goal_id};
-        const auto result =
-            owner_.submit(owner_.context, AYNI_INTENT_GOAL_CANCEL, &target, nullptr, goal.revision);
-        if (result.status != AYNI_OK && result.status != AYNI_BUSY) {
-            std::printf("motor check cancel status=%ld reason=%lu; waiting for stop\n",
-                        long(result.status), static_cast<unsigned long>(result.reason));
-        }
+        // The composition records command refusals in its RAM diagnostic lane. Stay in
+        // cancelling and retry until Core reports terminal; a refusal is never stop proof.
+        owner_.submit(owner_.context, AYNI_INTENT_GOAL_CANCEL, &target, nullptr, goal.revision);
     }
 }
 void MotorCheck::poll(ayni_kernel_t *kernel, uint64_t durable) {

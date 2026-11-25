@@ -26,7 +26,8 @@ class MotorExecution {
     ayni_submit_result_t submit_stream(ayni_attempt_ref_v1, uint64_t call,
                                        ayni_provider_completion_t *,
                                        const ayni_execution_permit_v1 &, const MotorCommand &,
-                                       uint64_t session_goal, uint64_t expires_at_us);
+                                       uint64_t session_goal, uint64_t expires_at_us,
+                                       uint64_t start_seq);
     // Async recoverable soft-stop tool path: confirms GPIO low readback and keeps Mode::armed
     // unless stop fails, in which case it auto-escalates to Mode::latched (ADR-0111).
     ayni_submit_result_t submit_soft_stop(const ayni_provider_request_v1 *,
@@ -45,7 +46,8 @@ class MotorExecution {
     bool close();
 
   private:
-    uint64_t latest_dispatch_ = 0; // Last Provider acceptance on the Core owner.
+    friend struct MotorExecutionTestPeer; // White-box host regression of worker-owned transitions.
+    uint64_t latest_dispatch_ = 0;        // Last Provider acceptance on the Core owner.
     using Mode = ControlMode;
     enum class Phase { prepared, running, result };
     enum class Effect { none, possible, partial, complete };
@@ -114,8 +116,8 @@ class MotorExecution {
     void release_worker_storage();
     ayni_status_t advance_owner();
     void receive_owner(Kind, uint64_t, const uint8_t *, size_t);
-    void stop_owner();
-    ayni_status_t soft_stop_owner();
+    void stop_owner(std::optional<ControlStopRequest> = {});
+    ayni_status_t soft_stop_owner(std::optional<ControlStopRequest> = {});
     void serve_soft_stop(const SoftStopRequest &);
     bool close_owner();
     static ayni_status_t challenge_port(void *, ayni_attempt_ref_v1, const ayni_permit_epochs_v1 *,
@@ -135,7 +137,7 @@ class MotorExecution {
     ayni_status_t challenge(const ayni_permit_epochs_v1 &, ayni_executor_nonce_v1 &);
     ayni_status_t status(uint64_t, ayni_executor_status_v1 &);
     ayni_control_observation_v1 live() const;
-    ayni_status_t stop_output();
+    ayni_status_t stop_output(std::optional<ControlStopRequest> = {});
     ayni_status_t post_result();
     ayni_status_t hardware_command(const MotorCommand &, MotorCommand &) const;
     void report_application(uint64_t applied_at_us);
@@ -143,7 +145,8 @@ class MotorExecution {
     ayni_status_t advance_pending();
     void apply_target(const ControlTarget &);
     void apply_hold();
-    void end(ayni_call_outcome_t, ayni_status_t);
+    void end(ayni_call_outcome_t, ayni_status_t, std::optional<ControlStopRequest> = {});
+    bool within_operator_limit(const MotorCommand &) const;
     void publish_terminal();
     Transport &transport_;
     MotorOutput *output_ = nullptr; // Internal RAM; survives every RMT transmission.

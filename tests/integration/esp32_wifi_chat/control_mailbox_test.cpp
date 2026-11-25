@@ -48,18 +48,17 @@ TEST(ControlMailbox, StopSurvivesPollingAndEarlierConfirmationCannotClearNewerOr
         EXPECT_TRUE(mailbox.stop_pending());
     }
     const auto hard = mailbox.request_stop(ControlStopKind::hard_estop);
-    mailbox.confirm_stop(soft.seq, true, 0, 2);
+    mailbox.confirm_stop(soft, ControlMode::armed, 0, 2);
     EXPECT_TRUE(mailbox.stop_pending());
     const auto again = mailbox.request_stop(ControlStopKind::soft_stop);
-    EXPECT_EQ(again.kind, ControlStopKind::hard_estop);
-    mailbox.confirm_stop(hard.seq, false, 0, 3);
+    EXPECT_EQ(mailbox.stop_request().kind, ControlStopKind::hard_estop);
+    mailbox.confirm_stop(hard, ControlMode::latched, 0, 3);
     EXPECT_TRUE(mailbox.stop_pending());
-    mailbox.confirm_stop(again.seq, false, 0, 4);
+    mailbox.confirm_stop(again, ControlMode::latched, 0, 4);
     EXPECT_FALSE(mailbox.stop_pending());
     EXPECT_TRUE(mailbox.target_blocked(before));
     ASSERT_TRUE(mailbox.submit({0, 0, 10, 10, 100}, 5, &after));
-    EXPECT_FALSE(
-        mailbox.target_blocked(after)); // Executor still rejects because hardware is latched.
+    EXPECT_TRUE(mailbox.target_blocked(after)); // Hard E-stop remains latched until reboot.
     EXPECT_EQ(mailbox.snapshot().stop_confirmed_seq, again.seq);
 }
 
@@ -145,7 +144,7 @@ TEST(ControlMailbox, QueuedStartDoesNotEnterHotTargetLaneAndStopBarrierStillReje
     ControlTarget target;
     EXPECT_FALSE(mailbox.take_target(target));
     const auto stop = mailbox.request_stop(ControlStopKind::soft_stop);
-    mailbox.confirm_stop(stop.seq, true, 0, 5);
+    mailbox.confirm_stop(stop, ControlMode::armed, 0, 5);
     EXPECT_FALSE(mailbox.stop_pending());
     EXPECT_TRUE(mailbox.target_blocked(start));
     const auto fresh = mailbox.reserve_start();
@@ -166,7 +165,7 @@ TEST(ControlMailbox, BargeInDefaultsToHoldAndExplicitCancelStillStops) {
     transport.apply_barge_in();
     EXPECT_TRUE(control.stop_pending());
     const auto stop = control.stop_request();
-    control.confirm_stop(stop.seq, true, 0, 10);
+    control.confirm_stop(stop, ControlMode::armed, 0, 10);
     ASSERT_TRUE(transport.set_barge_in_policy(BargeInPolicy::continue_motion));
     transport.set_motor_active(true);
     transport.post(Kind::cancel, 0, nullptr, 0);
@@ -231,3 +230,97 @@ TEST(ControlMailbox, RunningSessionDoesNotPresentHistoricalStopAsCurrentFact) {
     EXPECT_STREQ(wifichat::wifi::motor_output_text(feedback), "正在停机，等待硬件确认");
 }
 } // namespace
+
+TEST(ControlMailbox, StopConfirmationCannotAcknowledgeANewerHardStopAsArmed) {
+    // ADR-0114 / C-STOP-006: selected severity and hardware-confirmed mode must agree.
+    ControlMailbox mailbox;
+    const auto soft = mailbox.request_stop(ControlStopKind::soft_stop, 100);
+    mailbox.confirm_stop(soft, ControlMode::armed, 0, 101);
+    const auto stale = mailbox.stop_request();
+    const auto hard = mailbox.request_stop(ControlStopKind::hard_estop, 102);
+    mailbox.confirm_stop(stale, ControlMode::armed, 0, 103);
+    EXPECT_TRUE(mailbox.stop_pending());
+    EXPECT_EQ(mailbox.snapshot().stop_confirmed_seq, soft.seq);
+    mailbox.confirm_stop(hard, ControlMode::armed, 0, 104);
+    EXPECT_TRUE(mailbox.stop_pending());
+    mailbox.confirm_stop(hard, ControlMode::latched, 0, 105);
+    const auto feedback = mailbox.snapshot();
+    EXPECT_EQ(feedback.control_mode, uint8_t(ControlMode::latched));
+    EXPECT_EQ(feedback.accepted_at_us, 102U);
+    EXPECT_FALSE(mailbox.stop_pending());
+    EXPECT_TRUE(mailbox.target_blocked(mailbox.reserve_start()));
+}
+TEST(ControlMailbox, ApplicationTimestampIsFirstApplicationAndHoldReceiptHasTime) {
+    // ADR-0114: steady sampling cannot drift command-to-application latency.
+    ControlMailbox mailbox;
+    mailbox.mark_applied(1, 20, 20, 100);
+    mailbox.mark_applied(1, 20, 20, 200);
+    mailbox.mark_applied(1, 5, 5, 300);
+    EXPECT_EQ(mailbox.snapshot().applied_at_us, 100U);
+    uint32_t seq = 0;
+    ASSERT_TRUE(mailbox.request_hold(25, &seq, 350));
+    EXPECT_EQ(mailbox.hold().seq, seq);
+    EXPECT_EQ(mailbox.snapshot().accepted_at_us, 350U);
+}
+TEST(ControlMailbox, CommandSequenceContinuesPastTheFormer24BitLimit) {
+    // ADR-0114: new commands, not control ticks, consume full-width sequence identities.
+    ControlMailbox mailbox;
+    constexpr uint32_t former_limit = UINT32_C(1) << 24U;
+    for (uint32_t at = 1; at <= former_limit; ++at) {
+        ASSERT_EQ(mailbox.reserve_start(), at);
+    }
+    EXPECT_FALSE(mailbox.stop_pending());
+    EXPECT_EQ(mailbox.reserve_start(), former_limit + 1U);
+}
+
+TEST(ControlMailbox, ConcurrentHoldStopProducersHaveSeparateExecutorAndUiPayloadReaders) {
+    // ADR-0114: multiwriter hold/stop telemetry must not share the executor's reader pin.
+    ControlMailbox mailbox;
+    std::atomic<unsigned> done{0};
+    std::atomic<bool> finished{false}, coherent{true};
+    auto produce = [&] {
+        for (uint32_t at = 0; at < 2000; ++at) {
+            const auto scale = at % 101U;
+            while (!mailbox.request_hold(scale, nullptr, scale + 100U)) {
+                std::this_thread::yield();
+            }
+            if (at % 11U == 0) {
+                mailbox.request_stop(ControlStopKind::soft_stop, at + 1U);
+            }
+        }
+        mailbox.request_stop(ControlStopKind::hard_estop, 10000);
+        ++done;
+    };
+    auto first = std::async(std::launch::async, produce);
+    auto second = std::async(std::launch::async, produce);
+    auto executor = std::async(std::launch::async, [&] {
+        while (done.load() != 2 || mailbox.stop_pending()) {
+            const auto held = mailbox.hold();
+            if (held.seq && held.accepted_at_us != held.scale_percent + 100U) {
+                coherent = false;
+            }
+            if (const auto request = mailbox.pending_stop()) {
+                mailbox.confirm_stop(*request,
+                                     request->kind == ControlStopKind::hard_estop
+                                         ? ControlMode::latched
+                                         : ControlMode::armed,
+                                     0, 20000);
+            }
+        }
+        finished = true;
+    });
+    while (!finished.load()) {
+        const auto feedback = mailbox.snapshot();
+        if (feedback.accepted_kind == 2 &&
+            (feedback.accepted_at_us < 100 || feedback.accepted_at_us > 200)) {
+            coherent = false;
+        }
+    }
+    first.get();
+    second.get();
+    executor.get();
+    EXPECT_TRUE(coherent.load());
+    EXPECT_FALSE(mailbox.stop_pending());
+    EXPECT_TRUE(mailbox.hard_stop_requested());
+    EXPECT_EQ(mailbox.snapshot().control_mode, uint8_t(ControlMode::latched));
+}

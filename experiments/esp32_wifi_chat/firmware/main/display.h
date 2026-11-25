@@ -39,7 +39,8 @@ class Display {
     static constexpr size_t frame_slots = 2;
     std::array<Frame, frame_slots> frames_{};
     SemaphoreHandle_t frames_lock_ = nullptr;
-    std::optional<size_t> active_, pending_; // Guarded by frames_lock_; disjoint if both present.
+    std::optional<size_t> active_, pending_,
+        writing_; // Guarded by frames_lock_; disjoint if both present.
     TaskHandle_t worker_ = nullptr;
     StaticTask_t *worker_tcb_ = nullptr;  // Internal RAM: IDF rejects PSRAM task control blocks.
     StackType_t *worker_stack_ = nullptr; // Internal RAM, boot lifetime like panel/IO callback.
