@@ -1,5 +1,6 @@
 #include "kernel/service/persistence/work_replay.h"
 #include "foundation/workspace.h"
+#include "work/operation/operation_records.h"
 
 #include "authority/grant/grant_records.h"
 #include "authority/principal/owner_binding_records.h"
@@ -113,12 +114,14 @@ RecordUse WorkReplay::apply(const durability::BatchIdentity &batch,
         pairing_.memory.reset();
         pairing_.context.reset();
         pairing_.privacy_progress = false;
+        pairing_.standalone = BatchPairing::Standalone::none;
         pairing_.reauthorization.reset();
         pairing_.work_cleanup = {};
     }
     // A completed approval seals this batch (C-STORE-019); preserve its proof
     // until the next batch so unrelated trailing records cannot be accepted.
-    if ((pairing_.pause_group && pairing_.pause_group->command_seen) || pairing_.privacy_progress ||
+    if (pairing_.standalone != BatchPairing::Standalone::none ||
+        (pairing_.pause_group && pairing_.pause_group->command_seen) || pairing_.privacy_progress ||
         (pairing_.memory && pairing_.memory->complete()) ||
         (pairing_.context && pairing_.context->complete()) ||
         (pairing_.scene && pairing_.scene->command_seen) ||
@@ -228,7 +231,7 @@ RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
     case work::instance_record_type:
         return restore_instance(body, size, stamp);
     case work::goal_record_type:
-        return restore_goal(body, size, stamp);
+        return restore_goal(body, size, stamp, boot_epoch_limit);
     case work::goal_authority_record_type:
         return restore_goal_authority(body, size, stamp, boot_epoch_limit);
     case work::authority_cleanup_record_type:
@@ -236,9 +239,12 @@ RecordUse WorkReplay::apply_record(const durability::BatchIdentity &batch,
     case work::goal_state_record_type:
         return restore_goal_state(body, size, stamp);
     case work::task_authority_record_type:
-        return restore_task_authority(body, size, {batch.transition_id, batch.commit_seq});
+        return restore_task_authority(body, size, {batch.transition_id, batch.commit_seq},
+                                      boot_epoch_limit);
     case work::task_record_type:
         return restore_task(body, size, stamp);
+    case work::unresolved_op_state_record_type:
+        return restore_unresolved_op_state(body, size, {boot_epoch_limit, stamp});
     case work::call_record_type:
         return restore_call(body, size, {boot_epoch_limit, stamp}, header.version);
     case work::task_state_record_type:
@@ -275,7 +281,7 @@ RecordUse WorkReplay::restore_instance(const uint8_t *body, uint32_t size,
 }
 
 RecordUse WorkReplay::restore_goal(const uint8_t *body, uint32_t size,
-                                   foundation::TransitionStamp stamp) {
+                                   foundation::TransitionStamp stamp, uint64_t boot_epoch) {
     work::GoalRecord record{};
     // A goal is created for an instance that has started.
     if (pairing_.goal.has_value() || pairing_.goal_authority.has_value() ||
@@ -287,6 +293,22 @@ RecordUse WorkReplay::restore_goal(const uint8_t *body, uint32_t size,
     if (record.goal.tools.count > model_.catalogs.bindings.capacity()) {
         return RecordUse::no_room;
     }
+    // ADR-0115/C-STORE-015: retention's boolean capacity refusal must not become corruption.
+    if (record.replaced_goal_id) {
+        uint32_t previous = 0;
+        if (model_.goals.find(record.replaced_goal_id, previous)) {
+            uint32_t unresolved = 0;
+            for (uint32_t at = 0; at < model_.tasks.size(); ++at) {
+                const auto &task = model_.tasks.at(at);
+                if (task.goal_index == previous) {
+                    unresolved += model_.calls.unresolved_durable_count(task.task_id);
+                }
+            }
+            if (!model_.unresolved_ops.has_room(unresolved)) {
+                return RecordUse::no_room;
+            }
+        }
+    }
     record.goal.goal_type_index = work::GoalTable::no_index;
     uint32_t index = 0;
     const work::GoalTable::Restore restore =
@@ -297,7 +319,10 @@ RecordUse WorkReplay::restore_goal(const uint8_t *body, uint32_t size,
     // The goal that gave way took its tasks, which name the place, with it
     // (work::insert_goal).
     if (record.replaced_goal_id != 0U) {
-        model_.retire_goal_task_metadata(index, stamp.commit_seq, 0);
+        const auto retired = model_.retire_goal_task_metadata(index, {boot_epoch, stamp}, 0);
+        if (retired != AYNI_OK) {
+            return retired == AYNI_CAPACITY_EXCEEDED ? RecordUse::no_room : RecordUse::corrupt;
+        }
         model_.tasks.remove_goal(index);
     }
     if (model_.goals.at(index).depth != record.depth) {
@@ -421,6 +446,11 @@ RecordUse WorkReplay::restore_task(const uint8_t *body, uint32_t size,
         model_.goals.at(goal_index).owner_instance_id != record.task.owner_instance_id) {
         return RecordUse::corrupt;
     }
+    if (record.replaced_task_id &&
+        !model_.unresolved_ops.has_room(
+            model_.calls.unresolved_durable_count(record.replaced_task_id))) {
+        return RecordUse::no_room;
+    }
     record.task.goal_index = goal_index;
     const work::TaskTable::Restore restore =
         model_.tasks.restore(record.task, record.task_id, record.replaced_task_id, stamp);
@@ -442,7 +472,8 @@ RecordUse WorkReplay::restore_task(const uint8_t *body, uint32_t size,
 // A derived Task inherits the exact admitted Goal choices in the same batch.
 // F4 adds a separate transaction proof for reference replacement.
 RecordUse WorkReplay::restore_task_authority(const uint8_t *body, uint32_t size,
-                                             foundation::TransitionStamp stamp) {
+                                             foundation::TransitionStamp stamp,
+                                             uint64_t boot_epoch) {
     work::TaskAuthorityRecord record{};
     uint32_t index = 0;
     if (!work::read_task_authority_record(body, size, record) ||
@@ -498,7 +529,11 @@ RecordUse WorkReplay::restore_task_authority(const uint8_t *body, uint32_t size,
         model_.release_task_references(previous, stamp.commit_seq);
     }
     if (created) {
-        model_.calls.retire_task(task.replaced_task_id, 0);
+        const auto retired =
+            model_.retire_task_calls(task.replaced_task_id, {boot_epoch, stamp}, 0);
+        if (retired != AYNI_OK) {
+            return retired == AYNI_CAPACITY_EXCEEDED ? RecordUse::no_room : RecordUse::corrupt;
+        }
     }
     if (reauthorizing && !task_tools_consistent(index, record, UINT64_MAX)) {
         return RecordUse::corrupt;
@@ -1024,7 +1059,8 @@ bool WorkReplay::consistent(uint64_t boot_epoch_limit) const {
     if (!calendars_consistent() || !model_.provenance.complete() ||
         !provenance_consistent(boot_epoch_limit) || !contexts_consistent(boot_epoch_limit) ||
         !model_.grants.consistent() || !calls_consistent(boot_epoch_limit) ||
-        !memory_identities_consistent(boot_epoch_limit)) {
+        !memory_identities_consistent(boot_epoch_limit) ||
+        !operations_consistent(boot_epoch_limit)) {
         return false;
     }
     const auto &cleanup = model_.authority_cleanup.record();
@@ -1190,6 +1226,7 @@ void WorkReplay::discard() {
     model_.authority_cleanup.clear();
     model_.tasks.clear();
     model_.calls.clear();
+    model_.unresolved_ops.clear();
     model_.memories.clear();
     model_.provenance.clear();
     model_.privacy.clear();

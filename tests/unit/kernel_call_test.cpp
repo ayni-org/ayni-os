@@ -10,6 +10,9 @@
 #include "work/task/task_records.h"
 #include "work_node.h"
 
+#include "work/operation/operation_records.h"
+#include <ayni/audit.h>
+#include <ayni/ayni.hpp>
 #include <ayni/calls.h>
 #include <ayni/memory.h>
 #include <ayni/operations.h>
@@ -33,6 +36,7 @@ class ManagedCall : public ::testing::Test {
     void SetUp() override {
         auto &config = work.node().config();
         config.call_capacity = call_limit;
+        config.unresolved_op_capacity = unresolved_limit;
         config.task_step_capacity = step_limit;
         config.call_input_max_bytes = 128;
         config.call_result_max_bytes = 64;
@@ -41,7 +45,7 @@ class ManagedCall : public ::testing::Test {
         config.binding_capacity = 1;
         config.goal_type_capacity = 4;
         config.resource_capacity = 1;
-        config.resource_request_capacity = 4;
+        config.resource_request_capacity = request_slots;
         config.storage_buffer_bytes = 0;
         work.node().on_create([this](ayni_kernel_t *kernel) { register_profile(kernel); });
         work.strategy().answer = [this](const auto &snapshot, auto &output) {
@@ -174,12 +178,19 @@ class ManagedCall : public ::testing::Test {
         }
         const ayni_capability_desc_v1 authority{sizeof(authority), 1, text("echo"), 0, 0, nullptr};
         ASSERT_EQ(ayni_register_capability(kernel, &authority), AYNI_OK);
-        const ayni_resource_desc_v1 resource{
-            sizeof(resource), AYNI_RESOURCE_SHARED, text("model.slot"), 1, 0, 0, 0, nullptr, {}};
+        const ayni_resource_desc_v1 resource{sizeof(resource),
+                                             AYNI_RESOURCE_SHARED,
+                                             text("model.slot"),
+                                             resource_units,
+                                             0,
+                                             0,
+                                             0,
+                                             nullptr,
+                                             {}};
         ASSERT_EQ(ayni_register_resource(kernel, &resource), AYNI_OK);
         ASSERT_EQ(ayni_set_resource_health(kernel, resource.resource_id, AYNI_RESOURCE_ONLINE),
                   AYNI_OK);
-        const ayni_call_resource_v1 units{resource.resource_id, 1, 0};
+        const ayni_call_resource_v1 units{resource.resource_id, resource_demand, 0};
         ayni_call_capability_v1 capability{};
         capability.struct_size = sizeof(capability);
         capability.version = 1;
@@ -202,7 +213,9 @@ class ManagedCall : public ::testing::Test {
                                nullptr,
                                AYNI_CALL_DURABILITY_DURABLE,
                                0};
-        TextBusiness business(64, 64);
+        capability.contract.dedupe_window_ms = dedupe_window;
+        capability.contract.durability = durability;
+        TextBusiness business(64, business_result_limit);
         capability.business = &business.definition;
         ASSERT_EQ(ayni_register_call_capability(kernel, &capability), AYNI_OK);
         ayni_provider_v1 provider{};
@@ -251,6 +264,9 @@ class ManagedCall : public ::testing::Test {
             self.queries.push_back({attempt, 0, operation, completion, {}, false});
             return AYNI_SUBMIT_ACCEPTED;
         };
+        if (query_authority == AYNI_CALL_QUERY_NONE) {
+            provider.query = nullptr;
+        }
         ASSERT_EQ(ayni_register_provider(kernel, &provider), AYNI_OK);
         const ayni_binding_v1 binding{sizeof(binding),
                                       1,
@@ -418,6 +434,11 @@ class ManagedCall : public ::testing::Test {
     std::vector<uint64_t> grants;
     uint32_t step_limit = 8;
     uint32_t call_limit = 4;
+    uint32_t unresolved_limit = 0;
+    uint32_t resource_units = 1;
+    uint32_t request_slots = 4;
+    uint32_t resource_demand = 1, dedupe_window = 0, business_result_limit = 64;
+    uint32_t durability = AYNI_CALL_DURABILITY_DURABLE;
     bool background_action = false;
     bool mixed_offers = false;
     ayni_call_query_authority_t query_authority = AYNI_CALL_QUERY_AUTHORITATIVE;
@@ -2210,9 +2231,9 @@ TEST_F(MemoryCall, model_result_becomes_unconfirmed_memory_after_its_durable_pre
                                 text("inferred"), {nullptr, 0}};
     std::array<ayni_memory_info_v1, 3> rows{};
     uint32_t count = 0;
-    ASSERT_EQ(
-        ayni_search_memory(work.kernel(), work.session(), &query, rows.data(), rows.size(), &count),
-        AYNI_OK);
+    ASSERT_EQ(ayni_search_memory(work.kernel(), work.session(), &query, rows.data(),
+                                 static_cast<uint32_t>(rows.size()), &count),
+              AYNI_OK);
     ASSERT_EQ(count, 1U);
     EXPECT_EQ(rows[0].source, AYNI_MEMORY_MODEL);
     EXPECT_EQ(rows[0].source_call_id, pending[0].call);
@@ -2328,3 +2349,322 @@ TEST_F(MemoryCall, invalid_late_text_remains_unknown_after_its_source_is_deleted
     EXPECT_EQ(info.outcome, AYNI_CALL_ABANDONED);
     EXPECT_EQ(info.reason, AYNI_REASON_PROVIDER_RESULT);
 }
+
+namespace {
+// C-CALL-016/ADR-0115: public management of bodyless unknowns after one-slot work retirement.
+class LedgerCall : public ManagedCall {
+  protected:
+    void SetUp() override {
+        call_limit = 1;
+        unresolved_limit = 1;
+        work.node().config().task_capacity = 1;
+        work.node().config().audit_capacity = 64;
+        ManagedCall::SetUp();
+    }
+    uint64_t retire_unknown() {
+        const auto goal = create();
+        pump(12);
+        EXPECT_EQ(pending.size(), 1U);
+        if (pending.empty()) {
+            return 0;
+        }
+        const auto call = pending[0].call;
+        post(0, AYNI_CALL_ABANDONED, AYNI_CALL_EFFECT_UNKNOWN, {});
+        pump(8);
+        const auto task = work.goal(goal).last_task_id;
+        EXPECT_EQ(work.cancel_task(task).status, AYNI_OK);
+        pump(8);
+        create();
+        pump(16);
+        return call;
+    }
+    Submitted operation_command(uint64_t call, ayni_intent_kind_t kind, uint64_t request,
+                                uint32_t revision = 1) {
+        const ayni_unresolved_op_target_v1 body{sizeof(body), 0, call};
+        auto intent = work.intent(kind, &body, revision);
+        intent.command_id = request;
+        return work.submit(intent);
+    }
+    std::vector<ayni_audit_record_v1> audits() {
+        std::vector<ayni_audit_record_v1> rows(64);
+        uint32_t count = 0;
+        EXPECT_EQ(ayni_take_audit_records(work.kernel(), rows.data(),
+                                          static_cast<uint32_t>(rows.size()), &count),
+                  AYNI_OK);
+        rows.resize(count);
+        return rows;
+    }
+};
+TEST_F(LedgerCall, FullActiveCallStillAllowsDedicatedQueryAndDurableOnlyClosureAudit) {
+    const auto call = retire_unknown();
+    ASSERT_EQ(pending.size(), 2U); // New Call fills the only active mailbox slot.
+    auto op = ayni::initialized<ayni_unresolved_op_v1>();
+    ASSERT_EQ(ayni_get_unresolved_op(work.kernel(), call, &op), AYNI_OK);
+    auto info = ayni::initialized<ayni_call_info_v1>();
+    EXPECT_EQ(ayni_get_call(work.kernel(), call, &info), AYNI_NOT_FOUND);
+    EXPECT_EQ(op.operation_id, pending[0].operation);
+    audits();
+    ASSERT_EQ(operation_command(call, AYNI_INTENT_UNRESOLVED_OP_QUERY, ++command).status, AYNI_OK);
+    pump(12);
+    ASSERT_EQ(queries.size(), 1U);
+    EXPECT_EQ(queries[0].operation, op.operation_id);
+    post_query(0, AYNI_QUERY_RESULT_FOUND, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE,
+               text("private"));
+    // No storage completions: applied closure removes the row but cannot emit a durable audit.
+    work.node().step();
+    ASSERT_EQ(ayni_get_unresolved_op(work.kernel(), call, &op), AYNI_NOT_FOUND);
+    for (const auto &row : audits()) {
+        EXPECT_NE(row.kind, AYNI_AUDIT_OPERATION_RESOLVED);
+    }
+    pump(12);
+    bool found = false;
+    for (const auto &row : audits()) {
+        if (row.kind == AYNI_AUDIT_OPERATION_RESOLVED) {
+            found = true;
+            EXPECT_EQ(row.subject_id, call);
+            EXPECT_EQ(row.flags & AYNI_AUDIT_FLAG_ACKNOWLEDGED, 0U);
+        }
+    }
+    EXPECT_TRUE(found);
+}
+TEST_F(LedgerCall, HumanClosureChecksCASAndRetainsExactIdempotentReceiptAfterRemoval) {
+    const auto call = retire_unknown();
+    EXPECT_EQ(operation_command(call, AYNI_INTENT_UNRESOLVED_OP_ACKNOWLEDGE, ++command, 2).status,
+              AYNI_REVISION_CONFLICT);
+    const auto request = ++command;
+    const auto accepted = operation_command(call, AYNI_INTENT_UNRESOLVED_OP_ACKNOWLEDGE, request);
+    ASSERT_EQ(accepted.status, AYNI_OK);
+    EXPECT_EQ(
+        operation_command(call, AYNI_INTENT_UNRESOLVED_OP_ACKNOWLEDGE, request).result.commit_seq,
+        accepted.result.commit_seq);
+    pump(12);
+    bool found = false;
+    for (const auto &row : audits()) {
+        if (row.kind == AYNI_AUDIT_OPERATION_RESOLVED) {
+            found = true;
+            EXPECT_NE(row.flags & AYNI_AUDIT_FLAG_ACKNOWLEDGED, 0U);
+        }
+    }
+    EXPECT_TRUE(found);
+    EXPECT_EQ(restore_model(snapshot_model(work.node())), ayni::durability::BatchCheck::ok);
+}
+TEST_F(LedgerCall, NormalSnapshotRoundtripKeepsLedgerIndependentOfRetiredTaskAndCapacity) {
+    const auto call = retire_unknown();
+    post(1, AYNI_CALL_CANCELLED, AYNI_CALL_EFFECT_NONE, {});
+    pump(8);
+    auto snapshot = snapshot_model(work.node());
+    EXPECT_EQ(restore_model(snapshot), ayni::durability::BatchCheck::ok);
+    snapshot.config.unresolved_op_capacity = 0;
+    EXPECT_EQ(restore_model(snapshot), ayni::durability::BatchCheck::no_room);
+    auto op = ayni::initialized<ayni_unresolved_op_v1>();
+    ASSERT_EQ(ayni_get_unresolved_op(work.kernel(), call, &op), AYNI_OK);
+    auto task = ayni::initialized<ayni_task_info_v1>();
+    EXPECT_EQ(ayni_get_task(work.kernel(), op.task_id, &task), AYNI_NOT_FOUND);
+}
+} // namespace
+
+namespace {
+TEST_F(LedgerCall, ContinuousActiveProgressCannotStarveLedgerQueryDispatch) {
+    const auto call = retire_unknown();
+    ASSERT_EQ(operation_command(call, AYNI_INTENT_UNRESOLVED_OP_QUERY, ++command).status, AYNI_OK);
+    uint64_t sequence = 0;
+    constexpr uint32_t steps = 40;
+    for (uint32_t at = 0; at < steps && queries.empty(); ++at) {
+        auto result = ayni::initialized<ayni_provider_result_v1>();
+        result.attempt = pending[1].attempt;
+        result.outcome = AYNI_CALL_PROGRESS;
+        result.sequence = ++sequence;
+        const auto posted = ayni_provider_post(pending[1].completion, &result);
+        EXPECT_TRUE(posted == AYNI_OK || posted == AYNI_BUSY || posted == AYNI_INVALID_ARGUMENT);
+        work.node().sim().complete_storage();
+        work.node().sim().advance_us(10000);
+        work.node().step(1);
+    }
+    EXPECT_EQ(queries.size(), 1U);
+}
+class LedgerGoalCohort : public ManagedCall {
+  protected:
+    void SetUp() override {
+        call_limit = 2;
+        unresolved_limit = 1;
+        work.node().config().task_capacity = 2;
+        work.node().config().goal_capacity = 1;
+        ManagedCall::SetUp();
+    }
+};
+// C-CALL-016: all terminal Tasks of a Goal migrate together or leave every table untouched.
+TEST_F(LedgerGoalCohort, TwoTerminalTasksCannotPartiallyEnterOneLedgerSlot) {
+    constexpr uint64_t period_us = 1000000;
+    const auto goal = create_profile("reminder", agent_a, period_us);
+    pump(12);
+    ASSERT_EQ(pending.size(), 1U);
+    const auto first_task = last_task;
+    post(0, AYNI_CALL_ABANDONED, AYNI_CALL_EFFECT_UNKNOWN, {});
+    pump(8);
+    ASSERT_EQ(work.cancel_task(first_task).status, AYNI_OK);
+    pump(8);
+    work.node().sim().advance_us(period_us);
+    pump(12);
+    ASSERT_EQ(pending.size(), 2U);
+    ASSERT_NE(first_task, last_task);
+    const auto second_task = last_task;
+    post(1, AYNI_CALL_ABANDONED, AYNI_CALL_EFFECT_UNKNOWN, {});
+    pump(8);
+    ASSERT_EQ(work.cancel_task(second_task).status, AYNI_OK);
+    pump(8);
+    ASSERT_EQ(work.change(AYNI_INTENT_GOAL_CANCEL, goal).status, AYNI_OK);
+    pump(8);
+    const auto body =
+        WorkNode::create_body(work.instance(agent_a), 0, "chat", 1, {}, AYNI_TRIGGER_ONCE);
+    EXPECT_EQ(work.create(body).status, AYNI_CAPACITY_EXCEEDED);
+    auto op = ayni::initialized<ayni_unresolved_op_v1>();
+    for (const auto &call : pending) {
+        auto active = ayni::initialized<ayni_call_info_v1>();
+        EXPECT_EQ(ayni_get_call(work.kernel(), call.call, &active), AYNI_OK);
+        EXPECT_EQ(ayni_get_unresolved_op(work.kernel(), call.call, &op), AYNI_NOT_FOUND);
+    }
+    for (const auto task_id : {first_task, second_task}) {
+        EXPECT_EQ(work.task(task_id).lifecycle, AYNI_TASK_CANCELLED);
+    }
+}
+
+class LedgerTwoCalls : public LedgerCall {
+  protected:
+    void SetUp() override {
+        call_limit = 1;
+        unresolved_limit = 2;
+        work.node().config().task_capacity = 1;
+        work.node().config().audit_capacity = 64;
+        ManagedCall::SetUp();
+    }
+};
+TEST_F(LedgerTwoCalls, NormalJournalReopenAndShrinkReportCapacityWithoutChangingTheVolume) {
+    const auto call = retire_unknown();
+    ASSERT_EQ(pending.size(), 2U);
+    post(1, AYNI_CALL_ABANDONED, AYNI_CALL_EFFECT_UNKNOWN, {});
+    pump(8);
+    ASSERT_EQ(work.cancel_task(last_task).status, AYNI_OK);
+    pump(8);
+    create();
+    pump(16);
+    ASSERT_EQ(pending.size(), 3U);
+    post(2, AYNI_CALL_CANCELLED, AYNI_CALL_EFFECT_NONE, {});
+    pump(8);
+    ASSERT_EQ(work.node().stop_and_destroy(), AYNI_OK);
+    work.node().create_and_start();
+    work.node().recover();
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    auto op = ayni::initialized<ayni_unresolved_op_v1>();
+    ASSERT_EQ(ayni_get_unresolved_op(work.kernel(), call, &op), AYNI_OK);
+    ASSERT_EQ(work.node().stop_and_destroy(), AYNI_OK);
+    const auto before = work.node().sim().log();
+    work.node().config().unresolved_op_capacity = 1;
+    work.node().create_and_start();
+    work.node().recover();
+    EXPECT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RESTRICTED);
+    EXPECT_EQ(work.node().info().restriction, AYNI_RESTRICTION_STATE_EXCEEDS_CAPACITY);
+    const auto after = work.node().sim().log();
+    ASSERT_EQ(after.size(), before.size());
+    for (size_t at = 0; at < before.size(); ++at) {
+        EXPECT_EQ(before[at].bytes, after[at].bytes);
+    }
+}
+// C-CALL-016: maximum active mailbox occupancy leaves the independent query reservation free.
+class MaximumLedgerCalls : public LedgerCall {
+  protected:
+    void SetUp() override {
+        call_limit = AYNI_CALL_CAPACITY_MAX;
+        unresolved_limit = 1;
+        resource_units = AYNI_CALL_CAPACITY_MAX;
+        request_slots = AYNI_CALL_CAPACITY_MAX;
+        auto &config = work.node().config();
+        config.task_capacity = AYNI_CALL_CAPACITY_MAX;
+        config.goal_capacity = AYNI_CALL_CAPACITY_MAX + 2U;
+        config.resource_request_capacity = AYNI_CALL_CAPACITY_MAX;
+        ManagedCall::SetUp();
+    }
+};
+TEST_F(MaximumLedgerCalls, All256ActiveCallsStillAllowOriginalProviderReconciliation) {
+    const auto goal = create();
+    pump(12);
+    ASSERT_EQ(pending.size(), 1U);
+    const auto call = pending[0].call;
+    post(0, AYNI_CALL_ABANDONED, AYNI_CALL_EFFECT_UNKNOWN, {});
+    pump(8);
+    ASSERT_EQ(work.cancel_task(work.goal(goal).last_task_id).status, AYNI_OK);
+    pump(8);
+    for (uint32_t at = 0; at < AYNI_CALL_CAPACITY_MAX; ++at) {
+        create();
+        pump(10);
+    }
+    ASSERT_EQ(pending.size(), AYNI_CALL_CAPACITY_MAX + 1U);
+    ASSERT_EQ(operation_command(call, AYNI_INTENT_UNRESOLVED_OP_QUERY, ++command).status, AYNI_OK);
+    pump(12);
+    ASSERT_EQ(queries.size(), 1U);
+    post_query(0, AYNI_QUERY_RESULT_FOUND, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE, {});
+    pump(12);
+    auto op = ayni::initialized<ayni_unresolved_op_v1>();
+    EXPECT_EQ(ayni_get_unresolved_op(work.kernel(), call, &op), AYNI_NOT_FOUND);
+}
+} // namespace
+namespace {
+class LedgerWithoutQueries : public LedgerCall {
+  protected:
+    void SetUp() override {
+        query_authority = AYNI_CALL_QUERY_NONE;
+        LedgerCall::SetUp();
+    }
+};
+TEST_F(LedgerWithoutQueries, QueryNoneCanOnlyBeClosedByExplicitOwnerAcknowledgement) {
+    const auto call = retire_unknown();
+    EXPECT_EQ(operation_command(call, AYNI_INTENT_UNRESOLVED_OP_QUERY, ++command).status,
+              AYNI_UNSUPPORTED);
+    EXPECT_EQ(operation_command(call, AYNI_INTENT_UNRESOLVED_OP_ACKNOWLEDGE, ++command).status,
+              AYNI_OK);
+    pump(12);
+    auto op = ayni::initialized<ayni_unresolved_op_v1>();
+    EXPECT_EQ(ayni_get_unresolved_op(work.kernel(), call, &op), AYNI_NOT_FOUND);
+}
+class LedgerContractChange : public LedgerCall, public ::testing::WithParamInterface<uint32_t> {
+  protected:
+    void SetUp() override {
+        resource_units = 2;
+        LedgerCall::SetUp();
+    }
+};
+// C-CALL-016: same Provider ID/version cannot vouch for an operation after any saved contract
+// drift.
+TEST_P(LedgerContractChange, NormalReopenRejectsChangedProofDurabilityDedupeOrResourceUnits) {
+    const auto call = retire_unknown();
+    post(1, AYNI_CALL_CANCELLED, AYNI_CALL_EFFECT_NONE, {});
+    pump(8);
+    ASSERT_EQ(work.node().stop_and_destroy(), AYNI_OK);
+    switch (GetParam()) {
+    case 0:
+        business_result_limit = 32;
+        break;
+    case 1:
+        durability = AYNI_CALL_DURABILITY_EPHEMERAL;
+        query_authority = AYNI_CALL_QUERY_NONE;
+        break;
+    case 2:
+        dedupe_window = 1000;
+        break;
+    case 3:
+        resource_demand = 2;
+        break;
+    }
+    work.node().create_and_start();
+    work.node().recover();
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    work.reopen_session();
+    ASSERT_EQ(operation_command(call, AYNI_INTENT_UNRESOLVED_OP_QUERY, ++command).status, AYNI_OK);
+    pump(12);
+    EXPECT_TRUE(queries.empty());
+    auto op = ayni::initialized<ayni_unresolved_op_v1>();
+    ASSERT_EQ(ayni_get_unresolved_op(work.kernel(), call, &op), AYNI_OK);
+    EXPECT_EQ(op.query_status, AYNI_UNSUPPORTED_VERSION);
+    EXPECT_EQ(op.outcome, AYNI_CALL_ABANDONED);
+}
+INSTANTIATE_TEST_SUITE_P(SavedContract, LedgerContractChange, ::testing::Values(0U, 1U, 2U, 3U));
+} // namespace

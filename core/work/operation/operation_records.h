@@ -16,7 +16,7 @@ constexpr uint32_t operation_state_bytes =
 uint32_t operation_record_max(OperationLedger::Limits limits); // Bounded snapshot buffer need.
 uint32_t operation_record_size(const OperationRecord &record); // Exact full row size, no envelope.
 void write_operation_record(const OperationRecord &record, uint8_t *body); // Validated input only.
-bool read_operation_record(const uint8_t *body, uint32_t size,
+bool read_operation_record(foundation::Workspace &workspace, const uint8_t *body, uint32_t size,
                            OperationRecord &out); // No mutation.
 void write_operation_change(const OperationChange &change,
                             uint8_t *body); // Exactly operation_state_bytes.

@@ -106,7 +106,7 @@ class ProviderMailbox {
         uint32_t capacity;      // 0 disables delivery; otherwise <= capacity_max, no growth.
         uint32_t payload_bytes; // Positive bytes per progress/terminal lane: the call result bound.
     };
-    static constexpr uint32_t capacity_max = 256;
+    static constexpr uint32_t capacity_max = AYNI_CALL_CAPACITY_MAX + 1U;
     static constexpr std::size_t storage_alignment = alignof(uint64_t);
     // Limits must satisfy the above bounds; storage is caller-owned for our lifetime,
     // aligned to storage_alignment and at least storage_size(limits) bytes long.

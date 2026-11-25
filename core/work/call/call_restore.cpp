@@ -8,42 +8,9 @@
 #include <cstring>
 
 namespace ayni::work {
-namespace {
-bool same_stamp(ActionStamp left, ActionStamp right) {
-    return left.boot_epoch == right.boot_epoch &&
-           left.transition.transition_id == right.transition.transition_id &&
-           left.transition.commit_seq == right.transition.commit_seq;
-}
-
-bool at_or_before(ActionStamp before, ActionStamp after) {
-    return same_stamp(before, after) ||
-           (before.boot_epoch <= after.boot_epoch &&
-            before.transition.transition_id < after.transition.transition_id &&
-            before.transition.commit_seq < after.transition.commit_seq);
-}
-
-bool same_id(const catalog::CatalogId &left, const catalog::CatalogId &right) {
-    return left.equals({right.data(), right.size()});
-}
-
-bool same_identity(const CallIdentity &left, const CallIdentity &right) {
-    return left.mode == right.mode && left.model_context == right.model_context &&
-           left.authorization.grant_id == right.authorization.grant_id &&
-           left.authorization.revision == right.authorization.revision &&
-           left.call_id == right.call_id && left.operation_id == right.operation_id &&
-           left.task_id == right.task_id && left.owner_instance_id == right.owner_instance_id &&
-           same_id(left.step_key, right.step_key) &&
-           catalog::BindingRegistry::same_selection(left.binding(), right.binding());
-}
-
-bool same_bytes(ayni_bytes_v1 left, ayni_bytes_v1 right) {
-    return left.size == right.size &&
-           (left.size == 0U || std::memcmp(left.data, right.data, left.size) == 0);
-}
-
 // Delivery outcomes may conclude local tracking without resolving remote effects.
 // A queue cancellation has no action fact; NOT_RETAINED has local non-delivery evidence.
-bool result_matches(const CallRecord &record) {
+bool valid_call_outcome(const CallRecord &record) {
     const auto &state = record.state;
     const auto *action = record.action ? &*record.action : nullptr;
     switch (state.outcome) {
@@ -77,6 +44,39 @@ bool result_matches(const CallRecord &record) {
     default:
         return false;
     }
+}
+
+namespace {
+bool same_stamp(ActionStamp left, ActionStamp right) {
+    return left.boot_epoch == right.boot_epoch &&
+           left.transition.transition_id == right.transition.transition_id &&
+           left.transition.commit_seq == right.transition.commit_seq;
+}
+
+bool at_or_before(ActionStamp before, ActionStamp after) {
+    return same_stamp(before, after) ||
+           (before.boot_epoch <= after.boot_epoch &&
+            before.transition.transition_id < after.transition.transition_id &&
+            before.transition.commit_seq < after.transition.commit_seq);
+}
+
+bool same_id(const catalog::CatalogId &left, const catalog::CatalogId &right) {
+    return left.equals({right.data(), right.size()});
+}
+
+bool same_identity(const CallIdentity &left, const CallIdentity &right) {
+    return left.mode == right.mode && left.model_context == right.model_context &&
+           left.authorization.grant_id == right.authorization.grant_id &&
+           left.authorization.revision == right.authorization.revision &&
+           left.call_id == right.call_id && left.operation_id == right.operation_id &&
+           left.task_id == right.task_id && left.owner_instance_id == right.owner_instance_id &&
+           same_id(left.step_key, right.step_key) &&
+           catalog::BindingRegistry::same_selection(left.binding(), right.binding());
+}
+
+bool same_bytes(ayni_bytes_v1 left, ayni_bytes_v1 right) {
+    return left.size == right.size &&
+           (left.size == 0U || std::memcmp(left.data, right.data, left.size) == 0);
 }
 
 bool action_matches(const CallRecord &record) {
@@ -359,7 +359,7 @@ bool CallTable::valid_record(ayni::foundation::Workspace &workspace, const CallR
             return false;
         }
     }
-    return action_matches(record) && result_matches(record) && valid_query(record);
+    return action_matches(record) && valid_call_outcome(record) && valid_query(record);
 }
 
 CallRecord CallTable::record(uint32_t index) const {

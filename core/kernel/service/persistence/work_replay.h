@@ -90,7 +90,8 @@ class WorkReplay {
     // Every created Goal/Task needs its state; Grant creation/root revocation
     // needs its exact command, and revoked children need same-batch progress.
     bool complete() const {
-        return pairing_.complete() && calls_consistent(unbounded) && calendars_consistent();
+        return pairing_.complete() && calls_consistent(unbounded) && calendars_consistent() &&
+               operations_consistent(unbounded);
     }
     // After the last batch: whether the tables hold a state a transition
     // leaves, beyond what each record's own checks cover.
@@ -141,7 +142,7 @@ class WorkReplay {
     durability::RecordUse restore_instance(const uint8_t *body, uint32_t size,
                                            foundation::TransitionStamp stamp);
     durability::RecordUse restore_goal(const uint8_t *body, uint32_t size,
-                                       foundation::TransitionStamp stamp);
+                                       foundation::TransitionStamp stamp, uint64_t boot_epoch);
     durability::RecordUse restore_goal_state(const uint8_t *body, uint32_t size,
                                              foundation::TransitionStamp stamp);
     // Goal with authority marker must receive complete metadata in the same journal batch.
@@ -154,7 +155,8 @@ class WorkReplay {
     durability::RecordUse restore_task(const uint8_t *body, uint32_t size,
                                        foundation::TransitionStamp stamp);
     durability::RecordUse restore_task_authority(const uint8_t *body, uint32_t size,
-                                                 foundation::TransitionStamp stamp);
+                                                 foundation::TransitionStamp stamp,
+                                                 uint64_t boot_epoch);
     // Full row must match this batch and its owning Task; never reissues I/O.
     durability::RecordUse restore_call(const uint8_t *body, uint32_t size, work::ActionStamp stamp,
                                        uint16_t version);
@@ -164,6 +166,9 @@ class WorkReplay {
     // Validate Task-owned frontiers/UNKNOWN references after Call rows are available.
     bool task_calls_consistent() const;
     bool calls_consistent(uint64_t boot_epoch_limit) const;
+    // Bodyless retired identities never refer to live Tasks or collide with active Calls.
+    bool operations_consistent(uint64_t boot_epoch_limit) const;
+    durability::RecordUse restore_unresolved_op_state(const uint8_t *, uint32_t, work::ActionStamp);
     // Closes the exact query acceptance with its durable owner's canonical command.
     bool pair_target_command(const CommandMapping &mapping, ayni_bytes_v1 canonical);
     bool pair_task_limit_command(const CommandMapping &mapping,
@@ -274,6 +279,8 @@ class WorkReplay {
     // and Task pairs may coexist with authority; disengaged means no missing
     // state. progress_seq remembers the last progress batch to reject duplicates.
     struct BatchPairing {
+        enum class Standalone { none, operation_update };
+        Standalone standalone = Standalone::none; // A complete transport delta seals this batch.
         // One replacement's before-image identifiers survive metadata publication.
         // Task state protects its own ordinary fields; footer closes the whole cohort.
         struct ReauthorizationPair {

@@ -7,6 +7,55 @@ namespace ayni::kernel {
 // These ports/leases are volatile owners independent of replayed Task slots.
 // Fencing cancels borrowers and drains RAM-only ephemeral receipts while keeping
 // durable receipts intact for the new writer after reload.
+// A closing/fenced read consumes one reliable notice; terminal acknowledgement alone returns
+// the exact Provider borrow. Scalar query results are deliberately not applied on this path.
+CallRuntime::Advance
+CallRuntime::drain_transport_receipt(const ProviderMailbox::BlockedSlots *filter) {
+    ProviderMessage message{};
+    ProviderReceipt receipt{};
+    uint32_t size = 0;
+    if (mailbox_.read_next(receipt_, limits_.result_bytes, size, message, receipt, filter) !=
+        AYNI_OK) {
+        return Advance::internal;
+    }
+    const bool terminal = provider_terminal(message.kind);
+    if (mailbox_.acknowledge(receipt) == ProviderMailbox::Acknowledge::stale) {
+        return Advance::internal;
+    }
+    if (message.body_ref.id != 0U) {
+        release_body(message.body_ref); // Closing/fenced discard never persists this result.
+    }
+    if (matches_operation_receipt(receipt)) {
+        if (terminal) {
+            ledger_query_.reset();
+        }
+        return Advance::applied;
+    }
+    if (terminal) {
+        for (uint32_t at = 0; at < limits_.capacity; ++at) {
+            const auto &active = slots_[at].active;
+            if (active && active->delivery &&
+                active->delivery->reservation.attempt.request_id ==
+                    receipt.reservation.attempt.request_id) {
+                // Exact ended borrow also permits authoritative absence.
+                static_cast<void>(control_.delivery_ended(active->call_id));
+                if (active->ephemeral && message.execution_status &&
+                    control_.accept_inline_stop(at, *message.execution_status)) {
+                    static_cast<void>(control_.commit_stop(at));
+                }
+                // An unwritable close records no conclusive subscription fact.
+                // Keep its units until the longest requested finite lease ends.
+                if (active->collection) {
+                    await_subscription_stop(at);
+                }
+                release(at, host_.monotonic_now_us(host_.ctx));
+                break;
+            }
+        }
+    }
+    return Advance::applied;
+}
+
 CallRuntime::Advance CallRuntime::drain_transport(Mode mode) {
     ProviderMailbox::BlockedSlots fenced_blocked{};
     const ProviderMailbox::BlockedSlots *filter = nullptr;
@@ -18,46 +67,27 @@ CallRuntime::Advance CallRuntime::drain_transport(Mode mode) {
                 fenced_blocked[active->delivery->reservation.index] = false;
             }
         }
+        if (ledger_query_) {
+            fenced_blocked[ledger_query_->delivery.reservation.index] = false;
+        }
         filter = &fenced_blocked;
     }
     if ((mode == Mode::closing || mode == Mode::fenced) && mailbox_.has_pending(filter)) {
-        ProviderMessage message{};
-        ProviderReceipt receipt{};
-        uint32_t size = 0;
-        if (mailbox_.read_next(receipt_, limits_.result_bytes, size, message, receipt, filter) !=
-            AYNI_OK) {
-            return Advance::internal;
-        }
-        const bool terminal = provider_terminal(message.kind);
-        if (mailbox_.acknowledge(receipt) == ProviderMailbox::Acknowledge::stale) {
-            return Advance::internal;
-        }
-        if (message.body_ref.id != 0U) {
-            release_body(message.body_ref); // Closing/fenced discard never persists this result.
-        }
-        if (terminal) {
-            for (uint32_t at = 0; at < limits_.capacity; ++at) {
-                const auto &active = slots_[at].active;
-                if (active && active->delivery &&
-                    active->delivery->reservation.attempt.request_id ==
-                        receipt.reservation.attempt.request_id) {
-                    // Exact ended borrow also permits authoritative absence.
-                    static_cast<void>(control_.delivery_ended(active->call_id));
-                    if (active->ephemeral && message.execution_status &&
-                        control_.accept_inline_stop(at, *message.execution_status)) {
-                        static_cast<void>(control_.commit_stop(at));
-                    }
-                    // An unwritable close records no conclusive subscription fact.
-                    // Keep its units until the longest requested finite lease ends.
-                    if (active->collection) {
-                        await_subscription_stop(at);
-                    }
-                    release(at, host_.monotonic_now_us(host_.ctx));
-                    break;
-                }
+        return drain_transport_receipt(filter);
+    }
+    if (ledger_query_) {
+        if (ledger_query_->stage == Stage::submitted) {
+            const auto result = cancel_transport(ledger_query_->delivery);
+            if (result != Advance::idle) {
+                return result;
             }
+        } else {
+            if (!mailbox_.withdraw(ledger_query_->delivery.reservation)) {
+                return Advance::internal;
+            }
+            ledger_query_.reset();
+            return Advance::applied;
         }
-        return Advance::applied;
     }
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         auto &active = slots_[at].active;
@@ -115,9 +145,16 @@ bool CallRuntime::transport_ready(Mode mode) const {
                 fenced_blocked[active->delivery->reservation.index] = false;
             }
         }
+        if (ledger_query_) {
+            fenced_blocked[ledger_query_->delivery.reservation.index] = false;
+        }
         if (mailbox_.has_pending(&fenced_blocked)) {
             return true;
         }
+    }
+    if (ledger_query_ && (ledger_query_->stage != Stage::submitted ||
+                          ledger_query_->delivery.cancel == Delivery::Cancel::none)) {
+        return true;
     }
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         const auto &active = slots_[at].active;
@@ -133,6 +170,28 @@ bool CallRuntime::transport_ready(Mode mode) const {
 // must survive a validated reload. Other runtime rows can be discarded safely.
 // In-place swaps remap stable identities without another metadata arena.
 bool CallRuntime::rebind_restored() {
+    if (ledger_query_) {
+        if (ledger_query_->stage != Stage::submitted) {
+            if (!mailbox_.withdraw(ledger_query_->delivery.reservation)) {
+                return false;
+            }
+            ledger_query_.reset();
+        } else {
+            uint32_t index = 0;
+            if (!work_.unresolved_ops.find(ledger_query_->call_id, index)) {
+                return false;
+            }
+            const auto &query = work_.unresolved_ops.state(index).query;
+            if (!query || query->phase != work::CallQuery::Phase::dispatching ||
+                query->attempt.boot_epoch !=
+                    ledger_query_->delivery.reservation.attempt.boot_epoch ||
+                query->attempt.request_id !=
+                    ledger_query_->delivery.reservation.attempt.request_id) {
+                return false;
+            }
+        }
+    }
+
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         const auto &active = slots_[at].active;
         if (!active) {

@@ -1,8 +1,10 @@
 // White-box ADR-0115: independent arena, scalar reconciliation, atomic admission and codecs.
 #include "foundation/kernel_id.h"
 #include "foundation/little_endian.h"
+#include "text_business_fixture.h"
 #include "work/action/action_records.h"
 #include "work/operation/operation_records.h"
+#include "workspace_fixture.h"
 #include <array>
 #include <cstring>
 #include <gtest/gtest.h>
@@ -20,7 +22,7 @@ ayni::catalog::CatalogId id(const char *text) {
 }
 class OperationLedgerTest : public ::testing::Test {
   protected:
-    static constexpr OperationLedger::Limits limits{1, 64};
+    static constexpr OperationLedger::Limits limits{1, 4096};
     std::vector<uint64_t> arena =
         std::vector<uint64_t>(OperationLedger::storage_size(limits) / sizeof(uint64_t) + 1);
     OperationLedger ledger{arena.data(), limits};
@@ -28,7 +30,7 @@ class OperationLedgerTest : public ::testing::Test {
     ayni::catalog::CallContract contract{};
     CallState state{};
     std::optional<ActionRecord> action;
-    std::array<uint8_t, 4> proof{{1, 2, 3, 4}};
+    std::array<uint8_t, 4096> proof{};
     void SetUp() override {
         ayni::foundation::IdAllocator ids;
         ids.start(boot);
@@ -52,7 +54,16 @@ class OperationLedgerTest : public ::testing::Test {
         contract.timeout_ms = 1000;
         contract.input_format = AYNI_CALL_INPUT_VALUE;
         contract.result_format = AYNI_CALL_RESULT_TEXT;
-        contract.business_contract = {proof.data(), static_cast<uint32_t>(proof.size())};
+        contract.input_text_limit = 64;
+        contract.result_text_limit = 16;
+        ayni::test::TextBusiness business(16, 16);
+        const std::array<uint8_t, 4> domain{{1, 0, 0, 0}};
+        uint32_t size = 0;
+        ASSERT_EQ(ayni::catalog::encode_business(
+                      ayni::test::codec_workspace(), {domain.data(), domain.size()}, contract,
+                      business.definition, proof.data(), static_cast<uint32_t>(proof.size()), size),
+                  AYNI_OK);
+        contract.business_contract = {proof.data(), size};
         state.created = stamp(1);
         state.latest = stamp(4);
         state.attempt = {boot, 1};
@@ -103,8 +114,11 @@ TEST_F(OperationLedgerTest,
 }
 TEST_F(OperationLedgerTest, OwnsCompleteProofAndRejectsDuplicateIdsInSnapshot) {
     admit();
+    const auto original = proof;
     proof.fill(0);
-    EXPECT_EQ(ledger.contract(0).business_contract.data[1], 2U);
+    EXPECT_EQ(std::memcmp(ledger.contract(0).business_contract.data, original.data(),
+                          ledger.contract(0).business_contract.size),
+              0);
     const auto row = ledger.record(0);
     EXPECT_EQ(ledger.restore_snapshot_entry(row), AYNI_INVALID_STATE);
     EXPECT_TRUE(ledger.contains_identity(identity.operation_id));
@@ -165,11 +179,12 @@ TEST_F(OperationLedgerTest, FullSnapshotAndFixedDeltaRoundtripRejectMalformedFra
     std::vector<uint8_t> bytes(operation_record_size(row));
     write_operation_record(row, bytes.data());
     OperationRecord decoded{};
-    ASSERT_TRUE(read_operation_record(bytes.data(), static_cast<uint32_t>(bytes.size()), decoded));
+    ASSERT_TRUE(read_operation_record(ayni::test::codec_workspace(), bytes.data(),
+                                      static_cast<uint32_t>(bytes.size()), decoded));
     EXPECT_EQ(decoded.identity.call_id, identity.call_id);
-    EXPECT_EQ(decoded.contract.business_contract.size, proof.size());
-    EXPECT_FALSE(
-        read_operation_record(bytes.data(), static_cast<uint32_t>(bytes.size() - 1), decoded));
+    EXPECT_EQ(decoded.contract.business_contract.size, contract.business_contract.size);
+    EXPECT_FALSE(read_operation_record(ayni::test::codec_workspace(), bytes.data(),
+                                       static_cast<uint32_t>(bytes.size() - 1), decoded));
     ASSERT_EQ(ledger.request_query(0, stamp(6)), AYNI_OK);
     std::array<uint8_t, operation_state_bytes> delta{};
     write_operation_change(*ledger.journal_change(), delta.data());
@@ -177,11 +192,63 @@ TEST_F(OperationLedgerTest, FullSnapshotAndFixedDeltaRoundtripRejectMalformedFra
     ASSERT_TRUE(read_operation_change(delta.data(), delta.size(), change));
     EXPECT_EQ(change.kind, OperationChange::Kind::query_requested);
     ledger.clear();
-    ASSERT_EQ(ledger.restore_snapshot_entry(row), AYNI_OK);
+    ASSERT_EQ(ledger.restore_snapshot_entry(decoded), AYNI_OK);
     ASSERT_EQ(ledger.restore_journal_change(change), AYNI_OK);
     EXPECT_EQ(ledger.state(0).revision, 2U);
     constexpr uint32_t reserved_offset = 40;
     ayni::foundation::store_le32(delta.data() + reserved_offset, 1);
     EXPECT_FALSE(read_operation_change(delta.data(), delta.size(), change));
+}
+} // namespace
+namespace {
+// C-CALL-016: snapshot scalar combinations obey the same original Call evidence rules.
+TEST_F(OperationLedgerTest, SnapshotRejectsContradictoryOutcomeStopRouteAndProof) {
+    admit();
+    const auto row = ledger.record(0);
+    auto changed = row;
+    changed.state.outcome = AYNI_CALL_COMPLETED;
+    changed.state.status = AYNI_OK;
+    EXPECT_FALSE(OperationLedger::valid_record(changed));
+    changed = row;
+    changed.contract.effects = ayni::catalog::call_effect_physical;
+    EXPECT_FALSE(OperationLedger::valid_record(changed));
+    changed = row;
+    changed.identity.destination = id("unexpected");
+    EXPECT_FALSE(OperationLedger::valid_record(changed));
+    changed = row;
+    changed.state.created = changed.action.prepared;
+    EXPECT_FALSE(OperationLedger::valid_record(changed));
+    std::vector<uint8_t> bytes(operation_record_size(row));
+    write_operation_record(row, bytes.data());
+    // The immutable proof buffer is independently framed and checked against the saved contract.
+    OperationRecord decoded{};
+    ASSERT_TRUE(read_operation_record(ayni::test::codec_workspace(), bytes.data(),
+                                      static_cast<uint32_t>(bytes.size()), decoded));
+    const auto offset = static_cast<size_t>(decoded.contract.business_contract.data - bytes.data());
+    bytes[offset] = 0;
+    EXPECT_FALSE(read_operation_record(ayni::test::codec_workspace(), bytes.data(),
+                                       static_cast<uint32_t>(bytes.size()), decoded));
+}
+// C-CALL-016: an untrusted retained proof must validate its embedded canonical schemas.
+TEST_F(OperationLedgerTest, SnapshotRejectsMalformedSchemaInsideOtherwiseValidProof) {
+    admit();
+    const auto row = ledger.record(0);
+    std::vector<uint8_t> bytes(operation_record_size(row));
+    write_operation_record(row, bytes.data());
+    OperationRecord decoded{};
+    ASSERT_TRUE(read_operation_record(ayni::test::codec_workspace(), bytes.data(),
+                                      static_cast<uint32_t>(bytes.size()), decoded));
+    ayni::foundation::BodyReader reader(decoded.contract.business_contract);
+    EXPECT_EQ(reader.u32(), ayni::catalog::business_encoding_version);
+    ayni::catalog::CallContract execution{};
+    ASSERT_TRUE(ayni::catalog::read_execution_contract(reader, execution));
+    ASSERT_EQ(reader.u32(), 0U); // No subscription in this unary fixture.
+    const auto input = reader.bytes(ayni::catalog::schema_encoding_bytes_max);
+    ASSERT_TRUE(reader.valid());
+    constexpr size_t root_subtree_end_offset = 4 * sizeof(uint32_t);
+    const auto offset = static_cast<size_t>(input.data - bytes.data()) + root_subtree_end_offset;
+    ayni::foundation::store_le32(bytes.data() + offset, 0);
+    EXPECT_FALSE(read_operation_record(ayni::test::codec_workspace(), bytes.data(),
+                                       static_cast<uint32_t>(bytes.size()), decoded));
 }
 } // namespace

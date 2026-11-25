@@ -106,7 +106,10 @@ bool WorkModel::inherit_task_metadata(uint64_t task_id, foundation::TransitionSt
     if (task_authority.read(task.slot, task.replaced_task_id, replaced)) {
         release_task_references(replaced, stamp.commit_seq);
     }
-    calls.retire_task(task.replaced_task_id, stamp.commit_seq);
+    if (retire_task_calls(task.replaced_task_id, {ids.boot_epoch(), stamp}, stamp.commit_seq) !=
+        AYNI_OK) {
+        return false;
+    }
     // Configured Task and Goal requirement bounds are identical. A failure
     // here is an internal defect, never a partially accepted derivation.
     return task_authority.install_validated(task.slot, record) == AYNI_OK;
@@ -127,8 +130,79 @@ void WorkModel::release_task_references(const work::TaskAuthorityRecord &record,
     }
 }
 
-void WorkModel::retire_goal_task_metadata(uint32_t goal_index, uint64_t commit_seq,
-                                          uint64_t release_seq) {
+namespace {
+// Preflight the entire handoff before any table or body-reference mutation (ADR-0115).
+ayni_status_t check_task_handoff(const WorkModel &model, uint64_t task_id,
+                                 work::ActionStamp stamp) {
+    if (!model.calls.can_retire_task(task_id, UINT64_MAX)) {
+        return AYNI_INVALID_STATE;
+    }
+    const auto count = model.calls.unresolved_durable_count(task_id);
+    if (!model.unresolved_ops.has_room(count)) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    for (uint32_t at = 0; at < model.calls.capacity(); ++at) {
+        if (!model.calls.occupied(at) || model.calls.identity(at).task_id != task_id ||
+            model.calls.state(at).ephemeral || !model.calls.unresolved(at)) {
+            continue;
+        }
+        const auto status = model.unresolved_ops.check_admit_from_call(
+            model.calls.identity(at), model.calls.contract(at), model.calls.state(at),
+            *model.calls.action(at), stamp);
+        if (status != AYNI_OK) {
+            return status;
+        }
+    }
+    return AYNI_OK;
+}
+// Owner-thread commit phase after the complete cohort's capacity and evidence checks.
+void retire_checked_task_calls(WorkModel &model, uint64_t task_id, work::ActionStamp stamp,
+                               uint64_t release_seq) {
+    for (uint32_t at = 0; at < model.calls.capacity(); ++at) {
+        if (model.calls.occupied(at) && model.calls.identity(at).task_id == task_id &&
+            !model.calls.state(at).ephemeral && model.calls.unresolved(at)) {
+            model.unresolved_ops.admit_checked_call(model.calls.identity(at),
+                                                    model.calls.contract(at), model.calls.state(at),
+                                                    *model.calls.action(at), stamp);
+        }
+    }
+    model.calls.retire_task(task_id, release_seq);
+}
+} // namespace
+ayni_status_t WorkModel::retire_task_calls(uint64_t task_id, work::ActionStamp stamp,
+                                           uint64_t release_seq) {
+    if (task_id == 0) {
+        return AYNI_OK;
+    }
+    const auto status = check_task_handoff(*this, task_id, stamp);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    retire_checked_task_calls(*this, task_id, stamp, release_seq);
+    return AYNI_OK;
+}
+
+ayni_status_t WorkModel::retire_goal_task_metadata(uint32_t goal_index, work::ActionStamp stamp,
+                                                   uint64_t release_seq) {
+    const auto commit_seq = stamp.transition.commit_seq;
+    uint32_t count = 0;
+    uint32_t body_refs = 0;
+    for (uint32_t at = 0; at < tasks.size(); ++at) {
+        const auto &task = tasks.at(at);
+        if (task.goal_index != goal_index) {
+            continue;
+        }
+        count += calls.unresolved_durable_count(task.task_id);
+        body_refs += calls.task_body_refs(task.task_id);
+        const auto status = check_task_handoff(*this, task.task_id, stamp);
+        if (status != AYNI_OK) {
+            return status;
+        }
+    }
+    if (!unresolved_ops.has_room(count) || !calls.release_fits(body_refs)) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+
     for (uint32_t index = 0; index < tasks.size(); ++index) {
         const auto &task = tasks.at(index);
         work::TaskAuthorityRecord record{};
@@ -139,9 +213,10 @@ void WorkModel::retire_goal_task_metadata(uint32_t goal_index, uint64_t commit_s
         if (task_authority.read(task.slot, task.task_id, record)) {
             release_task_references(record, commit_seq);
         }
-        calls.retire_task(task.task_id, release_seq);
+        retire_checked_task_calls(*this, task.task_id, stamp, release_seq);
         task_authority.clear(task.slot);
     }
+    return AYNI_OK;
 }
 
 } // namespace ayni::kernel

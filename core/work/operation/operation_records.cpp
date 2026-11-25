@@ -1,4 +1,5 @@
 #include "work/operation/operation_records.h"
+#include "catalog/capability/business_encoding.h"
 #include "catalog/capability/call_contract_encoding.h"
 #include "work/action/action_records.h"
 #include <array>
@@ -148,7 +149,8 @@ void write_operation_record(const OperationRecord &record, uint8_t *body) {
     write_options(record, writer);
 }
 // All framing/optional markers are canonical; failures preserve the caller's previous value.
-bool read_operation_record(const uint8_t *body, uint32_t size, OperationRecord &out) {
+bool read_operation_record(foundation::Workspace &workspace, const uint8_t *body, uint32_t size,
+                           OperationRecord &out) {
     if (!body || size < operation_record_fixed_bytes) {
         return false;
     }
@@ -171,6 +173,13 @@ bool read_operation_record(const uint8_t *body, uint32_t size, OperationRecord &
     const auto action = reader.bytes(action_state_record_max_size);
     if (!read_action_state_record(action.data, action.size, record.action) ||
         !read_options(reader, record) || !reader.ok() || !OperationLedger::valid_record(record)) {
+        return false;
+    }
+    auto decoded = workspace.make<catalog::DecodedBusiness>();
+    if (!decoded ||
+        catalog::decode_business_proof(workspace, record.contract.business_contract, *decoded) !=
+            AYNI_OK ||
+        !catalog::bound_call_contract(decoded->execution, record.contract)) {
         return false;
     }
     out = record;

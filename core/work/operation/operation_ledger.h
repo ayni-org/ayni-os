@@ -93,7 +93,7 @@ class OperationLedger {
     OperationLedger &operator=(const OperationLedger &) = delete;
     bool has_room(uint32_t count) const {
         return count <= limits_.capacity - size_;
-    }                                                      // No eviction.
+    } // No eviction.
     uint32_t size() const { return size_; }                // Occupied unresolved rows.
     uint32_t capacity() const { return limits_.capacity; } // Fixed slots, including holes.
     bool occupied(uint32_t index) const;                   // False for out-of-range or empty slots.
@@ -124,12 +124,12 @@ class OperationLedger {
     ayni_status_t acknowledge_and_remove(uint32_t index, ActionStamp stamp); // Human closure only.
     bool audit_queue_full() const {
         return audit_count_ == limits_.capacity;
-    }                                                   // Closure backpressure.
+    } // Closure backpressure.
     bool has_durable_audit(uint64_t durable_seq) const; // Ready after_seq at ring head.
     bool take_durable_audit(uint64_t durable_seq, PendingAudit &out); // Pop only confirmed closure.
     const std::optional<OperationChange> &journal_change() const {
         return journal_change_;
-    }                                                        // Delta.
+    } // Delta.
     static bool valid_record(const OperationRecord &record); // Shared codec/live intrinsic rules.
     ayni_status_t restore_snapshot_entry(const OperationRecord &record); // No audit from snapshots.
     ayni_status_t restore_journal_change(const OperationChange &change); // Reuses live transitions.
@@ -144,7 +144,7 @@ class OperationLedger {
     };
     struct Slot {
         std::optional<Entry> entry;
-    };                                    // Empty holes retain no identity or proof.
+    }; // Empty holes retain no identity or proof.
     uint8_t *proof(uint32_t index) const; // Independent fixed proof region for one slot.
     uint32_t empty_slot() const;          // Requires has_room(1), returns the first hole.
     void install(uint32_t index, const OperationRecord &record); // Already checked; copies proof.

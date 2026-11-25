@@ -69,6 +69,8 @@ constexpr Row matrix[] = {
     {AYNI_INTENT_CONTEXT_FORGET,         management_on_retry, exact,         AYNI_OBJECT_CONTEXT},
     {AYNI_INTENT_CONTEXT_ACK,            management_on_retry, exact,         AYNI_OBJECT_CONTEXT},
     {AYNI_INTENT_PAUSE_GROUP_SET, management_on_retry, exact, AYNI_OBJECT_PAUSE_GROUP},
+    {AYNI_INTENT_UNRESOLVED_OP_QUERY, management_on_retry, exact, AYNI_OBJECT_UNRESOLVED_OP},
+    {AYNI_INTENT_UNRESOLVED_OP_ACKNOWLEDGE, management_on_retry, exact, AYNI_OBJECT_UNRESOLVED_OP},
 };
 // clang-format on
 
@@ -181,6 +183,7 @@ class IntentPolicy : public ::testing::Test {
         reauthorize_.original = create_;
         limit_ = {sizeof(limit_), 1, absent};
         query_ = {sizeof(query_), 0, absent};
+        unresolved_ = {sizeof(unresolved_), 0, absent};
         scene_ = {sizeof(scene_), 1, text("look"), 1, 0};
         pause_group_ = {sizeof(pause_group_), 1, 1, 0};
         memory_.struct_size = sizeof(memory_);
@@ -199,7 +202,8 @@ class IntentPolicy : public ::testing::Test {
                      {&limit_, 1},          {&query_, 1},        {&task_, 1},
                      {&scene_, 0},          {&memory_, 0},       {&memory_target_, 1},
                      {&memory_target_, 1},  {&context_open_, 0}, {&context_publish_, 1},
-                     {&context_forget_, 1}, {&context_ack_, 1},  {&pause_group_, 0}};
+                     {&context_forget_, 1}, {&context_ack_, 1},  {&pause_group_, 0},
+                     {&unresolved_, 1},     {&unresolved_, 1}};
         ASSERT_EQ(requests_.size(), std::size(matrix));
     }
 
@@ -216,6 +220,7 @@ class IntentPolicy : public ::testing::Test {
     ayni_goal_reauthorize_v1 reauthorize_{};
     ayni_task_raise_model_limit_v1 limit_{};
     ayni_call_query_result_v1 query_{};
+    ayni_unresolved_op_target_v1 unresolved_{};
     ayni_scene_set_enabled_v1 scene_{};
     ayni_pause_group_set_v1 pause_group_{};
     ayni_memory_save_v1 memory_{};

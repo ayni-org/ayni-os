@@ -88,7 +88,7 @@ void CallRuntime::release(uint32_t index, uint64_t now_us) {
 }
 
 bool CallRuntime::idle() const {
-    if (mailbox_.in_flight() != 0U || !control_.idle()) {
+    if (ledger_query_ || mailbox_.in_flight() != 0U || !control_.idle()) {
         return false;
     }
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
@@ -545,6 +545,13 @@ CallRuntime::Advance CallRuntime::advance(uint64_t now_us, uint64_t durable_seq,
     if (mode == Mode::fenced || mode == Mode::closing) {
         return drain_transport(mode);
     }
+    // ADR-0115: a continuous active progress stream cannot starve the reserved query lane.
+    if (admission == JournalAdmission::available) {
+        const auto operation = advance_operation_query(now_us, durable_seq, mode);
+        if (operation != Advance::idle) {
+            return operation;
+        }
+    }
     if (const auto receipt = consume(now_us, durable_seq, admission)) {
         return *receipt;
     }
@@ -588,7 +595,7 @@ CallRuntime::Advance CallRuntime::prepare_accepted(const AcceptedCalls &accepted
                                                    bool ephemeral_only,
                                                    JournalAdmission admission) {
     const auto now_us = host_.monotonic_now_us(host_.ctx);
-    if (now_us >= deadline_us || mailbox_.in_flight() == limits_.capacity ||
+    if (now_us >= deadline_us || call_mailbox_full() ||
         control_ready(now_us, durable_seq, Mode::running) ||
         ready_before_calls(now_us, durable_seq, Mode::running, admission)) {
         return Advance::idle;
@@ -838,7 +845,7 @@ CallRuntime::Advance CallRuntime::record_preparation(uint32_t index) {
 // Reserve the exact delivery before journaling DISPATCHING. If publication
 // fails, withdraw the reservation before the Kernel enters restricted mode.
 CallRuntime::Advance CallRuntime::prepare_barrier(uint32_t index) {
-    if (mailbox_.in_flight() == limits_.capacity) {
+    if (call_mailbox_full()) {
         return Advance::idle;
     }
     ayni_attempt_ref_v1 attempt{};
@@ -962,6 +969,10 @@ ProviderMailbox::BlockedSlots CallRuntime::blocked_receipts(JournalAdmission adm
               !work::execution_stopped(*work_.calls.state(at).execution)))) {
             blocked[active->delivery->reservation.index] = true;
         }
+    }
+    if (ledger_query_ &&
+        (admission != JournalAdmission::available || work_.unresolved_ops.audit_queue_full())) {
+        blocked[ledger_query_->delivery.reservation.index] = true;
     }
     return blocked;
 }

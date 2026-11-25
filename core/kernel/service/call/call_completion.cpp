@@ -68,6 +68,9 @@ std::optional<CallRuntime::Advance> CallRuntime::consume(uint64_t now_us, uint64
     // read_next writes no payload on refusal or empty. Wipe both lanes after an actual copy.
     const ReceiptScratch scratch{receipt_, limits_.result_bytes};
     const ReceiptScratch normalized_scratch{normalized_, limits_.result_bytes};
+    if (matches_operation_receipt(receipt)) {
+        return consume_operation_query(message, receipt);
+    }
     uint32_t index = 0;
     for (; index < limits_.capacity; ++index) {
         if (slots_[index].active && slots_[index].active->delivery &&
@@ -399,6 +402,10 @@ uint64_t CallRuntime::next_deadline_us(uint64_t now_us, JournalAdmission admissi
     };
     report(resources_.next_deadline_us(resource_admission(admission)));
     report(control_.next_deadline_us());
+    if (ledger_query_ && ledger_query_->stage == Stage::submitted &&
+        ledger_query_->delivery.cancel == Delivery::Cancel::none) {
+        report(ledger_query_->delivery.deadline_us);
+    }
     if (admission == JournalAdmission::available) {
         for (uint32_t at = 0; at < work_.tasks.size(); ++at) {
             const auto &task = work_.tasks.at(at);
@@ -439,7 +446,9 @@ bool CallRuntime::ready(uint64_t now_us, uint64_t durable_seq, Mode mode,
     if (mode == Mode::fenced || mode == Mode::closing) {
         return work_.calls.release_due(durable_seq) || transport_ready(mode);
     }
-    return ready_before_calls(now_us, durable_seq, mode, admission) ||
+    return (admission == JournalAdmission::available &&
+            operation_query_ready(now_us, durable_seq, mode)) ||
+           ready_before_calls(now_us, durable_seq, mode, admission) ||
            calls_ready(now_us, durable_seq, mode, admission);
 }
 
@@ -564,7 +573,7 @@ CallRuntime::CallReady CallRuntime::call_readiness(uint32_t at, uint64_t now_us,
                    ? CallReady::other
                    : CallReady::queued;
     }
-    if (active->stage == Stage::prepared && mailbox_.in_flight() != limits_.capacity) {
+    if (active->stage == Stage::prepared && !call_mailbox_full()) {
         return CallReady::prepared;
     }
     return active->stage == Stage::barrier && control_.issue_ready(at, now_us) &&
@@ -607,7 +616,7 @@ CallRuntime::CallReady CallRuntime::reflex_call_readiness(uint32_t at, uint64_t 
                    ? CallReady::other
                    : CallReady::queued;
     }
-    if (active->stage == Stage::prepared && mailbox_.in_flight() != limits_.capacity) {
+    if (active->stage == Stage::prepared && !call_mailbox_full()) {
         return CallReady::prepared;
     }
     return active->stage == Stage::barrier && control_.issue_ready(at, now_us) ? CallReady::other

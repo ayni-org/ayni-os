@@ -12,6 +12,8 @@
 #include "work_node.h"
 #include "workspace_fixture.h"
 
+#include "journal_test_support.h"
+#include <ayni/audit.h>
 #include <ayni/calls.h>
 #include <ayni/execution.h>
 #include <ayni/observations.h>
@@ -725,15 +727,15 @@ struct EphemeralFixture {
 };
 
 // Test 1 (ADR-0110 / contracts/storage/records.md):
-// Schema 11 cleanly rejects legacy schema 10 volumes, preserves work_profile.recovery
+// Schema 12 cleanly rejects legacy schema 11 volumes, preserves work_profile.recovery
 // in GOAL records, and refuses to decode EPHEMERAL durability from persisted CALL records.
-TEST(EphemeralExecution, Schema11RejectsSchema10VolumeAndValidatesRecordCodecs) {
-    EXPECT_EQ(AYNI_STORAGE_SCHEMA_CURRENT, 11U);
+TEST(EphemeralExecution, Schema12RejectsSchema11VolumeAndValidatesRecordCodecs) {
+    EXPECT_EQ(AYNI_STORAGE_SCHEMA_CURRENT, 12U);
     EXPECT_GE(AYNI_ABI_MINOR, 59U);
     EXPECT_EQ(ayni::work::goal_record_fixed_size, 144U);
     EXPECT_EQ(ayni::work::call_record_fixed_size, 452U);
 
-    // Build a valid schema 10 boot batch and confirm BootSequence refuses it cleanly.
+    // Build a valid schema 11 boot batch and confirm BootSequence refuses it cleanly.
     Node node;
     std::array<uint8_t, 64> raw{};
     ayni::durability::BatchIdentity id{1, 1, 1};
@@ -1213,7 +1215,7 @@ TEST(EphemeralExecution, MixedEphemeralAndDurableCallsPreserveDurabilityAndRepla
         saved_storage = fix.work.node().sim().durable_storage();
     }
 
-    // Recover from the recorded WAL to prove schema 11 replay consistency.
+    // Recover from the recorded WAL to prove current-schema replay consistency.
     EphemeralFixture replay;
     replay.configure_node();
     replay.work.node().sim().durable_storage() = saved_storage;
@@ -1282,4 +1284,70 @@ TEST(EphemeralExecution, FencedReloadCompletesForEphemeralPhysicalCallWithoutInl
     EXPECT_GT(fix.motor_exec.stop_calls, 0U);
 }
 
+} // namespace
+
+namespace {
+// C-CALL-016/ADR-0115: Tier0 UNKNOWN holds while live, but does not permanently pin stopped work.
+TEST(EphemeralExecution, StoppedUnknownHoldsUntilCancellationThenRetiresWithoutLedgerOrCallWal) {
+    EphemeralFixture fix;
+    fix.work.node().config().task_capacity = 1;
+    fix.work.node().config().audit_capacity = 64;
+    fix.work.node().config().unresolved_op_capacity = 1;
+    fix.motor_exec.auto_complete = false;
+    fix.motor_exec.proof_mode = InlineTestExecutor::ProofMode::omit;
+    bool dispatched = false;
+    fix.work.strategy().answer = [&](const ayni_task_snapshot_v1 &snap,
+                                     ayni_policy_output_v1 &out) {
+        if (!dispatched) {
+            dispatched = true;
+            return EphemeralFixture::stage_motor_call("unknown", 20, out);
+        }
+        return report(AYNI_POLICY_REPORT_COMPLETION, snap, out);
+    };
+    fix.start();
+    const auto goal = fix.create_goal("ephemeral_goal");
+    for (uint32_t at = 0; at < 30 && !fix.motor_exec.active; ++at) {
+        fix.pump(1);
+    }
+    ASSERT_TRUE(fix.motor_exec.active);
+    const auto task = fix.work.goal(goal).last_task_id;
+    const auto call = fix.work.task(task).logical_call_id;
+    auto &model = ayni::kernel::KernelTestProbe::work(fix.work.kernel());
+    // White-box: in-flight Provider borrow and unconfirmed physical stop both forbid retirement.
+    EXPECT_FALSE(model.calls.can_retire_task(task, UINT64_MAX));
+    fix.motor_exec.finish_active(AYNI_CALL_ABANDONED, AYNI_RESULT_UNKNOWN, AYNI_CALL_EFFECT_UNKNOWN,
+                                 nullptr);
+    fix.pump(30);
+    EXPECT_EQ(fix.work.task(task).hold_status, AYNI_RESULT_UNKNOWN);
+    EXPECT_EQ(fix.motor_exec.submit_calls, 1U);
+    EXPECT_EQ(model.unresolved_ops.size(), 0U);
+    ASSERT_EQ(fix.work.cancel_task(task).status, AYNI_OK);
+    fix.pump(8);
+    fix.create_goal("ephemeral_goal");
+    fix.pump(16);
+    ayni_task_info_v1 retired{};
+    retired.struct_size = sizeof(retired);
+    EXPECT_EQ(ayni_get_task(fix.work.kernel(), task, &retired), AYNI_NOT_FOUND);
+    ayni_call_info_v1 info{};
+    info.struct_size = sizeof(info);
+    EXPECT_EQ(ayni_get_call(fix.work.kernel(), call, &info), AYNI_NOT_FOUND);
+    EXPECT_EQ(model.unresolved_ops.size(), 0U);
+    std::array<ayni_audit_record_v1, 64> records{};
+    uint32_t count = 0;
+    ASSERT_EQ(ayni_take_audit_records(fix.work.kernel(), records.data(), records.size(), &count),
+              AYNI_OK);
+    bool found = false;
+    for (uint32_t at = 0; at < count; ++at) {
+        if (records[at].kind == AYNI_AUDIT_CALL_TERMINAL && records[at].subject_id == call) {
+            found = true;
+            EXPECT_NE(records[at].flags & AYNI_AUDIT_FLAG_EPHEMERAL, 0U);
+        }
+    }
+    EXPECT_TRUE(found);
+    for (const auto &stored : fix.work.node().sim().log()) {
+        for (const auto &record : read_stored_batch(stored).records) {
+            EXPECT_NE(record.header.type, ayni::work::call_record_type);
+        }
+    }
+}
 } // namespace

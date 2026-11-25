@@ -571,3 +571,17 @@ TEST_F(KernelApi, goal_requirement_capacity_must_be_in_its_range) {
     config.goal_requirement_capacity = AYNI_GOAL_REQUIREMENT_CAPACITY_MAX;
     EXPECT_EQ(ayni_kernel_memory_requirements(&config, &bytes, &alignment), AYNI_OK);
 }
+namespace {
+// C-CALL-016/ADR-0115: a ledger always has a usable independent Provider mailbox beside Calls.
+TEST_F(KernelApi, UnresolvedLedgerRequiresCallsAndHonorsItsIndependentCapacityBound) {
+    ayni::test::Node node;
+    auto config = node.config();
+    size_t bytes = 0, alignment = 0;
+    config.unresolved_op_capacity = 1;
+    EXPECT_EQ(ayni_kernel_memory_requirements(&config, &bytes, &alignment), AYNI_INVALID_ARGUMENT);
+    config.call_capacity = 1;
+    EXPECT_EQ(ayni_kernel_memory_requirements(&config, &bytes, &alignment), AYNI_OK);
+    config.unresolved_op_capacity = AYNI_UNRESOLVED_OP_CAPACITY_MAX + 1U;
+    EXPECT_EQ(ayni_kernel_memory_requirements(&config, &bytes, &alignment), AYNI_INVALID_ARGUMENT);
+}
+} // namespace

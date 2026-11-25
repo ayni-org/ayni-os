@@ -5,8 +5,7 @@
 
 namespace ayni::work {
 uint32_t CallTable::query_revision(uint32_t index) const {
-    const auto &query = state(index).query;
-    return query ? query->generation + initial_query_revision : initial_query_revision;
+    return work::query_revision(state(index).query);
 }
 
 bool CallTable::unresolved(uint32_t index) const {

@@ -52,6 +52,8 @@ void place_call_catalogs(Placer &placer, const KernelCapacities &capacities) {
 void place_call_runtime(Placer &placer, const KernelCapacities &capacities) {
     placer.place(Store::calls, work::CallTable::storage_alignment,
                  work::CallTable::storage_size(call_limits(capacities)));
+    placer.place(Store::unresolved_ops, work::OperationLedger::storage_alignment,
+                 work::OperationLedger::storage_size(operation_limits(capacities)));
     placer.place(Store::call_runtime, CallRuntime::storage_alignment,
                  CallRuntime::storage_size(call_runtime_limits(capacities)));
     placer.place(Store::provider_completions, ProviderMailbox::storage_alignment,

@@ -577,6 +577,43 @@ typedef struct ayni_call_info_v1 {
     ayni_body_ref_v1 body; /* Since 0.54. Result body by reference; zero when inline or absent. */
 } ayni_call_info_v1;
 
+/* Compact bodyless historical operation view. Owner-thread query, Since 0.62.
+ * This is independent of ayni_call_info_v1 and never exposes private request/result bytes. */
+typedef struct ayni_unresolved_op_v1 {
+    uint32_t struct_size;            /* sizeof this structure. */
+    uint32_t revision;               /* Owner CAS inherited from active Call query revision; >=1. */
+    uint64_t logical_call_id;        /* Original Call identity, unique and never reused. */
+    uint64_t operation_id;           /* Original operation or latest subscription generation. */
+    uint64_t task_id;                /* Retired Task reference; get_task may return NOT_FOUND. */
+    uint64_t owner_instance_id;      /* Retained original AgentInstance. */
+    ayni_attempt_ref_v1 attempt;     /* Original ended execution attempt. */
+    uint64_t archived_boot_epoch;    /* Writer boot of atomic handoff. */
+    uint64_t archived_transition_id; /* Work replacement transition. */
+    uint64_t archived_commit_seq;    /* Work replacement journal sequence. */
+    uint64_t requires_seq;           /* Latest applied fact, compare current writer durable_seq. */
+    ayni_call_outcome_t outcome;     /* Original terminal tracking outcome. */
+    ayni_status_t status;            /* Original result class. */
+    ayni_reason_t reason;            /* Original classified cause. */
+    ayni_call_effect_t effect;       /* Unresolved effect knowledge; never a retry permission. */
+    ayni_call_query_phase_t query_phase; /* Zero before first query. */
+    ayni_status_t query_status;          /* Query diagnostic, independent of original execution. */
+    ayni_reason_t query_reason;          /* Query classified cause. */
+    uint32_t
+        query_conclusion; /* Zero pending, QUERY_RESULT_UNKNOWN when query remains unresolved. */
+    ayni_attempt_ref_v1 query_attempt; /* Separate query transport attempt, zero before prepared. */
+    uint32_t binding_version;          /* Exact original version. */
+    uint32_t binding_size;             /* Static token bytes, <= CATALOG_ID_MAX_BYTES. */
+    char binding_id[AYNI_CATALOG_ID_MAX_BYTES]; /* Zero-padded static original binding token. */
+    uint32_t execution_phase; /* Zero for nonphysical; otherwise STOPPED or NOT_STARTED. */
+    uint32_t stop_cause;      /* Zero for nonphysical or not-started. */
+    uint32_t target;          /* Physical target evidence; zero when absent. */
+    uint32_t reserved;        /* Written zero. */
+} ayni_unresolved_op_v1;
+/* Read bodyless facts, including not-yet-durable changes. NOT_FOUND preserves output. Since 0.62.
+ */
+ayni_status_t ayni_get_unresolved_op(const ayni_kernel_t *kernel, uint64_t logical_call_id,
+                                     ayni_unresolved_op_v1 *out_info);
+
 /* Owner thread, outside callbacks. Fixed copied info may describe volatile facts;
  * requires_seq identifies their publication barrier. NOT_FOUND preserves output. */
 ayni_status_t ayni_get_call(const ayni_kernel_t *kernel, uint64_t logical_call_id,

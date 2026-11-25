@@ -128,6 +128,7 @@ ayni_add_core_module(kernel
     SOURCES
         kernel/api/audit_api.cpp
         kernel/api/call_api.cpp
+        kernel/api/operation_api.cpp
         kernel/api/directory_api.cpp
         kernel/api/calendar_api.cpp
         kernel/api/pause_group_api.cpp
@@ -153,6 +154,7 @@ ayni_add_core_module(kernel
         kernel/service/call/call_dispatch.cpp
         kernel/service/call/call_drain.cpp
         kernel/service/call/call_reconciliation.cpp
+        kernel/service/call/operation_reconciliation.cpp
         kernel/service/call/call_runtime.cpp
         kernel/service/call/call_subscription.cpp
         kernel/service/call/call_subscription_control.cpp
@@ -212,6 +214,7 @@ ayni_add_core_module(kernel
         kernel/service/persistence/goal_store.cpp
         kernel/service/persistence/task_store.cpp
         kernel/service/persistence/call_store.cpp
+        kernel/service/persistence/operation_store.cpp
         kernel/service/persistence/calendar_store.cpp
         kernel/service/persistence/pause_group_store.cpp
         kernel/service/persistence/grant_store.cpp

@@ -61,7 +61,8 @@ inline CallRuntime::Limits call_runtime_limits(const KernelCapacities &capacitie
 }
 
 inline ProviderMailbox::Limits provider_mailbox_limits(const KernelCapacities &capacities) {
-    return {capacities.call_capacity, capacities.call_result_max_bytes};
+    return {capacities.call_capacity + (capacities.unresolved_op_capacity > 0U ? 1U : 0U),
+            capacities.call_result_max_bytes};
 }
 
 } // namespace ayni::kernel

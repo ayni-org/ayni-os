@@ -71,6 +71,10 @@ struct CallQuery {
     uint32_t conclusion = 0;                 // Zero while pending; QUERY_RESULT_* when finished.
 };
 constexpr uint32_t initial_query_revision = 1; // No query has yet been requested.
+// Shared management CAS for active Calls and bodyless historical operations.
+inline uint32_t query_revision(const std::optional<CallQuery> &query) {
+    return query ? query->generation + initial_query_revision : initial_query_revision;
+}
 
 // Facts a durable call owns in addition to its independently validated ledger.
 struct CallState {
@@ -130,6 +134,9 @@ struct CallRecord {
     ayni_string_v1 result; // Terminal body as result_kind says, empty before completion.
     CallResultKind result_kind = CallResultKind::text; // Unless a completion holds tool calls.
 };
+
+// Shared terminal scalar/action evidence validator; no body or catalog interpretation.
+bool valid_call_outcome(const CallRecord &record);
 
 // Fixed slots keep noncopyable ActionRecord claims stable. Retained input and
 // output bodies belong to this table until a safe Task retirement or deletion.
@@ -233,8 +240,8 @@ class CallTable {
     // Shared persisted query shape/history rules, including command generation changes.
     static bool valid_query(const CallRecord &record);
     static bool query_advances(const CallState &before, const CallState &after);
-    // Task retirement prerequisite: every retained call is known and durable, and the
-    // release queue has room for every body reference those rows hold.
+    // Task retirement prerequisite: terminal, stopped, no runtime borrow or pending query, and the
+    // release queue has room for every body reference. WorkModel reserves unresolved ledger room.
     bool can_retire_task(uint64_t task_id, uint64_t durable_seq) const;
     // Counts durable unresolved operations for atomic handoff; no mutation or retirement change.
     uint32_t unresolved_durable_count(uint64_t task_id) const;

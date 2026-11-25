@@ -8,7 +8,7 @@
 #include "work/call/call_table.h"
 
 namespace ayni::work {
-// One complete current row in journal and snapshot (schema 11).
+// One complete current row in journal and snapshot (schema 12).
 constexpr uint16_t call_record_type = durability::record_type::call;
 constexpr uint16_t call_record_version = 2;
 constexpr uint16_t call_delta_version = 3;        // Journal updates only; schema 11, records.md.

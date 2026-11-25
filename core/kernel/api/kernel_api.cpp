@@ -202,6 +202,9 @@ constexpr CapacityField capacity_fields[] = {
     {&ayni_config_v1::reflex_event_capacity,
      {0U, AYNI_REFLEX_EVENT_CAPACITY_MAX},
      &KernelCapacities::reflex_event_capacity},
+    {&ayni_config_v1::unresolved_op_capacity,
+     {0U, AYNI_UNRESOLVED_OP_CAPACITY_MAX},
+     &KernelCapacities::unresolved_op_capacity},
     {&ayni_config_v1::audit_capacity,
      {0U, AYNI_AUDIT_CAPACITY_MAX},
      &KernelCapacities::audit_capacity},
@@ -224,6 +227,9 @@ ayni_status_t read_capacities(const ayni_config_v1 *config, KernelCapacities &ca
     if (capacities.observation_source_capacity != 0 &&
         capacities.observation_ingress_capacity == 0) {
         capacities.observation_ingress_capacity = AYNI_OBSERVATION_INGRESS_CAPACITY_DEFAULT;
+    }
+    if (capacities.unresolved_op_capacity > 0U && capacities.call_capacity == 0U) {
+        return AYNI_INVALID_ARGUMENT;
     }
     if (capacities.reflex_capacity == 0U && capacities.reflex_event_capacity != 0U) {
         return AYNI_INVALID_ARGUMENT;

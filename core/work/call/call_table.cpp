@@ -675,7 +675,7 @@ bool CallTable::can_retire_task(uint64_t task_id, uint64_t durable_seq) const {
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         const auto &entry = slots_[at].entry;
         if (entry && entry->identity.task_id == task_id &&
-            (pending(*entry) || (!entry->state.ephemeral && unresolved(at)) ||
+            (pending(*entry) || query_pending(at) ||
              (entry->state.execution && !execution_stopped(*entry->state.execution)) ||
              (runtime_retains_ != nullptr &&
               runtime_retains_(retention_context_, entry->identity.call_id)) ||

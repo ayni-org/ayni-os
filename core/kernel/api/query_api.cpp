@@ -29,7 +29,7 @@ ayni_status_t ayni_list_objects(const ayni_kernel_t *kernel, ayni_object_kind_t 
         return AYNI_INVALID_ARGUMENT;
     }
     if (kind != AYNI_OBJECT_GOAL && kind != AYNI_OBJECT_TASK && kind != AYNI_OBJECT_CALL &&
-        kind != AYNI_OBJECT_GRANT) {
+        kind != AYNI_OBJECT_GRANT && kind != AYNI_OBJECT_UNRESOLVED_OP) {
         return AYNI_UNSUPPORTED;
     }
     if (kernel->in_callback()) {
@@ -50,6 +50,15 @@ ayni_status_t ayni_list_objects(const ayni_kernel_t *kernel, ayni_object_kind_t 
     case AYNI_OBJECT_GRANT:
         return copy_ids(work.grants.size(), ids, capacity, out_count,
                         [&](uint32_t at) { return work.grants.at(at).grant_id; });
+    case AYNI_OBJECT_UNRESOLVED_OP: {
+        uint32_t slot = 0;
+        return copy_ids(work.unresolved_ops.size(), ids, capacity, out_count, [&](uint32_t) {
+            while (!work.unresolved_ops.occupied(slot)) {
+                ++slot;
+            }
+            return work.unresolved_ops.identity(slot++).call_id;
+        });
+    }
     default: {
         uint32_t slot = 0;
         return copy_ids(work.calls.size(), ids, capacity, out_count, [&](uint32_t) {

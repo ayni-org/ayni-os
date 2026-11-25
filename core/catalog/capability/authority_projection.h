@@ -17,6 +17,10 @@ struct ProjectionShape {
 ayni_status_t validate_business_definition(ayni::foundation::Workspace &workspace,
                                            const ayni_business_contract_v1 &business,
                                            ProjectionShape &out);
+// Domainless retained proof whose schemas were already decoded and validated.
+// Checks every mapping path/type/unit; original domain coverage is not available here.
+ayni_status_t validate_business_schemas_admitted(const ayni_business_contract_v1 &business,
+                                                 ProjectionShape &out);
 
 // Admitted business schema and complete authority domain; errors preserve out.
 // Rejects optional/null paths, floats, multi-axis lists and implicit unit/scale changes.

@@ -535,6 +535,7 @@ void ayni_kernel::report_step(StepContext &progress, ayni_step_report_v1 &report
     report.more_ready =
         completions.posted_count() > 0U || boot_due || log_due || maintenance_due || events_due ||
                 work_due || call_ready || revocation_ready() || reflex_due ||
+                work.unresolved_ops.has_durable_audit(log.durable_seq()) ||
                 (lifecycle == AYNI_LIFECYCLE_RUNNING &&
                  (observation_ingress.queued() != 0 ||
                   observation_ingress.info().gaps_pending != 0 || observation_slots.any_dirty())) ||
@@ -671,7 +672,28 @@ bool ayni_kernel::appends() const {
            (lifecycle == AYNI_LIFECYCLE_RUNNING || lifecycle == AYNI_LIFECYCLE_DRAINING);
 }
 
+void ayni_kernel::flush_durable_operation_audits() {
+    ayni::work::PendingAudit pending{};
+    while (work.unresolved_ops.take_durable_audit(log.durable_seq(), pending)) {
+        uint32_t flags = pending.acknowledged ? AYNI_AUDIT_FLAG_ACKNOWLEDGED : 0U;
+        if (pending.physical) {
+            flags |= AYNI_AUDIT_FLAG_PHYSICAL;
+        }
+        audit_ring.emit({AYNI_AUDIT_OPERATION_RESOLVED,
+                         work.ids.boot_epoch(),
+                         now_us(),
+                         pending.call_id,
+                         pending.operation_id,
+                         pending.status,
+                         pending.reason,
+                         pending.outcome,
+                         flags,
+                         {pending.binding_id.data(), pending.binding_id.size()}});
+    }
+}
+
 void ayni_kernel::settle_log() {
+    flush_durable_operation_audits();
     if (lifecycle == AYNI_LIFECYCLE_RUNNING && log.failure() != AYNI_RESTRICTION_NONE) {
         enter_fenced(log.failure());
     }

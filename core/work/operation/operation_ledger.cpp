@@ -22,17 +22,9 @@ OperationIdentity identity_from_call(const CallIdentity &id, const ActionFact &a
 }
 OperationRecord from_call(const CallIdentity &id, const catalog::CallContract &contract,
                           const CallState &state, const ActionFact &action, ActionStamp stamp) {
-    OperationState saved{state.created,
-                         stamp,
-                         stamp,
-                         state.attempt,
-                         state.outcome,
-                         state.status,
-                         state.reason,
-                         {},
-                         state.query,
-                         state.query ? state.query->generation + initial_query_revision
-                                     : initial_query_revision};
+    OperationState saved{
+        state.created, stamp,        stamp, state.attempt, state.outcome,
+        state.status,  state.reason, {},    state.query,   query_revision(state.query)};
     if (state.execution) {
         const auto &stop = *state.execution;
         saved.execution_stop = ExecutionStopSummary{stop.phase, stop.stop_cause, stop.target};
@@ -133,7 +125,20 @@ bool OperationLedger::valid_record(const OperationRecord &record) {
         !record.action.identity.binding_id.equals({id.binding_id.data(), id.binding_id.size()}) ||
         !before(state.created, state.archived) ||
         !(same_stamp(state.archived, state.latest) || before(state.archived, state.latest)) ||
+        !before(state.created, record.action.prepared) ||
         !before(record.action.latest, state.archived) || !valid_stop(state.execution_stop) ||
+        ((record.contract.effects & catalog::call_effect_physical) != 0) !=
+            state.execution_stop.has_value() ||
+        ((record.contract.effects & catalog::call_effect_egress) != 0) !=
+            (id.destination.size() != 0) ||
+        state.created.transition.commit_seq == 0 || state.created.transition.transition_id == 0 ||
+        foundation::id_boot_epoch(id.call_id) != state.created.boot_epoch ||
+        foundation::id_boot_epoch(id.task_id) > state.created.boot_epoch ||
+        foundation::id_boot_epoch(id.owner_instance_id) > state.created.boot_epoch ||
+        state.attempt.boot_epoch < state.created.boot_epoch ||
+        state.latest.boot_epoch > foundation::max_boot_epoch || id.call_id == id.task_id ||
+        id.call_id == id.owner_instance_id || id.operation_id == id.task_id ||
+        id.operation_id == id.owner_instance_id || record.contract.business_contract.size == 0 ||
         state.attempt.request_id == 0 || state.attempt.boot_epoch == 0 ||
         state.attempt.boot_epoch > state.archived.boot_epoch || state.revision == 0 ||
         (record.contract.business_contract.size != 0 && !record.contract.business_contract.data)) {
@@ -146,10 +151,11 @@ bool OperationLedger::valid_record(const OperationRecord &record) {
     call.state.latest = state.latest;
     call.state.attempt = state.attempt;
     call.state.outcome = state.outcome;
+    call.state.status = state.status;
+    call.state.reason = state.reason;
     call.state.query = state.query;
-    return state.outcome != 0 && CallTable::valid_query(call) &&
-           state.revision == (state.query ? state.query->generation + initial_query_revision
-                                          : initial_query_revision);
+    return valid_call_outcome(call) && CallTable::valid_query(call) &&
+           state.revision == query_revision(state.query);
 }
 
 ayni_status_t OperationLedger::check_admit_from_call(const CallIdentity &id,
@@ -161,6 +167,8 @@ ayni_status_t OperationLedger::check_admit_from_call(const CallIdentity &id,
         return AYNI_CAPACITY_EXCEEDED;
     }
     if (state.ephemeral || state.outcome == 0 || !ActionRecord::unresolved(action) ||
+        action.identity.operation_id !=
+            (state.subscription ? state.subscription->generation : id.operation_id) ||
         (state.query && state.query->phase != CallQuery::Phase::finished) ||
         (state.execution && !execution_stopped(*state.execution)) || !before(state.latest, stamp) ||
         contains_identity(id.call_id) || contains_identity(action.identity.operation_id) ||
