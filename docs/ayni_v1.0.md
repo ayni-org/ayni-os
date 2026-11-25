@@ -1,12 +1,12 @@
 # Ayni：通用原生 AgentOS 基础能力与实验实施计划
 
 > **文档性质**：工程实施计划与待实现契约，不代表已有软件能力。\
-> **文档版本**：v1.130 · 2026-11-26；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
+> **文档版本**：v1.131 · 2026-11-26；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
 > **产品定位**：跨平台、跨设备的通用原生 AgentOS；宿主与扩展决定提供哪些设备或软件能力，统一助理只是应用示例。\
 > **架构路线**：按 Ayni 的共享 Agent 状态、授权、资源及恢复需求设计原生 Core，复用宿主 OS，模型优先通过外部 API 获得；架构图仅参考 AIOS 的分层分组表达样式。\
 > **实施顺序**：先完成基础通用能力，再开展 ESP32-S3、Linux 系统等实验；设备与能力组合按实验目标选取，不要求宿主具备语音、视觉、运动或特定外设。\
 > **基准投入**：单人全职；阶段周期是相对工作量估算，不是开工日期或交付日期承诺。\
-> **当前状态**：通用基础与独立源码SDK已交付，Native/Sim基线见[基础报告](../reports/core/foundation-acceptance.md)。本分支ABI0.62/schema12，独立OperationLedger将持久未决操作与活跃Call及工作容量分离，提供QUERY/人工ACK和落盘后结案审计；朗读采用Tier0并保持停稳与借用归还规则，见[ADR-0115](adr/0115-unknown-operation-history-and-work-retirement.md)。相关正常便携回归、Native消费者编译、独立审查及最终ESP固件编译与分区检查通过。设备仍运行已正常OTA确认的d9f476e/ABI0.61，未部署本分支。板端时延、新格式异常恢复、完整128K峰值、实体停止链与耐久仍待对应证据。
+> **当前状态**：通用基础与独立源码SDK已交付，Native/Sim基线见[基础报告](../reports/core/foundation-acceptance.md)。本分支ABI0.62/schema12，独立OperationLedger将持久未决操作与活跃Call及工作容量分离，提供QUERY/人工ACK和落盘后结案审计；朗读采用Tier0并保持停稳与借用归还规则，见[ADR-0115](adr/0115-unknown-operation-history-and-work-retirement.md)。相关正常便携回归、Native消费者编译、独立审查及最终ESP固件编译与分区检查通过。设备已正常OTA到44278a8/ABI0.62/schema12并完成启动自确认；本次旧聊天、任务及未决记录按用户授权清理，配置保留。板端时延、新格式异常恢复、完整128K峰值、实体停止链与耐久仍待对应证据。
 
 > **本轮范围**：用户2026-10-31要求实施[独立工程接入与验收计划](architecture/independent-consumption-plan.md)：通用源码SDK、低栈工作区、Native/ESP存储及Host、共同应用和验收。平台适配保持独立目录，必要接口直接升级，正常存储和最小重开获授权；实机操作、付费模型及其他新专项不启动。
 
@@ -1098,7 +1098,9 @@ idf.py -p <SERIAL_PORT> flash monitor
 
 ### 14.1 已接受的实施默认值
 
-本次修订（v1.130，2026-11-26）：按用户要求修复Neon审查项：查询未知/取消/旧boot分类、fenced持久回执保留和快照命令退休边界，缩小朗读栈缓冲、补齐对齐/枚举约束与停稳校验复用。ABI0.62的192 B视图预留位公开原query_authority，持久布局和schema12不变；限定回归不替代通用恢复或硬件验收，见[ADR-0115](adr/0115-unknown-operation-history-and-work-retirement.md)。
+本次修订（v1.131，2026-11-26）：用户要求OTA并授权清理旧数据，44278a8/ABI0.62/schema12正常升级和启动自确认通过，旧聊天、任务及未决记录已放弃，配置/密钥/配对/偏好分区保留；一次性过渡逻辑不进入产品、不授权未来自动擦除。异常恢复和硬件验收边界不变，见[ADR-0115](adr/0115-unknown-operation-history-and-work-retirement.md)。
+
+上一修订（v1.130，2026-11-26）：按用户要求修复Neon审查项：查询未知/取消/旧boot分类、fenced持久回执保留和快照命令退休边界，缩小朗读栈缓冲、补齐对齐/枚举约束与停稳校验复用。ABI0.62的192 B视图预留位公开原query_authority，持久布局和schema12不变；限定回归不替代通用恢复或硬件验收，见[ADR-0115](adr/0115-unknown-operation-history-and-work-retirement.md)。
 
 上一修订（v1.129，2026-11-25）：按用户计划独立保存持久未决操作，CallTable保持纯活跃表，工作替换同批两阶段交接；QUERY/人工ACK闭环和结案审计落盘后发射。ABI0.62/schema12直接升级、拒旧保留，缩容no_room；Core默认0，Native/CLI与ESP显式16槽。speaker.speak_text降EPHEMERAL、ReplyVoice选CANCEL_ON_REBOOT。用户允许实际84B增量及合理调整步骤；不自动OTA、擦卷或真实动作，见[ADR-0115](adr/0115-unknown-operation-history-and-work-retirement.md)。
 
