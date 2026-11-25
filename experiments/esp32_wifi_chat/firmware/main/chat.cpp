@@ -565,7 +565,10 @@ ayni_status_t Chat::configure_reflexes() {
                                    {},
                                    0,
                                    0,
-                                   {}};
+                                   {},
+                                   0,
+                                   0,
+                                   nullptr};
     return ayni_register_reflex_rule(kernel_, &rule);
 }
 void Chat::drain_reflex_events() {

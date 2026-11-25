@@ -103,9 +103,21 @@ ayni_status_t ReflexEngine::execute_rule(uint32_t index, uint64_t now_us, uint64
         if (rule.active_call_id != 0U) {
             return AYNI_OK; // Previous reflex Call from this rule is still in flight.
         }
-        status =
-            calls_.submit_reflex_call(rule.owner_agent_id, rule.binding_index, view(rule.rule_id),
-                                      table_.input(index), now_us, durable_seq, spawned);
+        // The same owner already required all conditions for this trigger. Read scalar snapshots
+        // only; canonical path traversal and encoding were resolved once at start (ADR-0114).
+        std::array<int64_t, AYNI_REFLEX_CONDITION_COUNT_MAX> values{};
+        for (uint32_t at = 0; at < rule.parameter_count; ++at) {
+            const auto condition = rule.parameters[at].binding.condition_index;
+            ayni_observation_info_v1 observed{};
+            status = observations_.info(view(rule.conditions[condition].source), now_us, observed);
+            if (status != AYNI_OK) {
+                return AYNI_INTERNAL;
+            }
+            values[condition] = observed.value;
+        }
+        status = calls_.submit_reflex_call(
+            rule.owner_agent_id, rule.binding_index, view(rule.rule_id),
+            table_.projected_input(index, values), now_us, durable_seq, spawned);
         if (status == AYNI_INTERNAL) {
             return AYNI_INTERNAL;
         }

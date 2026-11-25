@@ -39,6 +39,25 @@ typedef uint32_t ayni_reflex_trigger_mode_t;
 /* Fire once on false->true edge; re-arm only after condition clears. Since 0.59. */
 #define AYNI_REFLEX_FLAG_EDGE_TRIGGERED 0x2u
 
+/* Maximum dynamic integer bindings and object-only path depth per rule. Since 0.61. */
+#define AYNI_REFLEX_PARAM_BINDING_MAX 4u
+#define AYNI_REFLEX_PARAM_PATH_MAX 4u
+/* Deterministic map: clamp input; saturated (input*scale_num)/scale_den truncated toward zero;
+ * saturated offset addition; clamp output. Only MEASURED condition sources and fixed I64
+ * schema fields are supported. No floating point or list paths. Since 0.61. */
+typedef struct ayni_reflex_param_binding_v1 {
+    uint32_t condition_index; /* Index in the same rule's active conditions prefix. */
+    uint32_t path_count;      /* 1..PARAM_PATH_MAX positive object field IDs. */
+    uint32_t path[AYNI_REFLEX_PARAM_PATH_MAX]; /* Root-to-leaf path; unused tail zero. */
+    int64_t input_min;  /* Inclusive measurement clamp lower bound in source units. */
+    int64_t input_max;  /* Inclusive measurement clamp upper bound, >= input_min. */
+    int64_t scale_num;  /* Signed integer affine slope numerator. */
+    int64_t scale_den;  /* Positive denominator, never zero. */
+    int64_t offset;     /* Saturating addition after division, in output field units. */
+    int64_t output_min; /* Inclusive output clamp lower bound within the entire schema range. */
+    int64_t output_max; /* Inclusive output clamp upper bound, >= output_min. */
+} ayni_reflex_param_binding_v1;
+
 /* Trusted CONFIGURING registration; all views and value inputs are copied. Since 0.59. */
 typedef struct ayni_reflex_rule_v1 {
     uint32_t struct_size;                    /* Exact sizeof. */
@@ -59,6 +78,10 @@ typedef struct ayni_reflex_rule_v1 {
     uint32_t binding_version;   /* Positive exact binding version for PREEMPT_CALL; else 0. */
     uint32_t reserved;          /* Zero. */
     ayni_value_v1 input; /* Canonical business value for PREEMPT_CALL; empty for SOFT_STOP. */
+    uint32_t param_binding_count;    /* 0..PARAM_BINDING_MAX; zero disables mapping. Since 0.61. */
+    uint32_t param_binding_reserved; /* Zero. Since 0.61. */
+    const ayni_reflex_param_binding_v1 *param_bindings; /* Copied at registration; null iff zero.
+                                                         * PREEMPT_CALL only. Since 0.61. */
 } ayni_reflex_rule_v1;
 
 /* Owner-thread diagnostics for one registered ReflexRule. Since 0.59. */

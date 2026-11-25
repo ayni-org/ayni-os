@@ -484,7 +484,10 @@ struct AuditFixture {
                                            {},
                                            0,
                                            0,
-                                           {}};
+                                           {},
+                                           0,
+                                           0,
+                                           nullptr};
             ASSERT_EQ(ayni_register_reflex_rule(k, &rule), AYNI_OK);
 
             auto motor_gt = goal_type_desc("motor.goal", 1);

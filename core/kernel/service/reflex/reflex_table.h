@@ -42,6 +42,14 @@ struct ReflexRuleEntry {
     uint32_t binding_index = no_index;  // Resolved BindingRegistry slot, or no_index.
     uint32_t input_size = 0;            // Encoded canonical input bytes for PREEMPT_CALL.
 
+    // One immutable mapping paired with its canonical startup-resolved patch location.
+    struct Parameter {
+        ayni_reflex_param_binding_v1 binding{}; // Copied validated affine/clamp contract.
+        uint32_t byte_offset = 0; // Resolved I64 payload offset, valid only after validate_all.
+    };
+    uint32_t parameter_count = 0; // Active prefix; zero means use original immutable input.
+    std::array<Parameter, AYNI_REFLEX_PARAM_BINDING_MAX> parameters{};
+
     // Boot-local volatile state reset in begin_boot(); never persisted.
     bool enabled = false;        // Current RAM enable gate.
     bool latched_active = false; // True while EDGE_TRIGGERED rule awaits condition reset.
@@ -91,6 +99,10 @@ class ReflexTable {
     ReflexRuleEntry &entry(uint32_t index) { return rules_[index]; }
     const ReflexRuleEntry &entry(uint32_t index) const { return rules_[index]; }
     ayni_bytes_v1 input(uint32_t index) const;
+    // Owner-only scratch borrow through synchronous Call admission; no trigger-time decoding.
+    ayni_bytes_v1
+    projected_input(uint32_t index,
+                    const std::array<int64_t, AYNI_REFLEX_CONDITION_COUNT_MAX> &values);
 
   private:
     bool find(ayni_string_v1 rule_id, uint32_t &out_index) const;

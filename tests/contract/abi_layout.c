@@ -1042,7 +1042,7 @@ AYNI_LAYOUT(reflex_rule_owner_agent,
 AYNI_LAYOUT(reflex_rule_input, offsetof(ayni_reflex_rule_v1, input) ==
                                    AYNI_ROUND8(40 + 7 * AYNI_PTR) + 16 + 2 * AYNI_PTR);
 AYNI_LAYOUT(reflex_rule_size, sizeof(ayni_reflex_rule_v1) ==
-                                  AYNI_ROUND8(AYNI_ROUND8(40 + 7 * AYNI_PTR) + 16 + 4 * AYNI_PTR));
+                                  AYNI_ROUND8(AYNI_ROUND8(40 + 7 * AYNI_PTR) + 24 + 5 * AYNI_PTR));
 AYNI_LAYOUT(reflex_info_size, sizeof(ayni_reflex_info_v1) == 56);
 AYNI_LAYOUT(reflex_info_last_fired, offsetof(ayni_reflex_info_v1, last_fired_us) == 24);
 AYNI_LAYOUT(reflex_info_active_call, offsetof(ayni_reflex_info_v1, active_call_id) == 48);
@@ -1082,6 +1082,12 @@ AYNI_LAYOUT(audit_info_next_seq, offsetof(ayni_audit_info_v1, next_seq) == 16);
 AYNI_LAYOUT(audit_info_dropped_overflow, offsetof(ayni_audit_info_v1, dropped_overflow) == 24);
 AYNI_LAYOUT(audit_info_drained_total, offsetof(ayni_audit_info_v1, drained_total) == 32);
 AYNI_LAYOUT(audit_info_size, sizeof(ayni_audit_info_v1) == 40);
+
+/* ADR-0114: parameter projection is a fixed C99 integer layout (Since 0.61). */
+AYNI_LAYOUT(reflex_param_size, sizeof(ayni_reflex_param_binding_v1) == 80);
+AYNI_LAYOUT(reflex_param_clamp, offsetof(ayni_reflex_param_binding_v1, input_min) == 24);
+AYNI_LAYOUT(reflex_param_bindings, offsetof(ayni_reflex_rule_v1, param_bindings) ==
+                                       AYNI_ROUND8(40 + 7 * AYNI_PTR) + 24 + 4 * AYNI_PTR);
 
 /* C-VER-002 / ADR-0114: pure ControlLoop C99 fields contain no pointers. */
 AYNI_LAYOUT(loop_sensor_limit_size, sizeof(ayni_control_sensor_limit_v1) == 32);

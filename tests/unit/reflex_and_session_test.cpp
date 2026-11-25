@@ -9,7 +9,10 @@
 //    and strict Grant/Scope/Agent/Scene preflight enforcement).
 // 6. Runtime volatile toggle (ayni_set_reflex_enabled, 0 WAL) + schema 11 reboot compatibility.
 
+#include "../support/latency_samples.h"
+#include "foundation/integer_affine.h"
 #include "work_node.h"
+#include <ayni/audit.h>
 
 #include <ayni/calls.h>
 #include <ayni/execution.h>
@@ -1595,6 +1598,276 @@ TEST(ReflexAndSession, StaleOrGapCooldownAndEdgeLatchDoNotBusySpinOwner) {
         EXPECT_EQ(idle_report.more_ready, 0U);
         EXPECT_GT(idle_report.next_deadline_us, fix.now_us);
     }
+}
+
+// ADR-0114: exact full-product division precedes saturation, including 32-bit-compatible edges.
+TEST(ReflexParameters, AffineIntegerEdgesSaturateWithoutPrematureProductTruncation) {
+    using ayni::foundation::map_reflex_i64;
+    EXPECT_EQ(map_reflex_i64(INT64_MAX, INT64_MIN, INT64_MAX, 2, 2, 0, INT64_MIN, INT64_MAX),
+              INT64_MAX);
+    EXPECT_EQ(map_reflex_i64(INT64_MIN, INT64_MIN, INT64_MAX, -1, 1, 0, INT64_MIN, INT64_MAX),
+              INT64_MAX);
+    EXPECT_EQ(map_reflex_i64(INT64_MIN, INT64_MIN, INT64_MAX, 3, 3, 0, INT64_MIN, INT64_MAX),
+              INT64_MIN);
+    EXPECT_EQ(map_reflex_i64(INT64_MAX, INT64_MIN, INT64_MAX, INT64_MAX, 1, 99, -90, 90), 90);
+    EXPECT_EQ(map_reflex_i64(-99, -10, 10, 3, 2, -2, -100, 100), -17);
+    EXPECT_EQ(
+        map_reflex_i64(INT64_MIN, INT64_MIN, INT64_MAX, 1, 1, INT64_MIN, INT64_MIN, INT64_MAX),
+        INT64_MIN);
+}
+
+// ADR-0114: nested object path is resolved once; patched bytes still undergo full Grant scope
+// preflight, with refusal audited and zero Provider execution outside the approved range.
+void dynamic_parameter_case(unsigned variant) {
+    struct Receiver {
+        int64_t value = 0;
+        uint32_t calls = 0;
+        static ayni_submit_result_t submit(void *context, const ayni_provider_request_v1 *request,
+                                           ayni_provider_completion_t *completion) {
+            auto &self = *static_cast<Receiver *>(context);
+            ++self.calls;
+            self.value = request->value.nodes[2].value.integer;
+            ayni_provider_result_v1 result{};
+            result.struct_size = sizeof(result);
+            result.attempt = request->attempt;
+            result.outcome = AYNI_CALL_COMPLETED;
+            result.status = AYNI_OK;
+            result.effect = AYNI_CALL_EFFECT_COMPLETE;
+            result.result = text("done");
+            return ayni_provider_post(completion, &result) == AYNI_OK
+                       ? AYNI_SUBMIT_ACCEPTED
+                       : AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+        }
+    } receiver;
+    ReflexFixture fix;
+    fix.work.node().config().audit_capacity = 32;
+    fix.extra_configure = [&](ayni_kernel_t *kernel) {
+        ayni_authority_field_desc_v1 field{};
+        field.struct_size = sizeof(field);
+        field.field_id = 1;
+        field.usage = AYNI_AUTHORITY_PARAMETER;
+        field.domain.struct_size = sizeof(field.domain);
+        field.domain.kind = AYNI_AUTHORITY_I64;
+        field.domain.unit = text("percent");
+        field.domain.values.integer = {-90, 90};
+        const ayni_capability_desc_v1 cap{sizeof(cap), 1, text("parameter.apply"), 1, 0, &field};
+        ASSERT_EQ(ayni_register_capability(kernel, &cap), AYNI_OK);
+        std::array<ayni_schema_node_v1, 3> schema{};
+        schema[0].kind = AYNI_VALUE_OBJECT;
+        schema[0].subtree_end = 3;
+        schema[1].kind = AYNI_VALUE_OBJECT;
+        schema[1].field_id = 10;
+        schema[1].subtree_end = 3;
+        schema[1].flags = AYNI_SCHEMA_REQUIRED;
+        schema[1].name = text("target");
+        schema[2].kind = AYNI_VALUE_I64;
+        schema[2].field_id = 1;
+        schema[2].subtree_end = 3;
+        schema[2].flags = AYNI_SCHEMA_REQUIRED;
+        schema[2].name = text("percent");
+        schema[2].unit = text("percent");
+        schema[2].min_i64 = -90;
+        schema[2].max_i64 = 90;
+        ayni_schema_node_v1 result{};
+        result.kind = AYNI_VALUE_TEXT;
+        result.subtree_end = 1;
+        result.max_count = 32;
+        ayni_authority_projection_v1 projection{};
+        projection.field_id = 1;
+        projection.path_count = 2;
+        projection.path[0] = 10;
+        projection.path[1] = 1;
+        projection.unit = text("percent");
+        const ayni_business_contract_v1 business{
+            {schema.data(), 3}, {&result, 1}, 1, 0, &projection};
+        const ayni_call_capability_v1 call{sizeof(call),
+                                           1,
+                                           text("parameter.apply"),
+                                           {sizeof(ayni_call_contract_v1), AYNI_CALL_UNARY,
+                                            AYNI_CALL_TOOL, 0, AYNI_CALL_IDEMPOTENT,
+                                            AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_NONE, 0, 1000,
+                                            AYNI_CALL_INPUT_VALUE, AYNI_CALL_RESULT_TEXT, 128, 32,
+                                            0, nullptr, nullptr, AYNI_CALL_DURABILITY_EPHEMERAL, 0},
+                                           &business};
+        ASSERT_EQ(ayni_register_call_capability(kernel, &call), AYNI_OK);
+        const ayni_provider_v1 provider{sizeof(provider),
+                                        1,
+                                        text("parameter.provider"),
+                                        text("parameter.endpoint"),
+                                        {},
+                                        &receiver,
+                                        1,
+                                        0,
+                                        &call,
+                                        Receiver::submit,
+                                        nullptr,
+                                        nullptr,
+                                        nullptr};
+        ASSERT_EQ(ayni_register_provider(kernel, &provider), AYNI_OK);
+        const ayni_binding_v1 binding{sizeof(binding),
+                                      1,
+                                      text("parameter.apply"),
+                                      text("parameter.apply"),
+                                      1,
+                                      1,
+                                      provider.provider_id,
+                                      provider.endpoint_id,
+                                      {},
+                                      0,
+                                      0,
+                                      nullptr};
+        ASSERT_EQ(ayni_register_binding(kernel, &binding), AYNI_OK);
+        std::array<ayni_value_node_v1, 3> input{};
+        input[0].kind = AYNI_VALUE_OBJECT;
+        input[0].subtree_end = 3;
+        input[1].kind = AYNI_VALUE_OBJECT;
+        input[1].field_id = 10;
+        input[1].subtree_end = 3;
+        input[2].kind = AYNI_VALUE_I64;
+        input[2].field_id = 1;
+        input[2].subtree_end = 3;
+        ayni_reflex_param_binding_v1 parameter{};
+        parameter.path_count = 2;
+        parameter.path[0] = 10;
+        parameter.path[1] = 1;
+        parameter.input_min = 0;
+        parameter.input_max = 200;
+        parameter.scale_num = -1;
+        parameter.scale_den = 2;
+        parameter.offset = 100;
+        parameter.output_min = -90;
+        parameter.output_max = 90;
+        const ayni_observation_condition_v1 condition{text("sensor.obstacle_mm"), 1, 0, 0, 200,
+                                                      obstacle_validity_us};
+        ayni_reflex_rule_v1 rule{};
+        rule.struct_size = sizeof(rule);
+        rule.version = 1;
+        rule.rule_id = text("reflex.dynamic");
+        rule.action = AYNI_REFLEX_PREEMPT_CALL;
+        rule.trigger_mode = AYNI_REFLEX_TRIGGER_IN_RANGE;
+        rule.flags = AYNI_REFLEX_FLAG_ENABLED_BY_DEFAULT | AYNI_REFLEX_FLAG_EDGE_TRIGGERED;
+        rule.condition_count = 1;
+        rule.conditions = &condition;
+        rule.owner_agent_id = agent_a;
+        rule.binding_id = binding.binding_id;
+        rule.binding_version = 1;
+        rule.input = {input.data(), 3};
+        if (variant == 1) {
+            parameter.scale_den = 0;
+        } else if (variant == 3) {
+            parameter.path[1] = 99; // Missing business path.
+        } else if (variant == 4) {
+            parameter.path_count = 1; // Existing object is not an I64 payload.
+            parameter.path[1] = 0;
+        } else if (variant == 5) {
+            parameter.output_max = 91; // Entire interval must be inside schema [-90,90].
+        }
+        const std::array<ayni_reflex_param_binding_v1, 2> parameters{parameter, parameter};
+        rule.param_binding_count = variant == 2 ? 2U : 1U;
+        rule.param_bindings = parameters.data();
+        EXPECT_EQ(ayni_register_reflex_rule(kernel, &rule),
+                  variant == 1 ? AYNI_INVALID_ARGUMENT : AYNI_OK);
+    };
+    if (variant >= 2) {
+        // ADR-0114: cross-catalog path/type/interval/duplicate checks happen before RUNNING.
+        fix.configure_defaults();
+        fix.work.additional_registration = [&](ayni_kernel_t *kernel) {
+            fix.register_motor_stack(kernel);
+            fix.extra_configure(kernel);
+        };
+        fix.work.node().create();
+        EXPECT_EQ(ayni_start(fix.work.kernel()), AYNI_INVALID_ARGUMENT);
+        return;
+    }
+    fix.start();
+    if (variant == 1) {
+        return; // Structurally invalid parameter was refused without consuming a rule slot.
+    }
+    ayni_scope_field_v1 allowed{};
+    allowed.struct_size = sizeof(allowed);
+    allowed.field_id = 1;
+    allowed.allowed.struct_size = sizeof(allowed.allowed);
+    allowed.allowed.kind = AYNI_AUTHORITY_I64;
+    allowed.allowed.unit = text("percent");
+    allowed.allowed.values.integer = {-50, 50};
+    const ayni_grant_create_v1 grant{sizeof(grant),
+                                     1,
+                                     text("parameter.apply"),
+                                     fix.work.instance(agent_a),
+                                     0,
+                                     AYNI_GRANT_PERMANENT,
+                                     0,
+                                     0,
+                                     {sizeof(ayni_scope_v1), 1, &allowed}};
+    auto intent = fix.work.intent(AYNI_INTENT_GRANT_CREATE, &grant);
+    intent.command_id = ++fix.command_id;
+    ASSERT_EQ(fix.work.submit(intent).status, AYNI_OK);
+    fix.flush_durable();
+    ASSERT_EQ(fix.publish_obstacle_latest(1, 120), AYNI_OK);
+    for (unsigned at = 0; at < 8 && !receiver.calls; ++at) {
+        fix.step(1000);
+    }
+    ASSERT_EQ(receiver.calls, 1U);
+    EXPECT_EQ(receiver.value, 40);
+    fix.step(1000);
+    ASSERT_EQ(fix.publish_obstacle_latest(2, 400), AYNI_OK);
+    fix.step(1000);
+    ASSERT_EQ(fix.publish_obstacle_latest(3, 80), AYNI_OK);
+    fix.step(1000);
+    EXPECT_EQ(receiver.calls, 1U);
+    EXPECT_EQ(fix.reflex_info("reflex.dynamic").denied_count, 1U);
+    std::array<ayni_audit_record_v1, 32> records{};
+    uint32_t count = 0;
+    ASSERT_EQ(ayni_take_audit_records(fix.work.kernel(), records.data(), uint32_t(records.size()),
+                                      &count),
+              AYNI_OK);
+    bool denied = false;
+    for (uint32_t at = 0; at < count; ++at) {
+        denied = denied ||
+                 (records[at].kind == AYNI_AUDIT_REFLEX_EVENT && records[at].status != AYNI_OK &&
+                  (records[at].flags & AYNI_AUDIT_FLAG_DENIED));
+    }
+    EXPECT_TRUE(denied);
+    ayni::test::LatencySamples samples;
+    const auto appends_before = fix.log_batches();
+    uint64_t sequence = 3;
+    for (unsigned at = 0; at < 256; ++at) {
+        ASSERT_EQ(fix.publish_obstacle_latest(++sequence, 400), AYNI_OK);
+        fix.step(0); // Reset edge latch and drain the preceding terminal result.
+        const auto calls_before = receiver.calls;
+        const auto wakes_before = fix.work.node().sim().wake_count();
+        const auto started = ayni::test::LatencySamples::Clock::now();
+        ASSERT_EQ(fix.publish_obstacle_latest(++sequence, 120), AYNI_OK);
+        EXPECT_GT(fix.work.node().sim().wake_count(), wakes_before);
+        for (unsigned step = 0; step < 8 && receiver.calls == calls_before; ++step) {
+            fix.step(0);
+        }
+        samples.add(started);
+        ASSERT_EQ(receiver.calls, calls_before + 1);
+        ASSERT_EQ(receiver.value, 40);
+    }
+    EXPECT_EQ(fix.log_batches(), appends_before);
+    samples.print("ObservationSlot->parameterized_Reflex->Provider/zero_WAL");
+    EXPECT_LT(samples.percentile(99), 300);
+    EXPECT_LT(samples.percentile(100), 2000);
+}
+TEST(ReflexParameters, DynamicProjectionRechecksScopeAndMeetsHostLatencyBudget) {
+    dynamic_parameter_case(0);
+}
+TEST(ReflexParameters, ZeroDenominatorIsRefusedAtRegistration) {
+    dynamic_parameter_case(1);
+}
+TEST(ReflexParameters, DuplicatePayloadOffsetIsRefusedAtStartup) {
+    dynamic_parameter_case(2);
+}
+TEST(ReflexParameters, MissingBusinessPathIsRefusedAtStartup) {
+    dynamic_parameter_case(3);
+}
+TEST(ReflexParameters, NonIntegerPayloadIsRefusedAtStartup) {
+    dynamic_parameter_case(4);
+}
+TEST(ReflexParameters, OutputIntervalOutsideSchemaIsRefusedAtStartup) {
+    dynamic_parameter_case(5);
 }
 
 } // namespace

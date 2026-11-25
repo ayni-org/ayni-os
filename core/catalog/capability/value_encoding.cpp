@@ -35,14 +35,17 @@ uint32_t scalar_bytes(const ayni_value_node_v1 &node) {
     }
 }
 
+// One layout calculation for measurement, encoding and pre-resolved scalar patches.
+uint64_t encoded_node_bytes(const ayni_value_node_v1 &node) {
+    return static_cast<uint64_t>(value_node_header_bytes) + scalar_bytes(node) +
+           (string_kind(node.kind) ? static_cast<uint64_t>(word_bytes) + node.value.text.size : 0U);
+}
+
 ayni_status_t measure(const ayni_value_v1 &value, uint32_t &out) {
     uint32_t size = value_encoding_header_bytes;
     for (uint32_t at = 0; at < value.node_count; ++at) {
         const auto &node = value.nodes[at];
-        const uint64_t extra =
-            static_cast<uint64_t>(value_node_header_bytes) + scalar_bytes(node) +
-            (string_kind(node.kind) ? static_cast<uint64_t>(word_bytes) + node.value.text.size
-                                    : 0U);
+        const auto extra = encoded_node_bytes(node);
         if (extra > std::numeric_limits<uint32_t>::max() - size) {
             return AYNI_CAPACITY_EXCEEDED;
         }
@@ -59,7 +62,6 @@ uint32_t write_node(const ayni_value_node_v1 &node, uint8_t *out) {
     foundation::store_le32(out + field_at, node.field_id);
     foundation::store_le32(out + end_at, node.subtree_end);
     auto *payload = out + value_node_header_bytes;
-    const uint32_t scalar = scalar_bytes(node);
     switch (node.kind) {
     case AYNI_VALUE_BOOL:
         foundation::store_le32(payload, node.value.boolean);
@@ -95,9 +97,8 @@ uint32_t write_node(const ayni_value_node_v1 &node, uint8_t *out) {
         if (node.value.text.size != 0U) {
             std::memcpy(payload + word_bytes, node.value.text.data, node.value.text.size);
         }
-        return value_node_header_bytes + word_bytes + node.value.text.size;
     }
-    return value_node_header_bytes + scalar;
+    return static_cast<uint32_t>(encoded_node_bytes(node));
 }
 
 // Signed bit patterns round-trip without implementation-defined unsigned-to-
@@ -164,6 +165,24 @@ bool read_node(ayni_bytes_v1 body, uint32_t &offset, ayni_value_node_v1 &node) {
     return true;
 }
 } // namespace
+
+ayni_status_t admitted_i64_offset(const ayni_value_v1 &value, uint32_t node_index,
+                                  uint32_t &out_offset) {
+    if (!value.nodes || node_index >= value.node_count ||
+        value.nodes[node_index].kind != AYNI_VALUE_I64) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    uint64_t offset = value_encoding_header_bytes;
+    for (uint32_t at = 0; at < node_index; ++at) {
+        offset += encoded_node_bytes(value.nodes[at]);
+    }
+    offset += value_node_header_bytes;
+    if (offset > UINT32_MAX) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    out_offset = static_cast<uint32_t>(offset);
+    return AYNI_OK;
+}
 
 ayni_status_t measure_admitted_value(const ayni_value_v1 &value, uint32_t &size) {
     return measure(value, size);

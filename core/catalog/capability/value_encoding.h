@@ -30,6 +30,10 @@ ayni_status_t encode_admitted_value(const ayni_value_v1 &value, uint8_t *out, ui
 // Complete shape decoder. Failure preserves out, with no partial published tree.
 ayni_status_t decode_value(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body,
                            DecodedValue &out);
+// Payload offset of one I64 in an already admitted tree's canonical encoding. Startup-only
+// consumers reuse this codec's layout rather than maintaining another byte reader/writer.
+ayni_status_t admitted_i64_offset(const ayni_value_v1 &value, uint32_t node_index,
+                                  uint32_t &out_offset);
 // Exact normalized trees, with only active fields compared and text compared by bytes.
 bool same_value(const ayni_value_v1 &left, const ayni_value_v1 &right);
 // Stronger persisted-value admission: object order and floating zero are canonical.

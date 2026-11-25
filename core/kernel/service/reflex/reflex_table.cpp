@@ -3,6 +3,8 @@
 #include "catalog/abi_checks.h"
 #include "catalog/capability/business_encoding.h"
 #include "catalog/capability/value_encoding.h"
+#include "foundation/integer_affine.h"
+#include "foundation/little_endian.h"
 #include "work/call/call_input.h"
 
 #include <cstring>
@@ -13,6 +15,54 @@ namespace {
 
 ayni_string_v1 view(const catalog::CatalogId &id) {
     return {id.data(), id.size()};
+}
+
+// Object-only paths have identical field/subtree semantics in admitted schema and value trees.
+// Lists are deliberately excluded: one binding always names exactly one fixed-width scalar.
+template <class Node>
+uint32_t object_path(const Node *nodes, uint32_t count,
+                     const ayni_reflex_param_binding_v1 &binding) {
+    uint32_t index = 0;
+    for (uint32_t depth = 0; depth < binding.path_count; ++depth) {
+        if (nodes[index].kind != AYNI_VALUE_OBJECT) {
+            return count;
+        }
+        uint32_t child = index + 1U;
+        while (child < nodes[index].subtree_end && nodes[child].field_id != binding.path[depth]) {
+            child = nodes[child].subtree_end;
+        }
+        if (child == nodes[index].subtree_end) {
+            return count;
+        }
+        index = child;
+    }
+    return index;
+}
+
+// Reject malformed bindings before retaining caller pointers or allocating any rule slot.
+ayni_status_t copy_parameters(const ayni_reflex_rule_v1 &raw, ReflexRuleEntry &out) {
+    if (raw.param_binding_count > AYNI_REFLEX_PARAM_BINDING_MAX || raw.param_binding_reserved ||
+        ((raw.param_binding_count == 0U) != (raw.param_bindings == nullptr)) ||
+        (raw.param_binding_count && raw.action != AYNI_REFLEX_PREEMPT_CALL)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    for (uint32_t at = 0; at < raw.param_binding_count; ++at) {
+        const auto &binding = raw.param_bindings[at];
+        if (binding.condition_index >= raw.condition_count || !binding.path_count ||
+            binding.path_count > AYNI_REFLEX_PARAM_PATH_MAX ||
+            binding.input_min > binding.input_max || binding.scale_den <= 0 ||
+            binding.output_min > binding.output_max) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        for (uint32_t path = 0; path < AYNI_REFLEX_PARAM_PATH_MAX; ++path) {
+            if ((path < binding.path_count) != (binding.path[path] != 0U)) {
+                return AYNI_INVALID_ARGUMENT;
+            }
+        }
+        out.parameters[at].binding = binding;
+    }
+    out.parameter_count = raw.param_binding_count;
+    return AYNI_OK;
 }
 
 // Validates rule header, trigger mode, flags, Scene pair and action-specific shape once
@@ -80,6 +130,33 @@ ayni_status_t decode_rule_header(const ayni_reflex_rule_v1 &raw, ReflexRuleEntry
     out.condition_count = raw.condition_count;
     out.owner_agent_id = raw.owner_agent_id;
     out.binding_version = raw.binding_version;
+    return copy_parameters(raw, out);
+}
+
+// Startup-only: each mapping has one I64 payload and an entire output interval within schema.
+ayni_status_t resolve_parameters(ReflexRuleEntry &rule, const catalog::DecodedValue &value,
+                                 const catalog::DecodedSchema &schema) {
+    for (uint32_t at = 0; at < rule.parameter_count; ++at) {
+        auto &parameter = rule.parameters[at];
+        const auto &binding = parameter.binding;
+        const auto value_index = object_path(value.nodes.data(), value.count, binding);
+        const auto schema_index = object_path(schema.nodes.data(), schema.count, binding);
+        if (value_index == value.count || schema_index == schema.count ||
+            schema.nodes[schema_index].kind != AYNI_VALUE_I64 ||
+            binding.output_min < schema.nodes[schema_index].min_i64 ||
+            binding.output_max > schema.nodes[schema_index].max_i64 ||
+            catalog::admitted_i64_offset(value.view(), value_index, parameter.byte_offset) !=
+                AYNI_OK ||
+            parameter.byte_offset > rule.input_size ||
+            rule.input_size - parameter.byte_offset < sizeof(int64_t)) {
+            return AYNI_INVALID_ARGUMENT;
+        }
+        for (uint32_t previous = 0; previous < at; ++previous) {
+            if (rule.parameters[previous].byte_offset == parameter.byte_offset) {
+                return AYNI_INVALID_ARGUMENT;
+            }
+        }
+    }
     return AYNI_OK;
 }
 
@@ -123,6 +200,27 @@ uint8_t *ReflexTable::input_slot(uint32_t index) const {
 ayni_bytes_v1 ReflexTable::input(uint32_t index) const {
     const auto size = rules_[index].input_size;
     return size == 0U ? ayni_bytes_v1{} : ayni_bytes_v1{input_slot(index), size};
+}
+
+ayni_bytes_v1
+ReflexTable::projected_input(uint32_t index,
+                             const std::array<int64_t, AYNI_REFLEX_CONDITION_COUNT_MAX> &values) {
+    const auto &rule = rules_[index];
+    if (!rule.parameter_count) {
+        return input(index);
+    }
+    auto *scratch = input_slot(rule_capacity_);
+    std::memcpy(scratch, input_slot(index), rule.input_size);
+    for (uint32_t at = 0; at < rule.parameter_count; ++at) {
+        const auto &parameter = rule.parameters[at];
+        const auto &binding = parameter.binding;
+        const auto mapped =
+            foundation::map_reflex_i64(values[binding.condition_index], binding.input_min,
+                                       binding.input_max, binding.scale_num, binding.scale_den,
+                                       binding.offset, binding.output_min, binding.output_max);
+        foundation::store_le64(scratch + parameter.byte_offset, static_cast<uint64_t>(mapped));
+    }
+    return {scratch, rule.input_size};
 }
 
 bool ReflexTable::find(ayni_string_v1 rule_id, uint32_t &out_index) const {
@@ -205,6 +303,16 @@ ayni_status_t ReflexTable::normalize_rule_input(uint32_t index, foundation::Work
     ayni_body_ref_v1 body_probe{};
     if (catalog::value_bodies(input(index), &body_probe, 1U) != 0U) {
         return AYNI_INVALID_ARGUMENT;
+    }
+    if (rule.parameter_count != 0U) {
+        // Offsets describe the canonical bytes after normalization, including defaults.
+        status = catalog::decode_value(workspace, input(index), *raw_lease);
+        if (status == AYNI_OK) {
+            status = resolve_parameters(rule, *raw_lease, proof_lease->input);
+        }
+        if (status != AYNI_OK) {
+            return status;
+        }
     }
     if ((contract.effects & catalog::call_effect_physical) != 0U) {
         uint32_t exec_idx = 0;

@@ -153,6 +153,12 @@ TEST(KernelLayout, each_region_is_sized_by_its_stores_limits_function) {
                   CallRuntime::storage_size(call_runtime_limits(capacities)));
         EXPECT_EQ(layout[Store::provider_completions].size,
                   ProviderMailbox::storage_size(provider_mailbox_limits(capacities)));
+        // ADR-0114: parameter metadata and the shared patch scratch belong to ReflexTable's arena.
+        EXPECT_EQ(layout[Store::reflex_rules].size,
+                  ayni::kernel::ReflexTable::rule_storage_size(capacities.reflex_capacity,
+                                                               capacities.call_input_max_bytes));
+        EXPECT_EQ(layout[Store::reflex_events].size,
+                  ayni::kernel::ReflexTable::event_storage_size(capacities.reflex_event_capacity));
         EXPECT_EQ(layout[Store::audit_ring].size,
                   AuditRing::storage_size(capacities.audit_capacity));
     }
