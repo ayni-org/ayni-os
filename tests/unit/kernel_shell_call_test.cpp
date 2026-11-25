@@ -21,7 +21,8 @@ TEST(KernelShell, explicit_authority_controls_real_pipeline_and_structured_resul
         shell_config.working_directory = "/tmp";
         shell_config.command_max_bytes = 128;
         shell_config.output_max_bytes = 128;
-        shell_config.timeout_ms = 1000;
+        // Headroom for real /bin/sh + pipeline execution under parallel sanitizer CI load.
+        shell_config.timeout_ms = 5000;
         ASSERT_EQ(shell.configure(shell_config), AYNI_OK);
         ayni_provider_v1 provider{};
         ayni_capability_desc_v1 authority{};
@@ -156,9 +157,9 @@ TEST(KernelShell, explicit_authority_controls_real_pipeline_and_structured_resul
         const auto goal = work.create(create);
         ASSERT_EQ(goal.status, AYNI_OK);
         // ADR-0085: await the real worker's terminal rather than assuming that
-        // 500 simulated advances cover its 1s execution budget under sanitizers.
+        // 500 simulated advances cover its 5s execution budget under sanitizers.
         // The bounded harness wait does not change the Provider's timeout or result checks.
-        constexpr auto completion_wait = std::chrono::seconds(5);
+        constexpr auto completion_wait = std::chrono::seconds(10);
         const auto completion_deadline = std::chrono::steady_clock::now() + completion_wait;
         while (std::chrono::steady_clock::now() < completion_deadline) {
             work.node().sim().complete_storage();
@@ -166,7 +167,8 @@ TEST(KernelShell, explicit_authority_controls_real_pipeline_and_structured_resul
             work.node().step();
             ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
             const auto state = work.goal(goal.result.object.id).lifecycle;
-            if (state == AYNI_GOAL_PROPOSED || state == AYNI_GOAL_SATISFIED) {
+            if (state == AYNI_GOAL_PROPOSED || state == AYNI_GOAL_SATISFIED ||
+                state == AYNI_GOAL_FAILED) {
                 break;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(1));

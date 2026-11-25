@@ -6,6 +6,23 @@
 #include <cstdio>
 #include <vector>
 namespace ayni::test {
+// Debug and sanitizer builds (especially under parallel CI) carry 10-30x instrumentation
+// overhead and OS scheduling preemption spikes; strict microbenchmark P99 gates apply to
+// optimized non-sanitizer builds while instrumented builds still check coarse hang ceilings.
+inline constexpr bool is_sanitized_or_debug() {
+#if !defined(NDEBUG) || defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+    return true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) ||                         \
+    __has_feature(undefined_behavior_sanitizer)
+    return true;
+#else
+    return false;
+#endif
+#else
+    return false;
+#endif
+}
 class LatencySamples {
   public:
     using Clock = std::chrono::steady_clock;
