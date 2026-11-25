@@ -14,6 +14,24 @@ constexpr uint64_t speech_scope = 0;
 ayni_string_v1 text(const char *s) {
     return {s, uint32_t(std::strlen(s))};
 }
+// ADR-0110/0115: a cancelled Task may be terminal while its RAM-only speaker Call still
+// borrows PCM. Keep the chunk until the exact Provider attempt has returned a terminal receipt.
+bool speech_calls_settled(ayni_kernel_t *kernel, uint64_t task_id) {
+    std::array<uint64_t, AYNI_CALL_CAPACITY_MAX> ids{};
+    uint32_t count = 0;
+    if (ayni_list_objects(kernel, AYNI_OBJECT_CALL, ids.data(), uint32_t(ids.size()), &count) !=
+        AYNI_OK) {
+        return false;
+    }
+    for (uint32_t at = 0; at < count; ++at) {
+        auto call = ayni::initialized<ayni_call_info_v1>();
+        if (ayni_get_call(kernel, ids[at], &call) != AYNI_OK ||
+            (call.task_id == task_id && call.outcome == 0)) {
+            return false;
+        }
+    }
+    return true;
+}
 } // namespace
 ayni_status_t ReplyVoice::validate(void *, ayni_bytes_v1 bytes) {
     if (!bytes.data || bytes.size != body_reference_bytes) {
@@ -55,6 +73,7 @@ ayni_goal_type_v1 ReplyVoice::goal_type() {
     out.trigger_kinds = AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE);
     out.occurrence_wait_max_us = AYNI_OCCURRENCE_WAIT_UNBOUNDED;
     out.context_mode = AYNI_GOAL_CONTEXT_AGENT;
+    out.work_profile.recovery = AYNI_GOAL_RECOVERY_CANCEL_ON_REBOOT;
     return out;
 }
 ayni_status_t ReplyVoice::decide(void *context, const ayni_task_snapshot_v1 *snapshot,
@@ -249,7 +268,7 @@ ayni_status_t ReplyVoice::poll_goal(ayni_kernel_t *kernel, ayni::CommandClient &
             cancelling_ = true;
         }
         task_settled =
-            task.commit_seq <= durable &&
+            task.commit_seq <= durable && speech_calls_settled(kernel, task.task_id) &&
             (task.lifecycle == AYNI_TASK_COMPLETED || task.lifecycle == AYNI_TASK_CANCELLED ||
              task.lifecycle == AYNI_TASK_FAILED || task.lifecycle == AYNI_TASK_EXPIRED);
     }

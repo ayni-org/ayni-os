@@ -1,4 +1,5 @@
 #include "speaker.h"
+#include "speaker_result.h"
 #include "transport.h"
 #include "wake.h"
 #include <algorithm>
@@ -82,6 +83,7 @@ struct Speaker::Worker {
     esp_err_t error = ESP_OK;
     uint32_t accepted_samples = 0;
     bool drained = false;
+    bool output_stopped = true; // Worker-owned; published together with done after I2S cleanup.
     explicit Worker(Speaker &s) : owner(s) {}
     esp_err_t play(Job);
     esp_err_t write_samples(Job, i2s_chan_handle_t);
@@ -167,7 +169,7 @@ ayni_status_t Speaker::configure(ayni_kernel_t *kernel) {
                         at == 0 ? legacy_tone_timeout_ms : synthesis_timeout_ms,
                         AYNI_CALL_INPUT_VALUE, AYNI_CALL_RESULT_TEXT, input_bytes(), result_limit,
                         1, &resource_, nullptr,
-                        at == 0 ? AYNI_CALL_DURABILITY_EPHEMERAL : AYNI_CALL_DURABILITY_DURABLE, 0},
+                        AYNI_CALL_DURABILITY_EPHEMERAL, 0},
                        &businesses_[at]};
         const ayni_capability_desc_v1 cap{
             sizeof(cap), capability_version, text(capabilities[at]), 0, 0, nullptr};
@@ -454,10 +456,16 @@ ayni_status_t Speaker::advance() {
     result.struct_size = sizeof(result);
     result.attempt = pending_->attempt;
     char facts[result_limit]{};
-    if (!no_output && worker_->drained && worker_->error == ESP_OK && !cancel_.load()) {
-        result.outcome = AYNI_CALL_COMPLETED;
-        result.status = AYNI_OK;
-        result.effect = AYNI_CALL_EFFECT_COMPLETE;
+    const auto output = no_output || (worker_->output_stopped && !worker_->accepted_samples)
+                            ? SpeakerOutput::none
+                        : worker_->output_stopped ? SpeakerOutput::stopped
+                                                  : SpeakerOutput::unknown;
+    const auto evidence =
+        speaker_result({output, !no_output && worker_->drained, cancel_.load(), expired});
+    result.outcome = evidence.outcome;
+    result.status = evidence.status;
+    result.effect = evidence.effect;
+    if (result.outcome == AYNI_CALL_COMPLETED) {
         std::snprintf(facts, sizeof(facts),
                       "{\"played\":true,\"samples\":%lu,\"sample_rate\":%lu,\"volume_percent\":%"
                       "lu,\"confirmed\":\"i2s-drained\"}",
@@ -466,14 +474,6 @@ ayni_status_t Speaker::advance() {
                           pending_->operation == Operation::speech ? speech_rate : pcm_rate),
                       static_cast<unsigned long>(volume));
         result.result = text(facts);
-    } else if (no_output || !worker_->accepted_samples) {
-        result.outcome = cancel_.load() && !expired ? AYNI_CALL_CANCELLED : AYNI_CALL_FAILED;
-        result.status = expired ? AYNI_EXPIRED : cancel_.load() ? AYNI_OK : AYNI_NOT_READY;
-        result.effect = AYNI_CALL_EFFECT_NONE;
-    } else {
-        result.outcome = AYNI_CALL_ABANDONED;
-        result.status = AYNI_RESULT_UNKNOWN;
-        result.effect = AYNI_CALL_EFFECT_UNKNOWN;
     }
     const auto posted = ayni_provider_post(pending_->completion, &result);
     if (posted == AYNI_OK) {
@@ -500,6 +500,7 @@ ayni_status_t Speaker::advance() {
 esp_err_t Speaker::Worker::play(Job job) {
     accepted_samples = 0;
     drained = false;
+    output_stopped = true;
     if (owner.cancel_.load()) {
         return ESP_OK;
     }
@@ -526,6 +527,7 @@ esp_err_t Speaker::Worker::play(Job job) {
     if (rc == ESP_OK) {
         rc = i2s_channel_enable(tx);
         enabled = rc == ESP_OK;
+        output_stopped = !enabled;
     }
     if (rc == ESP_OK) {
         rc = write_samples(job, tx);
@@ -547,14 +549,16 @@ esp_err_t Speaker::Worker::play(Job job) {
         }
         drained = rc == ESP_OK;
     }
+    auto disabled = ESP_OK;
     if (enabled) {
-        const auto disabled = i2s_channel_disable(tx);
+        disabled = i2s_channel_disable(tx);
         if (rc == ESP_OK) {
             rc = disabled;
         }
     }
     const auto deleted = i2s_del_channel(tx);
     const auto parked = deleted == ESP_OK ? Speaker::park_outputs() : deleted;
+    output_stopped = disabled == ESP_OK && deleted == ESP_OK && parked == ESP_OK;
     if (rc == ESP_OK) {
         rc = parked;
     }
