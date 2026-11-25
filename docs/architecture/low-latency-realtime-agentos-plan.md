@@ -1,7 +1,7 @@
 # Ayni 低时延、安全、实时 AgentOS 架构演进计划
 
 > **文档性质**：Ayni 核心架构演进计划与分阶段验收目标；各阶段能力在附有代码实现与对应验收证据前均属于规划中契约。\
-> **日期**：2026-11-24\
+> **日期**：2026-11-25\
 > **关联**：[ayni_v1.0.md](../ayni_v1.0.md)、[foundation-and-experiment-plan.md](foundation-and-experiment-plan.md)、[ADR-0110](../adr/0110-ephemeral-execution-tier-and-immediate-resource-release.md)
 
 ## 1. 背景与根因
@@ -55,3 +55,11 @@
 | **阶段 2（已完成本地验证）** | `ABI 0.58`（`schema 11` 不变）；拆分 `soft_stop`（保持 Armed）与 `hard_estop`（锁存）；Core `PREEMPT / SUPERSEDE` 原子资源抢占原语；`ConversationSession` 后台零 Flash 取消丢弃；解除 `Chat` 单回合忙锁，允许新用户指令即时打断并软停在途动作 | 打断并切换新动作 `5–10 ms`；停止失败自动转 `hard_estop + QUARANTINED`（本地单测与固件编译已通过，待实机 OTA） | [ADR-0111](../adr/0111-soft-stop-preemption-and-barge-in.md) |
 | **阶段 3（已完成本地验证）** | `ABI 0.59`（`schema 11` 不变）；扶正 `ControlSession` 为连续运动主路径（一次握手、`AYNI_FORM_SESSION` 多行紧致包络、流式换段、后台续租、`motor.run` v3）；新增三缓冲无锁 `ObservationSlot` 与本地确定性 `ReflexRule` 反应通道 | 连续动作段间 `< 2 ms`；传感器避障/反馈闭环 `< 5–10 ms`（本地单测与固件编译已通过，待实机 OTA） | [ADR-0112](../adr/0112-control-session-observation-slot-and-reflex-rules.md) |
 | **阶段 4（已完成本地验证）** | `ABI 0.60`（`schema 11` 不变）；`FileBodies` 干净升级 AYNB 格式 2（`<= 4 KiB` 内联进 manifest + 乐观 `previous_generation=0` CAS 创建，拒绝旧 v1）；`history.cpp` 小载荷（`<= 512 B`）内联进 `AYNDXI1`；`Session` 普通发布异步 GC（`PublicationCollection::deferred`，保留隐私擦除与关闭强排空）+ `preview_answer()` 0 ms 提前上屏；Core O(1) RAM `AuditRing`（7 类事件 + 溢出计数）+ Host 可选 A/B 轮转 `AuditSink`（`AYAU1`）+ ESP32 `DiagnosticLog` 零 Flash 导出 | 小正文 3 I/O 降至 1 I/O；答案上屏 0 ms，后台发布不阻塞下一轮输入（本地单测与固件编译已通过，待实机 OTA） | [ADR-0113](../adr/0113-coalesced-turn-persistence-and-audit-ring.md) |
+
+## 5. 异步界面与通用流式操作（ADR-0114）
+
+当前分支在四阶段基础上加入ABI0.61/schema11不变的控制/界面解耦。输入与输出独立包池、异步LCD和三缓冲目标邮箱隔离UI压力；软/硬停在真实输出证明后确认，接收/覆盖/应用/拒绝/停止五态分开。默认自然语言打断hold，显式停止始终生效。
+
+通用 `runtime/operation_session` 使用现有独立根Goal/Task和参数驱动单Call策略；来源开启Call与新Goal分别授权，句柄成功交付后才执行，不继承来源Goal专属Grant。来源回合结束不撤销已独立授权的操作，自身撤权/绝对期限/租约/显式关闭仍终止。`motor.stream`/`motor.steer` 是该机制的消费者，Core没有电机分支。
+
+便携ControlLoop只收紧实际输出；`tick_effective`保持原目标与后续轨迹，并把缩放值交给PermitGate。Reflex启动期解析I64偏移，触发时按可移植整数公式修补字节后完整准入。主机微基准与目标板数据分别记录；无认证安全功能声明，实体测距接入、真实热改/停止时延和OTA仍待单独确认。详细决定与实测边界见[ADR-0114](../adr/0114-async-ui-streaming-control-and-parameterized-reflex.md)。

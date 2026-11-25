@@ -135,3 +135,13 @@ Provider 终态在停止未确认时继续占用可靠完成槽；不会阻塞�
 派发在 `DISPATCHING` 屏障持久后发出挑战，回答到达后的工作项重新复核再安装许可（C-PERMIT-018）；续租链每一步重新判断是否应停止，撤销不等待在途请求（C-STOP-011）；`NOT_FOUND` 只从 Provider 终态之后发出的读取得到证明力，执行端答过后拒绝该许可（C-STOP-012）。停止回答不是停止证据，停止请求超时才重发（在急停轮次），被拒时由执行端自身租约收敛；只有状态回答里的停止测量能写入停止事实。
 
 续租因此跨三次往返、四个工作项，第一次续租还要等派发挑战的往返和一个轮询周期；会话租期 `L` 的声明须覆盖这些时间与漂移余量。Provider 须在一个轮询周期内把许可转发到远程闸门，否则许可被 `NOT_FOUND` 拦下，调用以停止结束。挑战 `BUSY` 由 0.35 的稍后重试改为结束调用。Mock 执行端可立即、延后或丢弃回答，也可把许可推迟到下一次 `advance()` 才交给闸门，用于上列用例；这些只是 Mock 链路，不作为真实远程执行端或停止时限的证据。
+
+## 有界控制整形与独立操作（ABI 0.61，ADR-0114）
+
+| 条款 | 保证 | 反例 | 验证 |
+|---|---|---|---|
+| C-PERMIT-019 | `tick_effective` 不修改 desired 或排队轨迹；实际 effective 必须同号或零、幅度不增加，字段/单位/时长保持，仍在完整 PermitGate 包络内；别名输入先作有界复制，违规进入 STOPPING | 用低速绕过窄许可下界，或每拍限速清空后续轨迹 | 正常主机：`ControlSessionTest.EffectiveTickPreservesDesiredAndQueuedSegments`、`ControlSessionTest.EffectiveTickRejectsAmplificationAndSignReversal`、`ControlSessionTest.EffectiveTickRejectsAmplificationAndRequiresActualEnvelope` |
+| C-PERMIT-020 | ControlLoop 为无 I/O、无堆分配、显式下一状态的整数整形；hold/传感只收紧指定字段，任一必需源缺失、陈旧、退化、未来时间、硬停阈值或周期超限要求软停，增速 slew 不延迟减速 | 启动首拍绕过 slew，传感器失联仍按旧高速输出 | 正常主机：`ControlLoop.*`、`ControlSessionTest.LocalLoopWallLatencyMeetsHostBudget`；非认证安全功能，不替代独立停止链；实体传感和 MCU 时限待测 |
+| C-PERMIT-021 | Runtime 独立操作须通过来源开启 Call 与新根 Goal 两次独立授权；不转移来源 Grant。句柄交付后才激活，原绝对 TTL 不重起算。来源回合结束不撤销已独立授权的操作，自身撤权/到期/显式停止仍结束它；UNKNOWN 不重试 | 借旧 Goal 专属权限隐式 detach，或交付失败仍执行 | 正常主机：`IndependentOperations.*`；生产注册/关闭：`WifiMotorSessions.ProductionRegistrationAndShutdownDrainRetainedOpening` |
+
+ESP structured target 与经 Core 授权的模型 target 共享有序邮箱。软/硬停在实际低电平读回及 Gate STOPPED 后确认，旧目标和旧握手持续被屏障拒绝。初始启动只经 worker 消息，不同时进入热目标槽。默认新自然语言输入 hold，窄 `motor.run` 软停；显式取消、断网、关闭和红色急停不受 continue/hold 影响。接收、覆盖、应用、拒绝与停输出是不同事实；受理后的关闭不能将已排队目标改写为“无效果”。`ControlMailbox.*` 为正常主机证据，实际 PWM 更新及停止时延仍待真机验证。

@@ -16,3 +16,9 @@
 | C-OBS-006 | M1 Mock 字节独立限制对象和每对象字节；读取要求完整 reference 与显式 owner/purpose，复制而不借出指针；过期、代际关闭、新 boot 清空回收，ID 不复用 | 已关闭摄像头代际的旧引用读取复用槽中的新帧 | M1 已实现：`MockMedia.copied_bytes_require_exact_reference_owner_and_purpose`、`MockMedia.object_and_byte_limits_reject_without_overwriting_and_expiry_reclaims`、`MockMedia.generation_close_and_new_boot_reclaim_without_reusing_identity`；调用者负责真实授权及触发生命周期回收，订阅 Mock 自动按关闭/过期/boot 回收（`SubscriptionFixture.two_tasks_share_capacity_but_keep_samples_media_and_close_isolated`）；真实媒体仍待 M3 |
 
 按 [ADR-0112](../../docs/adr/0112-control-session-observation-slot-and-reflex-rules.md)，latest 槽只接受当前 boot 的新样本。同代内序号须递增、采集时间须非递减。乱序或过期 boot 返回 `AYNI_STALE`，同源生产者竞争超过有界次数时返回 `AYNI_BUSY`。消费一个脏槽或执行一条匹配的反射规则各计一个 step item。预算不足时继续报告待处理工作，按优先级续跑反射，并给已请求的执行端停止留出推进机会。正常回归见 `ReflexAndSession.observation_slot_rejects_out_of_order_unread_sample` 与 `ReflexAndSession.single_item_steps_resume_reflex_before_more_samples`。
+
+### 参数化反射（ABI 0.61，ADR-0114）
+
+`ayni_reflex_rule_v1` 尾部允许至多四条整数仿射绑定。启动期一次解析规范化业务输入的最多四层对象 field_id 路径，目标必须是 I64；完整输出区间须包含于其 Schema 区间，分母正数、路径不重复。触发时复制预编码字节并按预解析位置写入小端 I64，无触发期树遍历/重编码；完整业务授权、Scope、Scene 和执行绑定检查仍在 Call 准入边界执行。
+
+投影按输入 clamp、精确全宽乘除后饱和至 I64、饱和加 offset、输出 clamp 的顺序；不提前截断乘积，不依赖 `__int128`。来源必须是本次触发所用的可用 MEASURED 条件。结构/启动拒绝及超 Scope 审计的正常证据为 `ReflexParameters.*`；`ObservationSlot->Reflex->Provider` 微基准使用真实主机墙钟与零 WAL 正常路径，不代表 ESP32 避障时延。

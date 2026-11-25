@@ -233,7 +233,7 @@ if (status == AYNI_OK) {
 
 同源可重复导入和增补组件；同一构建不能混用不同源码来源。源码、平台上下文和arena的生命周期仍按公开契约处理。独立隔离验证位于`tests/portability/`，完整接入阶段见[实施计划](architecture/independent-consumption-plan.md)，编译结果不代表ESP实机通过。
 
-P5 提供源码级 `include/ayni/ayni.hpp` 和 [五个公开接入示例](../examples/README.md)（ADR-0067）。`ayni_cpp_sdk_smoke` 与示例客户端按 C++17、`-fno-exceptions -fno-rtti` 编译；当前 C ABI minor 为 0.56、Core schema 10；各阶段版本及兼容决定见对应 ADR。ESP-IDF 组合根包含同一 header，完整 CI 编译不能替代板级执行。
+P5 提供源码级 `include/ayni/ayni.hpp` 和 [五个公开接入示例](../examples/README.md)（ADR-0067）。`ayni_cpp_sdk_smoke` 与示例客户端按 C++17、`-fno-exceptions -fno-rtti` 编译；当前分支 C ABI minor 为 0.61、Core schema 11；各阶段版本及兼容决定见对应 ADR。ESP-IDF 组合根包含同一 header，完整 CI 编译不能替代板级执行。
 
 普通测试套件通过 CTest 运行 `CppSdk.*`、`cpp_sdk_without_exceptions_or_rtti`、`Examples.*`；`Examples.assistant_demo` 运行 Mock CLI 脚本。第二模型用本地 HTTP fixture，不使用真实服务或密钥。具体操作见示例 README；构建前仍按本页资源预算设置显式并行度。
 
@@ -345,3 +345,5 @@ ABI0.55要求完整body descriptor；旧write接口仍持久确认后成功。st
 Core schema10、ConversationRecord6、turn8、结果视图2、SQLite5直接升级且拒旧保留。首次完整Call及快照type21/v2，后续journal状态type21/v3。新格式异常恢复未验证；本轮不执行板卡更新或清理，后续只通过既有停止/关闭后的指定分区流程处置旧数据，见ADR-0104及ADR-0108。
 
 Native已使用共享Session/FileBodies，只有SqliteValues保留SQLite I/O；默认durable、显式retain_and_append。共享默认retain仍要求显式abandon；保留模式正常关闭/重开挂接原Goal，不复制新动作。pending_result供异步通知读取正文后再消费，awaiting_turn只表示原Core回合等待，不能将保存/清理当空闲。详见ADR-0108及Native会话契约。
+
+ADR-0114 新增 SDK 组件 `operation_session` / `Ayni::OperationSession`：只依赖公开 Core API，配置精确 Binding、需求导出器、最大生命周期与组合根的独占命令流。注册对象不可复制/移动，配置借用及回调地址存活至 Kernel 成功销毁；创建、激活、推进及关闭只由 owner 在线程外层调用，Provider 回调只保存有界数据。开启与推进时间使用同一 Host 单调时钟，完整示例与无设备正常场景见 `tests/unit/operation_session_test.cpp`。

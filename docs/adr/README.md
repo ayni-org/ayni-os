@@ -176,4 +176,4 @@
 | [0112](0112-control-session-observation-slot-and-reflex-rules.md) | 流式控制会话（ControlSession）、三缓冲无锁传感槽与本地确定性反射引擎 | 已实施（阶段 3，待真机 OTA 实测） | ABI0.59（schema11 不变）、ControlSession、ObservationSlot、ReflexRule、motor.run v3 |
 | [0113](0113-coalesced-turn-persistence-and-audit-ring.md) | 回合级粗粒度合并落盘、非阻塞答案呈现与异步定长审计环 | 已实施（阶段 4，待真机 OTA 实测） | ABI0.60（schema11 不变）、AYNB2、history 内联、deferred GC、AuditRing、AuditSink |
 
-| [0114](0114-async-ui-streaming-control-and-parameterized-reflex.md) | 异步界面、流式控制与传感参数反射 | 实施中；完整验证待完成 | 目标ABI0.61/schema11、独立邮箱、异步LCD、ControlLoop及参数绑定 |
+| [0114](0114-async-ui-streaming-control-and-parameterized-reflex.md) | 异步界面、流式控制与传感参数反射 | 已实施；主机验证和固件编译通过，板端待测 | ABI0.61/schema11、通用独立操作、异步LCD、ControlLoop及参数绑定 |

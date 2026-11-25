@@ -150,9 +150,9 @@
 | `MA-009` | 2026-10-26 | 2026-10-26（正常双策略/对话值；文件存储随 P2） |
 | `MA-019`、`MA-020` | 2026-10-27 | 2026-10-27（P5 正常功能；完整实验另行验收） |
 
-## 交接状态（2026-11-16）
+## 交接状态（2026-11-25）
 
-- **当前对话流程：** 当前源码ABI0.56/schema10、turn8/ANRV2/SQLite5；Native/ESP共用Session/FileBodies及结果视图，旧USB注册、独立归档和无限缓存已删除。输入/摘要/历史引用、请求封套及ESP进度已复用，Session按scope完成真实清理和精确ACK，关闭仍全局排空。本地正常验证、ESP编译及独立复查通过，见[ADR-0108](../../docs/adr/0108-unified-conversation-and-result-storage.md)、[ADR-0109](../../docs/adr/0109-owned-conversation-text-and-scoped-cleanup.md)及关联记录。设备最后OTA仍为91c0c65-localreuse，本轮不OTA；下一步板端长单步、真实工具交接和内存峰值待验证，新格式异常恢复未验证。
+- **当前分支：** ABI0.61/schema11；异步LCD、独立输入/输出池、粘滞停止邮箱和五态反馈、通用独立授权OperationSession、ControlLoop及参数化Reflex已实现。新输入默认hold，显式取消/急停仍停止；独立操作不继承来源Goal专属Grant。正常主机与ASan/UBSan、目标并发TSan、独立复查及最终固件编译通过，见[ADR-0114](../../docs/adr/0114-async-ui-streaming-control-and-parameterized-reflex.md)。没有新OTA或真实动作；板端调度/PWM/传感时延、独立硬件停止链、新格式异常恢复与耐久仍待对应证据。
 - **共享交互运行时：** 会话取消/收尾、正文缓存清退、文件准入与命令辅助迁入共用组件，ESP改用Core上下文锚点；旧独立历史不迁移，见[ADR-0100](../../docs/adr/0100-shared-interactive-runtime.md)。已完成单子智能体独立审查，两项缓存问题按用户要求最小修复并提交推送；设备部署见实验记录，旧卷重放的完整归因仍未完成，本次授权清理不替代根因修复。
 - **独立平台实验：** 用户另选Web OTA与内存修复一起部署，USB安装及一次Wi-Fi双槽切换/启动确认通过；实施与正常更新结果见[ADR-0099](../../docs/adr/0099-esp32-web-ota.md)，不扩大故障回退专项。触屏Wi-Fi/RC003-MS语音及原电机能力迁入独立实验目录，USB入口撤除，继续复用内置ToolLoop和公开SDK；Core不改。128K完整峰值、60秒带电动作及停止链仍待另行实证，见[ADR-0097](../../docs/adr/0097-esp32-touch-wifi-voice-experiment.md)。
 
