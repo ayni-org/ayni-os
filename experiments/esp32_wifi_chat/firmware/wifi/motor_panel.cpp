@@ -28,9 +28,41 @@ bool MotorPanel::packet(const Packet &packet) {
 void MotorPanel::stop(Transport &transport) {
     transport.request_motor_stop(); // Independent of command queue capacity.
     control_.stop();
-    message_ = "已请求停止，重启后恢复";
+    message_ = "正在停机，等待硬件确认";
 }
 bool MotorPanel::tick(Transport &transport, bool healthy, int64_t now) {
+    const auto feedback = transport.control_mailbox().snapshot();
+    const bool changed = feedback.accepted_seq != feedback_.accepted_seq ||
+                         feedback.superseded_count != feedback_.superseded_count ||
+                         feedback.applied_seq != feedback_.applied_seq ||
+                         feedback.rejected_seq != feedback_.rejected_seq ||
+                         feedback.stop_confirmed_seq != feedback_.stop_confirmed_seq ||
+                         feedback.stop_requested_seq != feedback_.stop_requested_seq;
+    if (changed) {
+        feedback_ = feedback;
+        const char *reason =
+            feedback.reject_reason == ControlRejectReason::no_active_session ? "无活跃许可会话"
+            : feedback.reject_reason == ControlRejectReason::out_of_envelope ? "超出许可包络"
+            : feedback.reject_reason == ControlRejectReason::stop_pending ? "停止信号已拦截"
+            : feedback.reject_reason == ControlRejectReason::disarmed_or_latched
+                ? "未启用或急停锁存"
+            : feedback.reject_reason == ControlRejectReason::interlock_fault ? "联锁或传感失效"
+                                                                             : "无";
+        char text[384];
+        std::snprintf(
+            text, sizeof(text),
+            "已接收 #%llu\n已被覆盖 #%llu（%llu次）\n已应用 #%llu M1:%ld M2:%ld%%\n已拒绝 #%llu "
+            "%s\n%s",
+            (unsigned long long)feedback.accepted_seq, (unsigned long long)feedback.superseded_seq,
+            (unsigned long long)feedback.superseded_count, (unsigned long long)feedback.applied_seq,
+            long(feedback.applied_motor1), long(feedback.applied_motor2),
+            (unsigned long long)feedback.rejected_seq, reason,
+            feedback.stop_requested_seq > feedback.stop_confirmed_seq ? "正在停机，等待硬件确认"
+            : !feedback.stop_confirmed_seq ? "尚无停止确认"
+            : feedback.control_mode == 1   ? "输出已停止（软停，可恢复）"
+                                           : "输出已停止（急停锁存/未启用）");
+        feedback_text_ = text;
+    }
     if (!healthy && active()) {
         stop(transport);
         return true;
@@ -48,10 +80,17 @@ bool MotorPanel::tick(Transport &transport, bool healthy, int64_t now) {
         transport.post(Kind::motor_heartbeat, 0, nullptr, 0)) {
         heartbeat_ = now;
     }
-    return false;
+    return changed;
 }
 MotorPanel::Tap MotorPanel::tap(Transport &transport, int x, int y, bool healthy) {
     if (x < 8 || x >= 232) {
+        return Tap::none;
+    }
+    if (x >= 150 && y >= 32 && y < 58) {
+        feedback_page_ = !feedback_page_;
+        return Tap::none;
+    }
+    if (feedback_page_ && !(y >= 284 && y < 314)) {
         return Tap::none;
     }
     if (y >= 284 && y < 314) {
@@ -89,7 +128,13 @@ MotorPanel::Tap MotorPanel::tap(Transport &transport, int x, int y, bool healthy
     return Tap::none;
 }
 void MotorPanel::draw(Canvas &canvas) const {
-    draw_motor_preferences(canvas, active(), limit_, message_);
+    if (feedback_page_) {
+        draw_motor_feedback(canvas, message_,
+                            feedback_text_.empty() ? "等待控制指令" : feedback_text_);
+    } else {
+        draw_motor_preferences(canvas, active(), limit_, message_);
+    }
+    canvas.button(150, 32, 80, 26, feedback_page_ ? "控制" : "反馈");
 }
 void MotorPanel::test_notice(const MotorCheckNotice &notice) {
     char text[160];

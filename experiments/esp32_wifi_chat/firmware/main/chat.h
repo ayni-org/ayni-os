@@ -72,6 +72,7 @@ class Chat {
     ayni_status_t prepare_owner(const ayni_kernel_info_v1 &);
     ayni_status_t prepare_grant();
     ayni_status_t prepare_history(const ayni_kernel_info_v1 &);
+    bool drain_terminal();
     ayni_status_t close_session(const ayni_kernel_info_v1 &);
     ayni_status_t observe_probe(const ayni_kernel_info_v1 &);
     ayni_status_t converse(const ayni_kernel_info_v1 &);
@@ -188,6 +189,8 @@ class Chat {
     ayni_status_t probe_input(ayni_string_v1, ayni::strategies::Encoded &);
     std::string input_, answer_;
     std::array<char, 192> terminal_text_{}; // Owned error text until the terminal queue accepts it.
+    std::optional<uint64_t>
+        terminal_drain_deadline_;     // Set only while closing with an undelivered terminal.
     const char *reply_end_ = nullptr; // Static or terminal_text_, valid throughout reply_done.
     struct PreparationWait {
         const char *phase = nullptr; // None, or an internal static phase name (never user text).

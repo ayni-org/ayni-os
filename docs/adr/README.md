@@ -175,3 +175,5 @@
 | [0111](0111-soft-stop-preemption-and-barge-in.md) | 软停止与硬急停拆分、Core 资源级原子抢占及会话即时打断 | 已实施（阶段 2，待真机 OTA 实测） | ABI0.58（schema11 不变）、PREEMPT/SUPERSEDE、零 Flash 取消丢弃、ESP32 Barge-In |
 | [0112](0112-control-session-observation-slot-and-reflex-rules.md) | 流式控制会话（ControlSession）、三缓冲无锁传感槽与本地确定性反射引擎 | 已实施（阶段 3，待真机 OTA 实测） | ABI0.59（schema11 不变）、ControlSession、ObservationSlot、ReflexRule、motor.run v3 |
 | [0113](0113-coalesced-turn-persistence-and-audit-ring.md) | 回合级粗粒度合并落盘、非阻塞答案呈现与异步定长审计环 | 已实施（阶段 4，待真机 OTA 实测） | ABI0.60（schema11 不变）、AYNB2、history 内联、deferred GC、AuditRing、AuditSink |
+
+| [0114](0114-async-ui-streaming-control-and-parameterized-reflex.md) | 异步界面、流式控制与传感参数反射 | 实施中；完整验证待完成 | 目标ABI0.61/schema11、独立邮箱、异步LCD、ControlLoop及参数绑定 |

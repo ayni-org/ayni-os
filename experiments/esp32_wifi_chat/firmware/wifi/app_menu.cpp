@@ -141,6 +141,12 @@ void draw_motor_preferences(Canvas &canvas, bool enabled, uint32_t limit, std::s
     canvas.button(124, 246, 108, 30, "测试 2");
     canvas.button(8, 284, 224, 30, "停止", Canvas::danger, Canvas::background);
 }
+void draw_motor_feedback(Canvas &canvas, std::string_view status, std::string_view feedback) {
+    canvas.heading("控制反馈");
+    canvas.label(12, 62, status, Canvas::muted, 216);
+    canvas.document(feedback, 0, 88, 276);
+    canvas.button(8, 284, 224, 30, "停止", Canvas::danger, Canvas::background);
+}
 void draw_endpoint_preferences(Canvas &canvas, std::string_view title, const PreferenceRow *rows,
                                size_t count, bool options, bool show_options,
                                std::string_view web_address) {

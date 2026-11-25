@@ -1576,14 +1576,6 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
     if (audio != AYNI_OK && audio != AYNI_BUSY) {
         return audio;
     }
-    if (turn_state_ == Turn::reply_done) {
-        // Drain the retained terminal before shutdown can release the shared session's file port.
-        // A full UI queue defers this tick, rather than losing the only end-of-turn notice.
-        const auto terminal = present_reply();
-        if (terminal != AYNI_OK || turn_state_ == Turn::reply_done) {
-            return terminal;
-        }
-    }
     auto info = sized<ayni_kernel_info_v1>();
     auto rc = ayni_get_kernel_info(kernel_, &info);
     // STOPPED cannot be stepped again while asynchronous device workers are joining.
@@ -1608,7 +1600,17 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
     if (rc != AYNI_OK) {
         return rc;
     }
+    // UI backpressure must never bypass the Core, reflex or audit work above (ADR-0114).
+    if (turn_state_ == Turn::reply_done) {
+        const auto terminal = present_reply();
+        if (terminal != AYNI_OK) {
+            return terminal;
+        }
+    }
     if (info.lifecycle == AYNI_LIFECYCLE_STOPPED) {
+        if (!drain_terminal()) {
+            return AYNI_BUSY;
+        }
         transport_.allow_display(0);
         if (!motor_.execution().close() || !speaker_.close()) {
             return AYNI_BUSY;
@@ -1772,6 +1774,27 @@ ayni_status_t Chat::prepare_grant() {
     }
     return accepted;
 }
+// Shutdown retains the session/file ports until terminal admission, with an explicit bounded
+// fallback if the UI has stopped consuming altogether. Normal turn delivery has no timeout.
+bool Chat::drain_terminal() {
+    if (turn_state_ != Turn::reply_done) {
+        terminal_drain_deadline_.reset();
+        return true;
+    }
+    const auto at = uint64_t(esp_timer_get_time());
+    constexpr uint64_t drain_limit_us = 2000000;
+    if (!terminal_drain_deadline_) {
+        terminal_drain_deadline_ = at + drain_limit_us;
+    }
+    if (at < *terminal_drain_deadline_) {
+        return false;
+    }
+    transport_.diagnostics().record("wifi terminal_delivery_timeout turn=%llu; closing ports\n",
+                                    static_cast<unsigned long long>(turn_));
+    end_turn(nullptr); // Explicitly recorded undelivered terminal; do not borrow closed ports.
+    terminal_drain_deadline_.reset();
+    return true;
+}
 ayni_status_t Chat::close_session(const ayni_kernel_info_v1 &info) {
     auto rc = AYNI_OK;
     if (closing_ == Closing::cancel_work) {
@@ -1789,6 +1812,9 @@ ayni_status_t Chat::close_session(const ayni_kernel_info_v1 &info) {
         if (rc != AYNI_OK) {
             return rc;
         }
+    }
+    if (!drain_terminal()) {
+        return AYNI_OK;
     }
     rc = ayni_begin_shutdown(kernel_);
     if (rc == AYNI_OK) {

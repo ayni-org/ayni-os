@@ -3,7 +3,7 @@
 include("${AYNI_ROOT}/cmake/AyniMarkdown.cmake")
 add_executable(ayni_esp32_chat_integration_tests
     configuration_test.cpp reply_voice_kernel_test.cpp speech_text_test.cpp
-    turn_diagnostics_test.cpp model_delivery_test.cpp
+    turn_diagnostics_test.cpp model_delivery_test.cpp control_mailbox_test.cpp
     "${AYNI_ROOT}/experiments/esp32_wifi_chat/firmware/main/transport.cpp"
     "${AYNI_ROOT}/experiments/esp32_wifi_chat/firmware/wifi/model_delivery.cpp"
     "${AYNI_ROOT}/experiments/esp32_wifi_chat/firmware/main/reply_voice.cpp"

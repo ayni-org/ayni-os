@@ -164,12 +164,13 @@ ayni_submit_result_t MotorExecution::submit_soft_stop(const ayni_provider_reques
     if (!request || !completion) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
+    transport_.request_motor_soft_stop();
     Message message{};
     message.kind = MessageKind::soft_stop;
     message.soft_stop = {request->attempt, completion};
     if (!send(message)) {
         // Still engage the overflow-proof soft-stop latch so PWM stops even under inbox pressure.
-        soft_stop_.store(true, std::memory_order_release);
+        transport_.request_motor_soft_stop();
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     return AYNI_SUBMIT_ACCEPTED;
@@ -202,11 +203,10 @@ void MotorExecution::receive(Kind kind, uint64_t id, const uint8_t *data, size_t
     } // Control backpressure fails closed.
 }
 void MotorExecution::request_stop() {
-    local_stop_.store(true, std::memory_order_release);
-    wake_control();
+    transport_.request_motor_stop();
 }
 void MotorExecution::request_soft_stop() {
-    soft_stop_.store(true, std::memory_order_release);
+    transport_.request_motor_soft_stop();
     wake_control();
 }
 void MotorExecution::wake_control() {
@@ -227,6 +227,8 @@ void MotorExecution::publish_snapshot() {
         limit_ | (uint32_t(mode_) << snapshot_mode_shift) | (pending_ ? snapshot_busy : 0);
     state_notice_ = state_notice_ || value != snapshot_.load(std::memory_order_relaxed);
     snapshot_.store(value, std::memory_order_release);
+    transport_.control_mailbox().publish_mode(uint8_t(mode_),
+                                              pending_ && pending_->phase == Phase::running, false);
 }
 void MotorExecution::handle_message(const Message &message) {
     switch (message.kind) {

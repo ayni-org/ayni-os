@@ -145,8 +145,7 @@ class MotorExecution {
     enum class Initialization { unattempted, failed, ready };
     Initialization initialization_ = Initialization::unattempted;
     // Independent latest-level interlocks bypass the command inbox.
-    std::atomic<bool> accepting_{false}, local_stop_{false}, soft_stop_{false}, closing_{false},
-        worker_stopped_{false};
+    std::atomic<bool> accepting_{false}, closing_{false}, worker_stopped_{false};
     // High bit closes producer admission; low bits count borrows until xQueueSend returns.
     static constexpr uint32_t inbox_closed = 1U << 31U;
     std::atomic<uint32_t> inbox_access_{inbox_closed};

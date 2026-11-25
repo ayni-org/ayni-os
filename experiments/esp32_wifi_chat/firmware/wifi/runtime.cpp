@@ -136,6 +136,11 @@ class Runtime {
     OtaUpdate update_{};
     bool web_started_ = false;
     Packet packet_{};
+    struct PendingDisplay {
+        uint64_t call;
+        uint32_t pages;
+    };
+    std::optional<PendingDisplay> pending_display_; // Retains tool frame until display admission.
     bool storage_ok_ = false, touch_ok_ = false, configured_ = false;
     enum class Session { unconfigured, opening, ready, failed, closing, stopped };
     Session session_ = Session::unconfigured;
@@ -420,7 +425,7 @@ void Runtime::send(std::string_view text, uint64_t id) {
     message(barge_in ? "已打断旧任务，正在处理新指令" : "已发送，Ayni 正在处理");
 }
 void Runtime::packets() {
-    while (transport_.take_output(packet_)) {
+    while (!pending_display_ && transport_.take_output(packet_)) {
         const auto id = packet_.id;
         const std::string_view body(reinterpret_cast<const char *>(packet_.body.data()),
                                     packet_.size);
@@ -506,13 +511,8 @@ void Runtime::packets() {
             canvas_.clear();
             pages_ = canvas_.document(document_, 0, 48, 244);
             draw();
-            const uint8_t done = transport_.paint(id, canvas_.pixels(), screen_bytes) ? 1 : 0;
-            uint8_t count[4]{};
-            put32(count, pages_);
-            if (!transport_.post(Kind::render_info, id, count, sizeof(count)) ||
-                !transport_.post(Kind::display_ack, id, &done, sizeof(done))) {
-                message("显示回执队列已满");
-            }
+            pending_display_ = PendingDisplay{id, pages_};
+            // DMA completion, render_info and display_ack now belong to lcd-display.
             break;
         }
         case Kind::answer:
@@ -1583,12 +1583,23 @@ void Runtime::run() {
         if (touch_ok_ && touch_.released(x, y)) {
             tap(x, y);
         }
-        if (dirty_ && now - drawn >= redraw_us) {
+        if (pending_display_) {
+            // canvas_ stays frozen from render_text until admission. Touch/network handling
+            // still runs, but no subsequent draw or output packet may replace these pixels.
+            if (!transport_.display_allowed(pending_display_->call) ||
+                transport_.paint(pending_display_->call, canvas_.pixels(), screen_bytes,
+                                 pending_display_->pages)) {
+                pending_display_.reset();
+                dirty_ = true;
+            }
+        }
+        if (!pending_display_ && dirty_ && now - drawn >= redraw_us) {
             const bool first_frame = drawn == 0;
             const auto draw_begin_us = uint64_t(esp_timer_get_time());
             draw();
             const auto draw_end_us = uint64_t(esp_timer_get_time());
-            const bool painted = transport_.local_display().paint(canvas_.pixels(), screen_bytes);
+            const bool painted =
+                transport_.local_display().submit_ui_frame(canvas_.pixels(), screen_bytes);
             const auto paint_end_us = uint64_t(esp_timer_get_time());
             last_frame_ = {draw_begin_us, draw_end_us, draw_end_us, paint_end_us};
             if (!painted) {

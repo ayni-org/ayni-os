@@ -140,7 +140,7 @@ void MotorExecution::trace(const char *stage, ayni_status_t status) {
                                              : -1LL);
     if (count > 0 && size_t(count) < sizeof(message)) {
         transport_.diagnostics().capture({message, size_t(count)});
-        transport_.send(Kind::status, current_permit_, message, size_t(count));
+        transport_.send_latest_status(current_permit_, message, size_t(count));
     }
 }
 ayni_status_t MotorExecution::queue(const PortRequest &request) {
@@ -314,8 +314,8 @@ void MotorExecution::begin(const Pending &incoming) {
             seg.first_percent >= -int32_t(limit_) && seg.first_percent <= int32_t(limit_) &&
             seg.second_percent >= -int32_t(limit_) && seg.second_percent <= int32_t(limit_);
     }
-    if (pending_ || !gate_ || !session_ || !live().interlocks_ok ||
-        incoming.permit.permit_id <= refused_through_ ||
+    if (pending_ || transport_.control_mailbox().stop_pending() || !gate_ || !session_ ||
+        !live().interlocks_ok || incoming.permit.permit_id <= refused_through_ ||
         !admission_.permits(incoming.permit.echoed_nonce) || !output_->disabled() ||
         !within_limit) {
         reject(incoming, AYNI_DENIED);
@@ -361,6 +361,7 @@ ayni_status_t MotorExecution::sample() {
     return rc == AYNI_OK && step.state != AYNI_CONTROL_SESSION_ACTIVE ? AYNI_EXPIRED : rc;
 }
 ayni_status_t MotorExecution::stop_output() {
+    const auto requested = transport_.control_mailbox().stop_request();
     ayni_status_t stopped = AYNI_OK;
     if (session_ && gate_ && current_permit_) {
         stopped = ayni_control_session_soft_stop(session_, now());
@@ -373,12 +374,22 @@ ayni_status_t MotorExecution::stop_output() {
     if (stopped != AYNI_OK) {
         return stopped;
     }
-    if (!gate_ || !current_permit_) {
-        return AYNI_OK;
-    }
     // C-STOP-006: actual controller output readback, separate from wheel/target facts.
-    return session_ ? ayni_control_session_confirm_stopped(session_, now())
-                    : ayni_control_confirm_stopped(gate_, current_permit_, now());
+    // Only a successful stop() plus gate confirmation may advance the mailbox stop frontier.
+    if (gate_ && current_permit_) {
+        stopped = session_ ? ayni_control_session_confirm_stopped(session_, now())
+                           : ayni_control_confirm_stopped(gate_, current_permit_, now());
+    }
+    if (stopped == AYNI_OK && requested.seq) {
+        ayni_control_info_v1 info{};
+        info.struct_size = sizeof(info);
+        if (!current_permit_ || (ayni_control_get_info(gate_, &info) == AYNI_OK &&
+                                 info.phase == AYNI_CONTROL_STOPPED)) {
+            transport_.control_mailbox().confirm_stop(requested.seq, mode_ == Mode::armed,
+                                                      info.stop_cause, now());
+        }
+    }
+    return stopped;
 }
 void MotorExecution::end(ayni_call_outcome_t outcome, ayni_status_t status) {
     if (!pending_) {
@@ -449,7 +460,6 @@ ayni_status_t MotorExecution::soft_stop_owner() {
     return stopped;
 }
 void MotorExecution::serve_soft_stop(const SoftStopRequest &request) {
-    soft_stop_.exchange(false, std::memory_order_acq_rel);
     const auto stopped = soft_stop_owner();
     const bool ok = stopped == AYNI_OK;
     char reply[192];
@@ -550,15 +560,25 @@ ayni_status_t MotorExecution::advance_owner() {
     if (mode_ == Mode::closed) {
         return AYNI_OK;
     }
-    if (transport_.motor_stop_requested() ||
-        local_stop_.exchange(false, std::memory_order_acq_rel)) {
-        stop_owner();
-    } else if (transport_.motor_soft_stop_requested() ||
-               soft_stop_.exchange(false, std::memory_order_acq_rel)) {
-        const auto soft = soft_stop_owner();
-        if (soft != AYNI_OK && soft != AYNI_INTERNAL) {
-            return soft;
+    auto &mailbox = transport_.control_mailbox();
+    const auto stop_request = mailbox.stop_request();
+    if (mailbox.stop_pending()) {
+        if (stop_request.kind == ControlStopKind::hard_estop) {
+            stop_owner();
+        } else {
+            const auto soft = soft_stop_owner();
+            if (soft != AYNI_OK && soft != AYNI_INTERNAL) {
+                return soft;
+            }
         }
+    }
+    ControlTarget target;
+    if (mailbox.take_target(target)) {
+        // Batch 1 introduces a safe mailbox before Batch 3 wires authorized streaming targets.
+        const auto reason = mailbox.target_blocked(target.seq) ? ControlRejectReason::stop_pending
+                            : mode_ != Mode::armed ? ControlRejectReason::disarmed_or_latched
+                                                   : ControlRejectReason::no_active_session;
+        mailbox.mark_rejected(target.seq, reason, AYNI_DENIED, now());
     }
     if (transport_.motor_disable_requested() && mode_ != Mode::latched && mode_ != Mode::closed) {
         admission_.disable();

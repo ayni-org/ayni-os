@@ -37,6 +37,9 @@ class MotorPanel {
     MotorSwitch control_;
     uint32_t limit_ = motor_percent_max;
     int64_t heartbeat_ = 0;
+    ControlFeedbackSnapshot feedback_{}; // UI-only independent receipt/application/stop frontiers.
+    bool feedback_page_ = false;         // UI-only control/feedback navigation.
+    std::string feedback_text_;
     std::string message_ = "正在初始化电机资源";
 };
 } // namespace wifichat::wifi

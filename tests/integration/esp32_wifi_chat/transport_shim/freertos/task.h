@@ -4,6 +4,8 @@
 #include <chrono>
 #include <thread>
 
+struct StaticTask_t {};
+using StackType_t = uint8_t;
 using TaskHandle_t = std::atomic<uint32_t> *;
 inline void xTaskNotifyGive(TaskHandle_t task) {
     ++*task;

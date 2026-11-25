@@ -55,7 +55,10 @@ namespace wifichat {
 bool Display::initialize() {
     return true;
 }
-bool Display::paint(const uint8_t *, size_t) {
+bool Display::submit_ui_frame(const uint8_t *, size_t) {
+    return true;
+}
+bool Display::submit_tool_frame(uint64_t, uint32_t, const uint8_t *, size_t, void *, Completion) {
     return true;
 }
 bool Speaker::receive(Kind, uint64_t, const uint8_t *, size_t) {
@@ -84,7 +87,8 @@ class ModelDelivery : public testing::Test {
             transport,
             {packet, {}, {transport.api_generation(), 60, 75}, esp_timer_get_time() + 100000, ok});
     }
-    Transport transport;
+    ControlMailbox control;
+    Transport transport{control};
     std::atomic<uint32_t> notifications{0};
 };
 
@@ -94,7 +98,7 @@ TEST_F(ModelDelivery, OwnerReceivesWorkerCompletionBeforeBlockedFrameReleasesIts
     auto release = painted.get_future();
     auto frame = std::async(std::launch::async, [&] {
         bool filled = true;
-        for (size_t i = 0; i < packet_slots; ++i) {
+        for (size_t i = 0; i < output_packet_slots; ++i) {
             filled = transport.send(Kind::status, i, nullptr, 0) && filled;
         }
         full.set_value(filled);
@@ -103,7 +107,11 @@ TEST_F(ModelDelivery, OwnerReceivesWorkerCompletionBeforeBlockedFrameReleasesIts
         return transport.take_output(packet);
     });
     EXPECT_TRUE(full.get_future().get());
-    EXPECT_FALSE(transport.post(Kind::status, 0, nullptr, 0));
+    EXPECT_TRUE(transport.post(Kind::motor_heartbeat, 0, nullptr, 0));
+    Packet heartbeat;
+    ASSERT_TRUE(transport.receive(heartbeat));
+    EXPECT_EQ(heartbeat.kind, Kind::motor_heartbeat);
+    EXPECT_EQ(notifications.exchange(0), 1U);
     Packet result{}, received{};
     result.id = 41;
     result.kind = Kind::model_result;

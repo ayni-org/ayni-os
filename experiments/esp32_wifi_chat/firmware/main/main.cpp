@@ -38,7 +38,15 @@ void *owner(void *) {
         std::puts("Wi-Fi voice transport allocation failed");
         vTaskSuspend(nullptr);
     }
-    auto *transport = new (region) wifichat::Transport;
+    // IDF's PSRAM atomic workaround emulates external-memory atomics with a lock.
+    // Keep the small control mailbox internal so its 32-bit state uses native S32C1I.
+    auto *control_region =
+        heap_caps_malloc(sizeof(wifichat::ControlMailbox), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!control_region) {
+        vTaskSuspend(nullptr);
+    }
+    auto *control = new (control_region) wifichat::ControlMailbox;
+    auto *transport = new (region) wifichat::Transport(*control);
     esp_log_level_set(
         "*", ESP_LOG_NONE); // Only explicit, redacted diagnostics are emitted after this point.
     if (!transport->initialize()) {

@@ -1,5 +1,6 @@
 // Experiment-only in-process messages, independent of Ayni ABI/storage versions.
 #pragma once
+#include <algorithm>
 #include <array>
 #include <ayni/bodies.h>
 #include <ayni/providers/model_protocol.h>
@@ -12,7 +13,7 @@ constexpr size_t input_bytes = 4096, answer_bytes = 4096;
 // A history summary may use all of the output budget; Chinese text can exceed answer_bytes.
 constexpr size_t summary_bytes = 8192;
 constexpr size_t tx_bytes = 32768;
-constexpr size_t packet_slots = 4;
+constexpr size_t input_packet_slots = 6, output_packet_slots = 8;
 // The legacy USB owner reserved 96 KiB internally. Recorded normal peak was 25,832 bytes;
 // 64 KiB keeps 39,704 bytes above that observation while returning 32 KiB to radio/TLS.
 // This is a deployment stack budget, not a claim that every future path has been measured.
@@ -81,14 +82,25 @@ struct ModelDeliveryTiming {
     uint32_t generation = 0;
     uint64_t http_complete_us = 0, ready_us = 0;
 };
-// A bounded in-process lane; network protocols are owned by their adapters.
-struct Packet {
+// Separate bounded lanes prevent a blocked UI from borrowing the input capacity.
+// Packet remains the dedicated 32 KiB model handoff / consumer scratch type.
+template <size_t Capacity> struct BasicPacket {
     Kind kind{};
     uint64_t id = 0;
     uint32_t size = 0;
-    std::array<uint8_t, tx_bytes> body{};
+    std::array<uint8_t, Capacity> body{};
     ModelDeliveryTiming model{};
 };
+using InputPacket = BasicPacket<input_bytes>;
+using OutputPacket = BasicPacket<summary_bytes>;
+using Packet = BasicPacket<tx_bytes>;
+template <size_t Capacity> inline void copy_packet(const BasicPacket<Capacity> &from, Packet &to) {
+    to.kind = from.kind;
+    to.id = from.id;
+    to.size = from.size;
+    to.model = from.model;
+    std::copy_n(from.body.data(), from.size, to.body.data());
+}
 inline uint32_t get32(const uint8_t *p) {
     return uint32_t(p[0]) | (uint32_t(p[1]) << 8U) | (uint32_t(p[2]) << 16U) |
            (uint32_t(p[3]) << 24U);
