@@ -62,4 +62,4 @@
 
 通用 `runtime/operation_session` 使用现有独立根Goal/Task和参数驱动单Call策略；来源开启Call与新Goal分别授权，句柄成功交付后才执行，不继承来源Goal专属Grant。来源回合结束不撤销已独立授权的操作，自身撤权/绝对期限/租约/显式关闭仍终止。`motor.stream`/`motor.steer` 是该机制的消费者，Core没有电机分支。
 
-便携ControlLoop只收紧实际输出；`tick_effective`保持原目标与后续轨迹，并把缩放值交给PermitGate。Reflex启动期解析I64偏移，触发时按可移植整数公式修补字节后完整准入。主机微基准与目标板数据分别记录；无认证安全功能声明，实体测距接入、真实热改/停止时延和OTA仍待单独确认。详细决定与实测边界见[ADR-0114](../adr/0114-async-ui-streaming-control-and-parameterized-reflex.md)。
+便携ControlLoop只收紧实际输出；`tick_effective`保持原目标与后续轨迹，并把缩放值交给PermitGate。Reflex启动期解析I64偏移，触发时按可移植整数公式修补字节后完整准入。主机微基准与目标板数据分别记录；用户随后要求的正常OTA及启动自确认已完成，无认证安全功能声明，实体测距接入、真实热改/停止时延仍待实测。详细决定与实测边界见[ADR-0114](../adr/0114-async-ui-streaming-control-and-parameterized-reflex.md)。
