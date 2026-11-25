@@ -203,3 +203,10 @@ target_link_libraries(ayni_deferred_publication_tests PRIVATE ayni_runtime_porta
     ayni_host_sim ayni_host_storage ayni_warnings GTest::gtest_main)
 gtest_discover_tests(ayni_deferred_publication_tests
     DISCOVERY_TIMEOUT ${AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS})
+
+# CLI parsing/formatting is portable and exercises only public management views (ADR-0115).
+add_executable(ayni_cli_command_tests native_cli_commands_test.cpp
+    "${AYNI_ROOT}/targets/native_cli/commands.cpp" "${AYNI_ROOT}/targets/native_cli/format.cpp")
+target_include_directories(ayni_cli_command_tests PRIVATE "${AYNI_ROOT}/targets/native_cli")
+target_link_libraries(ayni_cli_command_tests PRIVATE ayni_runtime_assistant ayni_warnings GTest::gtest_main)
+gtest_discover_tests(ayni_cli_command_tests DISCOVERY_TIMEOUT ${AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS})

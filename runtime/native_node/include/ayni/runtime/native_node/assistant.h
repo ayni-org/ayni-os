@@ -26,6 +26,8 @@ enum class Operation {
     goals,
     tasks,
     calls,
+    unresolved_ops,
+    acknowledge_op,
     grants,
     grant,
     revoke,
@@ -105,6 +107,7 @@ struct Reply {
     std::vector<ayni_goal_info_v1> goals;
     std::vector<ayni_task_info_v1> tasks;
     std::vector<ayni_call_info_v1> calls;
+    std::vector<ayni_unresolved_op_v1> unresolved_ops;
     std::vector<ayni_grant_info_v1> grants;
     std::vector<MemoryEntry> memories;
 };

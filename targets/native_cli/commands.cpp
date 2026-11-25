@@ -103,6 +103,8 @@ const char *help() {
            "/limit <task-id> <次数>    提高模型次数上限\n"
            "/resume <task-id>          恢复等待超时的原 Task\n"
            "/query <call-id>           向原 Provider 查询未知结果（需其支持）\n"
+           "/unresolved               列出未决操作\n"
+           "/ack <call-id>            人工结案（不表示副作用已查清）\n"
            "/cancel <goal-id>          取消目标\n"
            "/forget [轮次]            删除全部/指定轮次，清除衍生摘要和回答\n"
            "/memory list [关键词] /memory show <id>\n"
@@ -165,6 +167,8 @@ bool parse(const std::string &line, Request &out) {
         c.operation = runtime::Operation::goals;
     } else if (op == "/tasks") {
         c.operation = runtime::Operation::tasks;
+    } else if (op == "/unresolved") {
+        c.operation = runtime::Operation::unresolved_ops;
     } else if (op == "/calls") {
         c.operation = runtime::Operation::calls;
     } else if (op == "/grants") {
@@ -194,6 +198,8 @@ bool parse(const std::string &line, Request &out) {
             c.operation = runtime::Operation::raise_limit;
         } else if (op == "/resume") {
             c.operation = runtime::Operation::resume_wait;
+        } else if (op == "/ack") {
+            c.operation = runtime::Operation::acknowledge_op;
         } else if (op == "/query") {
             c.operation = runtime::Operation::query_result;
         } else if (op == "/cancel") {

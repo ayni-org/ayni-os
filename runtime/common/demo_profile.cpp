@@ -83,6 +83,7 @@ ayni_config_v1 demo_config(const HarnessSettings &harness) {
     c.task_checkpoint_max_bytes = strategies::ToolLoop::checkpoint_bytes;
     c.task_step_capacity = 64;
     c.call_capacity = 64;
+    c.unresolved_op_capacity = 16;
     fit_call_bytes(
         c,
         {mock_bytes(mock_model(providers::mock::Service::tools)),

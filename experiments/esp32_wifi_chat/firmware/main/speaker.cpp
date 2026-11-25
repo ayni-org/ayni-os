@@ -168,8 +168,7 @@ ayni_status_t Speaker::configure(ayni_kernel_t *kernel) {
                         AYNI_CALL_NOT_IDEMPOTENT, AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_REQUEST, 0,
                         at == 0 ? legacy_tone_timeout_ms : synthesis_timeout_ms,
                         AYNI_CALL_INPUT_VALUE, AYNI_CALL_RESULT_TEXT, input_bytes(), result_limit,
-                        1, &resource_, nullptr,
-                        AYNI_CALL_DURABILITY_EPHEMERAL, 0},
+                        1, &resource_, nullptr, AYNI_CALL_DURABILITY_EPHEMERAL, 0},
                        &businesses_[at]};
         const ayni_capability_desc_v1 cap{
             sizeof(cap), capability_version, text(capabilities[at]), 0, 0, nullptr};

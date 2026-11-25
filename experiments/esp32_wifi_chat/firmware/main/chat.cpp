@@ -1566,6 +1566,25 @@ void Chat::diagnostics() {
                    (unsigned long)call.wait_reason);
         }
     }
+    if (ayni_list_objects(kernel_, AYNI_OBJECT_UNRESOLVED_OP, ids, call_slots, &count) == AYNI_OK) {
+        for (uint32_t at = 0; at < count; ++at) {
+            auto op = sized<ayni_unresolved_op_v1>();
+            if (ayni_get_unresolved_op(kernel_, ids[at], &op) != AYNI_OK) {
+                continue;
+            }
+            transport_.diagnostics().record(
+                "wifi unresolved call=%llu op=%llu task=%llu outcome=%lu status=%ld revision=%lu "
+                "query_phase=%lu\n",
+                (unsigned long long)op.logical_call_id, (unsigned long long)op.operation_id,
+                (unsigned long long)op.task_id, (unsigned long)op.outcome, (long)op.status,
+                (unsigned long)op.revision, (unsigned long)op.query_phase);
+            append("\n unresolved=%llu op=%llu task=%llu outcome=%lu status=%ld revision=%lu "
+                   "query_phase=%lu",
+                   (unsigned long long)op.logical_call_id, (unsigned long long)op.operation_id,
+                   (unsigned long long)op.task_id, (unsigned long)op.outcome, (long)op.status,
+                   (unsigned long)op.revision, (unsigned long)op.query_phase);
+        }
+    }
     if (fits) {
         transport_.send(Kind::status, 0, diagnostics_.data(), used);
     } else {
@@ -2088,8 +2107,9 @@ ayni_status_t Chat::observe_probe(const ayni_kernel_info_v1 &info) {
         return rc;
     }
     if (goal.wait_reason == AYNI_REASON_TASK_CAPACITY && !hold_reported_) {
-        status(turn_, "task capacity full: retained unresolved history; input will be "
-                      "cancelled, no retry");
+        status(turn_,
+               "task capacity full: active work or unresolved operation ledger full; input will be "
+               "cancelled, no retry");
         diagnostics();
         hold_reported_ = true;
         cancel_requested_ = true;

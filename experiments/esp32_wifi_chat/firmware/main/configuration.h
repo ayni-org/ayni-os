@@ -9,6 +9,7 @@ inline constexpr uint32_t owner_step_units = 16, owner_step_budget_us = 5000;
 inline constexpr uint32_t goal_slots = 4, task_slots = 4, grant_slots = 20, step_slots = 64;
 // Radio/TLS XiP and complete speech buffers share the board's 8 MiB PSRAM.
 inline constexpr uint32_t call_slots = 32;
+inline constexpr uint32_t unresolved_op_slots = 16;
 static_assert(step_slots <= AYNI_TASK_STEP_CAPACITY_MAX, "Profile exceeds public task step limit");
 // No runtime-private default helper is imported. These are public deployment capacities.
 // call_input_bytes and call_result_bytes are the largest canonical encodings the registered
@@ -47,6 +48,7 @@ inline ayni_config_v1 chat_config(uint32_t call_input_bytes, uint32_t call_resul
     c.memory_body_max_bytes = AYNI_MEMORY_BODY_BYTES_DEFAULT;
     c.memory_dependency_capacity = AYNI_MEMORY_DEPENDENCY_CAPACITY_DEFAULT;
     c.call_capacity = call_slots;
+    c.unresolved_op_capacity = unresolved_op_slots;
     c.call_input_max_bytes = call_input_bytes;
     c.call_result_max_bytes = call_result_bytes;
     c.max_turns = harness::max_turns;

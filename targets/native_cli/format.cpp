@@ -177,14 +177,22 @@ std::string format(const runtime::Reply &reply, Action action, runtime::Operatio
             << " query=" << call.query_status << ':' << call.query_reason << ':'
             << call.query_conclusion;
     }
+    for (const auto &op : reply.unresolved_ops) {
+        out << "\nUnresolved " << op.logical_call_id << " operation=" << op.operation_id
+            << " task=" << op.task_id << " binding=" << std::string(op.binding_id, op.binding_size)
+            << " outcome=" << op.outcome << " status=" << op.status
+            << " query_phase=" << op.query_phase << " revision=" << op.revision;
+    }
     for (const auto &grant : reply.grants) {
         out << "\nGrant " << grant.grant_id << " lifecycle=" << grant.lifecycle
             << " subject=" << grant.subject_instance_id
             << " capability=" << std::string(grant.capability_id, grant.capability_id_size);
     }
     if ((operation == runtime::Operation::goals || operation == runtime::Operation::tasks ||
-         operation == runtime::Operation::calls || operation == runtime::Operation::grants) &&
-        reply.goals.empty() && reply.tasks.empty() && reply.calls.empty() && reply.grants.empty()) {
+         operation == runtime::Operation::calls || operation == runtime::Operation::grants ||
+         operation == runtime::Operation::unresolved_ops) &&
+        reply.goals.empty() && reply.tasks.empty() && reply.calls.empty() && reply.grants.empty() &&
+        reply.unresolved_ops.empty()) {
         out << " 无保留对象。";
     }
     return out.str();
