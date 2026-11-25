@@ -344,12 +344,7 @@ ayni_status_t CallTable::confirm_execution(uint32_t index, ayni_execution_phase_
                                            ayni_execution_target_t target, ActionStamp stamp) {
     auto &entry = *slots_[index].entry;
     if (!entry.state.execution || execution_stopped(*entry.state.execution) ||
-        !advances(entry, stamp) ||
-        (phase != AYNI_EXECUTION_STOPPED && phase != AYNI_EXECUTION_NOT_STARTED) ||
-        (phase == AYNI_EXECUTION_STOPPED
-             ? cause == AYNI_CONTROL_STOP_NONE || cause > AYNI_CONTROL_STOP_CLOCK
-             : cause != AYNI_CONTROL_STOP_NONE || target != AYNI_TARGET_UNVERIFIED) ||
-        target > AYNI_TARGET_UNSATISFIED) {
+        !advances(entry, stamp) || !valid_execution_stop(phase, cause, target)) {
         return AYNI_INVALID_STATE;
     }
     auto &execution = *entry.state.execution;

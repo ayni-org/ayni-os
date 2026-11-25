@@ -1574,15 +1574,17 @@ void Chat::diagnostics() {
             }
             transport_.diagnostics().record(
                 "wifi unresolved call=%llu op=%llu task=%llu outcome=%lu status=%ld revision=%lu "
-                "query_phase=%lu\n",
+                "query_phase=%lu query_authority=%lu\n",
                 (unsigned long long)op.logical_call_id, (unsigned long long)op.operation_id,
                 (unsigned long long)op.task_id, (unsigned long)op.outcome, (long)op.status,
-                (unsigned long)op.revision, (unsigned long)op.query_phase);
+                (unsigned long)op.revision, (unsigned long)op.query_phase,
+                (unsigned long)op.query_authority);
             append("\n unresolved=%llu op=%llu task=%llu outcome=%lu status=%ld revision=%lu "
-                   "query_phase=%lu",
+                   "query_phase=%lu query_authority=%lu",
                    (unsigned long long)op.logical_call_id, (unsigned long long)op.operation_id,
                    (unsigned long long)op.task_id, (unsigned long)op.outcome, (long)op.status,
-                   (unsigned long)op.revision, (unsigned long)op.query_phase);
+                   (unsigned long)op.revision, (unsigned long)op.query_phase,
+                   (unsigned long)op.query_authority);
         }
     }
     if (fits) {

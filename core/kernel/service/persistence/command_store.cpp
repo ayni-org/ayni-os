@@ -133,14 +133,16 @@ bool matches_target_command(const WorkModel &model, const durability::SnapshotMe
     if (mapping.kind == AYNI_INTENT_UNRESOLVED_OP_QUERY ||
         mapping.kind == AYNI_INTENT_UNRESOLVED_OP_ACKNOWLEDGE) {
         if (!model.unresolved_ops.find(mapping.object.id, index)) {
-            return true;
+            // ADR-0115: a removed history row can retain a receipt, but an active Call has
+            // never belonged to this command's target namespace.
+            return !model.calls.find(mapping.object.id, index);
         }
         if (mapping.kind == AYNI_INTENT_UNRESOLVED_OP_ACKNOWLEDGE) {
             return false;
         }
         const auto &state = model.unresolved_ops.state(index);
         return state.revision >= mapping.object.revision &&
-               state.created.transition.commit_seq < mapping.commit_seq && state.query &&
+               state.archived.transition.commit_seq < mapping.commit_seq && state.query &&
                state.query->requested.transition.commit_seq >= mapping.commit_seq &&
                (state.revision != mapping.object.revision ||
                 state.query->requested.transition.commit_seq == mapping.commit_seq);

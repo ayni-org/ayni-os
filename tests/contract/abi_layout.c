@@ -110,6 +110,7 @@ AYNI_LAYOUT(storage_schema_12, AYNI_STORAGE_SCHEMA_CURRENT == 12u);
 AYNI_LAYOUT(config_unresolved_op_capacity, offsetof(ayni_config_v1, unresolved_op_capacity) == 200);
 AYNI_LAYOUT(unresolved_op_size, sizeof(ayni_unresolved_op_v1) == 192);
 AYNI_LAYOUT(unresolved_op_binding, offsetof(ayni_unresolved_op_v1, binding_id) == 144);
+AYNI_LAYOUT(unresolved_op_query_authority, offsetof(ayni_unresolved_op_v1, query_authority) == 188);
 AYNI_LAYOUT(unresolved_op_target_size, sizeof(ayni_unresolved_op_target_v1) == 16);
 AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 204);
 AYNI_LAYOUT(config_business_contract_bytes,

@@ -1,4 +1,5 @@
 #include "reply_voice.h"
+#include "configuration.h"
 #include "protocol.h"
 #include "speech_profile.h"
 #include <algorithm>
@@ -17,7 +18,7 @@ ayni_string_v1 text(const char *s) {
 // ADR-0110/0115: a cancelled Task may be terminal while its RAM-only speaker Call still
 // borrows PCM. Keep the chunk until the exact Provider attempt has returned a terminal receipt.
 bool speech_calls_settled(ayni_kernel_t *kernel, uint64_t task_id) {
-    std::array<uint64_t, AYNI_CALL_CAPACITY_MAX> ids{};
+    std::array<uint64_t, call_slots> ids{};
     uint32_t count = 0;
     if (ayni_list_objects(kernel, AYNI_OBJECT_CALL, ids.data(), uint32_t(ids.size()), &count) !=
         AYNI_OK) {

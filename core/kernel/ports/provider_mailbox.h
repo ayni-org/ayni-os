@@ -51,6 +51,12 @@ inline bool provider_terminal(ProviderMessageKind kind) {
     return kind == ProviderMessageKind::completed || kind == ProviderMessageKind::failed ||
            kind == ProviderMessageKind::cancelled || kind == ProviderMessageKind::abandoned;
 }
+// Query cancellation/abandonment says only that reconciliation did not establish a result.
+inline ayni_call_outcome_t provider_query_outcome(ProviderMessageKind kind) {
+    return kind == ProviderMessageKind::completed ? AYNI_CALL_COMPLETED
+           : kind == ProviderMessageKind::failed  ? AYNI_CALL_FAILED
+                                                  : AYNI_CALL_ABANDONED;
+}
 
 // Encodes a measured typed payload straight into its lane, under the ingress
 // lock, so no producer-side buffer of the lane's size is needed.
@@ -158,6 +164,8 @@ class ProviderMailbox {
     uint32_t in_flight() const { return in_flight_; }
     // Any thread: retained messages, independent of the owner's journal capacity.
     bool has_pending(const BlockedSlots *blocked = nullptr) const;
+    // Owner: lock and inspect this exact reservation; never reads or acknowledges its receipt.
+    bool has_terminal(ProviderReservation reservation) const;
 
   private:
     // Scalars shared by result lanes; semantic validation belongs above transport.
@@ -204,6 +212,7 @@ class ProviderMailbox {
     // Helpers accessing slot state require the ingress lock. Message validation,
     // kind classification and address math read only immutable configuration.
     Attempt *find(ProviderReservation reservation);
+    const Attempt *find(ProviderReservation reservation) const; // Same identity check for probes.
     static const Result *pending(const Attempt &attempt);
     ayni_status_t check_message(const ProviderMessage &message) const;
     uint8_t *payload_of(uint32_t index, ProviderMessageKind kind) const;

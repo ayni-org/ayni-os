@@ -607,7 +607,8 @@ typedef struct ayni_unresolved_op_v1 {
     uint32_t execution_phase; /* Zero for nonphysical; otherwise STOPPED or NOT_STARTED. */
     uint32_t stop_cause;      /* Zero for nonphysical or not-started. */
     uint32_t target;          /* Physical target evidence; zero when absent. */
-    uint32_t reserved;        /* Written zero. */
+    ayni_call_query_authority_t
+        query_authority; /* Original NONE/BEST_EFFORT/AUTHORITATIVE. Since 0.62. */
 } ayni_unresolved_op_v1;
 /* Read bodyless facts, including not-yet-durable changes. NOT_FOUND preserves output. Since 0.62.
  */

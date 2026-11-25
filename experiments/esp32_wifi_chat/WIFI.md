@@ -835,3 +835,5 @@ LittleFS 例行对账等待约 20 ms 的空闲窗口，持续繁忙时最迟在�
 本分支ABI0.62/schema12将已退休Task的持久未决操作放入独立OperationLedger，默认ESP配置16槽，诊断列出call/operation/task及query状态。speaker.speak_text采用Tier0 EPHEMERAL，ReplyVoice重启取消；I²S停稳确认后的部分取消保留PARTIAL，未确认停止仍UNKNOWN。正常便携验证、Native消费者编译、独立审查及最终ESP编译与分区检查通过；决定与结果边界见[ADR-0115](../../docs/adr/0115-unknown-operation-history-and-work-retirement.md)。
 
 本包未OTA、USB、擦卷、调用模型/语音服务或真实运动。设备仍运行上一节正常确认的d9f476e/ABI0.61/schema11；新固件不读取旧卷，不自动清空。真实I²S/PWM/控制时延、Flash争用、新格式异常恢复、独立停止链和耐久未由主机回归或编译证明。
+
+2026-11-26按用户要求修复Neon审查项：合法未知/取消及旧boot查询分类、fenced回执保留、快照命令退休边界、朗读栈缓冲和诊断容量约束；诊断同步公开query_authority。正常软件、限定查询重载、独立复核及最终固件编译/分区检查通过，编译栈报告确认朗读帧缩小；没有真机栈水位或设备操作，本分支仍未OTA。详见ADR-0115的审查修复补充。

@@ -116,3 +116,5 @@ ABI 0.60（ADR-0113）在`ayni_config_v1`尾部追加`audit_capacity`（`sizeof 
 ABI 0.61（ADR-0114）删除已废弃的 Call arguments/text、Provider text、Task reserved_call_tool、AYNI_TOOL_INPUT_VALUE 及旧 Host 草案。Persistence 只保留 durable / turn_boundary，全仓调用方统一重编译；Core schema 保持 11，持久记录的 input_format 仍在解码边界严格校验。新增 `control_loop.h` 纯函数、`ayni_control_session_tick_effective` 与 Reflex 参数绑定尾部字段；布局由 C99 ABI 检查固定。运行期 OperationSession 仅组合既有 Goal/Task API，不增加 Core 存储记录或可持久化句柄。
 
 ABI0.62 增加独立未决操作配置、对象、查询与管理命令，旧调用方统一重编译；ayni_call_info_v1 和104 B审计记录布局保持。schema12拒收并保留旧schema11卷，无迁移或自动擦除；独立账本满/缩容沿用STATE_EXCEEDS_CAPACITY。type29仅快照、type30仅日志，见ADR-0115。
+
+ABI0.62发布前审查修复将`ayni_unresolved_op_v1`末尾预留u32定义为`query_authority`（原NONE/BEST_EFFORT/AUTHORITATIVE）；结构仍192 B，字段偏移188。Core投影、Native CLI及ESP诊断同步使用，各源码消费者重编译，持久布局和schema12不变，见ADR-0115的2026-11-26补充。

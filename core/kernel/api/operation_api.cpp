@@ -43,6 +43,7 @@ ayni_status_t ayni_get_unresolved_op(const ayni_kernel_t *kernel, uint64_t call_
         info.query_attempt = state.query->attempt;
     }
     info.binding_version = row.identity.binding_version;
+    info.query_authority = static_cast<ayni_call_query_authority_t>(row.contract.query);
     info.binding_size = row.identity.binding_id.size();
     std::memcpy(info.binding_id, row.identity.binding_id.data(), info.binding_size);
     if (state.execution_stop) {

@@ -91,6 +91,30 @@ TEST_F(OperationLedgerTest, DisabledConsumesNoArenaAndCapacityNeverEvictsUnknown
               AYNI_CAPACITY_EXCEEDED);
     EXPECT_EQ(ledger.size(), 1U);
 }
+// ADR-0115: byte-proof strides may be odd without misaligning metadata or aliasing another row.
+TEST_F(OperationLedgerTest, OddProofStrideKeepsTwoEntriesAndAuditObligationsIndependent) {
+    admit();
+    constexpr OperationLedger::Limits odd_limits{2, 4097};
+    std::vector<uint64_t> storage(OperationLedger::storage_size(odd_limits) / sizeof(uint64_t) + 1);
+    OperationLedger odd(storage.data(), odd_limits);
+    auto row = ledger.record(0);
+    ASSERT_EQ(odd.restore_snapshot_entry(row), AYNI_OK);
+    row.identity.call_id += 10;
+    row.identity.operation_id += 10;
+    row.action.identity.logical_call_id = row.identity.call_id;
+    row.action.identity.operation_id = row.identity.operation_id;
+    ASSERT_EQ(odd.restore_snapshot_entry(row), AYNI_OK);
+    ASSERT_EQ(odd.acknowledge_and_remove(0, stamp(6)), AYNI_OK);
+    EXPECT_EQ(std::memcmp(odd.contract(1).business_contract.data, proof.data(),
+                          contract.business_contract.size),
+              0);
+    ASSERT_EQ(odd.acknowledge_and_remove(1, stamp(7)), AYNI_OK);
+    PendingAudit first{}, second{};
+    ASSERT_TRUE(odd.take_durable_audit(7, first));
+    ASSERT_TRUE(odd.take_durable_audit(7, second));
+    EXPECT_EQ(first.call_id, identity.call_id);
+    EXPECT_EQ(second.call_id, row.identity.call_id);
+}
 TEST_F(OperationLedgerTest,
        RejectsPendingEphemeralUnstoppedAndNonmonotonicHandoffsWithoutMutation) {
     for (const auto bad : {ActionStamp{boot - 1, {6, 6}}, stamp(4), ActionStamp{boot, {4, 6}},

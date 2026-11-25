@@ -32,13 +32,7 @@ OperationRecord from_call(const CallIdentity &id, const catalog::CallContract &c
     return {identity_from_call(id, action), contract, saved, action};
 }
 bool valid_stop(const std::optional<ExecutionStopSummary> &stop) {
-    return !stop ||
-           ((stop->phase == AYNI_EXECUTION_STOPPED || stop->phase == AYNI_EXECUTION_NOT_STARTED) &&
-            stop->stop_cause <= AYNI_CONTROL_STOP_CLOCK &&
-            (stop->phase == AYNI_EXECUTION_STOPPED ? stop->stop_cause != AYNI_CONTROL_STOP_NONE
-                                                   : stop->stop_cause == AYNI_CONTROL_STOP_NONE &&
-                                                         stop->target == AYNI_TARGET_UNVERIFIED) &&
-            stop->target <= AYNI_TARGET_UNSATISFIED);
+    return !stop || valid_execution_stop(stop->phase, stop->stop_cause, stop->target);
 }
 } // namespace
 
@@ -48,13 +42,15 @@ std::size_t OperationLedger::storage_size(Limits limits) {
 }
 OperationLedger::OperationLedger(void *storage, Limits limits)
     : slots_(static_cast<Slot *>(storage)),
+      audits_(limits.capacity == 0 ? nullptr
+                                   : reinterpret_cast<PendingAudit *>(slots_ + limits.capacity)),
       proofs_(limits.capacity == 0 ? nullptr
-                                   : reinterpret_cast<uint8_t *>(slots_ + limits.capacity)),
-      audits_(limits.capacity == 0 ? nullptr : reinterpret_cast<PendingAudit *>(proofs_)),
+                                   : reinterpret_cast<uint8_t *>(audits_ + limits.capacity)),
       limits_(limits) {
     // Audit metadata precedes byte strides, so an odd business_bytes never misaligns it.
-    proofs_ =
-        limits.capacity == 0 ? nullptr : reinterpret_cast<uint8_t *>(audits_ + limits.capacity);
+    static_assert(alignof(Slot) <= storage_alignment, "caller arena aligns ledger slots");
+    static_assert(alignof(PendingAudit) <= storage_alignment, "caller arena aligns audit ring");
+    static_assert(sizeof(Slot) % alignof(PendingAudit) == 0, "audit ring follows aligned slots");
     for (uint32_t at = 0; at < limits.capacity; ++at) {
         new (slots_ + at) Slot{};
         new (audits_ + at) PendingAudit{};

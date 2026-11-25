@@ -29,6 +29,7 @@ TEST(NativeCliCommands, FormatsRetiredOperationWithoutLookingUpItsTaskOrPrivateB
     op.binding_id[2] = 'd';
     op.outcome = AYNI_CALL_ABANDONED;
     op.status = AYNI_RESULT_UNKNOWN;
+    op.query_authority = AYNI_CALL_QUERY_NONE;
     reply.unresolved_ops.push_back(op);
     const auto output = ayni::cli::format(reply, ayni::cli::Action::execute,
                                           ayni::runtime::Operation::unresolved_ops);
@@ -37,5 +38,6 @@ TEST(NativeCliCommands, FormatsRetiredOperationWithoutLookingUpItsTaskOrPrivateB
     EXPECT_NE(output.find("task=789"), std::string::npos);
     EXPECT_NE(output.find("binding=old"), std::string::npos);
     EXPECT_NE(output.find("revision=2"), std::string::npos);
+    EXPECT_NE(output.find("query_authority=none (ack only)"), std::string::npos);
 }
 } // namespace

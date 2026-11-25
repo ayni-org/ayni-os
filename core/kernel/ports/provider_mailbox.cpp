@@ -50,6 +50,9 @@ ayni_status_t ProviderMailbox::check_message(const ProviderMessage &message) con
 }
 
 ProviderMailbox::Attempt *ProviderMailbox::find(ProviderReservation reservation) {
+    return const_cast<Attempt *>(static_cast<const ProviderMailbox *>(this)->find(reservation));
+}
+const ProviderMailbox::Attempt *ProviderMailbox::find(ProviderReservation reservation) const {
     if (reservation.index >= capacity_) {
         return nullptr;
     }
@@ -302,6 +305,11 @@ bool ProviderMailbox::has_pending(const BlockedSlots *blocked) const {
         }
     }
     return false;
+}
+bool ProviderMailbox::has_terminal(ProviderReservation reservation) const {
+    const IngressGuard guard(host_);
+    const auto *attempt = find(reservation);
+    return attempt != nullptr && attempt->terminal.has_value();
 }
 
 void ProviderMailbox::release(uint32_t index) {

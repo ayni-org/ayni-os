@@ -162,9 +162,7 @@ bool CallRuntime::query_ready(uint32_t index, uint64_t now_us, uint64_t durable_
 // the original Task only if it still waits for that call; cancellation is final.
 bool CallRuntime::consume_query(uint32_t index, uint32_t task_index, const ProviderMessage &message,
                                 foundation::TransitionStamp stamp) {
-    const auto kind = message.kind == ProviderMessageKind::completed ? AYNI_CALL_COMPLETED
-                      : message.kind == ProviderMessageKind::failed  ? AYNI_CALL_FAILED
-                                                                     : AYNI_CALL_ABANDONED;
+    const auto kind = provider_query_outcome(message.kind);
     work::CallResult result{
         kind,
         message.status,

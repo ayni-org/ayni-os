@@ -154,8 +154,8 @@ class OperationLedger {
     void remove(uint32_t index, bool acknowledged,
                 ActionStamp stamp); // Queues audit then wipes row.
     Slot *slots_;              // Fixed optional metadata in caller arena; null iff capacity zero.
-    uint8_t *proofs_;          // No domain/input/result pools; null iff capacity zero.
     PendingAudit *audits_;     // Fixed ring, exactly capacity obligations; no heap.
+    uint8_t *proofs_;          // No domain/input/result pools; null iff capacity zero.
     Limits limits_;            // Immutable arena bounds.
     uint32_t size_ = 0;        // Occupied slots, <= capacity.
     uint32_t audit_head_ = 0;  // Ring head, meaningful only with nonzero capacity.

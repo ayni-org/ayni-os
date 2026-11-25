@@ -10,6 +10,7 @@ inline constexpr uint32_t goal_slots = 4, task_slots = 4, grant_slots = 20, step
 // Radio/TLS XiP and complete speech buffers share the board's 8 MiB PSRAM.
 inline constexpr uint32_t call_slots = 32;
 inline constexpr uint32_t unresolved_op_slots = 16;
+static_assert(unresolved_op_slots <= call_slots, "Diagnostic Call buffer must also fit ledger IDs");
 static_assert(step_slots <= AYNI_TASK_STEP_CAPACITY_MAX, "Profile exceeds public task step limit");
 // No runtime-private default helper is imported. These are public deployment capacities.
 // call_input_bytes and call_result_bytes are the largest canonical encodings the registered

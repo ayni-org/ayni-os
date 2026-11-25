@@ -2,6 +2,18 @@
 #include <sstream>
 namespace ayni::cli {
 namespace {
+const char *query_authority(ayni_call_query_authority_t authority) {
+    switch (authority) {
+    case AYNI_CALL_QUERY_NONE:
+        return "none (ack only)";
+    case AYNI_CALL_QUERY_BEST_EFFORT:
+        return "best_effort";
+    case AYNI_CALL_QUERY_AUTHORITATIVE:
+        return "authoritative";
+    default:
+        return "unknown";
+    }
+}
 const char *task_state(ayni_task_lifecycle_t state) {
     switch (state) {
     case AYNI_TASK_READY:
@@ -181,6 +193,7 @@ std::string format(const runtime::Reply &reply, Action action, runtime::Operatio
         out << "\nUnresolved " << op.logical_call_id << " operation=" << op.operation_id
             << " task=" << op.task_id << " binding=" << std::string(op.binding_id, op.binding_size)
             << " outcome=" << op.outcome << " status=" << op.status
+            << " query_authority=" << query_authority(op.query_authority)
             << " query_phase=" << op.query_phase << " revision=" << op.revision;
     }
     for (const auto &grant : reply.grants) {

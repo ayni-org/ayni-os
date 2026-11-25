@@ -421,3 +421,5 @@ CALL_STATE 的资源组保存接受时已解析的实际 ID 与原需求单位�
 requested 与同批唯一 UNRESOLVED_OP_QUERY 精确命令配对；acknowledged 与 ACKNOWLEDGE 命令配对，回执保留被删除项的原 CAS。dispatching/query_failed/resolved 独占该 transition，不允许尾随无关记录；resolved 必须原 query 处于 dispatching 且权威效果已知。共享 live 规则生成并逐字段比较 delta；旧动作永不重派发。
 
 PendingAudit 不持久化，无额外日志；已应用结案的 `after_seq` 只有在当前 writer `durable_seq` 覆盖后才进入 AuditRing。fenced reload 丢弃未落盘义务，历史快照/重放不重复发射旧 RAM 审计。正常 codec/关闭重开验证不代表新格式异常恢复专项已通过。
+
+2026-11-26快照命令边界补充：保留的UNRESOLVED_OP_QUERY回执必须严格晚于目标archived.commit_seq，不能把退休前CALL_QUERY_RESULT历史改标为账本命令。不存在账本行时可保留已移除目标的QUERY/ACK回执，但同ID不得仍在活跃CallTable；普通格式与布局不变。codec校验见`LedgerCall.SnapshotRejectsLedgerQueryReceiptThatPredatesRetirement`、`LedgerCall.SnapshotRejectsLedgerAcknowledgementReceiptForAnActiveCall`。

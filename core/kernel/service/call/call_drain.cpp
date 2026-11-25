@@ -67,9 +67,6 @@ CallRuntime::Advance CallRuntime::drain_transport(Mode mode) {
                 fenced_blocked[active->delivery->reservation.index] = false;
             }
         }
-        if (ledger_query_) {
-            fenced_blocked[ledger_query_->delivery.reservation.index] = false;
-        }
         filter = &fenced_blocked;
     }
     if ((mode == Mode::closing || mode == Mode::fenced) && mailbox_.has_pending(filter)) {
@@ -144,9 +141,6 @@ bool CallRuntime::transport_ready(Mode mode) const {
             if (active && active->ephemeral && active->delivery) {
                 fenced_blocked[active->delivery->reservation.index] = false;
             }
-        }
-        if (ledger_query_) {
-            fenced_blocked[ledger_query_->delivery.reservation.index] = false;
         }
         if (mailbox_.has_pending(&fenced_blocked)) {
             return true;

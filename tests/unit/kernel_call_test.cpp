@@ -1,6 +1,6 @@
 #include "workspace_fixture.h"
 // Normal public ABI call scenarios, C-CALL-002/012, C-COMMIT-007 and ADR-0045.
-// Sim storage timing is explicit; no fault injection or restart campaign.
+// Sim timing is explicit; scoped Neon query/fenced regressions do not expand into a campaign.
 #include "goal_reauthorization_request.h"
 #include "journal_test_support.h"
 #include "kernel/service/command/command_records.h"
@@ -250,6 +250,7 @@ class ManagedCall : public ::testing::Test {
         provider.cancel = [](void *ctx, ayni_attempt_ref_v1 attempt) {
             auto &self = *static_cast<ManagedCall *>(ctx);
             ++self.cancellations;
+            self.cancelled_attempts.push_back(attempt);
             for (std::size_t at = 0; at < self.pending.size(); ++at) {
                 if (self.pending[at].attempt.request_id == attempt.request_id &&
                     !self.pending[at].ended && self.cancel_posts_terminal) {
@@ -448,6 +449,7 @@ class ManagedCall : public ::testing::Test {
     uint64_t command = 0;
     std::string seen_result;
     unsigned cancellations = 0;
+    std::vector<ayni_attempt_ref_v1> cancelled_attempts;
     bool cancel_posts_terminal = false;
 };
 
@@ -2352,6 +2354,41 @@ TEST_F(MemoryCall, invalid_late_text_remains_unknown_after_its_source_is_deleted
 
 namespace {
 // C-CALL-016/ADR-0115: public management of bodyless unknowns after one-slot work retirement.
+bool rewrite_snapshot_target(ModelSnapshot &snapshot, uint64_t call,
+                             ayni_intent_kind_t replacement) {
+    using namespace ayni::kernel;
+    constexpr uint32_t tail_bytes = sizeof(uint64_t);
+    for (auto &record : snapshot.records) {
+        if (record.header.type != command_record_type) {
+            continue;
+        }
+        CommandMapping mapping{};
+        uint64_t floor = 0;
+        ayni_bytes_v1 canonical{};
+        const auto base_size = static_cast<uint32_t>(record.body.size()) - tail_bytes;
+        if (!read_command_record(record.body.data(), base_size, mapping, floor, canonical) ||
+            mapping.kind != AYNI_INTENT_CALL_QUERY_RESULT || mapping.object.id != call) {
+            continue;
+        }
+        mapping.kind = replacement;
+        mapping.object.kind = AYNI_OBJECT_UNRESOLVED_OP;
+        std::array<uint8_t, target_command_size> changed{};
+        uint32_t written = 0;
+        const TargetCommand target{replacement,
+                                   replacement == AYNI_INTENT_UNRESOLVED_OP_ACKNOWLEDGE
+                                       ? mapping.object.revision
+                                       : mapping.object.revision - 1,
+                                   call};
+        if (encode_target_command(target, changed.data(), changed.size(), written) != AYNI_OK) {
+            return false;
+        }
+        const ayni_bytes_v1 proof{changed.data(), written};
+        mapping.digest = authority_command_digest(proof);
+        return write_command_record(mapping, floor, proof, record.body.data(), base_size);
+    }
+    return false;
+}
+
 class LedgerCall : public ManagedCall {
   protected:
     void SetUp() override {
@@ -2394,6 +2431,15 @@ class LedgerCall : public ManagedCall {
         rows.resize(count);
         return rows;
     }
+    void reach_query_deadline() {
+        using namespace ayni::kernel;
+        const auto now = work.node().sim().now_us();
+        const auto deadline = KernelTestProbe::calls(work.kernel())
+                                  .next_deadline_us(now, CallRuntime::JournalAdmission::available);
+        ASSERT_GT(deadline, now);
+        ASSERT_NE(deadline, UINT64_MAX);
+        work.node().sim().advance_us(deadline - now);
+    }
 };
 TEST_F(LedgerCall, FullActiveCallStillAllowsDedicatedQueryAndDurableOnlyClosureAudit) {
     const auto call = retire_unknown();
@@ -2403,6 +2449,7 @@ TEST_F(LedgerCall, FullActiveCallStillAllowsDedicatedQueryAndDurableOnlyClosureA
     auto info = ayni::initialized<ayni_call_info_v1>();
     EXPECT_EQ(ayni_get_call(work.kernel(), call, &info), AYNI_NOT_FOUND);
     EXPECT_EQ(op.operation_id, pending[0].operation);
+    EXPECT_EQ(op.query_authority, AYNI_CALL_QUERY_AUTHORITATIVE);
     audits();
     ASSERT_EQ(operation_command(call, AYNI_INTENT_UNRESOLVED_OP_QUERY, ++command).status, AYNI_OK);
     pump(12);
@@ -2461,6 +2508,47 @@ TEST_F(LedgerCall, NormalSnapshotRoundtripKeepsLedgerIndependentOfRetiredTaskAnd
     auto task = ayni::initialized<ayni_task_info_v1>();
     EXPECT_EQ(ayni_get_task(work.kernel(), op.task_id, &task), AYNI_NOT_FOUND);
 }
+// C-CALL-016: retained active-query evidence cannot be relabelled as an earlier ledger command.
+TEST_F(LedgerCall, SnapshotRejectsLedgerQueryReceiptThatPredatesRetirement) {
+    const auto goal = create();
+    pump(12);
+    ASSERT_EQ(pending.size(), 1U);
+    const auto call = pending[0].call;
+    post(0, AYNI_CALL_ABANDONED, AYNI_CALL_EFFECT_UNKNOWN, {});
+    pump(8);
+    ASSERT_EQ(query_call(call, ++command).status, AYNI_OK);
+    pump(12);
+    ASSERT_EQ(queries.size(), 1U);
+    post_query(0, AYNI_QUERY_RESULT_UNKNOWN, AYNI_CALL_ABANDONED, AYNI_CALL_EFFECT_UNKNOWN, {});
+    pump(8);
+    ASSERT_EQ(work.cancel_task(work.goal(goal).last_task_id).status, AYNI_OK);
+    pump(8);
+    create();
+    pump(12);
+    auto snapshot = snapshot_model(work.node());
+    ASSERT_EQ(restore_model(snapshot), ayni::durability::BatchCheck::ok);
+    ASSERT_TRUE(rewrite_snapshot_target(snapshot, call, AYNI_INTENT_UNRESOLVED_OP_QUERY));
+    EXPECT_EQ(restore_model(snapshot), ayni::durability::BatchCheck::corrupt);
+}
+
+// C-CALL-016: historical deletion receipts cannot target a Call that has never retired.
+TEST_F(LedgerCall, SnapshotRejectsLedgerAcknowledgementReceiptForAnActiveCall) {
+    create();
+    pump(12);
+    ASSERT_EQ(pending.size(), 1U);
+    const auto call = pending[0].call;
+    post(0, AYNI_CALL_ABANDONED, AYNI_CALL_EFFECT_UNKNOWN, {});
+    pump(8);
+    ASSERT_EQ(query_call(call, ++command).status, AYNI_OK);
+    pump(12);
+    ASSERT_EQ(queries.size(), 1U);
+    post_query(0, AYNI_QUERY_RESULT_UNKNOWN, AYNI_CALL_ABANDONED, AYNI_CALL_EFFECT_UNKNOWN, {});
+    pump(8);
+    auto snapshot = snapshot_model(work.node());
+    ASSERT_EQ(restore_model(snapshot), ayni::durability::BatchCheck::ok);
+    ASSERT_TRUE(rewrite_snapshot_target(snapshot, call, AYNI_INTENT_UNRESOLVED_OP_ACKNOWLEDGE));
+    EXPECT_EQ(restore_model(snapshot), ayni::durability::BatchCheck::corrupt);
+}
 } // namespace
 
 namespace {
@@ -2482,6 +2570,195 @@ TEST_F(LedgerCall, ContinuousActiveProgressCannotStarveLedgerQueryDispatch) {
     }
     EXPECT_EQ(queries.size(), 1U);
 }
+class LedgerUnknownQuery : public LedgerCall,
+                           public ::testing::WithParamInterface<ayni_call_outcome_t> {};
+// C-CALL-011/016: a normal unknown query result does not accuse its Provider of malformed data.
+TEST_P(LedgerUnknownQuery, CancelledAndAbandonedQueriesRetainUnknownWithoutProviderError) {
+    const auto call = retire_unknown();
+    ASSERT_EQ(operation_command(call, AYNI_INTENT_UNRESOLVED_OP_QUERY, ++command).status, AYNI_OK);
+    pump(12);
+    ASSERT_EQ(queries.size(), 1U);
+    post_query(0, AYNI_QUERY_RESULT_UNKNOWN, GetParam(), AYNI_CALL_EFFECT_UNKNOWN, {});
+    pump(8);
+    auto op = ayni::initialized<ayni_unresolved_op_v1>();
+    ASSERT_EQ(ayni_get_unresolved_op(work.kernel(), call, &op), AYNI_OK);
+    EXPECT_EQ(op.query_status, AYNI_RESULT_UNKNOWN);
+    EXPECT_EQ(op.query_reason, AYNI_REASON_NONE);
+    EXPECT_EQ(op.effect, AYNI_CALL_EFFECT_UNKNOWN);
+}
+INSTANTIATE_TEST_SUITE_P(NormalUnresolvedQuery, LedgerUnknownQuery,
+                         ::testing::Values(AYNI_CALL_CANCELLED, AYNI_CALL_ABANDONED));
+
+// ADR-0115: a cancelled query returns its borrow without closing the original operation.
+TEST_F(LedgerCall, QueryDeadlineCancellationRemainsAnOrdinaryUnknownResult) {
+    const auto call = retire_unknown();
+    post(1, AYNI_CALL_CANCELLED, AYNI_CALL_EFFECT_NONE, {});
+    pump(8);
+    ASSERT_EQ(operation_command(call, AYNI_INTENT_UNRESOLVED_OP_QUERY, ++command).status, AYNI_OK);
+    pump(12);
+    ASSERT_EQ(queries.size(), 1U);
+    reach_query_deadline();
+    pump(4);
+    ASSERT_TRUE(
+        std::any_of(cancelled_attempts.begin(), cancelled_attempts.end(), [&](auto attempt) {
+            return attempt.request_id == queries[0].attempt.request_id;
+        }));
+    post_query(0, AYNI_QUERY_RESULT_UNKNOWN, AYNI_CALL_CANCELLED, AYNI_CALL_EFFECT_NONE, {});
+    pump(8);
+    auto op = ayni::initialized<ayni_unresolved_op_v1>();
+    ASSERT_EQ(ayni_get_unresolved_op(work.kernel(), call, &op), AYNI_OK);
+    EXPECT_EQ(op.query_status, AYNI_RESULT_UNKNOWN);
+    EXPECT_EQ(op.query_reason, AYNI_REASON_NONE);
+}
+
+// ADR-0115: reliable terminal delivery wins its deadline edge without a redundant cancel.
+TEST_F(LedgerCall, AlreadyPostedQueryTerminalIsConsumedBeforeDeadlineCancellation) {
+    const auto call = retire_unknown();
+    post(1, AYNI_CALL_CANCELLED, AYNI_CALL_EFFECT_NONE, {});
+    pump(8);
+    ASSERT_EQ(operation_command(call, AYNI_INTENT_UNRESOLVED_OP_QUERY, ++command).status, AYNI_OK);
+    pump(12);
+    ASSERT_EQ(queries.size(), 1U);
+    post_query(0, AYNI_QUERY_RESULT_FOUND, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE, {});
+    reach_query_deadline();
+    work.node().step();
+    pump(8);
+    EXPECT_FALSE(
+        std::any_of(cancelled_attempts.begin(), cancelled_attempts.end(), [&](auto attempt) {
+            return attempt.request_id == queries[0].attempt.request_id;
+        }));
+    auto op = ayni::initialized<ayni_unresolved_op_v1>();
+    EXPECT_EQ(ayni_get_unresolved_op(work.kernel(), call, &op), AYNI_NOT_FOUND);
+}
+
+// ADR-0115: a blocked terminal cannot advertise a deadline cancel that advance will skip.
+TEST_F(LedgerCall, PostedTerminalWithFullAuditQueueDoesNotAdvertiseDeadlineWork) {
+    using namespace ayni::kernel;
+    const auto call = retire_unknown();
+    post(1, AYNI_CALL_CANCELLED, AYNI_CALL_EFFECT_NONE, {});
+    pump(8);
+    ASSERT_EQ(operation_command(call, AYNI_INTENT_UNRESOLVED_OP_QUERY, ++command).status, AYNI_OK);
+    pump(12);
+    ASSERT_EQ(queries.size(), 1U);
+    auto &model = KernelTestProbe::work(work.kernel());
+    auto &ledger = model.unresolved_ops;
+    uint32_t index = 0;
+    ASSERT_TRUE(ledger.find(call, index));
+    auto saved = ledger.record(index);
+    const std::vector<uint8_t> proof(saved.contract.business_contract.data,
+                                     saved.contract.business_contract.data +
+                                         saved.contract.business_contract.size);
+    saved.contract.business_contract = {proof.data(), static_cast<uint32_t>(proof.size())};
+    auto closure = saved;
+    ASSERT_TRUE(model.ids.allocate(closure.identity.call_id));
+    ASSERT_TRUE(model.ids.allocate(closure.identity.operation_id));
+    closure.action.identity.logical_call_id = closure.identity.call_id;
+    closure.action.identity.operation_id = closure.identity.operation_id;
+    closure.state.query.reset();
+    closure.state.revision = ayni::work::initial_query_revision;
+    closure.state.latest = closure.state.archived;
+    // White-box owner-state setup uses real ledger transitions; the query and its mailbox
+    // survive unchanged. No persistence failure or synthetic Provider result is injected.
+    ledger.clear();
+    ASSERT_EQ(ledger.restore_snapshot_entry(closure), AYNI_OK);
+    const auto latest = model.transitions.latest();
+    const ayni::work::ActionStamp stamp{model.ids.boot_epoch(),
+                                        {latest.transition_id + 1, latest.commit_seq + 1}};
+    ASSERT_EQ(ledger.acknowledge_and_remove(0, stamp), AYNI_OK);
+    ASSERT_EQ(ledger.restore_snapshot_entry(saved), AYNI_OK);
+    ASSERT_TRUE(ledger.audit_queue_full());
+    post_query(0, AYNI_QUERY_RESULT_FOUND, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE, {});
+    reach_query_deadline();
+    auto &runtime = KernelTestProbe::calls(work.kernel());
+    EXPECT_FALSE(runtime.ready(work.node().sim().now_us(), UINT64_MAX, CallRuntime::Mode::running));
+    ayni::work::PendingAudit audit{};
+    ASSERT_TRUE(ledger.take_durable_audit(UINT64_MAX, audit));
+    EXPECT_TRUE(runtime.ready(work.node().sim().now_us(), UINT64_MAX, CallRuntime::Mode::running));
+    pump(12);
+}
+
+class LedgerBestEffort : public LedgerCall, public ::testing::WithParamInterface<uint32_t> {
+    void SetUp() override {
+        query_authority = AYNI_CALL_QUERY_BEST_EFFORT;
+        LedgerCall::SetUp();
+    }
+};
+// C-CALL-016: even a positive best-effort answer cannot close a durable unknown.
+TEST_P(LedgerBestEffort, WeakEvidenceRemainsUnknownAndExposesItsOriginalAuthority) {
+    const auto call = retire_unknown();
+    ASSERT_EQ(operation_command(call, AYNI_INTENT_UNRESOLVED_OP_QUERY, ++command).status, AYNI_OK);
+    pump(12);
+    ASSERT_EQ(queries.size(), 1U);
+    post_query(0, GetParam(),
+               GetParam() == AYNI_QUERY_RESULT_FOUND ? AYNI_CALL_COMPLETED : AYNI_CALL_FAILED,
+               GetParam() == AYNI_QUERY_RESULT_FOUND ? AYNI_CALL_EFFECT_COMPLETE
+                                                     : AYNI_CALL_EFFECT_NONE,
+               {});
+    pump(8);
+    auto op = ayni::initialized<ayni_unresolved_op_v1>();
+    ASSERT_EQ(ayni_get_unresolved_op(work.kernel(), call, &op), AYNI_OK);
+    EXPECT_EQ(op.query_authority, AYNI_CALL_QUERY_BEST_EFFORT);
+    EXPECT_EQ(op.query_status, AYNI_RESULT_UNKNOWN);
+    EXPECT_EQ(op.query_reason, AYNI_REASON_NONE);
+}
+INSTANTIATE_TEST_SUITE_P(WeakOriginalProof, LedgerBestEffort,
+                         ::testing::Values(AYNI_QUERY_RESULT_FOUND,
+                                           AYNI_QUERY_RESULT_NOT_ACCEPTED));
+
+class LedgerFencedQuery : public LedgerCall, public ::testing::WithParamInterface<bool> {};
+// C-CALL-011/016: scoped regression for Neon findings; retained old-boot replies only drain I/O.
+TEST_P(LedgerFencedQuery, TerminalBeforeOrAfterReloadNeverBecomesAProviderViolation) {
+    using namespace ayni::kernel;
+    using namespace ayni::hosts::sim;
+    const auto call = retire_unknown();
+    post(1, AYNI_CALL_CANCELLED, AYNI_CALL_EFFECT_NONE, {});
+    pump(8);
+    ASSERT_EQ(operation_command(call, AYNI_INTENT_UNRESOLVED_OP_QUERY, ++command).status, AYNI_OK);
+    pump(12);
+    ASSERT_EQ(queries.size(), 1U);
+    const auto previous_boot = work.node().info().boot_epoch;
+    for (unsigned at = 0; at < 3; ++at) {
+        work.node().sim().inject_fault(StoragePort::append, StorageFault::fail);
+    }
+    create();
+    for (unsigned at = 0; at < 1000 && work.node().lifecycle() == AYNI_LIFECYCLE_RUNNING; ++at) {
+        work.node().sim().advance_us(10000);
+        work.node().step(1);
+        work.node().sim().complete_storage();
+    }
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_FENCED);
+    if (GetParam()) {
+        post_query(0, AYNI_QUERY_RESULT_FOUND, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE, {});
+        auto &runtime = KernelTestProbe::calls(work.kernel());
+        auto &mailbox = *queries[0].completion->pool;
+        const ProviderReservation reservation{queries[0].completion->index, queries[0].attempt};
+        for (unsigned at = 0; at < 2; ++at) {
+            EXPECT_NE(runtime.advance_managed(work.node().sim().now_us(), UINT64_MAX,
+                                              CallRuntime::Mode::fenced,
+                                              CallRuntime::JournalAdmission::available),
+                      CallRuntime::Advance::internal);
+            EXPECT_TRUE(mailbox.has_terminal(reservation));
+        }
+    }
+    for (unsigned at = 0; at < 1000 && work.node().lifecycle() != AYNI_LIFECYCLE_RUNNING; ++at) {
+        work.node().sim().advance_us(10000);
+        work.node().step(1);
+        work.node().sim().complete_storage();
+    }
+    ASSERT_EQ(work.node().lifecycle(), AYNI_LIFECYCLE_RUNNING);
+    ASSERT_EQ(work.node().info().boot_epoch, previous_boot + 1);
+    if (!GetParam()) {
+        post_query(0, AYNI_QUERY_RESULT_FOUND, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE, {});
+    }
+    pump(12);
+    auto op = ayni::initialized<ayni_unresolved_op_v1>();
+    ASSERT_EQ(ayni_get_unresolved_op(work.kernel(), call, &op), AYNI_OK);
+    EXPECT_EQ(op.query_status, AYNI_RESULT_UNKNOWN);
+    EXPECT_EQ(op.query_reason, AYNI_REASON_NONE);
+    EXPECT_EQ(op.effect, AYNI_CALL_EFFECT_UNKNOWN);
+}
+INSTANTIATE_TEST_SUITE_P(ReceiptArrival, LedgerFencedQuery, ::testing::Bool());
+
 class LedgerGoalCohort : public ManagedCall {
   protected:
     void SetUp() override {
@@ -2617,12 +2894,14 @@ class LedgerWithoutQueries : public LedgerCall {
 };
 TEST_F(LedgerWithoutQueries, QueryNoneCanOnlyBeClosedByExplicitOwnerAcknowledgement) {
     const auto call = retire_unknown();
+    auto op = ayni::initialized<ayni_unresolved_op_v1>();
+    ASSERT_EQ(ayni_get_unresolved_op(work.kernel(), call, &op), AYNI_OK);
+    EXPECT_EQ(op.query_authority, AYNI_CALL_QUERY_NONE);
     EXPECT_EQ(operation_command(call, AYNI_INTENT_UNRESOLVED_OP_QUERY, ++command).status,
               AYNI_UNSUPPORTED);
     EXPECT_EQ(operation_command(call, AYNI_INTENT_UNRESOLVED_OP_ACKNOWLEDGE, ++command).status,
               AYNI_OK);
     pump(12);
-    auto op = ayni::initialized<ayni_unresolved_op_v1>();
     EXPECT_EQ(ayni_get_unresolved_op(work.kernel(), call, &op), AYNI_NOT_FOUND);
 }
 class LedgerContractChange : public LedgerCall, public ::testing::WithParamInterface<uint32_t> {

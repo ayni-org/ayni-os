@@ -81,6 +81,11 @@ CallRuntime::Advance CallRuntime::advance_operation_query(uint64_t now_us, uint6
             return Advance::internal;
         }
         auto &query = *ledger_query_;
+        // ADR-0115: an immutable terminal already returns the borrow. Consume it before a
+        // deadline cancellation; the mailbox still owns it through journal backpressure.
+        if (query.stage == Stage::submitted && mailbox_.has_terminal(query.delivery.reservation)) {
+            return Advance::idle;
+        }
         if (mode != Mode::running || now_us >= query.delivery.deadline_us) {
             if (query.stage == Stage::submitted) {
                 return cancel_transport(query.delivery);
@@ -126,6 +131,11 @@ bool CallRuntime::operation_query_ready(uint64_t now_us, uint64_t durable_seq, M
             return true;
         }
         const auto &query = *ledger_query_;
+        // Its receipt supplies readiness only when journal/audit backpressure permits consuming
+        // it. Advertising a deadline cancel here would spin while that terminal is blocked.
+        if (query.stage == Stage::submitted && mailbox_.has_terminal(query.delivery.reservation)) {
+            return false;
+        }
         if (mode != Mode::running || now_us >= query.delivery.deadline_us) {
             return query.stage != Stage::submitted ||
                    query.delivery.cancel == Delivery::Cancel::none;
@@ -164,21 +174,21 @@ CallRuntime::Advance CallRuntime::consume_operation_query(const ProviderMessage 
         return Advance::internal;
     }
     const auto stamp = work::ActionStamp{work_.ids.boot_epoch(), work_.transitions.next()};
-    const auto outcome =
-        message.kind == ProviderMessageKind::completed ? AYNI_CALL_COMPLETED : AYNI_CALL_FAILED;
-    const bool valid = message.body != work::CallResultKind::tool_calls && !message.body_ref.id &&
-                       receipt.reservation.attempt.boot_epoch == work_.ids.boot_epoch() &&
-                       (message.kind == ProviderMessageKind::completed ||
-                        message.kind == ProviderMessageKind::failed);
-    auto status =
-        valid ? ledger.reconcile_and_remove(index, message.query_result,
-                                            {outcome,
-                                             message.status,
-                                             message.reason,
-                                             static_cast<work::ActionEffect>(message.effect),
-                                             {}},
-                                            stamp)
-              : AYNI_INVALID_ARGUMENT;
+    auto status = AYNI_INVALID_ARGUMENT;
+    if (receipt.reservation.attempt.boot_epoch != work_.ids.boot_epoch()) {
+        // C-CALL-011: an old writer's receipt only returns its transport borrow. It is not
+        // malformed Provider evidence and cannot establish a new writer's known result.
+        status = ledger.end_query(index, AYNI_RESULT_UNKNOWN, AYNI_REASON_NONE, stamp);
+    } else if (message.body != work::CallResultKind::tool_calls && !message.body_ref.id) {
+        const auto outcome = provider_query_outcome(message.kind);
+        status = ledger.reconcile_and_remove(index, message.query_result,
+                                             {outcome,
+                                              message.status,
+                                              message.reason,
+                                              static_cast<work::ActionEffect>(message.effect),
+                                              {}},
+                                             stamp);
+    }
     if (status == AYNI_INVALID_ARGUMENT) {
         status = ledger.end_query(index, AYNI_RESULT_UNKNOWN, AYNI_REASON_PROVIDER_RESULT, stamp);
     }

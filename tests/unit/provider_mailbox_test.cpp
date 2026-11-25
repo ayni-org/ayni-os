@@ -61,6 +61,23 @@ TEST_F(ProviderMailboxTest,
     EXPECT_EQ(mailbox.in_flight(), 0U);
 }
 
+// C-CALL-012: deadline preflight observes only the exact attempt and never consumes its evidence.
+TEST_F(ProviderMailboxTest, terminal_probe_preserves_receipts_and_rejects_reused_reservations) {
+    const auto original = reserve(1);
+    EXPECT_FALSE(mailbox.has_terminal(original));
+    ASSERT_EQ(post(original, Kind::progress, 1), AYNI_OK);
+    EXPECT_FALSE(mailbox.has_terminal(original));
+    ASSERT_EQ(post(original, Kind::completed), AYNI_OK);
+    EXPECT_TRUE(mailbox.has_terminal(original));
+    ASSERT_EQ(read(), AYNI_OK);
+    EXPECT_TRUE(mailbox.has_terminal(original));
+    ASSERT_EQ(mailbox.acknowledge(receipt), Ack::consumed);
+    const auto replacement = reserve(2);
+    ASSERT_EQ(post(replacement, Kind::completed), AYNI_OK);
+    EXPECT_FALSE(mailbox.has_terminal(original));
+    EXPECT_TRUE(mailbox.has_terminal(replacement));
+}
+
 TEST_F(ProviderMailboxTest, retains_cancel_and_terminal_until_the_owner_can_commit_each) {
     const auto reservation = reserve(1);
     const std::array<uint8_t, 3> result{{1, 2, 3}};

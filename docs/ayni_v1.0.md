@@ -1,7 +1,7 @@
 # Ayni：通用原生 AgentOS 基础能力与实验实施计划
 
 > **文档性质**：工程实施计划与待实现契约，不代表已有软件能力。\
-> **文档版本**：v1.129 · 2026-11-25；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
+> **文档版本**：v1.130 · 2026-11-26；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
 > **产品定位**：跨平台、跨设备的通用原生 AgentOS；宿主与扩展决定提供哪些设备或软件能力，统一助理只是应用示例。\
 > **架构路线**：按 Ayni 的共享 Agent 状态、授权、资源及恢复需求设计原生 Core，复用宿主 OS，模型优先通过外部 API 获得；架构图仅参考 AIOS 的分层分组表达样式。\
 > **实施顺序**：先完成基础通用能力，再开展 ESP32-S3、Linux 系统等实验；设备与能力组合按实验目标选取，不要求宿主具备语音、视觉、运动或特定外设。\
@@ -1098,7 +1098,9 @@ idf.py -p <SERIAL_PORT> flash monitor
 
 ### 14.1 已接受的实施默认值
 
-本次修订（v1.129，2026-11-25）：按用户计划独立保存持久未决操作，CallTable保持纯活跃表，工作替换同批两阶段交接；QUERY/人工ACK闭环和结案审计落盘后发射。ABI0.62/schema12直接升级、拒旧保留，缩容no_room；Core默认0，Native/CLI与ESP显式16槽。speaker.speak_text降EPHEMERAL、ReplyVoice选CANCEL_ON_REBOOT。用户允许实际84B增量及合理调整步骤；不自动OTA、擦卷或真实动作，见[ADR-0115](adr/0115-unknown-operation-history-and-work-retirement.md)。
+本次修订（v1.130，2026-11-26）：按用户要求修复Neon审查项：查询未知/取消/旧boot分类、fenced持久回执保留和快照命令退休边界，缩小朗读栈缓冲、补齐对齐/枚举约束与停稳校验复用。ABI0.62的192 B视图预留位公开原query_authority，持久布局和schema12不变；限定回归不替代通用恢复或硬件验收，见[ADR-0115](adr/0115-unknown-operation-history-and-work-retirement.md)。
+
+上一修订（v1.129，2026-11-25）：按用户计划独立保存持久未决操作，CallTable保持纯活跃表，工作替换同批两阶段交接；QUERY/人工ACK闭环和结案审计落盘后发射。ABI0.62/schema12直接升级、拒旧保留，缩容no_room；Core默认0，Native/CLI与ESP显式16槽。speaker.speak_text降EPHEMERAL、ReplyVoice选CANCEL_ON_REBOOT。用户允许实际84B增量及合理调整步骤；不自动OTA、擦卷或真实动作，见[ADR-0115](adr/0115-unknown-operation-history-and-work-retirement.md)。
 
 本次修订（v1.122，2026-11-16）：用户要求继续精简共用遍历、复制、校验及结束确认，只做本地验证、暂不OTA。正文在同步owner操作内有界复用，新增永久正文创建时请求后台保存，Session依赖确认和完成候选各只构建一次；保留原权限/隐私/派发、实际清理和最终ACK持久保证，不改C ABI及持久格式。见[ADR-0106](adr/0106-bounded-body-reads-and-publication.md)。
 
