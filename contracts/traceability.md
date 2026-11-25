@@ -16,7 +16,7 @@
 | [domain/limits.md](domain/limits.md) | 12 | 7 |
 | [domain/memory.md](domain/memory.md) | 12 | 12 |
 | [domain/observations_and_media.md](domain/observations_and_media.md) | 6 | 6 |
-| [domain/permits_and_stop.md](domain/permits_and_stop.md) | 30 | 0 |
+| [domain/permits_and_stop.md](domain/permits_and_stop.md) | 33 | 0 |
 | [domain/primitives.md](domain/primitives.md) | 8 | 0 |
 | [domain/product_semantics.md](domain/product_semantics.md) | 28 | 3 |
 | [domain/resources_and_budget.md](domain/resources_and_budget.md) | 23 | 2 |
@@ -35,7 +35,7 @@
 | [storage/records.md](storage/records.md) | 22 | 16 |
 | [wire/envelope.md](wire/envelope.md) | 20 | 4 |
 | [wire/json_subset.md](wire/json_subset.md) | 12 | 0 |
-| 合计 | 448 | 145 |
+| 合计 | 451 | 145 |
 
 ## 计划章节 → 契约文档
 

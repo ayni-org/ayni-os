@@ -103,6 +103,7 @@
         "runtime/storage",
         "config",
         "ports",
+        "service/audit",
         "service/model",
         "service/intent",
         "service/persistence",
@@ -113,12 +114,14 @@
         "runtime/commit",
         "runtime/ingress",
         "runtime/storage",
+        "service/audit",
         "service/call",
         "service/decision",
         "service/model",
         "service/memory",
         "service/intent",
         "service/persistence",
+        "service/reflex",
         "config",
         "ports"
       ],
@@ -153,6 +156,7 @@
       "service/call": [
         "ports",
         "config",
+        "service/audit",
         "service/execution",
         "service/model",
         "service/memory"
@@ -164,6 +168,7 @@
       ],
       "service/execution": [
         "ports",
+        "service/audit",
         "service/model"
       ],
       "service/persistence": [
@@ -172,10 +177,17 @@
         "service/model",
         "service/memory"
       ],
+      "service/audit": [],
       "service/command": [],
       "ports": [],
       "config": [],
       "service/memory": [
+        "service/model"
+      ],
+      "service/reflex": [
+        "config",
+        "service/audit",
+        "service/call",
         "service/model"
       ]
     },
@@ -192,6 +204,7 @@
   },
   "core_std_headers": [
     "array",
+    "atomic",
     "charconv",
     "system_error",
     "cstddef",
@@ -283,6 +296,7 @@
       "hosts:storage",
       "strategies:builtin",
       "runtime:conversation",
+      "runtime:operation_session",
       "external",
       "providers:model_protocol"
     ],

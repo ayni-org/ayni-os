@@ -2,7 +2,7 @@
 
 - **关联**：计划 §2.8、§4.2「持久化」、§4.3、§4.4「升级」；ADR-0002、ADR-0016、ADR-0026、ADR-0027、ADR-0030、ADR-0031、ADR-0096；`MA-010`、`MA-006`；E2 F0–F8、F11、F12，E4 步骤 6
 - **属主**：`durability`（批次编码、持久前缀、快照、重放、栅栏记录、迁移机制）；领域记录的内容由各属主模块定义，`durability` 不理解其语义
-- **状态**：M1 当前批次与快照只读写 `storage_schema=10`（ADR-0104）；其他 schema（包括 0/1/2/3/4/5/6/7/8/9） 在新写入前只读受限并保留，不迁移、不自动清空或回退（ADR-0038 决策 6）。布局以本文件和编解码测试为准；Native/模拟证据不代表 ESP32 或真实 OTA 验证；C 的 Grant/完整命令扩展及 D 的撤销扩展各自验证与交付状态见 ADR-0030/0031；D 已通过 Native 场景、覆盖率与内存量测，#28 已合并
+- **状态**：M1 当前批次与快照只读写 `storage_schema=11`（ADR-0110）；其他 schema（包括 0～10） 在新写入前只读受限并保留，不迁移、不自动清空或回退（ADR-0038 决策 6）。布局以本文件和编解码测试为准；Native/模拟证据不代表 ESP32 或真实 OTA 验证；C 的 Grant/完整命令扩展及 D 的撤销扩展各自验证与交付状态见 ADR-0030/0031；D 已通过 Native 场景、覆盖率与内存量测，#28 已合并
 
 ## 编码约定
 
@@ -44,7 +44,7 @@ marker 或身份语义，不能替代 Core 的完整批次校验。失败不修�
 | 4 | `length` | 记录体字节数 |
 | `length` | 记录体 | 由属主模块定义的字段编码 |
 
-schema 10 的 `REQUIRED` 是已知记录合法性的必需标记，不再用它决定是否跳过未知记录；未知记录始终拒绝。
+schema 11 的 `REQUIRED` 是已知记录合法性的必需标记，不再用它决定是否跳过未知记录；未知记录始终拒绝。
 
 ## 记录类型
 
@@ -94,12 +94,12 @@ phase 1..7 依次为 prepared、dispatching、in_progress、completed、failed�
 
 ## 工作记录
 
-schema 10 的Call区分首次完整v2与后续状态v3，见下文；其余类型/上下文保持原当前正文。下表为日志 v1；快照中 INSTANCE/OWNER_BINDING/GOAL/TASK/GRANT/COMMAND_MAPPING 使用 v2（追加原历史）。其余记录在允许的两种上下文均为 v1。状态记录写完整事实，不重执行业务规则。ID 字节串至多 32 B；固定长度包括所有长度/count 字段，不含变长数据。
+schema 11 的Call区分首次完整v2与后续状态v3，见下文（Tier 0 `EPHEMERAL` 调用仅驻留运行期 RAM，不写入日志或快照，见 ADR-0110）；其余类型/上下文保持原当前正文。下表为日志 v1；快照中 INSTANCE/OWNER_BINDING/GOAL/TASK/GRANT/COMMAND_MAPPING 使用 v2（追加原历史）。其余记录在允许的两种上下文均为 v1。状态记录写完整事实，不重执行业务规则。ID 字节串至多 32 B；固定长度包括所有长度/count 字段，不含变长数据。
 
 | 类型 | 记录 | 当前正文 | 固定长度 |
 |---:|---|---|---:|
 | 2 | INSTANCE | agent_id、instance_id（u64），revision、lifecycle（u32） | 24 |
-| 3 | GOAL | 五个 u64：goal/parent/owner/replaced/origin principal；五个 u32：origin kind/channel/binding revision、depth、GoalType version；GoalType ID 长度串；trigger kind u32、delay/period u64、source 长度串；expiry/wait duration u64；参数长度串；profile kind u32/period u64；pause_group、authority_required、provenance_required（u32）；tool mode/count（u32）及 count 项 Binding version/role/ID 长度串 | 140 |
+| 3 | GOAL | 五个 u64：goal/parent/owner/replaced/origin principal；五个 u32：origin kind/channel/binding revision、depth、GoalType version；GoalType ID 长度串；trigger kind u32、delay/period u64、source 长度串；expiry/wait duration u64；参数长度串；profile kind u32/recovery u32/period u64；pause_group、authority_required、provenance_required（u32）；tool mode/count（u32）及 count 项 Binding version/role/ID 长度串 | 144 |
 | 4 | GOAL_STATE | goal/last_task u64；lifecycle/revision/cancel_revision/skipped/skip_reason/taken/waiting/flags（u32）；change u32 | 52 |
 | 5 | TASK | task/goal/owner/replaced（u64），occurrence/count（u32），calendar_local/utc（u64），calendar_present/provenance_required（u32） | 64 |
 | 6 | TASK_STATE | task_id u64；lifecycle/revision/cancel_revision/hold_status/hold_reason/step_count（u32）；model used/limit/blocked（u32）；selected call u64/end u32；wait call/generation/sequence（u64）/phase/form（u32）、boot/gaps（u64）、cancel_requested/cancel_result/outcome/timeout_ms（u32）；call_unknown/change/wait_present（u32） | 132 |
@@ -135,7 +135,7 @@ Canonical Grant create 保留原 raw Scope 表达、expected revision、Capabili
 ## 控制记录与读取
 
 - `WRITER_FENCE` 单独成批，新 epoch 必须严格大于前缀现有有效 epoch。其后的完整旧 epoch 帧被忽略，不推进有效 commit、transition 或 boot 基线；其他有效批次仍须连续。
-- `SNAPSHOT_COMMIT` 正文为 `slot` u32、`payload_crc` u32、`generation` u64、`covers_commit_seq` u64、`max_transition_id` u64，共 32 字节。它自身是覆盖边界之后的下一批次；维护也消耗统一 transition 身份。当前外壳只接受 schema 10；无旧格式 reader、迁移或自动清空。
+- `SNAPSHOT_COMMIT` 正文为 `slot` u32、`payload_crc` u32、`generation` u64、`covers_commit_seq` u64、`max_transition_id` u64，共 32 字节。它自身是覆盖边界之后的下一批次；维护也消耗统一 transition 身份。当前外壳只接受 schema 11；无旧格式 reader、迁移或自动清空。
 - 恢复使用 Host 物理 cursor，不能用最大已见 commit_seq 翻页；旧 epoch 的高序号帧可能位于合法新批次之前。cursor 在同一日志实例中严格递增，轮转后从 0 重读。
 - 首个完整批次放不下时，Host 以读专用 `READ_BUFFER_TOO_SMALL` 报精确所需长度，映射 `STATE_EXCEEDS_CAPACITY`。真正 I/O 故障、非法大小或 `OK` 越界仍是 `STORAGE_READ_FAILED`。
 
@@ -143,7 +143,7 @@ Canonical Grant create 保留原 raw Scope 表达、expected revision、Capabili
 
 快照采用两个槽。维护先冻结新 transition 并排空 journal，得到边界 `S`，再写非当前槽的内容，回读校验版本、长度与 CRC 后独立写槽尾标记。槽尾标记只证明槽内容完整；日志中的 `SNAPSHOT_COMMIT` 是激活新状态的唯一切换提交，持久化后才轮转旧日志。尚未激活的新槽不参与恢复。
 
-### 槽头与槽尾（schema 10）
+### 槽头与槽尾（schema 11）
 
 头部固定为 72 字节：
 
@@ -355,7 +355,7 @@ Goal/Task/Checkpoint 的 provenance_required 是完整当前正文的一部分�
 
 清理 phase：memories=1、contexts=2、goals=3、tasks=4、calls=5、commands=6、files=7、compact=8、purge=9、complete=10；idle=0 不序列化。effect：none=0、memory=1、context=2、goal=3、task=4、call=5、command=6、remove_memory=7。cursor 是对象稳定 ID；命令阶段使用原 commit_seq。Context effect 之后唯一允许的回退是 memories/cursor=0/effect=none，直至来源稳定；其他普通进度不能倒退。files→compact 须所有 Context ACK 且外部借用释放；目标 snapshot_generation 为当前代际+2，溢出明确停止并报告容量失败。purge/complete 快照不能宣称超过本快照 generation 的轮转已完成。scrubbed Memory 从新快照省略；erased Provenance 保留不可用身份标记，正文/依赖为空，运行时完成双槽覆盖后移除 tombstone。
 
-**会话私有格式（ADR-0108）**独立于Core schema10，无旧reader或迁移；未知版本保留并拒绝，不自动擦除。Native的SQLite5只保存共享值；AYFV1文件、正文AYNB1及4 KiB块布局见[C-HVAL](../host/file_values.md)，Native具体SQL约束见[Native会话](../host/native_conversation.md)。
+**会话私有格式（ADR-0108/0113）**独立于Core schema11，无旧reader或迁移；未知版本保留并拒绝，不自动擦除。Native的SQLite5只保存共享值；AYFV1文件、正文AYNB2（`<= 4096 B`内联进manifest，拒绝旧v1）及4 KiB块布局见[C-HVAL](../host/file_values.md)，Native具体SQL约束见[Native会话](../host/native_conversation.md)。
 
 - **AYNC6**：8字节magic/version后，Conversation字段由`strategies/builtin/conversation.cpp::fields`单一读写遍历定义。文本均为24字节BodyRef(id:u64,digest:u64,size:u32,reserved:u32=0)，包括summary/draft/history/rounds；保留原id、owner、隐私/文件版本、轮次、usage、披露来源和context_version，不复制正文。rounds索引为count:u32后逐项number:u64/user:BodyRef/answer:BodyRef，user必有、answer可无；稀疏轮号不复用。
 - **AYNT8**：8字节magic/version后为done:u32/base_revision:u64/memory_id:u64，再接同一Conversation字段、input:BodyRef、phase/compact_resume两u32及controller_fields。结果摘要源为完整BodyRef与json_bytes:u32，后续offset/next/chunk三u32和summary:BodyRef；不再保存Native archive结果ID。模型提议和过长结果的临时投影只属于活Turn缓存，不持久编码；冷读按原Call来源重新构建，不重执动作。

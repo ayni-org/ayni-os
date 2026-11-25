@@ -162,6 +162,27 @@ ayni_status_t ayni_get_observation_ingress(const ayni_kernel_t *kernel,
 ayni_status_t ayni_get_observation(const ayni_kernel_t *kernel, ayni_string_v1 source_id,
                                    ayni_observation_info_v1 *out_info);
 
+/* Lock-free latest-wins slot diagnostics; all counts are since Kernel creation. Since 0.59. */
+typedef struct ayni_observation_slot_info_v1 {
+    uint32_t struct_size;  /* Caller supplies exact sizeof. */
+    uint32_t source_count; /* Registered sources with lock-free latest slots; 0 if disabled. */
+    uint64_t published;    /* Successful latest-slot writes. */
+    uint64_t overwritten;  /* Unread prior samples superseded by newer writes. */
+    uint64_t applied;      /* Drained samples accepted into ObservationTable. */
+    uint64_t discarded;    /* Drained samples rejected by owner clock/sequence checks. */
+} ayni_observation_slot_info_v1;
+
+/* Any non-ISR Host thread, RUNNING only. Lock-free triple-buffered latest-wins overwrite per
+ * registered source; wakes the Kernel owner when transitioning a slot from clean to dirty.
+ * Older boot epochs or non-advancing samples return AYNI_STALE. Same-source writer contention
+ * returns AYNI_BUSY if the bounded writer-claim spin is exhausted. Since 0.59. */
+ayni_status_t ayni_publish_observation_latest(ayni_kernel_t *kernel,
+                                              const ayni_observation_post_v1 *post);
+/* Any non-ISR thread; lock-free diagnostic snapshot of latest-wins observation slots.
+ * Argument/size failures preserve output. Since 0.59. */
+ayni_status_t ayni_get_observation_slots(const ayni_kernel_t *kernel,
+                                         ayni_observation_slot_info_v1 *out_info);
+
 #ifdef __cplusplus
 }
 #endif

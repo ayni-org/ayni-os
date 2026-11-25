@@ -42,7 +42,8 @@ ayni_status_t ProviderMailbox::check_message(const ProviderMessage &message) con
         // A body by reference is a completed terminal's whole result (ADR-0096).
         (message.body_ref.id != 0U ? message.kind != ProviderMessageKind::completed ||
                                          message.payload.size != 0U || written
-                                   : message.body_calls != 0U)) {
+                                   : message.body_calls != 0U) ||
+        (message.execution_status.has_value() && !provider_terminal(message.kind))) {
         return AYNI_INVALID_ARGUMENT;
     }
     return message.payload.size > payload_bytes_ ? AYNI_CAPACITY_EXCEEDED : AYNI_OK;
@@ -105,10 +106,10 @@ ayni_status_t ProviderMailbox::post(ProviderReservation reservation,
         if (message.writer != nullptr && message.payload.size > attempt->written_limit) {
             return attempt->written_limit == 0U ? AYNI_INVALID_ARGUMENT : AYNI_CAPACITY_EXCEEDED;
         }
-        const Result result{message.kind,         message.status,      message.reason,
-                            message.payload.size, message.effect,      message.query_result,
-                            message.body,         message.model_usage, message.body_ref,
-                            message.body_calls};
+        const Result result{message.kind,         message.status,          message.reason,
+                            message.payload.size, message.effect,          message.query_result,
+                            message.body,         message.model_usage,     message.body_ref,
+                            message.body_calls,   message.execution_status};
         if (provider_subscription_control(message.kind)) {
             auto &control = attempt->lease_control;
             if (!control || control->result || control->sequence != message.sequence ||
@@ -220,6 +221,7 @@ ayni_status_t ProviderMailbox::read_next(uint8_t *payload, uint32_t capacity, ui
         out.model_usage = result->model_usage;
         out.body_ref = result->body_ref;
         out.body_calls = result->body_calls;
+        out.execution_status = result->execution_status;
         receipt = {{index, slot.attempt->identity}, result->kind, sequence};
         required = result->size;
         cursor_ = (index + 1U) % capacity_;

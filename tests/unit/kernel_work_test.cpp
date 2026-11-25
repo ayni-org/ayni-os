@@ -114,9 +114,9 @@ TEST(WorkModel, work_profiles_reject_invalid_classes_periods_and_reminder_waits)
     type.occurrence_wait_max_us = AYNI_RESOURCE_WAIT_DEFAULT_US;
     EXPECT_EQ(ayni_register_goal_type(node.kernel(), &type), AYNI_INVALID_ARGUMENT);
     type.occurrence_wait_max_us = AYNI_OCCURRENCE_WAIT_UNBOUNDED;
-    type.work_profile.reserved = 1;
+    type.work_profile.recovery = AYNI_GOAL_RECOVERY_CANCEL_ON_REBOOT + 1U;
     EXPECT_EQ(ayni_register_goal_type(node.kernel(), &type), AYNI_INVALID_ARGUMENT);
-    type.work_profile.reserved = 0;
+    type.work_profile.recovery = AYNI_GOAL_RECOVERY_RESUME;
     type.work_profile.background_period_min_us = AYNI_BACKGROUND_PERIOD_DEFAULT_US;
     EXPECT_EQ(ayni_register_goal_type(node.kernel(), &type), AYNI_INVALID_ARGUMENT);
     type.work_profile.background_period_min_us = 0;

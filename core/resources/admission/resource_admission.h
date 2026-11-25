@@ -5,12 +5,15 @@
 #include "foundation/bounded_array.h"
 
 #include <array>
+#include <ayni/calls.h>
 #include <cstddef>
 #include <cstdint>
 
 namespace ayni::resources {
 
-// System stop bypasses this queue. Priorities never preempt existing holders.
+// System stop bypasses this queue. Ordinary priorities never preempt existing
+// holders; explicit preemption policies query conflicts and request soft stop
+// through CallRuntime/ExecutionControl (ADR-0111).
 enum class Priority : uint32_t { foreground, normal, background, count };
 // Outcome for the work owner when a queued request reaches its deadline.
 enum class WaitAction : uint32_t { pause, skip, wait };
@@ -35,6 +38,18 @@ struct ResourceRequest {
     uint64_t wait_us;     // Relative monotonic duration; 0 may expire immediately.
     uint32_t count;       // 0..resource_group_max; zero-resource calls still obey FIFO.
     std::array<ResourceUnits, resource_group_max> resources; // Only [0,count) is read.
+    // Preemption policy for this queued request; NONE keeps strict FIFO (ADR-0111).
+    ayni_call_preemption_t preemption = AYNI_CALL_PREEMPT_NONE;
+    // Copied from the immutable Call contract at enqueue; held claims are independent.
+    enum class Lane { durable, ephemeral };
+    Lane lane = Lane::durable;
+};
+
+// Snapshot of one held request blocking a waiting preemptor; never exposes queue slots.
+struct HeldConflict {
+    uint64_t call_id;  // Held logical Call occupying or conflicting with the waiter's group.
+    Priority priority; // Held Call's admitted priority.
+    uint64_t ticket;   // Held Call's monotonic enqueue ticket; compares relative age.
 };
 
 // Selection is an owner-thread snapshot; commit must reselect before acquire.
@@ -71,16 +86,20 @@ class ResourceAdmission {
     bool has_room() const { return !requests_.full() && last_ticket_ != UINT64_MAX; }
     // Validates the entire group before copying; failure has no side effects.
     ayni_status_t enqueue(const ResourceRequest &request, uint64_t now_us);
+    // A blocked lane keeps its FIFO place (C-RES-004).
+    enum class Admission { all, ram_only };
     // Expired requests first, then highest-priority eligible Agent in a ring
-    // ordered by instance ID; its oldest request alone may be selected.
-    bool next(uint64_t now_us, AdmissionChoice &out) const;
+    // ordered by instance ID; its oldest admitted request alone may be selected.
+    bool next(uint64_t now_us, AdmissionChoice &out, Admission admission = Admission::all) const;
     // Result of committing the current selection against the caller's stable Call ID.
     enum class Acquisition { not_selected, expired, acquired };
     // Selects under the same owner and acquires all units atomically (C-RES-002/005).
     // Only acquired writes claim; only expired writes on_wait. Neither other result
     // changes occupancy, request ownership or fairness.
     Acquisition acquire(uint64_t call_id, uint64_t now_us, ResourceClaim &claim,
-                        WaitAction &on_wait);
+                        WaitAction &on_wait, Admission admission = Admission::all);
+    // An overdue request must take its expiry path before preemption.
+    bool wait_expired(uint64_t call_id, uint64_t now_us) const;
     // Removes a queued request (cancel/expiry), never an acquired request.
     bool remove_waiter(uint64_t call_id, uint64_t now_us);
     // Final dispatch check: this exact held generation still exists and every
@@ -99,8 +118,25 @@ class ResourceAdmission {
     // is responsible (FIFO/available). Returns false for absent/held calls.
     bool waiting(uint64_t call_id, uint64_t now_us, WaitReason &reason, uint32_t &resource_index,
                  uint64_t &waited_us) const;
-    // Earliest pending finite wait deadline; no_deadline if none.
-    uint64_t next_deadline_us() const;
+    // Read-only conflict inspection for a waiting Call. Writes up to max_out held
+    // entries that block waiter_call_id via capacity shortage or conflict-domain
+    // overlap, and returns total matching holders. Sets out_blocked_by_unavailable
+    // when any target resource or conflict partner is offline, faulted or quarantined.
+    uint32_t conflicting_holders(uint64_t waiter_call_id, HeldConflict *out, uint32_t max_out,
+                                 bool &out_blocked_by_unavailable, uint64_t &out_waiter_ticket,
+                                 Priority &out_waiter_priority) const;
+    // Streams every held request blocking waiter_call_id to visitor without allocating a conflict
+    // buffer; stops early if visitor returns false (ADR-0111).
+    uint32_t visit_conflicting_holders(uint64_t waiter_call_id, bool &out_blocked_by_unavailable,
+                                       uint64_t &out_waiter_ticket, Priority &out_waiter_priority,
+                                       void *context,
+                                       bool (*visitor)(void *, const HeldConflict &)) const;
+    // Lists held Call IDs occupying resource_index or any resource in its conflict
+    // domain without mutating queue state (ADR-0112). Returns total matching holders.
+    uint32_t holders_of_resource(uint32_t resource_index, uint64_t *out_call_ids,
+                                 uint32_t max_count) const;
+    // Earliest finite wait the pass can expire; no_deadline if none.
+    uint64_t next_deadline_us(Admission admission = Admission::all) const;
     // Boot-local peak wait among requests acquired or removed.
     uint64_t longest_wait_us() const { return longest_wait_us_; }
     // Copy group counts and maximum current/completed wait, without mutating statistics.
@@ -111,7 +147,7 @@ class ResourceAdmission {
 
   private:
     // The single arbitration rule used for prediction and the actual claim.
-    uint32_t select(uint64_t now_us) const;
+    uint32_t select(uint64_t now_us, Admission admission) const;
     // Physical availability and occupancy are independent. Health cannot prove stop.
     struct State {
         ayni_resource_health_t health = AYNI_RESOURCE_OFFLINE; // Latest Host fact.
@@ -133,12 +169,20 @@ class ResourceAdmission {
     bool find(uint64_t call_id, uint32_t &index) const;
     // Oldest waiter of this Agent at this priority; higher priorities independent.
     bool head(uint32_t index) const;
+    // A rejected waiter keeps its ticket and cannot block another eligible request.
+    static bool is_expired(const Entry &entry, uint64_t now_us);
+    static bool admitted(const Entry &entry, uint64_t now_us, Admission admission);
     // Whole-group preflight; available only when every resource has room.
     WaitReason availability(const Entry &entry, uint32_t &resource_index) const;
     // Least enqueue ticket of all expired waiters, no FIFO blocking on expiry.
-    uint32_t expired(uint64_t now_us) const;
+    uint32_t expired(uint64_t now_us, Admission admission) const;
     // Fair work-conserving selection among eligible heads of one priority.
-    uint32_t eligible(Priority priority) const;
+    uint32_t eligible(Priority priority, uint64_t now_us, Admission admission) const;
+    // Shared round-robin scan; preempt_only restricts candidates to preempting waiters.
+    uint32_t eligible_scan(Priority priority, bool preempt_only, uint64_t now_us,
+                           Admission admission) const;
+    // True when held entry blocks waiter via capacity shortage or conflict-domain overlap.
+    bool blocks_waiter(const Entry &waiter, const Entry &held) const;
     // Capture an immutable candidate without exposing its storage slot.
     AdmissionChoice choice(uint32_t index, uint64_t now_us) const;
 

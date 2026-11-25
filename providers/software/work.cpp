@@ -87,7 +87,9 @@ struct WorkProvider::Impl {
                               value_bound,
                               1,
                               &resource,
-                              at == events_offer ? &subscription : nullptr};
+                              at == events_offer ? &subscription : nullptr,
+                              AYNI_CALL_DURABILITY_DURABLE,
+                              0};
             offer.business = &business[at];
         }
     }

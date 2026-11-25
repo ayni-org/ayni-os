@@ -6,6 +6,7 @@
 #include <ayni/calls.h>
 #include <ayni/execution.h>
 #include <ayni/observations.h>
+#include <ayni/reflex.h>
 #include <ayni/resources.h>
 #include <ayni/scenes.h>
 
@@ -61,6 +62,9 @@ static inline ayni_config_v1 ayni_measure_maximum_config(void) {
     c.memory_dependency_capacity = AYNI_MEMORY_DEPENDENCY_CAPACITY_MAX;
     c.business_contract_max_bytes = AYNI_BUSINESS_CONTRACT_BYTES_MAX;
     c.observation_ingress_capacity = AYNI_OBSERVATION_INGRESS_CAPACITY_MAX;
+    c.reflex_capacity = AYNI_REFLEX_CAPACITY_MAX;
+    c.reflex_event_capacity = AYNI_REFLEX_EVENT_CAPACITY_MAX;
+    c.audit_capacity = AYNI_AUDIT_CAPACITY_MAX;
     return c;
 }
 #endif

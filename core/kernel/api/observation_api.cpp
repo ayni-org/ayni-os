@@ -110,6 +110,38 @@ ayni_status_t ayni_post_observation(ayni_kernel_t *kernel, const ayni_observatio
     const auto status = decode_sample(post->sample, post->media, decoded);
     return status == AYNI_OK ? kernel->post_observation(post->boot_epoch, decoded) : status;
 }
+// Lock-free any-thread latest-wins sensor publication into triple-buffered slots (ADR-0112).
+ayni_status_t ayni_publish_observation_latest(ayni_kernel_t *kernel,
+                                              const ayni_observation_post_v1 *post) {
+    if (kernel == nullptr || post == nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto shape =
+        ayni::catalog::check_struct_size(post->struct_size, sizeof(*post), sizeof(*post));
+    if (shape != AYNI_OK) {
+        return shape;
+    }
+    if (post->reserved != 0 || post->boot_epoch == 0) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    ayni::knowledge::ObservationInput decoded{};
+    const auto status = decode_sample(post->sample, post->media, decoded);
+    return status == AYNI_OK ? kernel->publish_observation_latest(post->boot_epoch, decoded)
+                             : status;
+}
+ayni_status_t ayni_get_observation_slots(const ayni_kernel_t *kernel,
+                                         ayni_observation_slot_info_v1 *out) {
+    if (kernel == nullptr || out == nullptr) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto shape =
+        ayni::catalog::check_struct_size(out->struct_size, sizeof(*out), sizeof(*out));
+    if (shape != AYNI_OK) {
+        return shape;
+    }
+    *out = kernel->observation_slots_view().info();
+    return AYNI_OK;
+}
 // Gaps share admission identity, but have source-reserved retention.
 ayni_status_t ayni_report_observation_gap(ayni_kernel_t *kernel,
                                           const ayni_observation_gap_v1 *gap) {

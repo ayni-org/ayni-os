@@ -24,6 +24,10 @@ struct CallInputView {
         projection{}; // First row for fixed physical control only.
 };
 
+// Saved records are never interpreted as VALUE unless their recorded format matches.
+inline bool saved_value_input(const catalog::CallContract &contract) {
+    return contract.input_format == catalog::call_value_input_format;
+}
 // Shared UTF-8 result/protocol-ID validation. No truncation, normalization or logging.
 ayni_status_t check_call_text(ayni_string_v1 text, uint32_t limit);
 

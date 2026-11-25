@@ -105,7 +105,6 @@ ayni_status_t native_operation(Workspace &workspace, const NativeArguments &args
                                const ayni_task_snapshot_v1 &snapshot, ayni_string_v1 step,
                                ayni_policy_output_v1 &output, ReplyBuffer &scratch,
                                ToolReply &reply, bool &requested) {
-    auto &response = reply.text;
     const bool wait = name(operation, "wait");
     const bool read = name(operation, "read");
     const bool cancel = name(operation, "cancel");
@@ -116,8 +115,7 @@ ayni_status_t native_operation(Workspace &workspace, const NativeArguments &args
                                ? target(args, snapshot, reference, info)
                                : AYNI_INVALID_ARGUMENT;
     if (status != AYNI_OK) {
-        return native_error(status, "Operation unavailable or invalid arguments.", scratch,
-                            response);
+        return native_error(status, "Operation unavailable or invalid arguments.", scratch, reply);
     }
     ayni_operation_control_v1 control{};
     control.struct_size = sizeof(control);
@@ -131,7 +129,7 @@ ayni_status_t native_operation(Workspace &workspace, const NativeArguments &args
         if (!args.string(after_field, after) || !operations::frontier(after, control.after) ||
             !args.integer(timeout_field, control.timeout_ms)) {
             return native_error(AYNI_INVALID_ARGUMENT, "Invalid wait frontier or duration.",
-                                scratch, response);
+                                scratch, reply);
         }
     }
     if (!read && !step_committed(snapshot, step)) {
@@ -143,7 +141,7 @@ ayni_status_t native_operation(Workspace &workspace, const NativeArguments &args
         }
         if (status != AYNI_STALE || reference.operation_id != info.reference.operation_id) {
             return native_error(status, "Control refused; execution facts are unchanged.", scratch,
-                                response);
+                                reply);
         }
     }
     const auto waited =

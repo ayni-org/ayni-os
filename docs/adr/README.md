@@ -170,3 +170,10 @@
 | [0108](0108-unified-conversation-and-result-storage.md) | 统一会话和结果存储，删除兼容与无限缓存 | 已接受；实施及本地验证见实验记录，不OTA | Session/FileBodies、BodyProgress、turn8/ANRV2/SQLite5 |
 
 | [0109](0109-owned-conversation-text-and-scoped-cleanup.md) | 不可变正文复用与按会话确认清理 | 已实施；本地验证及独立复查见实验记录，不OTA | Session/FileBodies、ToolLoop、ESP工具进度；ABI及持久格式不变 |
+
+| [0110](0110-ephemeral-execution-tier-and-immediate-resource-release.md) | 瞬态执行等级（Tier 0）、重启自动取消与内存即时释放资源 | 已实施（阶段 1，待真机 OTA 实测） | ABI0.57、schema11、EPHEMERAL Call、内联停稳证明、ESP32 低时延交接 |
+| [0111](0111-soft-stop-preemption-and-barge-in.md) | 软停止与硬急停拆分、Core 资源级原子抢占及会话即时打断 | 已实施（阶段 2，待真机 OTA 实测） | ABI0.58（schema11 不变）、PREEMPT/SUPERSEDE、零 Flash 取消丢弃、ESP32 Barge-In |
+| [0112](0112-control-session-observation-slot-and-reflex-rules.md) | 流式控制会话（ControlSession）、三缓冲无锁传感槽与本地确定性反射引擎 | 已实施（阶段 3，待真机 OTA 实测） | ABI0.59（schema11 不变）、ControlSession、ObservationSlot、ReflexRule、motor.run v3 |
+| [0113](0113-coalesced-turn-persistence-and-audit-ring.md) | 回合级粗粒度合并落盘、非阻塞答案呈现与异步定长审计环 | 已实施（阶段 4，待真机 OTA 实测） | ABI0.60（schema11 不变）、AYNB2、history 内联、deferred GC、AuditRing、AuditSink |
+
+| [0114](0114-async-ui-streaming-control-and-parameterized-reflex.md) | 异步界面、流式控制与传感参数反射 | 已实施；主机验证和固件编译通过，板端待测 | ABI0.61/schema11、通用独立操作、异步LCD、ControlLoop及参数绑定 |

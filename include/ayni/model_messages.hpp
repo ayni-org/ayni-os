@@ -614,19 +614,40 @@ inline uint64_t estimate_tokens(uint64_t characters) {
     return characters / denominator * numerator +
            (characters % denominator * numerator + denominator - 1) / denominator;
 }
-inline uint64_t estimate_tool_reply(ayni_string_v1 id, ayni_string_v1 content) {
-    auto measured = json::Writer::measuring();
-    measured.raw(",{\"role\":\"tool\",\"tool_call_id\":");
-    measured.string(id);
-    measured.raw(",\"content\":");
-    measured.string(content);
-    measured.raw("}");
-    return estimate_tokens(measured.characters());
-}
 struct TokenEstimate {
     uint64_t tokens = 0;     // Estimated input tokens, never a serving-model usage assertion.
     uint64_t characters = 0; // Unicode code points in messages/tools JSON, including structure.
 };
+// Optional SDK projection port. Both callbacks share the serving protocol's writers; the
+// borrowed context lives through strategy destruction and is immutable during a decision.
+struct Projection {
+    void *context = nullptr; // Null is allowed when callbacks require no state.
+    ayni_status_t (*context_writer)(void *, json::Writer &, ayni_string_v1, Mode,
+                                    Completeness) = nullptr; // Null selects legacy Chat projection.
+    // Writes the matching reply envelope for the same protocol, including its separator.
+    // Null selects legacy Chat measurement; configure requires both callbacks or neither.
+    void (*reply_writer)(void *, json::Writer &, ayni_string_v1, ayni_string_v1) = nullptr;
+    // True when context_writer is pure for fixed configuration and appending a tool reply
+    // to a non-empty partial context adds exactly reply_writer's measured characters.
+    bool stable_tool_replies = false;
+};
+inline TokenEstimate measure_tool_reply(const Projection &projection, ayni_string_v1 id,
+                                        ayni_string_v1 content) {
+    auto measured = json::Writer::measuring();
+    if (!projection.reply_writer) {
+        measured.raw(",{\"role\":\"tool\",\"tool_call_id\":");
+        measured.string(id);
+        measured.raw(",\"content\":");
+        measured.string(content);
+        measured.raw("}");
+    } else {
+        projection.reply_writer(projection.context, measured, id, content);
+    }
+    return {estimate_tokens(measured.characters()), measured.characters()};
+}
+inline uint64_t estimate_tool_reply(ayni_string_v1 id, ayni_string_v1 content) {
+    return measure_tool_reply(Projection{}, id, content).tokens;
+}
 inline ayni_status_t estimate_input(ayni_string_v1 input, Mode mode, TokenEstimate &estimate,
                                     Completeness completeness = Completeness::complete) {
     auto measured = json::Writer::measuring();
@@ -641,16 +662,6 @@ inline ayni_status_t estimate_input(ayni_string_v1 input, Mode mode, TokenEstima
     estimate = {estimate_tokens(measured.characters()), measured.characters()};
     return AYNI_OK;
 }
-// Optional SDK projection port. Both callbacks share the serving protocol's writers; the
-// borrowed context lives through strategy destruction and is immutable during a decision.
-struct Projection {
-    void *context = nullptr; // Null is allowed when callbacks require no state.
-    ayni_status_t (*context_writer)(void *, json::Writer &, ayni_string_v1, Mode,
-                                    Completeness) = nullptr; // Null selects legacy Chat projection.
-    // Writes the matching reply envelope for the same protocol, including its separator.
-    // Null selects legacy Chat measurement; configure requires both callbacks or neither.
-    void (*reply_writer)(void *, json::Writer &, ayni_string_v1, ayni_string_v1) = nullptr;
-};
 inline ayni_status_t estimate_input(const Projection &projection, ayni_string_v1 input, Mode mode,
                                     TokenEstimate &estimate,
                                     Completeness completeness = Completeness::complete) {
@@ -672,12 +683,7 @@ inline ayni_status_t estimate_input(const Projection &projection, ayni_string_v1
 }
 inline uint64_t estimate_tool_reply(const Projection &projection, ayni_string_v1 id,
                                     ayni_string_v1 content) {
-    if (!projection.reply_writer) {
-        return estimate_tool_reply(id, content);
-    }
-    auto measured = json::Writer::measuring();
-    projection.reply_writer(projection.context, measured, id, content);
-    return estimate_tokens(measured.characters());
+    return measure_tool_reply(projection, id, content).tokens;
 }
 } // namespace ayni::model
 #endif

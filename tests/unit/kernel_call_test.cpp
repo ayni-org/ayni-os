@@ -94,8 +94,6 @@ class ManagedCall : public ::testing::Test {
                 0,
                 text("ask"),
                 text("mock.echo"),
-                {},
-                {},
                 input.view(),
                 background_action ? AYNI_CALL_MODE_MANAGED : AYNI_CALL_MODE_FOREGROUND,
                 0};
@@ -201,7 +199,9 @@ class ManagedCall : public ::testing::Test {
                                64,
                                1,
                                &units,
-                               nullptr};
+                               nullptr,
+                               AYNI_CALL_DURABILITY_DURABLE,
+                               0};
         TextBusiness business(64, 64);
         capability.business = &business.definition;
         ASSERT_EQ(ayni_register_call_capability(kernel, &capability), AYNI_OK);
@@ -310,7 +310,8 @@ class ManagedCall : public ::testing::Test {
                                              nullptr,
                                              {},
                                              {},
-                                             {}};
+                                             {},
+                                             nullptr};
         EXPECT_EQ(ayni_provider_post(call.completion, &result), AYNI_OK);
         call.ended = true;
     }
@@ -333,7 +334,8 @@ class ManagedCall : public ::testing::Test {
                                              nullptr,
                                              {},
                                              {},
-                                             {}};
+                                             {},
+                                             nullptr};
         EXPECT_EQ(ayni_provider_post(query.completion, &result), AYNI_OK);
         query.ended = true;
     }
@@ -566,16 +568,15 @@ TEST_F(ManagedCall, malformed_staged_requests_leave_the_real_decision_available)
     work.strategy().answer = [&](const auto &, auto &output) {
         ++decisions;
         TextValue input(text("hello"));
-        const ayni_call_request_v1 valid{sizeof(valid), AYNI_POLICY_REQUEST_MODEL, 1,  0,
-                                         text("ask"),   text("mock.echo"),         {}, {},
-                                         input.view(),  AYNI_CALL_MODE_FOREGROUND, 0};
+        const ayni_call_request_v1 valid{
+            sizeof(valid), AYNI_POLICY_REQUEST_MODEL, 1, 0, text("ask"), text("mock.echo"),
+            input.view(),  AYNI_CALL_MODE_FOREGROUND, 0};
         EXPECT_EQ(output.request_call(nullptr, &valid), AYNI_INVALID_ARGUMENT);
         EXPECT_EQ(output.request_call(output.call_context, nullptr), AYNI_INVALID_ARGUMENT);
         struct Invalid {
             void (*change)(ayni_call_request_v1 &);
             ayni_status_t status = AYNI_INVALID_ARGUMENT;
         };
-        static const std::array<char, 65> oversized{};
         const Invalid invalid[] = {
             {[](auto &v) { v.struct_size = 0; }},
             {[](auto &v) { ++v.struct_size; }, AYNI_UNSUPPORTED_VERSION},
@@ -588,10 +589,6 @@ TEST_F(ManagedCall, malformed_staged_requests_leave_the_real_decision_available)
             {[](auto &v) { ++v.binding_version; }},
             {[](auto &v) { v.kind = AYNI_POLICY_REQUEST_CALL; }},
             {[](auto &v) { v.value = {}; }},
-            {[](auto &v) { v.arguments.field_count = 1; }},
-            {[](auto &v) { v.text = {nullptr, 1}; }},
-            {[](auto &v) { v.text = {"\xff", 1}; }},
-            {[](auto &v) { v.text = {oversized.data(), oversized.size()}; }},
         };
         for (const auto &fault : invalid) {
             auto candidate = valid;
@@ -607,9 +604,6 @@ TEST_F(ManagedCall, malformed_staged_requests_leave_the_real_decision_available)
             const auto unexpected_routes = {
                 +[](ayni_call_request_v1 &v) { v.binding_version = 1; },
                 +[](ayni_call_request_v1 &v) { v.binding_id = text("mock.echo"); },
-                +[](ayni_call_request_v1 &v) { v.text = text("extra"); },
-                +[](ayni_call_request_v1 &v) { v.arguments.struct_size = sizeof(ayni_scope_v1); },
-                +[](ayni_call_request_v1 &v) { v.arguments.field_count = 1; },
             };
             for (const auto change : unexpected_routes) {
                 auto candidate = target;
@@ -1426,8 +1420,6 @@ TEST_F(ShortCallWorkflow, failed_calls_still_consume_the_task_step_capacity) {
                                            0,
                                            {key.data(), static_cast<uint32_t>(key.size())},
                                            text("mock.echo"),
-                                           {},
-                                           {},
                                            input.view(),
                                            AYNI_CALL_MODE_FOREGROUND,
                                            0};
@@ -1605,7 +1597,8 @@ TEST_F(ManagedCall, preparation_leaves_wait_that_expires_during_selection_for_or
     ASSERT_NE(call, 0U);
     auto &calls = ayni::kernel::KernelTestProbe::calls(work.kernel());
     const auto report = node.info();
-    const auto deadline = calls.next_deadline_us();
+    const auto deadline =
+        calls.next_deadline_us(node.sim().now_us(), Runtime::JournalAdmission::available);
     ASSERT_NE(deadline, UINT64_MAX);
     ASSERT_GT(deadline - 2U, node.sim().now_us());
     node.sim().advance_us(deadline - 2U - node.sim().now_us());
@@ -1629,7 +1622,8 @@ TEST_F(ManagedCall, preparation_yields_to_a_different_waiter_expiring_during_sel
     ASSERT_EQ(ayni_set_resource_health(work.kernel(), slot, AYNI_RESOURCE_OFFLINE), AYNI_OK);
     ASSERT_NE(ready_task(create()), 0U);
     node.step(1);
-    const auto expiry = calls.next_deadline_us();
+    const auto expiry =
+        calls.next_deadline_us(node.sim().now_us(), Runtime::JournalAdmission::available);
     ASSERT_NE(expiry, UINT64_MAX);
     const auto task = ready_task(create_profile("foreground", agent_b));
     ASSERT_NE(task, 0U);
@@ -1812,7 +1806,8 @@ TEST_F(ManagedCall, progress_is_monotonic_and_duplicate_terminal_is_rejected) {
                                      nullptr,
                                      {},
                                      {},
-                                     {}};
+                                     {},
+                                     nullptr};
     ASSERT_EQ(ayni_provider_post(call.completion, &progress), AYNI_OK);
     progress.sequence = 1;
     ASSERT_EQ(ayni_provider_post(call.completion, &progress), AYNI_OK);
@@ -1833,7 +1828,8 @@ TEST_F(ManagedCall, progress_is_monotonic_and_duplicate_terminal_is_rejected) {
                                             nullptr,
                                             {},
                                             {},
-                                            {}};
+                                            {},
+                                            nullptr};
     EXPECT_EQ(ayni_provider_post(call.completion, &duplicate), AYNI_INVALID_STATE);
     pump(12);
     EXPECT_EQ(seen_result, "done");
@@ -1878,8 +1874,6 @@ TEST_F(ModelCallLimit, eight_model_calls_pause_until_owner_raises_the_same_task_
                                            0,
                                            {key.data(), static_cast<uint32_t>(key.size())},
                                            text("mock.echo"),
-                                           {},
-                                           {},
                                            input.view(),
                                            AYNI_CALL_MODE_FOREGROUND,
                                            0};
@@ -2108,7 +2102,8 @@ TEST_F(ManagedCall, provider_cannot_report_the_core_only_skipped_outcome) {
                                          nullptr,
                                          {},
                                          {},
-                                         {}};
+                                         {},
+                                         nullptr};
     EXPECT_EQ(ayni_provider_post(call.completion, &result), AYNI_INVALID_ARGUMENT);
     EXPECT_EQ(call_info(call.call).outcome, 0U);
     post(0, AYNI_CALL_COMPLETED, AYNI_CALL_EFFECT_COMPLETE, text("done"));

@@ -181,9 +181,10 @@ uint8_t *CallTable::bytes(uint32_t index) const {
 
 // The coordinator proves foreign-key ownership. This owner verifies intrinsic
 // identity/stamp shape before reserving a stable slot or touching its byte pool.
-bool CallTable::valid_identity(const CallIdentity &id, ActionStamp stamp) {
+bool CallTable::valid_identity(const CallIdentity &id, ActionStamp stamp, bool ephemeral,
+                               bool reflex) {
     const bool source = id.authorization.grant_id == 0U
-                            ? id.authorization.revision == 0U
+                            ? (!reflex && id.authorization.revision == 0U)
                             : foundation::is_kernel_id(id.authorization.grant_id) &&
                                   id.authorization.revision != 0U &&
                                   id.authorization.grant_id < id.call_id;
@@ -197,16 +198,21 @@ bool CallTable::valid_identity(const CallIdentity &id, ActionStamp stamp) {
             }
         }
     }
-    return source && disclosure && id.model_context.valid() &&
+    const bool stamp_valid =
+        stamp.boot_epoch != 0U && stamp.boot_epoch <= foundation::max_boot_epoch &&
+        (ephemeral ? (stamp.transition.transition_id == 0U && stamp.transition.commit_seq == 0U)
+                   : (stamp.transition.transition_id != 0U && stamp.transition.commit_seq != 0U));
+    // Reflex Calls belong to a live AgentInstance rather than a Task (task_id == 0, ADR-0112).
+    const bool task_valid = reflex ? (ephemeral && id.task_id == 0U)
+                                   : (foundation::is_kernel_id(id.task_id) &&
+                                      id.call_id != id.task_id && id.operation_id != id.task_id &&
+                                      foundation::id_boot_epoch(id.task_id) <= stamp.boot_epoch);
+    return source && disclosure && id.model_context.valid() && stamp_valid && task_valid &&
            foundation::is_kernel_id(id.call_id) && foundation::is_kernel_id(id.operation_id) &&
-           foundation::is_kernel_id(id.task_id) && foundation::is_kernel_id(id.owner_instance_id) &&
-           id.call_id != id.operation_id && id.call_id != id.task_id &&
-           id.operation_id != id.task_id &&
+           foundation::is_kernel_id(id.owner_instance_id) && id.call_id != id.operation_id &&
            foundation::id_boot_epoch(id.call_id) == stamp.boot_epoch &&
            foundation::id_boot_epoch(id.operation_id) == stamp.boot_epoch &&
-           foundation::id_boot_epoch(id.task_id) <= stamp.boot_epoch &&
            foundation::id_boot_epoch(id.owner_instance_id) <= stamp.boot_epoch &&
-           stamp.transition.transition_id != 0U && stamp.transition.commit_seq != 0U &&
            id.step_key.size() != 0U && id.binding_id.size() != 0U && id.binding_version != 0U &&
            id.capability_id.size() != 0U && id.capability_version != 0U &&
            id.provider_id.size() != 0U && id.provider_version != 0U && id.endpoint.size() != 0U;
@@ -214,6 +220,10 @@ bool CallTable::valid_identity(const CallIdentity &id, ActionStamp stamp) {
 
 bool CallTable::advances(const Entry &entry, ActionStamp stamp) {
     const auto &latest = entry.state.latest;
+    if (entry.state.ephemeral) {
+        return stamp.boot_epoch == latest.boot_epoch && stamp.transition.transition_id == 0U &&
+               stamp.transition.commit_seq == 0U;
+    }
     return stamp.boot_epoch >= latest.boot_epoch &&
            stamp.transition.transition_id > latest.transition.transition_id &&
            stamp.transition.commit_seq > latest.transition.commit_seq;
@@ -227,7 +237,8 @@ bool CallTable::pending(const Entry &entry) {
 // and contract. Capacity/duplicate refusal changes neither metadata nor bytes.
 bool CallTable::valid_mode(const CallIdentity &id, const catalog::CallContract &contract) {
     return id.mode == AYNI_CALL_MODE_FOREGROUND ||
-           (id.mode == AYNI_CALL_MODE_MANAGED && contract.category == catalog::CallClass::tool &&
+           (!contract.is_ephemeral() && id.mode == AYNI_CALL_MODE_MANAGED &&
+            contract.category == catalog::CallClass::tool &&
             (contract.form == catalog::CallForm::action ||
              contract.form == catalog::CallForm::subscription));
 }
@@ -235,13 +246,33 @@ bool CallTable::valid_mode(const CallIdentity &id, const catalog::CallContract &
 ayni_status_t CallTable::insert(const CallIdentity &id, const catalog::CallContract &contract,
                                 ayni_bytes_v1 domain_body, ayni_bytes_v1 input_body,
                                 ActionStamp stamp, uint32_t &index) {
-    if (!valid_identity(id, stamp) || !valid_mode(id, contract) || domain_body.data == nullptr ||
-        input_body.data == nullptr || domain_body.size == 0U ||
+    if (contract.is_ephemeral() || !valid_identity(id, stamp, false) || !valid_mode(id, contract) ||
+        domain_body.data == nullptr || input_body.data == nullptr || domain_body.size == 0U ||
         input_body.size < catalog::value_encoding_header_bytes ||
         ((contract.effects & catalog::call_effect_egress) != 0U) != (id.destination.size() != 0U)) {
         return AYNI_INVALID_ARGUMENT;
     }
     return place_new(id, contract, domain_body, input_body, stamp, index);
+}
+
+ayni_status_t CallTable::insert_ephemeral(const CallIdentity &id,
+                                          const catalog::CallContract &contract,
+                                          ayni_bytes_v1 domain_body, ayni_bytes_v1 input_body,
+                                          uint64_t boot_epoch, uint32_t &index, bool reflex) {
+    const ActionStamp stamp{boot_epoch, {0, 0}};
+    if (!contract.is_ephemeral() || id.mode != AYNI_CALL_MODE_FOREGROUND ||
+        contract.subscription.has_value() || !valid_identity(id, stamp, true, reflex) ||
+        domain_body.data == nullptr || input_body.data == nullptr || domain_body.size == 0U ||
+        input_body.size < catalog::value_encoding_header_bytes ||
+        ((contract.effects & catalog::call_effect_egress) != 0U) != (id.destination.size() != 0U)) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    const auto status = place_new(id, contract, domain_body, input_body, stamp, index);
+    if (status == AYNI_OK) {
+        slots_[index].entry->state.ephemeral = true;
+        slots_[index].entry->state.reflex = reflex;
+    }
+    return status;
 }
 // Allocation and immutable identity uniqueness have one owner for admission and snapshot restore.
 ayni_status_t CallTable::place_new(const CallIdentity &id, const catalog::CallContract &contract,
@@ -335,10 +366,13 @@ ayni_status_t CallTable::prepare(uint32_t index, ActionStamp stamp) {
         return AYNI_INVALID_STATE;
     }
     const auto &id = entry.identity;
-    const auto status = ActionRecord::prepare(
-        {entry.state.subscription ? entry.state.subscription->generation : id.operation_id,
-         id.call_id, id.binding_id, id.binding_version},
-        stamp, entry.action);
+    const ActionIdentity action_id{entry.state.subscription ? entry.state.subscription->generation
+                                                            : id.operation_id,
+                                   id.call_id, id.binding_id, id.binding_version};
+    const auto status =
+        entry.state.ephemeral
+            ? ActionRecord::prepare_ephemeral(action_id, stamp.boot_epoch, entry.action)
+            : ActionRecord::prepare(action_id, stamp, entry.action);
     if (status == AYNI_OK) {
         entry.state.latest = stamp;
     }
@@ -406,9 +440,17 @@ void CallTable::set_terminal(Entry &entry, const CallResult &result, ActionStamp
     }
 }
 
-ayni_status_t CallTable::cancel_before_dispatch(uint32_t index, ActionStamp stamp) {
+ayni_status_t CallTable::cancel_before_dispatch(uint32_t index, ActionStamp stamp,
+                                                ayni_reason_t reason) {
+    const auto &state = slots_[index].entry->state;
+    const bool valid_reason =
+        reason == AYNI_REASON_NONE ||
+        ((reason == AYNI_REASON_PREEMPTED || reason == AYNI_REASON_REFLEX) && state.ephemeral);
+    if (!valid_reason) {
+        return AYNI_INVALID_ARGUMENT;
+    }
     return end_before_dispatch(
-        index, {AYNI_CALL_CANCELLED, AYNI_OK, AYNI_REASON_NONE, ActionEffect::none, {}}, stamp);
+        index, {AYNI_CALL_CANCELLED, AYNI_OK, reason, ActionEffect::none, {}}, stamp);
 }
 
 ayni_status_t CallTable::skip_before_dispatch(uint32_t index, ActionStamp stamp) {
@@ -419,6 +461,16 @@ ayni_status_t CallTable::skip_before_dispatch(uint32_t index, ActionStamp stamp)
     return end_before_dispatch(
         index, {AYNI_CALL_SKIPPED, AYNI_EXPIRED, AYNI_REASON_RESOURCE_WAIT, ActionEffect::none, {}},
         stamp);
+}
+
+ayni_status_t CallTable::fail_before_dispatch_ephemeral(uint32_t index, ayni_status_t status,
+                                                        ayni_reason_t reason, uint64_t boot_epoch) {
+    const auto &state = slots_[index].entry->state;
+    if (!state.ephemeral || status >= AYNI_OK || status == AYNI_RESULT_UNKNOWN) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    return end_before_dispatch(index, {AYNI_CALL_FAILED, status, reason, ActionEffect::none, {}},
+                               {boot_epoch, {0, 0}});
 }
 
 ayni_status_t CallTable::end_before_dispatch(uint32_t index, const CallResult &result,
@@ -456,8 +508,12 @@ ayni_status_t CallTable::rejected_not_retained(uint32_t index, ActionStamp stamp
 
 ayni_status_t CallTable::request_cancel(uint32_t index, CallCancelCause cause, ActionStamp stamp) {
     auto &entry = *slots_[index].entry;
-    if (cause != CallCancelCause::user && cause != CallCancelCause::authority &&
-        cause != CallCancelCause::deadline && cause != CallCancelCause::shutdown) {
+    const bool valid_cause =
+        cause == CallCancelCause::user || cause == CallCancelCause::authority ||
+        cause == CallCancelCause::deadline || cause == CallCancelCause::shutdown ||
+        ((cause == CallCancelCause::preempted || cause == CallCancelCause::reflex) &&
+         entry.state.ephemeral);
+    if (!valid_cause) {
         return AYNI_INVALID_ARGUMENT;
     }
     if (!pending(entry) || !advances(entry, stamp) ||
@@ -510,6 +566,15 @@ ayni_status_t CallTable::finish(ayni::foundation::Workspace &workspace, uint32_t
         return checked;
     }
     auto result = usable_result(input, dependencies);
+    // Core itself tags preempted/reflex EPHEMERAL cancellations after Provider evidence
+    // validation passes; Providers cannot forge a cancel reason (ADR-0111/0112).
+    if (entry.state.ephemeral && result.outcome == AYNI_CALL_CANCELLED) {
+        if (entry.state.cancel_cause == CallCancelCause::preempted) {
+            result.reason = AYNI_REASON_PREEMPTED;
+        } else if (entry.state.cancel_cause == CallCancelCause::reflex) {
+            result.reason = AYNI_REASON_REFLEX;
+        }
+    }
     if (entry.state.content_erased) {
         result.text = {};
         result.kind = CallResultKind::text;
@@ -599,11 +664,12 @@ bool CallTable::can_retire_task(uint64_t task_id, uint64_t durable_seq) const {
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         const auto &entry = slots_[at].entry;
         if (entry && entry->identity.task_id == task_id &&
-            (pending(*entry) || unresolved(at) ||
+            (pending(*entry) || (!entry->state.ephemeral && unresolved(at)) ||
              (entry->state.execution && !execution_stopped(*entry->state.execution)) ||
              (runtime_retains_ != nullptr &&
               runtime_retains_(retention_context_, entry->identity.call_id)) ||
-             entry->state.latest.transition.commit_seq > durable_seq)) {
+             (!entry->state.ephemeral &&
+              entry->state.latest.transition.commit_seq > durable_seq))) {
             return false;
         }
     }
@@ -636,6 +702,26 @@ void CallTable::retire_task(uint64_t task_id, uint64_t release_seq) {
     }
 }
 
+bool CallTable::retire_ephemeral(uint32_t index) {
+    if (!occupied(index)) {
+        return false;
+    }
+    auto &entry = *slots_[index].entry;
+    if (!entry.state.ephemeral || !entry.state.reflex || pending(entry) ||
+        (entry.state.execution && !execution_stopped(*entry.state.execution)) ||
+        (runtime_retains_ != nullptr &&
+         runtime_retains_(retention_context_, entry.identity.call_id))) {
+        return false;
+    }
+    std::memset(bytes(index), 0,
+                static_cast<std::size_t>(limits_.domain_bytes) + limits_.input_bytes +
+                    limits_.result_bytes + limits_.business_bytes);
+    slots_[index].erased = {};
+    slots_[index].entry.reset();
+    --size_;
+    return true;
+}
+
 bool CallTable::find(uint64_t call_id, uint32_t &index) const {
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         if (occupied(at) && slots_[at].entry->identity.call_id == call_id) {
@@ -647,6 +733,9 @@ bool CallTable::find(uint64_t call_id, uint32_t &index) const {
 }
 
 bool CallTable::find_step(uint64_t task_id, ayni_string_v1 key, uint32_t &index) const {
+    if (task_id == 0U) {
+        return false; // Task-less reflex Calls do not collide in Task step lookups (ADR-0112).
+    }
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         if (occupied(at) && slots_[at].entry->identity.task_id == task_id &&
             slots_[at].entry->identity.step_key.equals(key)) {

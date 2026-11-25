@@ -30,7 +30,7 @@ struct TurnResult {
     bool published = false; // True only after the exact publication ACK became durable.
 };
 // Publication boundaries emitted once per publication in actual path order:
-// background runs checkpoint_ready -> publish_durable; direct/reopen runs publish_durable ->
+// turn_boundary runs checkpoint_ready -> publish_durable; direct/reopen runs publish_durable ->
 // checkpoint_ready; both then run record_saved -> collected -> context_ready.
 enum class PublicationStage {
     checkpoint_ready, // Completed durable Task checkpoint copied into publication candidate.
@@ -40,6 +40,10 @@ enum class PublicationStage {
     context_ready     // Exact CONTEXT_ACK became durable and context returned to IDLE/usable.
 };
 enum class PublicationAck { submitted, durable };
+// Ordinary publication GC policy (ADR-0113). Synchronous waits for superseded deletes before
+// CONTEXT_ACK (C-SDK-009 default); deferred enqueues superseded deletes asynchronously so
+// ordinary turns reach ready() immediately while privacy erasure and quiesce() still drain.
+enum class PublicationCollection { synchronous, deferred };
 // Optional owner-only diagnostic callback. Never mutates Session or reenters Session.
 struct PublicationObserver {
     void *context = nullptr;
@@ -61,6 +65,7 @@ struct Config {
     UnfinishedTurn unfinished = UnfinishedTurn::retain;
     strategies::Persistence persistence = strategies::Persistence::durable;
     PublicationObserver observer{}; // Optional; null disables publication stage callbacks.
+    PublicationCollection collection_mode = PublicationCollection::synchronous;
 };
 // Caller places this bounded object in suitable RAM (it contains large records).
 // Owner-thread, no reentry. poll performs bounded public-API/queue work, never waits.
@@ -80,13 +85,15 @@ class Session {
     ayni_status_t poll();
     // again is reset each call and set for a newly runnable local cleanup/ACK transition.
     ayni_status_t poll_with_progress(bool &again) { return poll_step(&again); }
-    // OK copies input. Durable mode saves its draft before admission; background mode stages
-    // it and starts the Goal while saving proceeds. One turn at a time per Session.
+    // OK copies input. Durable mode saves its draft before admission; turn_boundary stages
+    // it in RAM and saves it with the completed turn. One turn at a time per Session.
     // Completion is ready() with a new last_round; the final answer crosses Core ACK durability.
     ayni_status_t begin(ayni_string_v1 user, uint64_t memory_id = 0);
     ayni_status_t forget(ayni_context_action_t action, uint64_t turn = 0);
-    // Owner-thread, nonblocking. Cancel waits for actual durable Core termination before
-    // discarding a draft. Publication already in flight completes and is never rolled back.
+    // Owner-thread, nonblocking. Durable/retaining modes wait for actual durable Core termination
+    // before discarding a saved draft; turn_boundary+discard clears an unpersisted RAM draft once
+    // Core records termination without writing storage (ADR-0111). Publication already in flight
+    // completes and is never rolled back.
     ayni_status_t cancel();
     // Explicitly discard a retained terminal draft; never resumes/retries the old action.
     ayni_status_t abandon();
@@ -98,6 +105,10 @@ class Session {
     bool take_result(TurnResult &out);
     // Borrow only until the next owner operation. Consume after any required body read succeeds.
     const TurnResult *pending_result() const;
+    // Reads the completed answer before durable ACK while the exact Core source and context
+    // still permit reading it (ADR-0113). Returns NOT_FOUND without an active candidate.
+    // TurnResult::published stays false until CONTEXT_ACK is durable.
+    ayni_status_t preview_answer(std::string &out) const;
     // Last poll observed a Core Task hold; resolves on that same Task.
     bool held() const { return held_; }
     // A turn owns work/publication or a retained terminal draft; initialization/forget are
@@ -160,6 +171,8 @@ class Session {
     ayni_status_t turn(const ayni_context_info_v1 &, uint64_t durable);
     ayni_status_t cancel_turn(uint64_t durable);
     ayni_status_t discard();
+    ayni_status_t run_volatile_cleanup();
+    bool volatile_discard() const;
     ayni_status_t unfinished();
     ayni_status_t settled(uint64_t durable) const;
     ayni_status_t collect_superseded(const strategies::ConversationRecord &);
@@ -193,7 +206,16 @@ class Session {
     enum class EndRequest { none, cancel, abandon };
     EndRequest end_request_ = EndRequest::none; // Owner intent, never Core lifecycle state.
     bool held_ = false;                         // Last poll's public Task hold observation.
-    std::optional<TurnResult> result_;          // Delivered once; history itself remains queryable.
+    // True iff the latest confirmed conversation_root file on storage holds a non-empty draft.
+    bool draft_persisted_ = false;
+    // True after a deferred ordinary publication enqueued background superseded-body collection;
+    // drained before quiesce() returns OK and observed during privacy erasure (ADR-0113).
+    bool deferred_collection_pending_ = false;
+    // True after a volatile discard hit cold-cache AYNI_NOT_READY while walking history refs;
+    // retried on poll_step() and before quiesce() so cancelled drafts never leak.
+    bool volatile_cleanup_pending_ = false;
+    std::vector<strategies::BodyRef> pending_discarded_drafts_;
+    std::optional<TurnResult> result_; // Delivered once; history itself remains queryable.
 
     hosts::storage::FileValueResult answer_{}; // Published before completed_'s release store.
     std::atomic<bool> completed_{false}; // Worker->owner one-shot publication, not domain state.

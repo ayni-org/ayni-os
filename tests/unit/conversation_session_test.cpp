@@ -244,7 +244,7 @@ TEST_F(ConversationSession, normal_close_after_owner_cancellation_discards_only_
 }
 class BackgroundSession : public ConversationSession {
   protected:
-    BackgroundSession() { persistence = ayni::strategies::Persistence::background; }
+    BackgroundSession() { persistence = ayni::strategies::Persistence::turn_boundary; }
 };
 // ADR-0104: actual file bodies, Core shared VALUE results, and consecutive normal turns.
 TEST_F(BackgroundSession, consecutive_turns_trim_then_reopen_and_delete_shared_history) {

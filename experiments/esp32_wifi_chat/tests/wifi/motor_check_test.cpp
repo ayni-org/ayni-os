@@ -44,7 +44,8 @@ TEST(MotorCheck, PublicRulesRequestsOneFixedMotorThroughTheNormalCallBoundary) {
             EXPECT_EQ(std::string_view(call->binding_id.data, call->binding_id.size), "motor.run");
             EXPECT_EQ(call->binding_version, motor_version);
             EXPECT_EQ(call->mode, AYNI_CALL_MODE_FOREGROUND);
-            EXPECT_EQ(call->value.node_count, 4U);
+            EXPECT_EQ(call->preemption, AYNI_CALL_PREEMPT_SUPERSEDE);
+            EXPECT_EQ(call->value.node_count, 6U);
             auto nodes = motor_run_schema();
             const ayni_schema_v1 schema{nodes.data(), uint32_t(nodes.size())};
             size_t bytes = 0, alignment = 0;
@@ -52,18 +53,20 @@ TEST(MotorCheck, PublicRulesRequestsOneFixedMotorThroughTheNormalCallBoundary) {
             std::vector<uint64_t> region((bytes + sizeof(uint64_t) - 1) / sizeof(uint64_t));
             const ayni_workspace_v1 workspace{sizeof(workspace), 0, region.data(),
                                               region.size() * sizeof(uint64_t)};
-            std::array<ayni_value_node_v1, 4> normalized_nodes{};
+            std::array<ayni_value_node_v1, 6> normalized_nodes{};
             std::array<char, motor_input_bytes_max> normalized_text{};
             ayni_value_buffer_v1 normalized{
                 normalized_nodes.data(), uint32_t(normalized_nodes.size()), 0,
                 normalized_text.data(),  uint32_t(normalized_text.size()),  0};
             EXPECT_EQ(ayni_value_normalize(&workspace, &schema, &call->value, &normalized),
                       AYNI_OK);
-            ayni::ValueReader value;
-            EXPECT_EQ(value.read(call->value), AYNI_OK);
-            self.first = value.field(1)->value.integer;
-            self.second = value.field(2)->value.integer;
-            self.duration = value.field(3)->value.integer;
+            EXPECT_EQ(normalized.node_count, 6U);
+            EXPECT_EQ(normalized.nodes[1].kind, AYNI_VALUE_LIST);
+            EXPECT_EQ(normalized.nodes[1].field_id, 1U);
+            EXPECT_EQ(normalized.nodes[2].kind, AYNI_VALUE_OBJECT);
+            self.first = normalized.nodes[3].value.integer;
+            self.second = normalized.nodes[4].value.integer;
+            self.duration = normalized.nodes[5].value.integer;
             return AYNI_OK;
         }
         static ayni_status_t result(const void *, ayni_string_v1, ayni_task_call_result_v1 *) {
@@ -194,5 +197,34 @@ TEST(MotorCheck, NoticePreservesErrorCodesAndOnlyKnownWireStatesAreAccepted) {
     EXPECT_FALSE(MotorCheckNotice::decode(bytes.data(), bytes.size(), after));
     EXPECT_TRUE(MotorCheck::owns(motor_text("wifi.motor.check1"), 1));
     EXPECT_FALSE(MotorCheck::owns(motor_text("usb.chat"), 1));
+}
+TEST(MotorCheck, ValidMotorTrajectoryEnforcesSegmentAndTotalDurationBounds) {
+    // ADR-0112: v3 motor.run supports 1..8 segments including intermediate (0, 0) coast pauses,
+    // rejects empty/all-zero/overlong trajectories, and caps combined duration at 60 s.
+    MotorTrajectory trajectory{};
+    EXPECT_FALSE(valid_motor_trajectory(trajectory));
+
+    trajectory.count = 3;
+    trajectory.segments[0] = {45, 45, 500};
+    trajectory.segments[1] = {0, 0, 200};
+    trajectory.segments[2] = {45, -45, 400};
+    EXPECT_TRUE(valid_motor_trajectory(trajectory));
+    EXPECT_EQ(total_duration_ms(trajectory), 1100U);
+
+    MotorTrajectory all_zero{};
+    all_zero.count = 2;
+    all_zero.segments[0] = {0, 0, 100};
+    all_zero.segments[1] = {0, 0, 100};
+    EXPECT_FALSE(valid_motor_trajectory(all_zero));
+
+    MotorTrajectory over_duration{};
+    over_duration.count = 2;
+    over_duration.segments[0] = {30, 30, 35000};
+    over_duration.segments[1] = {30, 30, 30000};
+    EXPECT_FALSE(valid_motor_trajectory(over_duration));
+
+    MotorTrajectory too_many{};
+    too_many.count = motor_segments_max + 1;
+    EXPECT_FALSE(valid_motor_trajectory(too_many));
 }
 } // namespace

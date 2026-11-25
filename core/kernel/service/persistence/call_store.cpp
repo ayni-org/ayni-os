@@ -46,7 +46,7 @@ bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
              durability::BatchWriter &writer) {
     uint32_t written = 0;
     for (uint32_t index = 0; index < model.calls.capacity(); ++index) {
-        if (!model.calls.occupied(index) ||
+        if (!model.calls.occupied(index) || model.calls.state(index).ephemeral ||
             model.calls.state(index).latest.transition.commit_seq != stamp.commit_seq) {
             continue;
         }
@@ -71,10 +71,11 @@ bool journal(const WorkModel &model, foundation::TransitionStamp stamp,
     return true;
 }
 
-// Skips empty retained slots; the payload carries the journal body.
+// Skips empty and RAM-only ephemeral slots; the payload carries the journal body.
 bool snapshot_next(const WorkModel &model, StoreCursor &cursor) {
     auto &index = cursor.index;
-    while (index < model.calls.capacity() && !model.calls.occupied(index)) {
+    while (index < model.calls.capacity() &&
+           (!model.calls.occupied(index) || model.calls.state(index).ephemeral)) {
         ++index;
     }
     return index < model.calls.capacity();

@@ -25,7 +25,16 @@ add_executable(ayni_unit_tests
     scene_test.cpp
     managed_execution_test.cpp
     execution_facts_test.cpp
+    ephemeral_execution_test.cpp
+    preemption_test.cpp
+    reflex_and_session_test.cpp
+    audit_ring_test.cpp
+    audit_sink_test.cpp
+    file_bodies_v2_test.cpp
     control_gate_test.cpp
+    control_session_test.cpp
+    control_loop_test.cpp
+    operation_session_test.cpp
     mock_provider_test.cpp
     mock_execution_test.cpp
     mock_tools_test.cpp
@@ -110,7 +119,7 @@ add_executable(ayni_unit_tests
     work_restore_test.cpp)
 # ayni_core_internal gives white-box tests the Core-internal include root.
 target_link_libraries(ayni_unit_tests PRIVATE
-    ayni_core ayni_core_internal ayni_host_native ayni_host_storage ayni_host_sim ayni_runtime_conversation ayni_runtime_native_node ayni_provider_mock ayni_provider_mock_execution ayni_provider_shell ayni_control_gate
+    ayni_core ayni_core_internal ayni_host_native ayni_host_storage ayni_host_sim ayni_runtime_conversation ayni_runtime_operation_session ayni_runtime_native_node ayni_provider_mock ayni_provider_mock_execution ayni_provider_shell ayni_control_gate
     ayni_provider_software ayni_warnings GTest::gtest_main)
 # Every test file includes gtest.h, which takes about a second to parse, so the
 # headers most test files share are parsed once per build. Test files still
@@ -185,4 +194,11 @@ add_executable(ayni_conversation_progress_tests conversation_progress_test.cpp)
 target_link_libraries(ayni_conversation_progress_tests PRIVATE ayni_runtime_portable
     ayni_host_sim ayni_host_native ayni_warnings GTest::gtest_main)
 gtest_discover_tests(ayni_conversation_progress_tests
+    DISCOVERY_TIMEOUT ${AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS})
+
+# Portable deferred publication + preview_answer checks (ADR-0113, no OS Files dependency).
+add_executable(ayni_deferred_publication_tests deferred_publication_test.cpp)
+target_link_libraries(ayni_deferred_publication_tests PRIVATE ayni_runtime_portable
+    ayni_host_sim ayni_host_storage ayni_warnings GTest::gtest_main)
+gtest_discover_tests(ayni_deferred_publication_tests
     DISCOVERY_TIMEOUT ${AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS})

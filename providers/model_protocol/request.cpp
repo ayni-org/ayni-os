@@ -438,7 +438,10 @@ model::Projection Protocol::projection(RequestOptions &options) {
             [](void *context, Writer &out, ayni_string_v1 id, ayni_string_v1 content) {
                 out.raw(",");
                 write_reply(out, static_cast<RequestOptions *>(context)->api, id, content);
-            }};
+            },
+            // Both Chat Completions and Responses append a matching comma-prefixed reply item
+            // for each Role::tool message under fixed RequestOptions.
+            true};
 }
 ayni_status_t encode_answer(const RequestOptions &options, Answer &answer, std::string &out) {
     if (answer.result.outcome != AYNI_CALL_COMPLETED) {

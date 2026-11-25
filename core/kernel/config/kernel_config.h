@@ -54,7 +54,10 @@ struct KernelCapacities {
     uint32_t observation_source_capacity = 0;  // Static sources and current-boot samples.
     uint32_t observation_ingress_capacity = 0; // Optional fixed Host sample FIFO.
     uint32_t business_contract_max_bytes =
-        0; // Bytes per original proof; zero with no call catalogs.
+        0;                              // Bytes per original proof; zero with no call catalogs.
+    uint32_t reflex_capacity = 0;       // Static ReflexRules; zero disables (ADR-0112).
+    uint32_t reflex_event_capacity = 0; // Bounded reflex event ring; zero when reflex disabled.
+    uint32_t audit_capacity = 0;        // Bounded RAM audit ring; zero disables (ADR-0113).
 };
 
 // Validated limits from ayni_config_v1 that do not change the layout.
@@ -110,9 +113,13 @@ enum class Store : uint32_t {
     observation_sources,  // ObservationSources: copied source descriptions.
     observations,         // ObservationTable: the current boot's latest sample per source.
     observation_ingress,  // ObservationIngress: copied FIFO and reliable source gap cells.
+    observation_slots,    // ObservationSlots: lock-free triple buffers per source (ADR-0112).
+    reflex_rules,         // ReflexTable: registered ReflexRules and pre-encoded inputs.
+    reflex_events,        // ReflexTable: bounded asynchronous reflex event ring.
     memories,             // MemoryTable: owned facts and fixed UTF-8 bodies.
     contexts,             // ContextTable: one file/version/source anchor per Agent.
     provenance,           // ProvenanceTable: exact Goal/Task content sources and erasure state.
+    audit_ring,           // AuditRing: fixed RAM overwrite-oldest audit buffer (ADR-0113).
     count,                // Not a store: the number of stores.
 };
 

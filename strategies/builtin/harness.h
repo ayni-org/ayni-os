@@ -97,9 +97,10 @@ struct ToolBudget {
     uint64_t tokens = UINT64_MAX; // Estimated remaining input tokens; MAX disables token limiting.
     ayni_string_v1 protocol_id{}; // Current opaque ID, counted with the matching reply envelope.
     model::Projection projection{}; // Same wire envelope as this request.
-    uint64_t measure(ayni_string_v1 reply) const {
-        return model::estimate_tool_reply(projection, protocol_id, reply);
+    model::TokenEstimate measure_estimate(ayni_string_v1 reply) const {
+        return model::measure_tool_reply(projection, protocol_id, reply);
     }
+    uint64_t measure(ayni_string_v1 reply) const { return measure_estimate(reply).tokens; }
     bool fits(ayni_string_v1 reply) const { return measure(reply) <= tokens; }
 };
 // Owns rendering bytes through history append. Successful requests never obtain the buffer.
@@ -118,13 +119,16 @@ struct ReplyBuffer {
 struct ToolReply {
     ayni_string_v1 text{}; // Borrows the synchronous reply buffer.
     ayni_task_call_result_v1 call{};
-    std::string owned;                // Resolved original bytes; call views borrow this string.
-    std::optional<uint64_t> measured; // Selected local candidate cost; absent until measured.
+    std::string owned; // Resolved original bytes; call views borrow this string.
+    std::optional<model::TokenEstimate>
+        measured; // Selected local candidate cost; absent until measured.
+    ayni_status_t local_error =
+        AYNI_OK; // Non-OK only when ToolLoop rendered a local refusal without a business Call.
 };
 // Current pending tool reply budget, including the real API projection, definitions and
 // protected continuation. Shared by raw results and completed result summaries.
 ayni_status_t current_tool_budget(const ToolLoopConfig &, const Turn &, ayni_string_v1,
-                                  ToolBudget &);
+                                  ToolBudget &, uint64_t *characters = nullptr);
 // Select a nonempty UTF-8 prefix under the caller's framing/token predicate.
 // The same bounded search serves history and archived-result summary chunks.
 template <class Make>
@@ -181,7 +185,7 @@ ayni_status_t native_result(Workspace &workspace, const ayni_task_call_result_v1
                             ReplyBuffer &, ayni_string_v1 &response);
 // Normal harness errors never claim a failed or unknown business action.
 ayni_status_t native_error(ayni_status_t status, std::string_view message, ReplyBuffer &,
-                           ayni_string_v1 &response);
+                           ToolReply &reply);
 // Chunk only the result body; the final reply keeps the original action facts.
 ayni_status_t summarize_result(Workspace &workspace, Turn &, const ToolLoopConfig &,
                                const ayni_task_snapshot_v1 &, ayni_policy_output_v1 &,

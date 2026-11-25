@@ -158,9 +158,9 @@ ayni_status_t list(const NativeArguments &args, const ayni_task_snapshot_v1 &sna
         json::Writer candidate(buffer, capacity);
         emit(candidate, chosen);
         if (done(candidate, buffer, response)) {
-            const auto tokens = budget.measure(response);
-            if (tokens <= budget.tokens) {
-                reply.measured = tokens;
+            const auto measured = budget.measure_estimate(response);
+            if (measured.tokens <= budget.tokens) {
+                reply.measured = measured;
                 return AYNI_OK;
             }
         }
@@ -212,7 +212,8 @@ ayni_status_t inspect(Workspace &workspace, const ayni_capability_detail_v1 &det
 // admits defaults, numbers and object closure before the ordinary Call boundary.
 ayni_status_t invoke(Workspace &workspace, const NativeArguments &args, uint32_t argument,
                      const ayni_capability_detail_v1 &detail, ayni_string_v1 step,
-                     ayni_policy_output_v1 &output, uint32_t mode) {
+                     ayni_policy_output_v1 &output, uint32_t mode,
+                     ayni_call_preemption_t preemption) {
     auto source_lease =
         workspace.make<std::array<ayni_argument_node_v1, AYNI_VALUE_NODE_COUNT_MAX>>();
     if (!source_lease) {
@@ -232,8 +233,9 @@ ayni_status_t invoke(Workspace &workspace, const NativeArguments &args, uint32_t
         ayni_string_v1 step;
         ayni_policy_output_v1 &output;
         uint32_t mode;
+        ayni_call_preemption_t preemption;
         Workspace &workspace;
-    } inspection{{source.data(), count}, detail, step, output, mode, workspace};
+    } inspection{{source.data(), count}, detail, step, output, mode, preemption, workspace};
     return ::ayni::detail::with_workspace(
         workspace, ayni_business_workspace_requirements, [&](const ayni_workspace_v1 *region) {
             return ayni_business_contract_read(
@@ -272,6 +274,10 @@ ayni_status_t invoke(Workspace &workspace, const NativeArguments &args, uint32_t
                     }
                     Call call;
                     call.mode = state.mode;
+                    call.preemption = (state.mode == AYNI_CALL_MODE_FOREGROUND &&
+                                       state.detail.info.form != AYNI_CALL_SUBSCRIPTION)
+                                          ? state.preemption
+                                          : AYNI_CALL_PREEMPT_NONE;
                     call.binding_id = state.detail.info.binding_id;
                     call.binding_version = state.detail.info.binding_version;
                     call.input = ayni_value_v1{nodes.data(), value.node_count};
@@ -281,7 +287,7 @@ ayni_status_t invoke(Workspace &workspace, const NativeArguments &args, uint32_t
 }
 } // namespace
 ayni_status_t native_error(ayni_status_t status, std::string_view message, ReplyBuffer &scratch,
-                           ayni_string_v1 &response) {
+                           ToolReply &reply) {
     auto *buffer = scratch.data();
     const auto capacity = scratch.capacity;
     json::Writer out(buffer, capacity);
@@ -290,7 +296,11 @@ ayni_status_t native_error(ayni_status_t status, std::string_view message, Reply
     out.raw(",\"message\":");
     out.string(message);
     out.raw("}}");
-    return done(out, buffer, response) ? AYNI_OK : AYNI_CAPACITY_EXCEEDED;
+    if (!done(out, buffer, reply.text)) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    reply.local_error = status;
+    return AYNI_OK;
 }
 ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &proposal,
                               const ToolLoopConfig &config, const ayni_task_snapshot_v1 &snapshot,
@@ -305,7 +315,7 @@ ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &pro
     if (capability) {
         if (!read_capability_arguments(proposal, args)) {
             return native_error(AYNI_INVALID_ARGUMENT, "Invalid operation envelope.", scratch,
-                                response);
+                                reply);
         }
         if (args.positions[operation_field] != UINT32_MAX &&
             (!args.string(operation_field, operation) ||
@@ -363,9 +373,9 @@ ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &pro
             json::Writer out(buffer, scratch.capacity);
             status = inspect(workspace, detail, out);
             if (status == AYNI_OK && done(out, buffer, response)) {
-                const auto tokens = budget.measure(response);
-                if (tokens <= budget.tokens) {
-                    reply.measured = tokens;
+                const auto measured = budget.measure_estimate(response);
+                if (measured.tokens <= budget.tokens) {
+                    reply.measured = measured;
                     return AYNI_OK;
                 }
             }
@@ -374,7 +384,8 @@ ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &pro
             if (shell) {
                 args.positions[arguments_field] = 0;
             }
-            status = invoke(workspace, args, arguments_field, detail, step, output, mode);
+            status = invoke(workspace, args, arguments_field, detail, step, output, mode,
+                            config.tool_preemption);
             if (status == AYNI_OK) {
                 requested = true;
                 return AYNI_OK;
@@ -387,7 +398,7 @@ ayni_status_t native_function(Workspace &workspace, const ayni_tool_call_v1 &pro
     return native_error(status,
                         "Function unavailable, invalid arguments, stale cursor, or explicit "
                         "resource limit. No business Call was accepted.",
-                        scratch, response);
+                        scratch, reply);
 }
 ayni_status_t native_result(Workspace &workspace, const ayni_task_call_result_v1 &result,
                             ReplyBuffer &scratch, ayni_string_v1 &response) {

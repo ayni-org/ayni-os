@@ -43,7 +43,8 @@ ayni_status_t Chat::configure_screen() {
                           {sizeof(ayni_call_contract_v1), AYNI_CALL_UNARY, AYNI_CALL_TOOL, 0,
                            AYNI_CALL_IDEMPOTENT, AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_REQUEST, 0,
                            render_timeout_ms, AYNI_CALL_INPUT_VALUE, AYNI_CALL_RESULT_TEXT,
-                           screen_input_bytes(), 128, 1, &screen_resource_, nullptr},
+                           screen_input_bytes(), 128, 1, &screen_resource_, nullptr,
+                           AYNI_CALL_DURABILITY_EPHEMERAL, 0},
                           &screen_business_};
     if (rc == AYNI_OK) {
         rc = ayni_register_call_capability(kernel_, &screen_capability_);

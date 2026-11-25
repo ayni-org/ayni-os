@@ -84,8 +84,10 @@ CallRuntime::Advance CallRuntime::restore_wait(uint32_t index, uint32_t task_ind
     }
     // Expired waits persist through shutdown. User pause is independent and
     // also prevents a resumed call from joining the queue until released.
+    // Old-boot CANCEL_ON_REBOOT Goals wait for do_due_work() to cancel them (ADR-0110).
     // Only never-dispatched calls reach this gate (ADR-0047).
-    if (work::TaskTable::is_held(task) || task.lifecycle == AYNI_TASK_PAUSED) {
+    if (work::TaskTable::is_held(task) || task.lifecycle == AYNI_TASK_PAUSED ||
+        work_.goal_lineage_boot_reset_pending(task.goal_index)) {
         return Advance::idle;
     }
     catalog::BindingLinks links{};
@@ -150,10 +152,12 @@ CallRuntime::Advance CallRuntime::stop(uint32_t index, uint32_t task_index, Mode
     }
     const auto &state = work_.calls.state(index);
     if (state.cancel_cause == work::CallCancelCause::none && mode != Mode::fenced) {
-        return work_.calls.request_cancel(
-                   index, cause, {work_.ids.boot_epoch(), work_.transitions.next()}) == AYNI_OK
-                   ? Advance::applied
-                   : Advance::internal;
+        const foundation::TransitionStamp stamp =
+            state.ephemeral ? foundation::TransitionStamp{0, 0} : work_.transitions.next();
+        if (work_.calls.request_cancel(index, cause, {work_.ids.boot_epoch(), stamp}) != AYNI_OK) {
+            return Advance::internal;
+        }
+        return state.ephemeral ? cancel_transport(*active.delivery) : Advance::applied;
     }
     return cancel_transport(*active.delivery);
 }
@@ -186,10 +190,13 @@ CallRuntime::Advance CallRuntime::dispatch(uint32_t index, uint32_t task_index, 
                                          work_.calls.input(index), contract, input) != AYNI_OK) {
         return Advance::internal;
     }
-    const auto authority =
-        check_input(task_index, catalogs_.bindings.at(binding_index), work_.calls.domain(index),
-                    input, contract, *proof, host_.monotonic_now_us(host_.ctx), durable_seq,
-                    work_.calls.identity(index).call_id);
+    const auto authority = task_index == no_task
+                               ? work_.check_ephemeral_call_authority(
+                                     index, host_.monotonic_now_us(host_.ctx), durable_seq)
+                               : check_input(task_index, catalogs_.bindings.at(binding_index),
+                                             work_.calls.domain(index), input, contract, *proof,
+                                             host_.monotonic_now_us(host_.ctx), durable_seq,
+                                             work_.calls.identity(index).call_id);
     if (authority.status != AYNI_OK) {
         return authority.status == AYNI_BUSY ? Advance::idle : cancel_local(index, task_index);
     }
@@ -199,7 +206,7 @@ CallRuntime::Advance CallRuntime::dispatch(uint32_t index, uint32_t task_index, 
     }
     // The permit's challenge is answered in a later item, so this recheck
     // runs again before the nonce it brings is used (ADR-0052).
-    switch (control_.issue(index, slots_[index].active->claim, input.arguments, now_us)) {
+    switch (control_.issue(index, slots_[index].active->claim, input, *proof, now_us)) {
     case PermitIssue::issued:
         break;
     case PermitIssue::requested:
@@ -214,11 +221,13 @@ CallRuntime::Advance CallRuntime::dispatch(uint32_t index, uint32_t task_index, 
     case PermitIssue::defect:
         return Advance::internal;
     }
-    if (!task_export_current({work_, host_.monotonic_now_us(host_.ctx), durable_seq}, task_index,
+    if (task_index != no_task &&
+        !task_export_current({work_, host_.monotonic_now_us(host_.ctx), durable_seq}, task_index,
                              catalogs_.bindings.at(binding_index))) {
         return cancel_local(index, task_index);
     }
-    if (!model_context_current(task_index, id.model_context, host_.monotonic_now_us(host_.ctx),
+    if (task_index != no_task &&
+        !model_context_current(task_index, id.model_context, host_.monotonic_now_us(host_.ctx),
                                durable_seq)) {
         const auto result = cancel_local(index, task_index);
         if (result == Advance::applied) {
@@ -264,7 +273,6 @@ CallRuntime::Advance CallRuntime::submit_provider(uint32_t index, uint32_t task_
         view(id.capability_id),
         view(id.endpoint),
         arguments.view(),
-        {},
         permit,
         contract.subscription ? &subscription : nullptr,
         input.value.count == 0U ? ayni_value_v1{} : input.value.view()};
@@ -284,10 +292,21 @@ CallRuntime::Advance CallRuntime::submit_provider(uint32_t index, uint32_t task_
                                                                  : Advance::internal;
     }
     if (submitted == AYNI_SUBMIT_REJECTED_NOT_RETAINED && mailbox_.withdraw(delivery.reservation)) {
-        const auto stamp = work_.transitions.next();
-        if (work_.calls.rejected_not_retained(index, {work_.ids.boot_epoch(), stamp}) != AYNI_OK ||
-            !work::end_task_call(work_.calls, work_.tasks, index, task_index, stamp)) {
-            return Advance::internal;
+        if (work_.calls.state(index).ephemeral) {
+            if (work_.calls.rejected_not_retained(index, {work_.ids.boot_epoch(), {0, 0}}) !=
+                AYNI_OK) {
+                return Advance::internal;
+            }
+            if (task_index != no_task) {
+                work_.tasks.end_volatile_call(task_index, id.call_id);
+            }
+        } else {
+            const auto stamp = work_.transitions.next();
+            if (work_.calls.rejected_not_retained(index, {work_.ids.boot_epoch(), stamp}) !=
+                    AYNI_OK ||
+                !work::end_task_call(work_.calls, work_.tasks, index, task_index, stamp)) {
+                return Advance::internal;
+            }
         }
         release(index, now_us);
     } else if (submitted != AYNI_SUBMIT_ACCEPTED && submitted != AYNI_SUBMIT_ACCEPT_UNKNOWN &&

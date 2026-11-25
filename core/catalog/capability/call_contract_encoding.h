@@ -6,7 +6,7 @@
 #include "foundation/record_body.h"
 
 namespace ayni::catalog {
-constexpr uint32_t execution_contract_word_count = 13;
+constexpr uint32_t execution_contract_word_count = 14;
 constexpr uint32_t execution_contract_fixed_bytes =
     execution_contract_word_count * sizeof(uint32_t);
 // Excludes optional subscription source semantics, carried by its enclosing owner.

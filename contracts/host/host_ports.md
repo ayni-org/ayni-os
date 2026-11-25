@@ -2,7 +2,7 @@
 
 - **关联**：计划 §2.1、§3.2「所有权/异步/线程」、§4.1、§4.2、§4.3；ADR-0002、ADR-0006、ADR-0014、ADR-0015、ADR-0016、ADR-0019、ADR-0020、ADR-0021、ADR-0026、ADR-0027；`MA-003`、`MA-005`、`MA-007`、`MA-010`；E1 步骤 10，E2 F2、F7、F12
 - **属主**：`kernel`（端口的调用方、事件入口与完成槽）；各 Host 实现（`hosts/native`、`hosts/esp_idf`、`hosts/sim`）
-- **头文件**：已实现部分 `include/ayni/ayni.h`（`ayni_host_v1`：时钟、唤醒、入口临界区与八个存储端口；`ayni_completion_post`；`ayni_post_event`）；计划部分 `include/ayni/draft/host_v1.h`
+- **头文件**：已实现部分 `include/ayni/ayni.h`（`ayni_host_v1`：时钟、唤醒、入口临界区与八个存储端口；`ayni_completion_post`；`ayni_post_event`）；审计出口 `include/ayni/audit.h`
 
 Host 为 Kernel 维护自身不变量提供平台服务（ADR-0006）：时钟、持久存储、唤醒与日志出口。网络、模型、媒体与设备 I/O 不是 Host 端口，而是经 Binding 调用的 Provider（`provider.md`）。
 
@@ -24,7 +24,7 @@ Host 为 Kernel 维护自身不变量提供平台服务（ADR-0006）：时钟�
 | `ayni_post_event` | Host → Kernel | 任意非 ISR 线程 | 只等待入口锁 | 返回 `OK`（已入队，解锁后 `wake`）/ `BUSY`（队列满）/ `CAPACITY_EXCEEDED`（ABI 0.25 起，同一 ingress 实例累计接受的输入序号达到 UINT64_MAX）/ `INVALID_STATE`（`CONFIGURING`、`STOPPED`） | M1 已实现（本地输入，ADR-0021；其他事件种类为草案） |
 | `ayni_completion_post` | Host → Kernel | 任意非 ISR 线程 | 只等待入口锁 | 写入预留的完成槽，然后 `wake` | M1 已实现 |
 
-端口名与 `ayni_host_v1`（已实现部分）和 `include/ayni/draft/host_v1.h`（计划部分）的成员名一致。
+端口名与 `ayni_host_v1`（已实现部分）的成员名一致；审计记录通过 `<ayni/audit.h>` 独立读取。
 
 八个存储函数为 append、read_prefix、read_log、fence_writers、write_snapshot、read_snapshot、trim_prefix、free_bytes。`ayni_create` 仍允许没有存储或只有旧 append/read_prefix pair 的 Host 表（其余存储端口为空）；pair 缺一或新扩展只提供一部分时拒绝。`ayni_start` 要求八个函数齐备，否则返回 `UNSUPPORTED` 并保持 `CONFIGURING`；不以成功桩补齐缺失能力。
 
@@ -72,3 +72,5 @@ Host 为 Kernel 维护自身不变量提供平台服务（ADR-0006）：时钟�
 | C-HOST-021 | 所有者线程在被唤醒、上一次 `ayni_step` 报告 `more_ready` 或到达其 `next_deadline_us` 时再调用 `ayni_step`。Kernel 只为能够推进的定时工作报告期限，包括存储限频和重试退避；等待已受理请求时由完成唤醒，不用过去的期限空转。工作计时包括：放行 Goal 的 occurrence 到期与有界等待结束，以及 Goal 失效，暂停与否（ADR-0019、ADR-0020）；只能由意图或重启解除的等待（Goal 或实例暂停、无界等待的 occurrence 遇到 Task 表满由意图解除，遇到 ID 用尽由重启解除）不设期限，解除它的意图唤醒 owner。`ayni_post_event` 入队后唤醒 owner；本地输入记录的 occurrence 在取出它的 step 开始时到期，它的有界等待同样设期限（ADR-0021） | 暂停的周期目标每次到期都报告期限，Host 反复醒来却无事可做；或 Host 只等唤醒，延时提醒到期后一直不派生 | M1 已实现（Kernel 报告的期限）：`WorkTrigger.delay_goal_derives_once_its_time_comes`、`WorkTrigger.deadline_counts_only_goals_that_could_derive`、`WorkTrigger.paused_goal_takes_what_fell_due_when_resumed`、`WorkTrigger.paused_instance_holds_the_occurrence_until_resumed`、`WorkTrigger.used_up_ids_report_no_deadline`、`WorkTrigger.budget_spent_before_deriving_still_reports_the_due_occurrence`、`WorkTrigger.draining_reports_no_deadline`、`WorkExpiry.goal_expires_at_its_time`、`WorkExpiry.expiry_counts_in_the_deadline`、`WorkExpiry.expiry_needs_neither_room_nor_an_id`、`WorkWait.occurrences_are_skipped_once_their_wait_ends`、`WorkWait.used_up_ids_skip_with_their_reason`、`WorkWait.unbounded_wait_never_skips`、`WorkWait.paused_goal_waits_without_skipping`、`WorkWait.deadline_is_the_end_of_the_earliest_bounded_wait`、`WorkExpiry.clock_at_its_largest_value_finds_no_due_work`、`WorkInput.goal_takes_inputs_from_its_source`、`WorkInput.inputs_waiting_too_long_are_skipped`；存储退避与不空转 `KernelFence.persisted_unknown_retries_one_batch_and_freezes_new_commands`；按期限睡眠的应用循环随 E1 夹具与 `MA-007` |
 
 ESP-IDF独占卷的C-HOST-013实现允许返回保守可用空间下界：真实测量后，对所有观察到的program/erase块先扣完整块，删除空间仅在重新测量后返还；低水位、累计阈值、跟踪溢出及测量失败触发核对或失效。Host仍另外扣除在途预留，先完成空间缓存更新再投递请求完成。Native的外部空间变化采样规则保持。决定与正常账目验证见[ADR-0102](../../docs/adr/0102-reuse-call-proofs-and-storage-accounting.md)及`EspSpaceLedger.*`，不以此声明真实介质故障保证。
+
+ADR-0114 的 ESP 组合约束：ObservationSlot clean→dirty 立即调用 `wake`，owner 的 task notification 保留忙时通知，下一次 wait 可立即返回。LCD DMA 由独立任务完成，可靠终态输出饱和时 owner 仍先推进 Core/reflex/audit。关闭先排空会话终态与已接受 Provider 回执，再销毁 Kernel/Host；UI 终态交付最多等待两秒，超时必须记录为未交付。主机 mailbox、正常独立会话关闭测试及静态调用链审查提供软件证据，真实 LCD/worker 调度和板端尾延迟仍待测。

@@ -361,10 +361,11 @@ struct Profile::Impl {
                         harness.compact_target_tokens, harness.tool_result_max_tokens};
             c.bodies = bodies.store();
             c.persistence = persistence;
-            if (persistence == strategies::Persistence::background) {
+            if (persistence != strategies::Persistence::durable) {
                 c.reply_encoding = c.summary_reply_encoding = model::ReplyEncoding::framed;
             }
-            c.body_progress = {&bodies, runtime::FileBodies::progress};
+            c.body_progress = {&bodies, runtime::FileBodies::progress,
+                               runtime::FileBodies::discard_unconfirmed};
             c.model.kind = c.summary.kind = AYNI_POLICY_REQUEST_MODEL;
             c.model.binding_id = text(model_bindings[at]);
             c.summary.binding_id = text("portable.summary");
@@ -387,6 +388,9 @@ struct Profile::Impl {
             type.tool_authorization = AYNI_TOOLS_ON_DEMAND;
             type.tools = &tool;
             type.context_mode = AYNI_GOAL_CONTEXT_AGENT;
+            if (persistence == strategies::Persistence::turn_boundary) {
+                type.work_profile.recovery = AYNI_GOAL_RECOVERY_CANCEL_ON_REBOOT;
+            }
             if (status == AYNI_OK) {
                 status = ayni_register_goal_type(kernel, &type);
             }
@@ -488,7 +492,7 @@ ayni_status_t Profile::create_in(void *data, size_t bytes, const ayni_host_v1 &h
         return status;
     }
     impl_->persistence = persistence;
-    if (persistence == strategies::Persistence::background) {
+    if (persistence != strategies::Persistence::durable) {
         impl_->bodies.set_shared_call_results();
         impl_->model_a.use_staged_framed_replies();
         impl_->model_b.use_staged_framed_replies();

@@ -90,10 +90,7 @@ ayni_status_t ObservationTable::replace_sample(const ObservationInput &input, ui
         !after_boundary(input.generation, input.sequence, *slot.invalid_through)) {
         return AYNI_STALE;
     }
-    if (slot &&
-        (input.generation < slot->generation ||
-         (input.generation == slot->generation &&
-          (input.sequence <= slot->sequence || input.captured_at_us < slot->captured_at_us)))) {
+    if (slot && !newer_sample(input, {slot->generation, slot->sequence}, slot->captured_at_us)) {
         return AYNI_STALE;
     }
     // A newly accepted sample ends the gap's unusable interval. Keep the floor

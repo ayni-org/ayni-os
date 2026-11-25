@@ -1,10 +1,13 @@
 /* Uses the implemented ABI from strict C99 with caller-provided memory. */
 
 #include <ayni/arguments.h>
+#include <ayni/audit.h>
 #include <ayni/authority.h>
 #include <ayni/ayni.h>
 #include <ayni/host_authority.h>
 #include <ayni/memory.h>
+#include <ayni/observations.h>
+#include <ayni/reflex.h>
 #include <ayni/resources.h>
 #include <ayni/storage_format.h>
 #include <ayni/values.h>
@@ -38,7 +41,10 @@ typedef union {
 
 /* ABI 0.53 reserves owner-thread codec scratch; the query below proves this
  * caller-owned test block suffices, without prescribing a production arena. */
-enum { kernel_memory_units = 65536 };
+enum {
+    kernel_memory_bytes = 1024u * 1024u,
+    kernel_memory_units = (kernel_memory_bytes + sizeof(max_aligned_t) - 1u) / sizeof(max_aligned_t)
+};
 static max_aligned_t kernel_memory[kernel_memory_units];
 
 static int expect(int condition, const char *what) {
@@ -321,6 +327,42 @@ int main(void) {
             expect(ayni_get_resource(kernel, resource.resource_id, &resource_info) == AYNI_OK &&
                        resource_info.state == AYNI_RESOURCE_FREE,
                    "query resource");
+    }
+    /* ADR-0112 (ABI 0.59): lock-free observation slot and reflex rule symbols link from C99. */
+    {
+        ayni_observation_slot_info_v1 slot_info = {0};
+        ayni_reflex_rule_v1 rule = {0};
+        ayni_reflex_info_v1 reflex_info = {0};
+        ayni_reflex_event_v1 reflex_event = {0};
+        const ayni_string_v1 rule_id = {"reflex.smoke", 12u};
+        slot_info.struct_size = (uint32_t)sizeof slot_info;
+        rule.struct_size = (uint32_t)sizeof rule;
+        reflex_info.struct_size = (uint32_t)sizeof reflex_info;
+        reflex_event.struct_size = (uint32_t)sizeof reflex_event;
+        failures += expect(ayni_get_observation_slots(kernel, &slot_info) == AYNI_OK &&
+                               slot_info.source_count == 0u,
+                           "observation slot snapshot links from C99");
+        failures += expect(ayni_register_reflex_rule(kernel, &rule) == AYNI_INVALID_ARGUMENT,
+                           "reflex registration links and rejects malformed rule");
+        failures += expect(ayni_set_reflex_enabled(kernel, rule_id, 1u) == AYNI_NOT_READY,
+                           "reflex runtime toggle links from C99 in CONFIGURING");
+        failures += expect(ayni_get_reflex_info(kernel, rule_id, &reflex_info) == AYNI_NOT_FOUND,
+                           "reflex info links from C99");
+        failures += expect(ayni_take_reflex_event(kernel, &reflex_event) == AYNI_NOT_FOUND,
+                           "reflex event drain links from C99");
+    }
+    /* ADR-0113 (ABI 0.60): asynchronous RAM audit ring symbols link from C99. */
+    {
+        ayni_audit_info_v1 audit_info = {0};
+        ayni_audit_record_v1 record = {0};
+        uint32_t count = 1u;
+        audit_info.struct_size = (uint32_t)sizeof audit_info;
+        failures += expect(ayni_get_audit_info(kernel, &audit_info) == AYNI_OK &&
+                               audit_info.capacity == 0u && audit_info.pending == 0u,
+                           "audit info links from C99");
+        failures +=
+            expect(ayni_take_audit_records(kernel, &record, 1u, &count) == AYNI_OK && count == 0u,
+                   "audit take links from C99");
     }
     failures +=
         expect(ayni_begin_shutdown(kernel) == AYNI_INVALID_STATE, "shutdown in CONFIGURING");

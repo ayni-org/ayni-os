@@ -2,10 +2,7 @@
 
 namespace ayni::catalog {
 bool WorkProfile::decode(const ayni_work_profile_v1 &input, WorkProfile &out) {
-    if (input.reserved != 0U) {
-        return false;
-    }
-    WorkProfile profile{input.work_class, input.background_period_min_us};
+    WorkProfile profile{input.work_class, input.recovery, input.background_period_min_us};
     if (profile.kind == AYNI_WORK_BACKGROUND && profile.background_period_us == 0U) {
         profile.background_period_us = AYNI_BACKGROUND_PERIOD_DEFAULT_US;
     }
@@ -16,7 +13,7 @@ bool WorkProfile::decode(const ayni_work_profile_v1 &input, WorkProfile &out) {
     return true;
 }
 bool WorkProfile::valid() const {
-    if (kind > AYNI_WORK_BACKGROUND) {
+    if (kind > AYNI_WORK_BACKGROUND || recovery > AYNI_GOAL_RECOVERY_CANCEL_ON_REBOOT) {
         return false;
     }
     return kind == AYNI_WORK_BACKGROUND ? background_period_us >= AYNI_TRIGGER_PERIOD_MIN_US &&

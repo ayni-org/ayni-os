@@ -100,6 +100,37 @@ class ResourceAdmissionTest : public ::testing::Test {
     ResourceAdmission admission;
 };
 
+// C-RES-004: storage pressure skips a blocked Agent, preserving its FIFO.
+TEST_F(ResourceAdmissionTest, ram_only_admission_keeps_per_agent_fifo) {
+    auto durable = request(1, 1);
+    durable.on_wait = WaitAction::pause;
+    durable.wait_us = 30;
+    queue(durable);
+    auto same_agent = request(2, 1);
+    same_agent.lane = ResourceRequest::Lane::ephemeral;
+    queue(same_agent);
+    auto other_agent = request(3, 2, 1);
+    other_agent.lane = ResourceRequest::Lane::ephemeral;
+    other_agent.on_wait = WaitAction::pause;
+    other_agent.wait_us = 60;
+    queue(other_agent);
+
+    AdmissionChoice choice{};
+    auto on_wait = WaitAction::wait;
+    ResourceClaim claim{};
+    using Admission = ResourceAdmission::Admission;
+    EXPECT_EQ(admission.next_deadline_us(), durable.wait_us);
+    EXPECT_EQ(admission.next_deadline_us(Admission::ram_only), other_agent.wait_us);
+    ASSERT_TRUE(admission.next(0, choice, Admission::ram_only));
+    EXPECT_EQ(choice.call_id, other_agent.call_id);
+    EXPECT_EQ(admission.acquire(other_agent.call_id, 0, claim, on_wait, Admission::ram_only),
+              ResourceAdmission::Acquisition::acquired);
+    EXPECT_FALSE(admission.next(0, choice, Admission::ram_only));
+    take(1);
+    ASSERT_TRUE(release(1));
+    take(2);
+}
+
 // C-RES-002/003: unavailable groups never consume a subset of units.
 TEST_F(ResourceAdmissionTest, group_admission_is_atomic_and_held_units_do_not_overflow) {
     queue(request(1, 1, 1, 2));
@@ -367,5 +398,127 @@ TEST_F(ConflictDomainTest, self_conflicting_group_is_rejected_without_partial_ad
     EXPECT_EQ(admission.size(), 0U);
     EXPECT_EQ(admission.info(1).used, 0U);
     EXPECT_EQ(admission.info(2).used, 0U);
+}
+
+// ADR-0111: conflicting_holders reports direct and conflict-domain holders and unavailable gates.
+TEST_F(ConflictDomainTest, conflicting_holders_reports_direct_domain_and_unavailable) {
+    auto invalid = request(99, 1, 2);
+    invalid.preemption = AYNI_CALL_PREEMPT_SUPERSEDE + 1U;
+    EXPECT_EQ(admission.enqueue(invalid, 0), AYNI_INVALID_ARGUMENT);
+
+    // Call 1 holds shared resource 1 (in shared.bus conflict domain with motor resource 2).
+    queue(request(1, 1, 1));
+    take(1);
+    auto waiter = request(2, 2, 2);
+    waiter.preemption = AYNI_CALL_PREEMPT_SUPERSEDE;
+    queue(waiter);
+    std::array<HeldConflict, 4> conflicts{};
+    bool unavailable = false;
+    uint64_t waiter_ticket = 0;
+    Priority waiter_priority = Priority::background;
+    uint32_t count = admission.conflicting_holders(2, conflicts.data(), conflicts.size(),
+                                                   unavailable, waiter_ticket, waiter_priority);
+    EXPECT_FALSE(unavailable);
+    EXPECT_EQ(waiter_priority, Priority::normal);
+    EXPECT_GT(waiter_ticket, 0U);
+    ASSERT_EQ(count, 1U);
+    EXPECT_EQ(conflicts[0].call_id, 1U);
+    EXPECT_EQ(conflicts[0].priority, Priority::normal);
+    EXPECT_LT(conflicts[0].ticket, waiter_ticket);
+
+    // Quarantine on motor resource 2 blocks acquisition as unavailable (not preemptable).
+    ASSERT_TRUE(release(1));
+    take(2);
+    ASSERT_TRUE(release(2));
+    auto waiter3 = request(3, 3, 1);
+    waiter3.preemption = AYNI_CALL_PREEMPT_SUPERSEDE;
+    queue(waiter3);
+    unavailable = false;
+    count = admission.conflicting_holders(3, conflicts.data(), conflicts.size(), unavailable,
+                                          waiter_ticket, waiter_priority);
+    EXPECT_TRUE(unavailable);
+    EXPECT_EQ(count, 0U);
+}
+
+// ADR-0111: an eligible preempting waiter is selected ahead of an older ordinary same-priority
+// waiter.
+TEST_F(ResourceAdmissionTest,
+       preempting_waiter_is_selected_ahead_of_ordinary_same_priority_waiter) {
+    queue(request(1, 1, 0));
+    take(1);
+    queue(request(2, 2, 0));
+    auto preemptor = request(3, 3, 0);
+    preemptor.preemption = AYNI_CALL_PREEMPT_SUPERSEDE;
+    queue(preemptor);
+    ASSERT_TRUE(release(1));
+    // Preemptor (call 3) takes the freed slot ahead of ordinary waiter (call 2).
+    take(3);
+    ASSERT_TRUE(release(3));
+    take(2);
+}
+
+// ADR-0111: visit_conflicting_holders() streams more than AYNI_RESOURCE_GROUP_COUNT_MAX (8)
+// shared-resource holders without truncating or overflowing a small conflict buffer.
+TEST(ResourceAdmissionSharedPreemption,
+     visit_conflicting_holders_handles_more_than_eight_shared_holders) {
+    constexpr uint32_t res_cap = 1;
+    constexpr uint32_t req_cap = 16;
+    Arena cat_mem(ayni::catalog::ResourceRegistry::storage_size(res_cap));
+    Arena st_mem(ResourceAdmission::state_storage_size(res_cap));
+    Arena req_mem(ResourceAdmission::request_storage_size(req_cap));
+    ayni::catalog::ResourceRegistry reg(cat_mem.data(), res_cap);
+    ResourceAdmission adm(reg, st_mem.data(), res_cap, req_mem.data(), req_cap);
+    const ayni_resource_desc_v1 desc{
+        sizeof(desc), AYNI_RESOURCE_SHARED, {"workers", 7}, 12, 0, 0, 0, nullptr, {}};
+    ayni::catalog::Resource decoded{};
+    ASSERT_EQ(reg.decode(desc, decoded), AYNI_OK);
+    ASSERT_EQ(reg.add_validated(decoded), AYNI_OK);
+    bool changed = false;
+    ASSERT_EQ(adm.set_health(0, AYNI_RESOURCE_ONLINE, changed), AYNI_OK);
+
+    // Hold 10 concurrent background calls (> AYNI_RESOURCE_GROUP_COUNT_MAX == 8), 1 unit each.
+    for (uint64_t id = 1; id <= 10; ++id) {
+        ResourceRequest r{};
+        r.call_id = id;
+        r.instance_id = id;
+        r.priority = Priority::background;
+        r.on_wait = WaitAction::wait;
+        r.wait_us = no_deadline;
+        r.count = 1;
+        r.resources[0] = {0, 1};
+        ASSERT_EQ(adm.enqueue(r, 0), AYNI_OK);
+        AdmissionChoice choice{};
+        ASSERT_TRUE(adm.next(0, choice));
+        ASSERT_EQ(choice.call_id, id);
+        ResourceClaim claim{};
+        WaitAction on_wait{};
+        ASSERT_EQ(adm.acquire(id, 0, claim, on_wait), ResourceAdmission::Acquisition::acquired);
+    }
+
+    // Queue a foreground preemptor needing 6 units (blocked by all 10 holders).
+    ResourceRequest waiter{};
+    waiter.call_id = 100;
+    waiter.instance_id = 100;
+    waiter.priority = Priority::foreground;
+    waiter.on_wait = WaitAction::wait;
+    waiter.wait_us = no_deadline;
+    waiter.count = 1;
+    waiter.resources[0] = {0, 6};
+    waiter.preemption = AYNI_CALL_PREEMPT_SUPERSEDE;
+    ASSERT_EQ(adm.enqueue(waiter, 10), AYNI_OK);
+
+    bool unavailable = false;
+    uint64_t waiter_ticket = 0;
+    Priority waiter_priority = Priority::background;
+    std::vector<uint64_t> seen;
+    const uint32_t total = adm.visit_conflicting_holders(
+        100, unavailable, waiter_ticket, waiter_priority, &seen,
+        [](void *ctx, const HeldConflict &c) {
+            static_cast<std::vector<uint64_t> *>(ctx)->push_back(c.call_id);
+            return true;
+        });
+    EXPECT_FALSE(unavailable);
+    EXPECT_EQ(total, 10U);
+    EXPECT_EQ(seen.size(), 10U);
 }
 } // namespace

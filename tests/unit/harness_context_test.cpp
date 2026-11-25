@@ -312,6 +312,7 @@ class CountedReplyBudget : public ManagedResultHarness {
     uint32_t measurements = 0;
     uint32_t partial_input_measurements = 0;
     bool refuse_partial_input = false;
+    bool stable_tool_replies = false;
     CountedReplyBudget() {
         configure_loop = [this](policies::ToolLoopConfig &config) {
             config.body_progress = {nullptr, [](void *, uint64_t) { return 1U; }};
@@ -338,6 +339,25 @@ class CountedReplyBudget : public ManagedResultHarness {
                 out.string(content);
                 out.raw("}");
             };
+            config.projection.stable_tool_replies = stable_tool_replies;
+        };
+    }
+};
+class StableCountedReplyBudget : public CountedReplyBudget {
+  protected:
+    StableCountedReplyBudget() { stable_tool_replies = true; }
+};
+class TightStableReplyBudget : public CountedReplyBudget {
+  protected:
+    TightStableReplyBudget() {
+        stable_tool_replies = true;
+        auto base = configure_loop;
+        configure_loop = [this, base](policies::ToolLoopConfig &config) {
+            base(config);
+            // Leave room > tool_result_max_tokens initially; the first tool reply shrinks
+            // remaining input room below tool_result_max_tokens so only incremental character
+            // accounting catches the second reply overflowing the context window.
+            config.limits = {6000, 200, 1200, 2400};
         };
     }
 };
@@ -353,6 +373,69 @@ TEST_F(CountedReplyBudget, ordinary_result_has_one_final_reply_measurement) {
     EXPECT_EQ(partial_input_measurements, 2U);
     EXPECT_EQ(measurements, 1U);
     post(2, text("done"));
+    pump();
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+}
+// C-POLICY-013: a stable serving projection projects partial history once across a batched group
+// and advances the remaining character count incrementally after each appended tool reply.
+TEST_F(StableCountedReplyBudget, batched_tools_project_partial_context_once) {
+    const auto task = start();
+    propose(0, 3);
+    ASSERT_EQ(pending.size(), 2U);
+    EXPECT_EQ(partial_input_measurements, 1U);
+    EXPECT_EQ(measurements, 0U);
+    post(1, text("first result"));
+    pump();
+    ASSERT_EQ(pending.size(), 3U);
+    EXPECT_EQ(pending[2].capability, "echo");
+    EXPECT_EQ(partial_input_measurements, 1U);
+    EXPECT_EQ(measurements, 1U);
+    post(2, text("second result"));
+    pump();
+    ASSERT_EQ(pending.size(), 4U);
+    EXPECT_EQ(pending[3].capability, "echo");
+    EXPECT_EQ(partial_input_measurements, 1U);
+    EXPECT_EQ(measurements, 2U);
+    post(3, text("third result"));
+    pump();
+    ASSERT_EQ(pending.size(), 5U);
+    EXPECT_EQ(pending[4].capability, "model");
+    EXPECT_EQ(partial_input_measurements, 1U);
+    EXPECT_EQ(measurements, 3U);
+    post(4, text("done"));
+    pump();
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
+}
+// C-POLICY-013: incremental character reuse matches fresh partial-context accounting when an
+// earlier tool reply shrinks the remaining room below tool_result_max_tokens.
+TEST_F(TightStableReplyBudget, incremental_budget_enforces_exact_overflow_across_batch) {
+    const auto task = start();
+    propose(0, 2);
+    ASSERT_EQ(pending.size(), 2U);
+    EXPECT_EQ(partial_input_measurements, 1U);
+    // ~2070 tokens: fits in both remaining room (~3300) and tool_result_max_tokens (2400).
+    const std::string first(2600, 'a');
+    post(1, {first.data(), static_cast<uint32_t>(first.size())});
+    pump();
+    ASSERT_EQ(pending.size(), 3U);
+    EXPECT_EQ(pending[2].capability, "echo");
+    EXPECT_EQ(partial_input_measurements, 1U);
+    // ~2070 tokens again: still below tool_result_max_tokens (2400), but exceeds the shrunken
+    // context room (~1230), so incremental accounting must route it through result summary.
+    const std::string second(2600, 'b');
+    post(2, {second.data(), static_cast<uint32_t>(second.size())});
+    pump();
+    ASSERT_EQ(pending.back().capability, "summary");
+    EXPECT_EQ(partial_input_measurements, 1U);
+    uint32_t chunks = 0;
+    while (pending.back().capability == "summary") {
+        ASSERT_LT(chunks++, 24U);
+        post(static_cast<uint32_t>(pending.size() - 1U), text("condensed second reply"));
+        pump();
+    }
+    ASSERT_EQ(pending.back().capability, "model");
+    EXPECT_NE(pending.back().text.find("condensed second reply"), std::string::npos);
+    post(static_cast<uint32_t>(pending.size() - 1U), text("done"));
     pump();
     EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
 }
@@ -586,5 +669,81 @@ TEST_F(SmallResultBudget, SummaryEnvelopeStillObeysThePerToolResultBudget) {
                             [](const auto &p) { return p.capability == "echo"; }),
               1);
     expect_original(original);
+}
+
+class ToolObserverHarness : public StrategiesFixture {
+  protected:
+    std::vector<policies::ToolOutcome> observed;
+    ToolObserverHarness() {
+        configure_loop = [this](policies::ToolLoopConfig &config) {
+            config.tool_observer = {this, [](void *ctx, const policies::ToolOutcome &outcome) {
+                                        static_cast<ToolObserverHarness *>(ctx)->observed.push_back(
+                                            outcome);
+                                    }};
+        };
+    }
+};
+
+// ToolObserver reports both ToolLoop local refusals (no Core Call ID) and Provider Call outcomes
+// with exact source model_call and batch item indices.
+TEST_F(ToolObserverHarness, reports_local_refusals_and_provider_failures_with_batch_indices) {
+    const auto task = start("chat", "run batch");
+    ASSERT_EQ(pending.size(), 1U);
+    ayni_argument_node_v1 arg{};
+    arg.kind = AYNI_ARGUMENT_STRING;
+    arg.subtree_end = 1;
+    arg.value.text = text("hello");
+    const ayni_arguments_v1 input{&arg, 1};
+    FunctionProposal refused(text("missing.tool"), input, text("p0"));
+    FunctionProposal ok_call(text("echo"), input, text("p1"));
+    FunctionProposal denied_call(text("echo"), input, text("p2"));
+    std::array<ayni_tool_call_v1, 3> batch{refused.call(), ok_call.call(), denied_call.call()};
+    post(0, {}, AYNI_CALL_COMPLETED, AYNI_OK, batch.data(), static_cast<uint32_t>(batch.size()));
+    pump();
+
+    // Item 0 refused locally with no Core Call; item 1 was submitted to the echo Provider.
+    ASSERT_EQ(observed.size(), 1U);
+    EXPECT_EQ(observed[0].task_id, task);
+    EXPECT_NE(observed[0].model_call, 0U);
+    EXPECT_EQ(observed[0].tool_index, 0U);
+    EXPECT_EQ(observed[0].tool_count, 3U);
+    EXPECT_EQ(observed[0].logical_call_id, 0U);
+    EXPECT_TRUE(observed[0].local_refusal);
+    EXPECT_EQ(observed[0].status, AYNI_NOT_FOUND);
+
+    ASSERT_EQ(pending.size(), 2U);
+    ASSERT_EQ(pending[1].capability, "echo");
+    post(1, text("ok"));
+    pump();
+
+    ASSERT_EQ(observed.size(), 2U);
+    EXPECT_EQ(observed[1].model_call, observed[0].model_call);
+    EXPECT_EQ(observed[1].tool_index, 1U);
+    EXPECT_EQ(observed[1].tool_count, 3U);
+    EXPECT_NE(observed[1].logical_call_id, 0U);
+    EXPECT_FALSE(observed[1].local_refusal);
+    EXPECT_EQ(observed[1].outcome, AYNI_CALL_COMPLETED);
+    EXPECT_EQ(observed[1].status, AYNI_OK);
+
+    ASSERT_EQ(pending.size(), 3U);
+    ASSERT_EQ(pending[2].capability, "echo");
+    post(2, {}, AYNI_CALL_FAILED, AYNI_DENIED);
+    pump();
+
+    ASSERT_EQ(observed.size(), 3U);
+    EXPECT_EQ(observed[2].model_call, observed[0].model_call);
+    EXPECT_EQ(observed[2].tool_index, 2U);
+    EXPECT_EQ(observed[2].tool_count, 3U);
+    EXPECT_NE(observed[2].logical_call_id, 0U);
+    EXPECT_NE(observed[2].logical_call_id, observed[1].logical_call_id);
+    EXPECT_FALSE(observed[2].local_refusal);
+    EXPECT_EQ(observed[2].outcome, AYNI_CALL_FAILED);
+    EXPECT_EQ(observed[2].status, AYNI_DENIED);
+
+    ASSERT_EQ(pending.size(), 4U);
+    ASSERT_EQ(pending[3].capability, "model");
+    post(3, text("Done."));
+    pump();
+    EXPECT_EQ(work.task(task).lifecycle, AYNI_TASK_COMPLETED);
 }
 } // namespace

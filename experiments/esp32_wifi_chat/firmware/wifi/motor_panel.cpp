@@ -1,5 +1,7 @@
 #include "motor_panel.h"
 #include "app_menu.h"
+#include "motor_panel_text.h"
+#include <algorithm>
 #include <cstdio>
 #include <yyjson.h>
 namespace wifichat::wifi {
@@ -28,9 +30,47 @@ bool MotorPanel::packet(const Packet &packet) {
 void MotorPanel::stop(Transport &transport) {
     transport.request_motor_stop(); // Independent of command queue capacity.
     control_.stop();
-    message_ = "已请求停止，重启后恢复";
+    steering_ = {};
+    message_ = "正在停机，等待硬件确认";
 }
 bool MotorPanel::tick(Transport &transport, bool healthy, int64_t now) {
+    const auto feedback = transport.control_mailbox().snapshot();
+    const bool changed = feedback.desired.goal != feedback_.desired.goal ||
+                         feedback.desired.seq != feedback_.desired.seq ||
+                         feedback.accepted_seq != feedback_.accepted_seq ||
+                         feedback.superseded_count != feedback_.superseded_count ||
+                         feedback.applied_seq != feedback_.applied_seq ||
+                         feedback.rejected_seq != feedback_.rejected_seq ||
+                         feedback.stop_confirmed_seq != feedback_.stop_confirmed_seq ||
+                         feedback.stop_requested_seq != feedback_.stop_requested_seq ||
+                         feedback.control_mode != feedback_.control_mode ||
+                         feedback.busy != feedback_.busy ||
+                         feedback.hold_active != feedback_.hold_active ||
+                         feedback.applied_motor1 != feedback_.applied_motor1 ||
+                         feedback.applied_motor2 != feedback_.applied_motor2;
+    if (changed) {
+        feedback_ = feedback;
+        control_.observe(feedback.control_mode);
+        const char *reason =
+            feedback.reject_reason == ControlRejectReason::no_active_session ? "无活跃许可会话"
+            : feedback.reject_reason == ControlRejectReason::out_of_envelope ? "超出许可包络"
+            : feedback.reject_reason == ControlRejectReason::stop_pending ? "停止信号已拦截"
+            : feedback.reject_reason == ControlRejectReason::disarmed_or_latched
+                ? "未启用或急停锁存"
+            : feedback.reject_reason == ControlRejectReason::interlock_fault ? "联锁或传感失效"
+                                                                             : "无";
+        char text[384];
+        std::snprintf(
+            text, sizeof(text),
+            "已接收 #%llu\n已被覆盖 #%llu（%llu次）\n已应用 #%llu M1:%ld M2:%ld%%\n已拒绝 #%llu "
+            "%s\n%s",
+            (unsigned long long)feedback.accepted_seq, (unsigned long long)feedback.superseded_seq,
+            (unsigned long long)feedback.superseded_count, (unsigned long long)feedback.applied_seq,
+            long(feedback.applied_motor1), long(feedback.applied_motor2),
+            (unsigned long long)feedback.rejected_seq, reason, motor_output_text(feedback));
+        feedback_text_ = text;
+    }
+    sync_steering();
     if (!healthy && active()) {
         stop(transport);
         return true;
@@ -48,10 +88,62 @@ bool MotorPanel::tick(Transport &transport, bool healthy, int64_t now) {
         transport.post(Kind::motor_heartbeat, 0, nullptr, 0)) {
         heartbeat_ = now;
     }
-    return false;
+    return changed;
+}
+// Rebase from the worker's desired target, not hold/sensor-shaped output. Keep rapid local
+// clicks optimistic until their latest sequence settles; session identity fences old drafts.
+void MotorPanel::sync_steering() {
+    const auto &current = feedback_.desired;
+    if (!active() || !feedback_.busy || !current.goal ||
+        feedback_.stop_requested_seq > feedback_.stop_confirmed_seq) {
+        steering_ = {};
+    } else if (steering_.goal != current.goal || current.seq >= steering_.seq ||
+               feedback_.rejected_seq >= steering_.seq ||
+               feedback_.superseded_seq >= steering_.seq) {
+        steering_ = current;
+        steering_.motor1 = std::clamp(steering_.motor1, -int32_t(limit_), int32_t(limit_));
+        steering_.motor2 = std::clamp(steering_.motor2, -int32_t(limit_), int32_t(limit_));
+    }
 }
 MotorPanel::Tap MotorPanel::tap(Transport &transport, int x, int y, bool healthy) {
     if (x < 8 || x >= 232) {
+        return Tap::none;
+    }
+    if (x >= 150 && y >= 32 && y < 58) {
+        page_ = page_ == Page::control    ? Page::feedback
+                : page_ == Page::feedback ? Page::steering
+                                          : Page::control;
+        if (page_ == Page::steering) {
+            steering_ = {};
+            sync_steering();
+        }
+        return Tap::none;
+    }
+    if (page_ == Page::steering && ((y >= 100 && y < 144) || (y >= 166 && y < 210))) {
+        sync_steering();
+        if (!healthy || !steering_.goal) {
+            message_ = "请先启用并打开许可会话";
+            return Tap::none;
+        }
+        auto edited = steering_;
+        auto &desired = y < 160 ? edited.motor1 : edited.motor2;
+        desired += x < 80 ? -10 : x >= 160 ? 10 : -desired;
+        edited.motor1 = std::clamp(edited.motor1, -int32_t(limit_), int32_t(limit_));
+        edited.motor2 = std::clamp(edited.motor2, -int32_t(limit_), int32_t(limit_));
+        ControlTarget target;
+        target.motor1 = edited.motor1;
+        target.motor2 = edited.motor2;
+        target.session_goal = edited.goal;
+        target.deadline = ControlTargetDeadline::preserve;
+        if (transport.submit_motor_target(target, &edited.seq)) {
+            steering_ = edited;
+            message_ = "已受理，应用结果见反馈";
+        } else {
+            message_ = "邮箱忙，请重试";
+        }
+        return Tap::none;
+    }
+    if (page_ != Page::control && !(y >= 284 && y < 314)) {
         return Tap::none;
     }
     if (y >= 284 && y < 314) {
@@ -70,6 +162,7 @@ MotorPanel::Tap MotorPanel::tap(Transport &transport, int x, int y, bool healthy
     } else if (y >= 62 && y < 142) {
         if (control_.active()) {
             control_.disable();
+            steering_ = {};
             transport.set_motor_active(false);
             transport.request_motor_disable();
             message_ = "正在停用";
@@ -89,7 +182,18 @@ MotorPanel::Tap MotorPanel::tap(Transport &transport, int x, int y, bool healthy
     return Tap::none;
 }
 void MotorPanel::draw(Canvas &canvas) const {
-    draw_motor_preferences(canvas, active(), limit_, message_);
+    if (page_ == Page::steering) {
+        draw_motor_steering(canvas, steering_.motor1, steering_.motor2, message_);
+    } else if (page_ == Page::feedback) {
+        draw_motor_feedback(canvas, message_,
+                            feedback_text_.empty() ? "等待控制指令" : feedback_text_);
+    } else {
+        draw_motor_preferences(canvas, active(), limit_, message_);
+    }
+    canvas.button(150, 32, 80, 26,
+                  page_ == Page::control    ? "反馈"
+                  : page_ == Page::feedback ? "调速"
+                                            : "控制");
 }
 void MotorPanel::test_notice(const MotorCheckNotice &notice) {
     char text[160];

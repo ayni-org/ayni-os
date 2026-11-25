@@ -118,7 +118,9 @@ Candidate candidate(const WorkModel &model, PrivacyPhase phase, uint64_t after) 
         }
     } else if (phase == PrivacyPhase::calls) {
         for (uint32_t index = 0; index < model.calls.capacity(); ++index) {
-            if (!model.calls.occupied(index)) {
+            // The durable cursor must be reproducible without RAM-only calls. Their Task
+            // erasure scrubs them separately (ADR-0110).
+            if (!model.calls.occupied(index) || model.calls.state(index).ephemeral) {
                 continue;
             }
             uint32_t task = 0;
@@ -138,7 +140,7 @@ Candidate candidate(const WorkModel &model, PrivacyPhase phase, uint64_t after) 
     return result;
 }
 void erase_work(WorkModel &model, ProvenanceKind kind, uint32_t index,
-                foundation::TransitionStamp stamp) {
+                foundation::TransitionStamp stamp, uint64_t boot_epoch, bool release) {
     const auto *record =
         kind == ProvenanceKind::goal ? goal_sources(model, index) : task_sources(model, index);
     if (record != nullptr) {
@@ -151,6 +153,17 @@ void erase_work(WorkModel &model, ProvenanceKind kind, uint32_t index,
         const auto &task = model.tasks.at(index);
         model.provenance.erase(kind, task.slot, task.task_id, stamp);
         model.tasks.erase_checkpoint(index);
+        if (release) {
+            // Scrub RAM-only EPHEMERAL calls owned by this erased Task immediately without
+            // emitting an unreplayable PrivacyEffect::call WAL record (ADR-0110, ADR-0111).
+            for (uint32_t call = 0; call < model.calls.capacity(); ++call) {
+                if (model.calls.occupied(call) && model.calls.state(call).ephemeral &&
+                    !model.calls.state(call).content_erased &&
+                    model.calls.identity(call).task_id == task.task_id) {
+                    static_cast<void>(model.calls.erase_content(call, {boot_epoch, {0, 0}}, true));
+                }
+            }
+        }
     }
 }
 } // namespace
@@ -234,13 +247,13 @@ bool apply_privacy_step(WorkModel &model, const work::PrivacyRecord &record, uin
         if (!model.goals.find(record.cursor, index)) {
             return false;
         }
-        erase_work(model, ProvenanceKind::goal, index, record.stamp);
+        erase_work(model, ProvenanceKind::goal, index, record.stamp, boot_epoch, !replay);
         break;
     case PrivacyEffect::task:
         if (!model.tasks.find(record.cursor, index)) {
             return false;
         }
-        erase_work(model, ProvenanceKind::task, index, record.stamp);
+        erase_work(model, ProvenanceKind::task, index, record.stamp, boot_epoch, !replay);
         break;
     case PrivacyEffect::call:
         if (!model.calls.find(record.cursor, index) ||

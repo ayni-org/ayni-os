@@ -1,5 +1,6 @@
 #pragma once
 #include "../wifi/model_buffer.h"
+#include "configuration.h"
 #include "motor.h"
 #include "motor_check.h"
 #include "reply_voice.h"
@@ -7,6 +8,7 @@
 #include "transport.h"
 #include "turn_diagnostics.h"
 #include <array>
+#include <ayni/audit.h>
 #include <ayni/authority.h>
 #include <ayni/ayni.hpp>
 #include <ayni/calls.h>
@@ -24,7 +26,11 @@ namespace wifichat {
 class Chat {
   public:
     explicit Chat(Transport &transport)
-        : transport_(transport), speaker_(transport), motor_(transport) {}
+        : transport_(transport), speaker_(transport), motor_(transport) {
+        transport_.attach_motor_wake(&motor_.execution(), [](void *context) {
+            static_cast<MotorExecution *>(context)->wake_control();
+        });
+    }
     // Owner startup before the UI/radios: reserve contiguous control/audio stacks.
     // The audio worker stays idle; motor hardware/worker initialize automatically during
     // composition.
@@ -36,6 +42,7 @@ class Chat {
     void incoming(const Packet &);
     void record_owner_wait(uint64_t entered_us, uint64_t exited_us);
     void stop_outputs() {
+        motor_.close_sessions();
         reply_voice_.set_accepting(false);
         speaker_.set_accepting(false);
         speaker_.request_stop();
@@ -44,6 +51,7 @@ class Chat {
     }
 
   private:
+    friend struct ChatTickTestPeer; // Host regression uses the real owner tick and terminal drain.
     // The ToolLoop, held back until the session policy announced readiness: restored work
     // waits for its cancellation instead of proposing model or device calls.
     static ayni_status_t decide(void *, const ayni_task_snapshot_v1 *, ayni_policy_output_v1 *);
@@ -56,6 +64,9 @@ class Chat {
     ayni_status_t configure_model();
     ayni_status_t configure_strategy();
     ayni_status_t configure_motor_check();
+    ayni_status_t configure_reflexes();
+    void drain_reflex_events();
+    void drain_audit_records();
     ayni_status_t command(ayni_intent_kind_t, const void *, uint64_t * = nullptr, uint32_t = 0,
                           ayni_reason_t * = nullptr);
     ayni_status_t receipt();
@@ -64,9 +75,11 @@ class Chat {
     ayni_status_t prepare_owner(const ayni_kernel_info_v1 &);
     ayni_status_t prepare_grant();
     ayni_status_t prepare_history(const ayni_kernel_info_v1 &);
+    bool drain_terminal();
     ayni_status_t close_session(const ayni_kernel_info_v1 &);
     ayni_status_t observe_probe(const ayni_kernel_info_v1 &);
     ayni_status_t converse(const ayni_kernel_info_v1 &);
+    void start_user_turn(uint64_t id, std::string_view user_text);
     ayni_status_t present_reply();
     void finish_voice(ayni_status_t);
     static void on_voice_stage(void *, ReplyVoice::Event, uint64_t goal, size_t offset,
@@ -77,7 +90,9 @@ class Chat {
     void publish_model();
     void trace_tool_io(uint64_t model_call, uint64_t next_call, uint64_t from_us, uint64_t to_us,
                        uint64_t first, uint64_t next);
-    void emit_tool_decisions(uint64_t durable_seq);
+    static void on_tool_outcome(void *, const ayni::strategies::ToolOutcome &);
+    void emit_tool_decisions(uint64_t durable_seq, uint64_t step_elapsed_us,
+                             const ayni_step_report_v1 &report);
     static void on_publication_stage(void *, uint64_t goal, uint64_t task,
                                      ayni::runtime::conversation::PublicationStage);
     static void on_publication_ack(void *, ayni::runtime::conversation::PublicationAck,
@@ -148,11 +163,24 @@ class Chat {
     uint64_t grant_ = 0, goal_ = 0, turn_ = 0;
     bool announced_ = false, hold_reported_ = false, cancel_requested_ = false;
     bool progress_ = false; // A command or state change this tick that Core has not stepped.
+    // True once the current turn's answer text was pushed to UI early from RAM at checkpoint_ready
+    // (0 ms display while background publication drains, ADR-0113).
+    bool answer_presented_early_ = false;
+    uint64_t early_answer_at_us_ = 0;
+    uint64_t audit_dropped_reported_ = 0; // Last observed Core audit ring dropped_overflow count.
     enum class ReplyIntent { present, cancelled };
     ReplyIntent reply_intent_ = ReplyIntent::present; // Independent of Core Goal cancellation.
     // One turn at a time: its text until the Goal exists, then the Goal until its answer.
     enum class Turn { idle, input, running, saving, answer, speaking, reply_done };
     Turn turn_state_ = Turn::idle;
+    // Latest-wins 1-slot live barge-in queue; promoted as soon as the cancelled turn goes idle.
+    struct PendingUser {
+        uint64_t id = 0;
+        std::string text;
+        uint64_t old_turn = 0;
+        uint64_t at_us = 0;
+    };
+    std::optional<PendingUser> pending_user_;
     struct ProbeTurn {
         enum class Source { synthetic, current_history } source = Source::synthetic;
         uint32_t characters = 0; // Zero only primes the transport template; otherwise Han text.
@@ -164,6 +192,8 @@ class Chat {
     ayni_status_t probe_input(ayni_string_v1, ayni::strategies::Encoded &);
     std::string input_, answer_;
     std::array<char, 192> terminal_text_{}; // Owned error text until the terminal queue accepts it.
+    std::optional<uint64_t>
+        terminal_drain_deadline_;     // Set only while closing with an undelivered terminal.
     const char *reply_end_ = nullptr; // Static or terminal_text_, valid throughout reply_done.
     struct PreparationWait {
         const char *phase = nullptr; // None, or an internal static phase name (never user text).
@@ -172,7 +202,7 @@ class Chat {
     uint64_t turn_started_ = 0;
     // Owner-only per-turn wall time. step_us is ayni_step() wall time (includes preemption);
     // storage snapshots are cumulative completed work, sampled as deltas at phase boundaries.
-    static constexpr uint32_t step_units = 32;
+    static constexpr uint32_t step_units = owner_step_units;
     struct TurnTiming {
         uint64_t step_calls = 0, step_us = 0, max_step_us = 0, conversation_us = 0;
         uint64_t phase_started_us = 0;
@@ -182,14 +212,30 @@ class Chat {
         uint64_t model_received_call = 0, model_received_us = 0, model_staged_us = 0;
         ModelDeliveryTiming model_delivery{};
         struct ToolDecision {
-            uint64_t task = 0, at_us = 0;
+            uint64_t task = 0, at_us = 0, decide_us = 0;
+            ayni_policy_intent_kind_t kind = AYNI_POLICY_REQUEST_CALL;
             uint32_t key_size = 0;
             std::array<char, AYNI_CATALOG_ID_MAX_BYTES> key{};
         };
+        struct ToolFailure {
+            uint64_t model_call = 0, logical_call_id = 0;
+            uint32_t tool_index = 0, tool_count = 0;
+            ayni_call_outcome_t outcome = 0;
+            ayni_status_t status = AYNI_OK;
+            ayni_reason_t reason = AYNI_REASON_NONE;
+            ayni_call_effect_t effect = AYNI_CALL_EFFECT_NONE;
+            bool local_refusal = false;
+        };
         std::array<ToolDecision, step_units> tool_decisions{};
+        std::array<ToolFailure, step_units> tool_failures{};
         uint64_t last_motor_dispatch = 0;
         size_t tool_decision_count = 0; // Filled only during this owner step.
+        size_t tool_failure_count = 0;  // Filled only during this owner step.
         PublicationTimeline publication{};
+        struct PublishBacklog {
+            bool has_start = false, has_end = false;
+            ayni::runtime::FileBodies::Backlog start{}, end{};
+        } pub_backlog;
         struct Ack {
             uint64_t collected_us = 0, submitted_us = 0, durable_us = 0, ready_us = 0;
             uint64_t commit_seq = 0;

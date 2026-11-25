@@ -32,8 +32,10 @@ struct StepContext {
     // Count one applied item and observe elapsed time before another loop iteration.
     void applied() {
         ++items_;
-        out_of_time_ = now_us() - started_us >= max_time_us;
+        check_time();
     }
+    // A scan that finds no actionable item can still spend the time budget.
+    void check_time() { out_of_time_ = now_us() - started_us >= max_time_us; }
     // Boot/maintenance advance once with their original no-extra-sample accounting.
     void storage_advanced() { ++items_; }
     // Completed items, always bounded by max_items; report remains available when exhausted.

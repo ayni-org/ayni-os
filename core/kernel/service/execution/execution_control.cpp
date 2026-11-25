@@ -19,14 +19,12 @@ bool valid_nonce(const ayni_executor_nonce_v1 &nonce, uint64_t control_domain_id
 // Projection rows share this one Scene generation. Control envelope fields are
 // proven fixed at catalog close, but other Scene-limited fields can vary per
 // item, and must not borrow authorization from only the first item (ADR-0084).
-ayni_status_t ExecutionControl::authorize_input(
-    const catalog::ExecutionBinding &binding, ayni_string_v1 capability, uint32_t version,
-    ayni_bytes_v1 domain, const catalog::CallContract &contract, const work::CallInputView &input,
-    const catalog::DecodedBusiness &proof, uint64_t durable_seq, uint32_t &scene) const {
-    if (contract.input_format != catalog::call_value_input_format) {
-        return work_.scenes.authorize(view(binding.scene), binding.scene_version, capability,
-                                      version, input.arguments, durable_seq, scene);
-    }
+ayni_status_t ExecutionControl::authorize_input(const catalog::ExecutionBinding &binding,
+                                                ayni_string_v1 capability, uint32_t version,
+                                                ayni_bytes_v1 domain, const catalog::CallContract &,
+                                                const work::CallInputView &input,
+                                                const catalog::DecodedBusiness &proof,
+                                                uint64_t durable_seq, uint32_t &scene) const {
     const uint32_t count = catalog::projection_rows(proof.view(), input.value.view());
     if (count == 0U) {
         return AYNI_DENIED;
@@ -102,7 +100,10 @@ authority::GrantCheck ExecutionControl::prepare(
             return {status, AYNI_REASON_EXECUTION_OBSERVATION};
         }
     }
-    if (!work::valid_execution(fact, input.arguments)) {
+    ayni_control_envelope_v1 envelope{};
+    if (!work::valid_execution_metadata(fact) ||
+        catalog::execution_envelope_for_value(fact.binding, proof.view(), input.value.view(),
+                                              input.arguments, envelope) != AYNI_OK) {
         return {AYNI_INVALID_ARGUMENT, AYNI_REASON_GRANT_INPUT};
     }
     out_fact = fact;
@@ -241,7 +242,8 @@ bool ExecutionControl::any_due(uint32_t executor, uint64_t now_us) const {
 // nonce anchors the executor's deadline and the full envelope is derived from
 // authorized bytes. Nothing reaches a Provider before the lease is installed.
 PermitIssue ExecutionControl::issue(uint32_t index, const resources::ResourceClaim &claim,
-                                    ayni_bytes_v1 arguments, uint64_t now_us) {
+                                    const work::CallInputView &input,
+                                    const catalog::DecodedBusiness &proof, uint64_t now_us) {
     const auto &saved = work_.calls.state(index).execution;
     if (!saved) {
         return PermitIssue::issued;
@@ -298,7 +300,8 @@ PermitIssue ExecutionControl::issue(uint32_t index, const resources::ResourceCla
     // the permit to a remote gate has that long before a NOT_FOUND fences it.
     const uint64_t first_poll_us = foundation::deadline(
         now_us, work_.catalogs.execution.executor(executor).ports.poll_period_us);
-    if (catalog::execution_envelope(fact.binding, arguments, permit.envelope) != AYNI_OK ||
+    if (catalog::execution_envelope_for_value(fact.binding, proof.view(), input.value.view(),
+                                              input.arguments, permit.envelope) != AYNI_OK ||
         !permits_.install(id.call_id, executor, claim, permit, first_poll_us)) {
         return PermitIssue::refused;
     }
@@ -345,8 +348,89 @@ bool ExecutionControl::delivery_ended(uint64_t call_id) {
     return true;
 }
 
+// Emits one physical actuator quarantine or release record into Core's RAM audit ring (ADR-0113).
+void ExecutionControl::audit_actuator(ayni_audit_kind_t kind, uint32_t executor_index,
+                                      uint64_t call_id, uint64_t permit_id, ayni_status_t status,
+                                      uint32_t detail_code, bool ephemeral) const {
+    const auto &id = work_.catalogs.execution.executor(executor_index).id;
+    AuditEntry entry{};
+    entry.kind = kind;
+    entry.boot_epoch = work_.ids.boot_epoch();
+    entry.at_us = host_.monotonic_now_us(host_.ctx);
+    entry.subject_id = call_id;
+    entry.auxiliary_id = permit_id;
+    entry.status = status;
+    entry.detail_code = detail_code;
+    entry.flags = AYNI_AUDIT_FLAG_PHYSICAL | (ephemeral ? AYNI_AUDIT_FLAG_EPHEMERAL : 0U);
+    entry.label = view(id);
+    audit_.emit(entry);
+}
+
+// Transitions a lease into stopping/quarantine and records the first entry once (ADR-0113).
+bool ExecutionControl::quarantine_lease(uint64_t call_id, ayni_status_t status) {
+    const auto *lease = permits_.find(call_id);
+    const bool entering =
+        lease != nullptr && lease->phase != resources::PermitLease::Phase::stopping;
+    const uint32_t executor = lease != nullptr ? lease->executor_index : 0U;
+    const uint64_t permit_id = lease != nullptr ? lease->permit.permit_id : 0U;
+    if (!permits_.request_stop(call_id)) {
+        return false;
+    }
+    if (entering) {
+        uint32_t call_index = 0;
+        const bool ephemeral =
+            work_.calls.find(call_id, call_index) && work_.calls.state(call_index).ephemeral;
+        audit_actuator(AYNI_AUDIT_ACTUATOR_QUARANTINE, executor, call_id, permit_id, status,
+                       AYNI_CONTROL_STOPPING, ephemeral);
+    }
+    return true;
+}
+
 bool ExecutionControl::request_stop(uint64_t call_id) {
-    return permits_.request_stop(call_id);
+    return quarantine_lease(call_id, AYNI_OK);
+}
+
+bool ExecutionControl::accept_inline_stop(uint32_t index, const ayni_executor_status_v1 &status) {
+    const auto &saved = work_.calls.state(index).execution;
+    if (!saved || work::execution_stopped(*saved)) {
+        return false;
+    }
+    uint32_t executor = 0;
+    if (!executor_of(*saved, executor)) {
+        return false;
+    }
+    const auto &ports = work_.catalogs.execution.executor(executor).ports;
+    if ((ports.flags & AYNI_EXECUTOR_FLAG_INLINE_STOP_PROOF) == 0U ||
+        status.control.phase != AYNI_CONTROL_STOPPED) {
+        return false;
+    }
+    const auto call_id = work_.calls.identity(index).call_id;
+    return permits_.observe(call_id, status) && stop_measured(call_id);
+}
+
+bool ExecutionControl::release_ephemeral_stopped(uint64_t call_id) {
+    uint32_t call_index = 0;
+    if (!work_.calls.find(call_id, call_index)) {
+        return false;
+    }
+    const auto &state = work_.calls.state(call_index);
+    const auto *lease = permits_.find(call_id);
+    if (!state.ephemeral || !state.execution || !work::execution_stopped(*state.execution) ||
+        lease == nullptr || !lease->stopped) {
+        return false;
+    }
+    const uint32_t executor = lease->executor_index;
+    const uint64_t permit_id = lease->permit.permit_id;
+    const uint32_t stopped_phase = lease->stopped->phase;
+    if (!permits_.release_stopped(call_id)) {
+        return false;
+    }
+    audit_actuator(AYNI_AUDIT_ACTUATOR_RELEASE, executor, call_id, permit_id, AYNI_OK,
+                   stopped_phase, true);
+    for (auto lane : {ExecutorLane::control, ExecutorLane::stop, ExecutorLane::status}) {
+        executors_.close(executor, lane);
+    }
+    return true;
 }
 
 bool ExecutionControl::stop_measured(uint64_t call_id) const {
@@ -384,16 +468,19 @@ bool ExecutionControl::stop_unsent(const resources::PermitLease &lease) const {
 }
 
 // Durable work facts retain measured stop independently of Provider completion.
-// Resource quarantine is lifted only by the independent consumer after this stamp persists.
+// Resource quarantine is lifted only by the independent consumer after this stamp persists,
+// except for RAM-only EPHEMERAL calls whose stop fact never enters the WAL (ADR-0110).
 RuntimeAdvance ExecutionControl::commit_stop(uint32_t index) {
     const auto *lease = permits_.find(work_.calls.identity(index).call_id);
     if (lease == nullptr || !lease->stopped) {
         return Advance::internal;
     }
     const auto &fact = *lease->stopped;
+    const foundation::TransitionStamp stamp = work_.calls.state(index).ephemeral
+                                                  ? foundation::TransitionStamp{0, 0}
+                                                  : work_.transitions.next();
     return work_.calls.confirm_execution(index, fact.phase, fact.cause, fact.target,
-                                         {work_.ids.boot_epoch(), work_.transitions.next()}) ==
-                   AYNI_OK
+                                         {work_.ids.boot_epoch(), stamp}) == AYNI_OK
                ? Advance::applied
                : Advance::internal;
 }
@@ -432,9 +519,16 @@ ExecutionControl::Advance ExecutionControl::poll(uint32_t index, uint64_t now_us
     if (lease->stopped) {
         if (stopped_releasable(*lease, durable_seq, mode)) {
             const auto call_id = lease->call_id;
+            const auto permit_id = lease->permit.permit_id;
+            const auto stopped_phase = lease->stopped->phase;
+            uint32_t call_index = 0;
+            const bool ephemeral =
+                work_.calls.find(call_id, call_index) && work_.calls.state(call_index).ephemeral;
             if (!permits_.release_stopped(call_id)) {
                 return Advance::internal;
             }
+            audit_actuator(AYNI_AUDIT_ACTUATOR_RELEASE, index, call_id, permit_id, AYNI_OK,
+                           stopped_phase, ephemeral);
             // Later answers for this permit are refused.
             for (auto lane : {ExecutorLane::control, ExecutorLane::stop, ExecutorLane::status}) {
                 executors_.close(index, lane);
@@ -455,7 +549,7 @@ ExecutionControl::Advance ExecutionControl::poll(uint32_t index, uint64_t now_us
         return Advance::idle;
     }
     const bool allowed = !should_stop(*lease, now_us, durable_seq, mode);
-    if (!allowed && !permits_.request_stop(lease->call_id)) {
+    if (!allowed && !quarantine_lease(lease->call_id, lease->port_status)) {
         return Advance::internal;
     }
     if (stop_unsent(*lease)) {
@@ -524,7 +618,8 @@ ExecutionControl::Advance ExecutionControl::apply(resources::PermitLease &lease,
             lease.port_status = AYNI_INVALID_ARGUMENT;
         }
         if (lease.port_status != AYNI_OK) {
-            return permits_.request_stop(lease.call_id) ? Advance::applied : Advance::internal;
+            return quarantine_lease(lease.call_id, lease.port_status) ? Advance::applied
+                                                                      : Advance::internal;
         }
         if (!renewing || answer.output.status.control.phase != AYNI_CONTROL_ACTIVE ||
             executors_.request(index, ExecutorLane::control) != nullptr) {
@@ -544,7 +639,8 @@ ExecutionControl::Advance ExecutionControl::apply(resources::PermitLease &lease,
         lease.port_status = AYNI_INVALID_ARGUMENT;
     }
     if (lease.port_status != AYNI_OK) {
-        return permits_.request_stop(lease.call_id) ? Advance::applied : Advance::internal;
+        return quarantine_lease(lease.call_id, lease.port_status) ? Advance::applied
+                                                                  : Advance::internal;
     }
     if (request.kind != AYNI_EXECUTOR_CHALLENGE || !renewing) {
         return Advance::applied;
@@ -567,12 +663,22 @@ bool ExecutionControl::stopped_releasable(const resources::PermitLease &lease, u
         return transport_.retiring(transport_.context, lease.call_id);
     }
     uint32_t index = 0;
-    if (mode == Mode::fenced || !work_.calls.find(lease.call_id, index)) {
+    if (!work_.calls.find(lease.call_id, index)) {
         return false;
     }
     const auto &state = work_.calls.state(index);
-    return state.execution && work::execution_stopped(*state.execution) &&
-           state.latest.transition.commit_seq <= durable_seq;
+    if (mode == Mode::fenced && state.ephemeral) {
+        // Ephemeral stop facts are never persisted to WAL; once FENCED isolation stops and
+        // retires the transport borrow, release the lease so reload can proceed (ADR-0110).
+        return transport_.retiring(transport_.context, lease.call_id);
+    }
+    if (!state.execution || !work::execution_stopped(*state.execution)) {
+        return false;
+    }
+    if (state.ephemeral) {
+        return true; // Confirmed physical stop lifts RAM quarantine without durable_seq (ADR-0110).
+    }
+    return mode != Mode::fenced && state.latest.transition.commit_seq <= durable_seq;
 }
 
 // All execution gates share the same decision for renewal and immediate stopping.
@@ -583,17 +689,26 @@ bool ExecutionControl::should_stop(const resources::PermitLease &lease, uint64_t
     }
     bool expired = false;
     uint32_t index = 0;
-    uint32_t task_index = 0;
     if (!transport_.holds(transport_.context, lease.call_id, now_us, expired) ||
-        !work_.calls.find(lease.call_id, index) ||
-        !work_.tasks.find(work_.calls.identity(index).task_id, task_index)) {
+        !work_.calls.find(lease.call_id, index)) {
+        return true;
+    }
+    const auto &state = work_.calls.state(index);
+    if (state.reflex) {
+        return expired || state.cancel_cause != work::CallCancelCause::none ||
+               work_.check_ephemeral_call_authority(index, now_us, durable_seq).status != AYNI_OK ||
+               !allowed(index, now_us, durable_seq) || !resources_.executable(lease.claim);
+    }
+    uint32_t task_index = 0;
+    if (!work_.tasks.find(work_.calls.identity(index).task_id, task_index)) {
         return true;
     }
     const auto &task = work_.tasks.at(task_index);
     return expired || task.call.end != work::TaskCall::End::none ||
-           task.lifecycle == AYNI_TASK_PAUSED ||
-           work_.calls.state(index).cancel_cause != work::CallCancelCause::none ||
+           !work::TaskTable::is_live(task.lifecycle) || task.lifecycle == AYNI_TASK_PAUSED ||
+           state.cancel_cause != work::CallCancelCause::none ||
            work_.check_task_authority(task_index, now_us, durable_seq).status != AYNI_OK ||
+           work_.check_ephemeral_call_authority(index, now_us, durable_seq).status != AYNI_OK ||
            !allowed(index, now_us, durable_seq) || !resources_.executable(lease.claim);
 }
 
@@ -603,7 +718,7 @@ bool ExecutionControl::latch_closed_gates(uint64_t now_us, uint64_t durable_seq,
     for (uint32_t index = 0; index < permits_.capacity(); ++index) {
         const auto *lease = permits_.at(index);
         if (lease != nullptr && !lease->stopped && should_stop(*lease, now_us, durable_seq, mode) &&
-            !permits_.request_stop(lease->call_id)) {
+            !quarantine_lease(lease->call_id, lease->port_status)) {
             return false;
         }
     }

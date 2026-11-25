@@ -115,6 +115,7 @@ struct ValueFiles {
     };
     std::map<std::pair<uint64_t, uint64_t>, Value> values;
     bool removal_capacity = true;
+    uint32_t submissions = 0;
     static ayni_submit_result_t submit(void *context,
                                        const ayni::hosts::storage::FileValueRequest *r) {
         auto &self = *static_cast<ValueFiles *>(context);
@@ -140,6 +141,7 @@ struct ValueFiles {
             result.generation = found->second.generation;
             result.size = found->second.bytes.size();
         }
+        ++self.submissions;
         r->complete(r->context, result);
         return AYNI_SUBMIT_ACCEPTED;
     }

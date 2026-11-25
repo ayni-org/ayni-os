@@ -165,7 +165,9 @@ class StrategiesFixture : public ::testing::Test {
                               result_bytes,
                               model ? 1U : 0U,
                               model ? &slot : nullptr,
-                              nullptr};
+                              nullptr,
+                              AYNI_CALL_DURABILITY_DURABLE,
+                              0};
             auto &schema = input_schemas[at];
             schema[0].kind = model ? AYNI_VALUE_OBJECT : AYNI_VALUE_TEXT;
             schema[0].subtree_end = model ? 2U : 1U;

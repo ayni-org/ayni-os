@@ -89,6 +89,27 @@ struct TaskCall {
     bool operator!=(const TaskCall &other) const { return !(*this == other); }
 };
 
+// In-RAM execution overlay for CANCEL_ON_REBOOT tasks running EPHEMERAL calls
+// or volatile progress steps (ADR-0110). Never journaled directly; durable
+// fields on Task stay intact for WAL replay and compaction snapshots. Volatile
+// steps occupy the tail of steps_of(index) growing backwards from
+// step_capacity_ - 1 so durable steps [0..step_count) never shift. Volatile
+// checkpoints reuse the Task's checkpoint slot only while checkpoint_seq == 0.
+struct TaskVolatile {
+    uint64_t call_id = 0;    // Zero iff no in-flight EPHEMERAL call blocks decisions.
+    uint64_t generation = 0; // Monotonic RAM progress tick; 0 before any volatile update.
+    uint32_t step_count = 0; // Count of volatile steps at tail; step_count + durable <= cap.
+    uint32_t model_calls_used =
+        0;                        // Unpersisted EPHEMERAL model calls; durable + volatile <= limit.
+    uint32_t checkpoint_size = 0; // Volatile checkpoint bytes when checkpoint_dirty is true.
+    uint32_t checkpoint_writer_version = 0;    // Nonzero iff checkpoint_dirty is true.
+    catalog::CatalogId checkpoint_writer_id{}; // Strategy id that wrote volatile checkpoint.
+    bool checkpoint_dirty = false; // True iff slot buffer holds unpersisted volatile checkpoint.
+    bool decision_waits_for_journal = false; // A discarded decision needs a durable transition.
+    // Set until the UNKNOWN hold can be committed, or the Task terminates.
+    std::optional<ayni_reason_t> pending_unknown{};
+};
+
 struct Task {
     uint64_t task_id;
     uint64_t goal_id;
@@ -134,6 +155,7 @@ struct Task {
     // from the durable state so compaction cannot make the hold permanent.
     ayni_status_t recovery_hold_status;
     ayni_reason_t recovery_hold_reason;
+    TaskVolatile volatile_state{}; // In-RAM CANCEL_ON_REBOOT overlay; reset on every boot.
 };
 
 // What a TASK_STATE record (ADR-0026) holds.
@@ -282,6 +304,33 @@ class TaskTable {
     // the same B2 transition owns its Call record, checkpoint and resource intent.
     void begin_call(uint32_t index, uint64_t call_id, CallKind kind,
                     foundation::TransitionStamp stamp);
+    // In-RAM Tier 0 EPHEMERAL call selection (ADR-0110); touches no durable field.
+    void begin_volatile_call(uint32_t index, uint64_t call_id, CallKind kind);
+    // Clears the in-RAM EPHEMERAL call reference when the call completes or stops.
+    void end_volatile_call(uint32_t index, uint64_t call_id);
+    // Blocks further work immediately after an ephemeral UNKNOWN without changing the durable row.
+    void defer_volatile_unknown(uint32_t index, ayni_reason_t reason);
+    // Finds a live RAM UNKNOWN hold that can now take one durable revision.
+    bool next_volatile_unknown(uint32_t &index) const;
+    // Commits the saved UNKNOWN diagnostic and model count at the caller's transition.
+    void commit_volatile_unknown(uint32_t index, foundation::TransitionStamp stamp);
+    // Remembers whether the last discarded decision for this Task awaits journal admission.
+    void set_decision_waits_for_journal(uint32_t index, bool waits);
+    // Appends one volatile step key at the tail of steps_of(index) without journaling.
+    bool add_volatile_step(uint32_t index, ayni_string_v1 key);
+    // Stores a volatile checkpoint into the slot buffer; caller requires checkpoint_seq == 0.
+    void set_volatile_checkpoint(uint32_t index, const catalog::CatalogId &writer_id,
+                                 uint32_t writer_version, ayni_bytes_v1 state);
+    // Advances volatile_state.generation after a zero-WAL progress decision.
+    void volatile_progress(uint32_t index);
+    // Promotes unpersisted volatile checkpoint bytes into durable Task metadata on a
+    // single-Task durable decision commit (REPORT_COMPLETION, hold, memory, Tier 2 call).
+    void promote_volatile_checkpoint(uint32_t index, foundation::TransitionStamp stamp);
+    // Folds unpersisted EPHEMERAL model call counts into durable model_calls.used before
+    // a TaskRecordChange::state durable write; never called on metadata-only transitions.
+    void fold_volatile_model_calls(uint32_t index);
+    // Next monotonic volatile tick; used as the step-start frontier in next_ready().
+    uint64_t next_volatile_generation() const { return volatile_clock_; }
     // Exact selected call is drained and either known or the Task's end was
     // requested. Preserve user pause; cancellation/expiry never reopens decisions.
     // Unknown call records remain pinned independently by the retention query.
@@ -343,17 +392,42 @@ class TaskTable {
     // The step < at(index).step_count of task index, in the order the
     // steps were committed.
     const catalog::CatalogId &step(uint32_t index, uint32_t step) const;
+    // Durable steps [0..step_count) followed by volatile steps [0..volatile_state.step_count).
+    const catalog::CatalogId &live_step(uint32_t index, uint32_t step) const;
     bool has_step(uint32_t index, ayni_string_v1 key) const;
     // Valid until the task's next change.
     ayni_bytes_v1 checkpoint(uint32_t index) const;
+    // Returns volatile checkpoint when dirty, otherwise durable checkpoint.
+    ayni_bytes_v1 live_checkpoint(uint32_t index) const;
     // Erase bytes under a separate provenance privacy stamp; keep the true workflow/writer facts.
     void erase_checkpoint(uint32_t index);
+
+    static uint64_t live_call_id(const Task &task) {
+        return task.call.id != 0U ? task.call.id : task.volatile_state.call_id;
+    }
+    static uint32_t live_step_count(const Task &task) {
+        return task.step_count + task.volatile_state.step_count;
+    }
+    static uint32_t live_model_calls_used(const Task &task) {
+        return task.model_calls.used + task.volatile_state.model_calls_used;
+    }
+    static const catalog::CatalogId &live_checkpoint_writer_id(const Task &task) {
+        return task.volatile_state.checkpoint_dirty ? task.volatile_state.checkpoint_writer_id
+                                                    : task.checkpoint_writer_id;
+    }
+    static uint32_t live_checkpoint_writer_version(const Task &task) {
+        return task.volatile_state.checkpoint_dirty ? task.volatile_state.checkpoint_writer_version
+                                                    : task.checkpoint_writer_version;
+    }
+    static bool can_volatile_checkpoint(const Task &task) { return task.checkpoint_seq == 0U; }
 
     static bool allows(const Task &task, TaskChange change);
     static bool at_largest_revision(const Task &task);
     // Reserve acceptance, UNKNOWN hold, cancellation and final drain revisions.
     // These bounds prevent user changes from consuming completion's last revision.
     static bool can_begin_call(const Task &task);
+    // In-RAM admission for an EPHEMERAL call; consumes no durable Task revision.
+    static bool can_begin_volatile_call(const Task &task);
     // Include live background Call reserves without copying Call state into Task.
     bool can_begin_with_calls(const Task &task) const;
     // Admission also reserves future detach writes before the new background Call exists.
@@ -364,6 +438,7 @@ class TaskTable {
     static ayni_status_t effective_hold_status(const Task &task) {
         return task.hold_status != AYNI_OK            ? task.hold_status
                : task.recovery_hold_status != AYNI_OK ? task.recovery_hold_status
+               : task.volatile_state.pending_unknown  ? AYNI_RESULT_UNKNOWN
                : task.call_unknown                    ? AYNI_RESULT_UNKNOWN
                : task.model_calls.blocked             ? AYNI_CAPACITY_EXCEEDED
                                                       : AYNI_OK;
@@ -371,16 +446,21 @@ class TaskTable {
     static ayni_reason_t effective_hold_reason(const Task &task) {
         return task.hold_status != AYNI_OK            ? task.hold_reason
                : task.recovery_hold_status != AYNI_OK ? task.recovery_hold_reason
+               : task.volatile_state.pending_unknown  ? *task.volatile_state.pending_unknown
                : task.call_unknown                    ? AYNI_REASON_NONE
                : task.model_calls.blocked             ? AYNI_REASON_TASK_MODEL_CALL_LIMIT
                                                       : AYNI_REASON_NONE;
     }
     static ayni_task_lifecycle_t effective_lifecycle(const Task &task) {
-        return is_live(task.lifecycle) && task.lifecycle != AYNI_TASK_CANCELLING &&
-                       (task.hold_status != AYNI_OK || task.recovery_hold_status != AYNI_OK ||
-                        task.model_calls.blocked || task.call_unknown)
-                   ? AYNI_TASK_PAUSED
-                   : task.lifecycle;
+        if (is_live(task.lifecycle) && task.lifecycle != AYNI_TASK_CANCELLING &&
+            effective_hold_status(task) != AYNI_OK) {
+            return AYNI_TASK_PAUSED;
+        }
+        // A READY task with an in-flight Tier 0 EPHEMERAL call behaves as RUNNING in RAM.
+        if (task.lifecycle == AYNI_TASK_READY && task.volatile_state.call_id != 0U) {
+            return AYNI_TASK_RUNNING;
+        }
+        return task.lifecycle;
     }
     static bool is_held(const Task &task) { return effective_hold_status(task) != AYNI_OK; }
     static bool still_held(const Task &task) {
@@ -388,16 +468,17 @@ class TaskTable {
     }
 
     // The task that has been READY longest among those READY since before
-    // commit_seq ready_before, by commit_seq and then task id; a task at
-    // the largest revision can take no decision and is left out. Returns
-    // false when there is none.
+    // commit_seq ready_before and volatile generation volatile_before, by
+    // commit_seq and then task id; a task at the largest revision can take no
+    // decision and is left out. Returns false when there is none.
     // Optional owner-provided admission filter; null accepts every candidate.
     // Both context and callback are borrowed for this non-reentrant query.
     struct ReadyFilter {
         const void *context; // Borrowed owner state; null is valid for stateless filters.
         bool (*accepts)(const void *, const Task &); // Pure selection; null accepts all candidates.
     };
-    bool next_ready(uint64_t ready_before, uint32_t &out_index, ReadyFilter filter = {}) const;
+    bool next_ready(uint64_t ready_before, uint32_t &out_index, ReadyFilter filter = {},
+                    uint64_t volatile_before = UINT64_MAX) const;
     // Whether some task below the largest revision is READY.
     bool has_ready(ReadyFilter filter = {}) const;
     // Whether a task of goal goal_index other than task_index has not ended;
@@ -481,6 +562,7 @@ class TaskTable {
     uint32_t checkpoint_max_bytes_;
     uint32_t max_turns_;                 // Fixed this boot; independent of steps and concurrency.
     uint32_t held_count_ = 0;            // still_held() tasks
+    uint64_t volatile_clock_ = 1;        // Monotonic RAM tick for volatile progress frontiers.
     const void *call_context_ = nullptr; // Borrowed coordinator for the table lifetime.
     CallQuery call_query_ = nullptr;     // Pure owner-thread projection; null in standalone tables.
     Retention retention_{};              // External references, not a cached call/knowledge count.

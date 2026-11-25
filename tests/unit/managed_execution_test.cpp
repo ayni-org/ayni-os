@@ -62,8 +62,6 @@ class ManagedExecution : public ::testing::Test {
                                          text("turn"),
                                          text("turn.binding"),
                                          {},
-                                         {},
-                                         {},
                                          AYNI_CALL_MODE_FOREGROUND,
                                          0};
             std::array<ayni_value_node_v1, 5> values{};
@@ -89,7 +87,6 @@ class ManagedExecution : public ::testing::Test {
                     values[at].subtree_end = at + 1U;
                     values[at].value.integer = at == 3U ? 5 : second_scene_item;
                 }
-                request.arguments = {};
                 request.value = {values.data(), static_cast<uint32_t>(values.size())};
             }
             return output.request_call(output.call_context, &request);
@@ -808,9 +805,15 @@ class PreparationStopsExecution : public ManagedExecution {
                 return turn(snapshot, output);
             }
             const TextValue body(text("display"));
-            const ayni_call_request_v1 request{sizeof(request), AYNI_POLICY_REQUEST_CALL,  1,  0,
-                                               text("display"), text("present.binding"),   {}, {},
-                                               body.view(),     AYNI_CALL_MODE_FOREGROUND, 0};
+            const ayni_call_request_v1 request{sizeof(request),
+                                               AYNI_POLICY_REQUEST_CALL,
+                                               1,
+                                               0,
+                                               text("display"),
+                                               text("present.binding"),
+                                               body.view(),
+                                               AYNI_CALL_MODE_FOREGROUND,
+                                               0};
             return output.request_call(output.call_context, &request);
         };
     }

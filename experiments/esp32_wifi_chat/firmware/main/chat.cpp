@@ -8,6 +8,8 @@
 #include <ayni/bodies.h>
 #include <ayni/host_authority.h>
 #include <ayni/model_messages.hpp>
+#include <ayni/observations.h>
+#include <ayni/reflex.h>
 #include <ayni/resources.h>
 #include <ayni/scenes.h>
 #include <ayni/values.hpp>
@@ -19,7 +21,8 @@
 namespace wifichat {
 namespace {
 constexpr uint64_t probe_record_id = UINT64_C(0x43545850524f4245);
-constexpr uint32_t version = 1, step_us = 4000;
+// Cooperative owner budget is measured and documented in ADR-0114; a single callback can overrun.
+constexpr uint32_t version = 1, step_us = owner_step_budget_us;
 constexpr uint64_t presentation_wait_us = UINT64_C(120) * 1000000;
 constexpr uint64_t principal = 1;
 constexpr char chat_type[] = "wifi.chat", probe_type[] = "wifi.context-probe";
@@ -27,16 +30,25 @@ constexpr char reply_capability[] = "wifi.model.text", reply_binding[] = "wifi.m
                tools_capability[] = "wifi.model.tools", tools_binding[] = "wifi.tools";
 constexpr const char *grant_capabilities[] = {reply_capability, tools_capability, "screen.text",
                                               "speaker.tone",   "speaker.speech", "motor.status",
-                                              "motor.plan",     "motor.run",      "motor.stop"};
+                                              "motor.run",      "motor.stop",     "motor.stream",
+                                              "motor.steer",    stream_execute};
 constexpr uint64_t motor_grant_us = UINT64_C(24) * 60 * 60 * 1000000;
 constexpr uint64_t grant_count = sizeof(grant_capabilities) / sizeof(grant_capabilities[0]);
 // Deployment-neutral identity; tool protocol and authorization rules come from
 // the built-in ToolLoop, device details from the public capability directory.
 constexpr char instructions[] =
     "你是Ayni，一个通用助手。根据用户的目标直接回答，或使用当前获准的能力完成请求。"
-    "用户明确要求多个动作，且每一步的参数和顺序都已确定时，在同一回复中按用户指定的顺序"
-    "提交这些工具调用。后一步的选择或参数依赖前一步的观测结果时，只提交当前可以确定的"
-    "步骤，收到结果后再决定其余步骤。";
+    "调用 motor.run 时，请使用 segments 数组（1~8 段，每段包含 motor1_percent、motor2_percent、"
+    "duration_ms）编排运动；当用户要求连续多段运动（例如前进后转向、加速或中途停顿）且各段参数"
+    "已确定时，优先在单次 motor.run 的 segments 中一次性编排连续轨迹，以实现无缝换段，无需拆成"
+    "多次调用或插入 motor.stop（中途停顿可用 0/0 段表示）。"
+    "在同一回复中使用默认 operation=\"invoke\"（或省略 operation）提交多个不同工具调用时，"
+    "设备会按提交顺序逐个执行完前一步再执行下一步，不会并发争抢电机；每一步仍会独立校验"
+    "参数、权限与当前状态。顺序动作不要使用 operation=\"start\"；"
+    "需要立即停机时可调用 motor.stop（可恢复软停，停机后仍可继续执行新动作；触屏红色急停按钮为"
+    "硬件锁存急停，需重启恢复）。"
+    "后一步的选择或参数依赖前一步的观测结果时，只提交当前可以确定的步骤，收到结果后再决定其余步骤"
+    "。";
 template <class T> T sized() {
     T out{};
     out.struct_size = sizeof(out);
@@ -199,6 +211,21 @@ void Chat::flush_publication_diagnostics() {
     flush_pending_model_post();
     if (timing_.publication.segment_count() > 0U) {
         emit_publication_ack();
+        if (timing_.pub_backlog.has_start) {
+            const auto &b = timing_.pub_backlog.start;
+            const auto &e = timing_.pub_backlog.end;
+            transport_.diagnostics().record(
+                "wifi pub_backlog turn=%llu before_pub=%lu/%lu/%lu/%lu/%lu/%u "
+                "after_pub=%lu/%lu/%lu/%lu/%lu/%u\n",
+                static_cast<unsigned long long>(turn_), static_cast<unsigned long>(b.entries),
+                static_cast<unsigned long>(b.writes), static_cast<unsigned long>(b.staged),
+                static_cast<unsigned long>(b.deletes), static_cast<unsigned long>(b.reads),
+                b.in_flight ? 1U : 0U, static_cast<unsigned long>(e.entries),
+                static_cast<unsigned long>(e.writes), static_cast<unsigned long>(e.staged),
+                static_cast<unsigned long>(e.deletes), static_cast<unsigned long>(e.reads),
+                e.in_flight ? 1U : 0U);
+            timing_.pub_backlog = {};
+        }
         timing_.publication.emit_report(&transport_.diagnostics(),
                                         [](void *ctx, const char *line, size_t) {
                                             static_cast<DiagnosticLog *>(ctx)->record("%s", line);
@@ -231,7 +258,13 @@ void Chat::on_publication_stage(void *ctx, uint64_t goal, uint64_t task,
     const auto metrics = self.host_->storage_metrics(at_us);
     using Stage = ayni::runtime::conversation::PublicationStage;
     auto &ack = self.timing_.ack;
-    if (stage == Stage::collected) {
+    if (stage == Stage::checkpoint_ready && !self.timing_.pub_backlog.has_start) {
+        self.timing_.pub_backlog.start = self.bodies_.backlog();
+        self.timing_.pub_backlog.has_start = true;
+    } else if (stage == Stage::publish_durable && !self.timing_.pub_backlog.has_end) {
+        self.timing_.pub_backlog.end = self.bodies_.backlog();
+        self.timing_.pub_backlog.has_end = true;
+    } else if (stage == Stage::collected) {
         ack.collected_us = at_us;
     } else if (stage == Stage::context_ready) {
         ack.ready_us = at_us;
@@ -333,12 +366,13 @@ ayni_status_t Chat::initialize(const ModelSelection &selection) {
     }
     bodies_.set_shared_call_results();
     transport_.attach_bodies(bodies_.store());
-    const uint32_t input_bytes =
-        std::max({model_input_bytes(destination_), screen_input_bytes(), Speaker::input_bytes()});
+    const uint32_t call_input_bytes =
+        std::max({model_input_bytes(destination_), screen_input_bytes(), Speaker::input_bytes(),
+                  motor_input_bytes_max});
     const uint32_t result_bytes =
         std::max({static_cast<uint32_t>(summary_bytes), static_cast<uint32_t>(summary_bytes),
                   Speaker::result_bytes});
-    auto c = chat_config(input_bytes, result_bytes);
+    auto c = chat_config(call_input_bytes, result_bytes);
     size_t bytes = 0, alignment = 0;
     rc = ayni_kernel_memory_requirements(&c, &bytes, &alignment);
     if (rc != AYNI_OK) {
@@ -428,7 +462,22 @@ ayni_status_t Chat::configure() {
         rc = check("motor", motor_.configure(kernel_));
     }
     if (rc == AYNI_OK) {
+        ayni::runtime::OperationSession::Commands commands;
+        commands.context = this;
+        commands.submit = [](void *context, ayni_intent_kind_t kind, const void *body, uint64_t *id,
+                             uint32_t revision) {
+            ayni::runtime::OperationSession::SubmitResult result;
+            result.status =
+                static_cast<Chat *>(context)->command(kind, body, id, revision, &result.reason);
+            return result;
+        };
+        rc = check("operation session", motor_.configure_session(kernel_, &workspace_, commands));
+    }
+    if (rc == AYNI_OK) {
         rc = check("motor check", configure_motor_check());
+    }
+    if (rc == AYNI_OK) {
+        rc = check("reflex", configure_reflexes());
     }
     if (rc == AYNI_OK) {
         auto speech = reply_voice_.strategy(bodies_.store());
@@ -465,7 +514,7 @@ ayni_status_t Chat::configure_motor_check() {
         return result;
     };
     owner.stop = [](void *context) {
-        static_cast<Chat *>(context)->transport_.request_motor_stop();
+        static_cast<Chat *>(context)->transport_.request_motor_soft_stop();
     };
     owner.notify = [](void *context, uint64_t id, const MotorCheckNotice &notice) {
         auto &self = *static_cast<Chat *>(context);
@@ -484,6 +533,106 @@ ayni_status_t Chat::configure_motor_check() {
     };
     auto status = motor_check_.configure(owner);
     return status == AYNI_OK ? motor_check_.install(kernel_) : status;
+}
+// Registers the generic obstacle-distance observation source and a motor soft-stop reflex
+// gated by the bench Scene so future hardware sensors plug directly into ObservationSlots
+// (ADR-0112).
+ayni_status_t Chat::configure_reflexes() {
+    const ayni_observation_source_v1 obstacle{sizeof(obstacle),          obstacle_source_version,
+                                              text(obstacle_source),     AYNI_OBSERVATION_I64,
+                                              AYNI_OBSERVATION_MEASURED, text("mm"),
+                                              obstacle_validity_us};
+    auto rc = ayni_register_observation_source(kernel_, &obstacle);
+    if (rc != AYNI_OK) {
+        return rc;
+    }
+    const ayni_observation_condition_v1 cond{
+        text(obstacle_source), obstacle_source_version, 0,
+        obstacle_stop_min_mm,  obstacle_stop_max_mm,    obstacle_validity_us};
+    const ayni_reflex_rule_v1 rule{sizeof(rule),
+                                   1,
+                                   text(obstacle_reflex),
+                                   AYNI_REFLEX_SOFT_STOP_RESOURCE,
+                                   AYNI_REFLEX_TRIGGER_IN_RANGE,
+                                   AYNI_REFLEX_FLAG_ENABLED_BY_DEFAULT,
+                                   200,
+                                   obstacle_cooldown_us,
+                                   text(motor_scene),
+                                   motor_scene_version,
+                                   1,
+                                   &cond,
+                                   text("motor.actuator"),
+                                   0,
+                                   {},
+                                   0,
+                                   0,
+                                   {},
+                                   0,
+                                   0,
+                                   nullptr};
+    return ayni_register_reflex_rule(kernel_, &rule);
+}
+void Chat::drain_reflex_events() {
+    ayni_reflex_event_v1 event{};
+    event.struct_size = sizeof(event);
+    while (ayni_take_reflex_event(kernel_, &event) == AYNI_OK) {
+        transport_.diagnostics().record(
+            "wifi reflex seq=%llu rule=%.*s action=%lu status=%ld affected=%llu spawned=%llu "
+            "src=%.*s val=%lld dropped=%llu\n",
+            static_cast<unsigned long long>(event.sequence), int(event.rule_id.size),
+            event.rule_id.data, static_cast<unsigned long>(event.action), long(event.status),
+            static_cast<unsigned long long>(event.affected_call_id),
+            static_cast<unsigned long long>(event.spawned_call_id), int(event.trigger_source.size),
+            event.trigger_source.data, static_cast<long long>(event.trigger_value),
+            static_cast<unsigned long long>(event.dropped_before));
+        char note[160];
+        const auto len = std::snprintf(
+            note, sizeof(note), "reflex %.*s status=%ld src=%.*s val=%lld", int(event.rule_id.size),
+            event.rule_id.data, long(event.status), int(event.trigger_source.size),
+            event.trigger_source.data, static_cast<long long>(event.trigger_value));
+        if (len > 0 && size_t(len) < sizeof(note)) {
+            status(0, note);
+        }
+        event = {};
+        event.struct_size = sizeof(event);
+    }
+}
+void Chat::drain_audit_records() {
+    constexpr uint32_t batch_limit = 8;
+    constexpr uint32_t max_batches = 4;
+    std::array<ayni_audit_record_v1, batch_limit> records{};
+    for (uint32_t batch = 0; batch < max_batches; ++batch) {
+        uint32_t count = 0;
+        if (ayni_take_audit_records(kernel_, records.data(), batch_limit, &count) != AYNI_OK) {
+            return;
+        }
+        for (uint32_t at = 0; at < count; ++at) {
+            const auto &rec = records[at];
+            transport_.diagnostics().record_ram(
+                "wifi audit seq=%llu kind=%lu subj=%llu aux=%llu status=%ld reason=%lu detail=%lu "
+                "flags=0x%lx label=%.*s\n",
+                static_cast<unsigned long long>(rec.seq), static_cast<unsigned long>(rec.kind),
+                static_cast<unsigned long long>(rec.subject_id),
+                static_cast<unsigned long long>(rec.auxiliary_id), long(rec.status),
+                static_cast<unsigned long>(rec.reason), static_cast<unsigned long>(rec.detail_code),
+                static_cast<unsigned long>(rec.flags), int(rec.label_size), rec.label);
+        }
+        if (count < batch_limit) {
+            break;
+        }
+    }
+    auto audit_info = sized<ayni_audit_info_v1>();
+    if (ayni_get_audit_info(kernel_, &audit_info) == AYNI_OK &&
+        audit_info.dropped_overflow > audit_dropped_reported_) {
+        const auto lost = audit_info.dropped_overflow - audit_dropped_reported_;
+        audit_dropped_reported_ = audit_info.dropped_overflow;
+        transport_.diagnostics().record_ram(
+            "wifi audit_drop lost=%llu total_dropped=%llu pending=%lu/%lu\n",
+            static_cast<unsigned long long>(lost),
+            static_cast<unsigned long long>(audit_info.dropped_overflow),
+            static_cast<unsigned long>(audit_info.pending),
+            static_cast<unsigned long>(audit_info.capacity));
+    }
 }
 // Two model capabilities on one Provider and one slot: tool-calling turns for the ToolLoop and
 // text-only summaries for its compaction. Both egress to this boot's fixed destination.
@@ -510,7 +659,7 @@ ayni_status_t Chat::configure_model() {
     }
     resource_ = {text("model.slot"), 1, 0};
     input_schema_[0].kind = AYNI_VALUE_OBJECT;
-    input_schema_[0].subtree_end = input_schema_.size();
+    input_schema_[0].subtree_end = uint32_t(input_schema_.size());
     auto &destination = input_schema_[1];
     destination.kind = AYNI_VALUE_IDENTIFIER;
     destination.field_id = AYNI_MODEL_DESTINATION_FIELD_ID;
@@ -522,7 +671,7 @@ ayni_status_t Chat::configure_model() {
     auto &body = input_schema_[2];
     body.kind = AYNI_VALUE_TEXT;
     body.field_id = AYNI_MODEL_BODY_FIELD_ID;
-    body.subtree_end = input_schema_.size();
+    body.subtree_end = uint32_t(input_schema_.size());
     body.name = text("body");
     body.flags = AYNI_SCHEMA_REQUIRED | AYNI_SCHEMA_EXTERNAL;
     body.max_count = harness::model_body_bytes;
@@ -537,7 +686,7 @@ ayni_status_t Chat::configure_model() {
                  1,
                  0,
                  &projection_};
-    const uint32_t input_bytes = model_input_bytes(destination_);
+    const uint32_t call_input_bytes = model_input_bytes(destination_);
     for (uint32_t at = 0; at < capabilities_.size(); ++at) {
         const bool tools = at == 1;
         capabilities_[at] = {
@@ -548,7 +697,8 @@ ayni_status_t Chat::configure_model() {
              AYNI_CALL_EFFECT_EGRESS | AYNI_CALL_EFFECT_BILLING, AYNI_CALL_NOT_IDEMPOTENT,
              AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_REQUEST, 0, harness::request_timeout_ms,
              AYNI_CALL_INPUT_VALUE, tools ? AYNI_CALL_RESULT_TOOL_CALLS : AYNI_CALL_RESULT_TEXT,
-             input_bytes, static_cast<uint32_t>(summary_bytes), 1, &resource_, nullptr},
+             call_input_bytes, static_cast<uint32_t>(summary_bytes), 1, &resource_, nullptr,
+             tools ? AYNI_CALL_DURABILITY_EPHEMERAL : AYNI_CALL_DURABILITY_DURABLE, 0},
             &business_};
         if (rc == AYNI_OK) {
             rc = check("call capability",
@@ -622,8 +772,9 @@ ayni_status_t Chat::configure_strategy() {
     config.limits = {harness::context_window_tokens, harness::max_output_tokens,
                      harness::compact_target_tokens, harness::tool_result_max_tokens};
     config.bodies = bodies_.store();
-    config.persistence = ayni::strategies::Persistence::background;
-    config.body_progress = {&bodies_, ayni::runtime::FileBodies::progress};
+    config.persistence = ayni::strategies::Persistence::turn_boundary;
+    config.body_progress = {&bodies_, ayni::runtime::FileBodies::progress,
+                            ayni::runtime::FileBodies::discard_unconfirmed};
     config.tool_exposure = ayni::strategies::ToolExposure::preloaded;
     config.reply_encoding = config.summary_reply_encoding = ayni::model::ReplyEncoding::framed;
     protocol_options_.model = selection_.model.data();
@@ -632,6 +783,8 @@ ayni_status_t Chat::configure_strategy() {
     protocol_options_.chat_token_limit = selection_.chat_token_limit;
     protocol_options_.reply_encoding = ayni::model::ReplyEncoding::framed;
     config.projection = ayni::providers::model_protocol::Protocol::projection(protocol_options_);
+    config.tool_observer = {this, on_tool_outcome};
+    config.tool_preemption = AYNI_CALL_PREEMPT_SUPERSEDE;
     auto status = loop_.configure(config, &workspace_);
     if (status != AYNI_OK) {
         return status;
@@ -650,9 +803,10 @@ ayni_status_t Chat::configure_strategy() {
         {text("speaker.play_tone"), version, AYNI_TOOL_ROLE_CAPABILITY},
         {text("speaker.speak_text"), SpeechProfile::capability_version, AYNI_TOOL_ROLE_CAPABILITY},
         {text("motor.status"), motor_version, AYNI_TOOL_ROLE_CAPABILITY},
-        {text("motor.plan"), motor_version, AYNI_TOOL_ROLE_CAPABILITY},
         {text("motor.run"), motor_version, AYNI_TOOL_ROLE_CAPABILITY},
-        {text("motor.stop"), motor_version, AYNI_TOOL_ROLE_CAPABILITY}};
+        {text("motor.stop"), motor_version, AYNI_TOOL_ROLE_CAPABILITY},
+        {text("motor.stream"), motor_version, AYNI_TOOL_ROLE_CAPABILITY},
+        {text("motor.steer"), motor_version, AYNI_TOOL_ROLE_CAPABILITY}};
     auto type = sized<ayni_goal_type_v1>();
     type.version = version;
     type.goal_type_id = text(probe_type);
@@ -662,6 +816,9 @@ ayni_status_t Chat::configure_strategy() {
     type.export_requirements = requirements;
     type.trigger_kinds = AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE);
     type.occurrence_wait_max_us = AYNI_OCCURRENCE_WAIT_UNBOUNDED;
+    // Interactive chat turns cancel on reboot so EPHEMERAL model/peripheral calls
+    // execute with zero intermediate WAL stalls (ADR-0110).
+    type.work_profile.recovery = AYNI_GOAL_RECOVERY_CANCEL_ON_REBOOT;
     type.tools = tools;
     type.tool_count = sizeof(tools) / sizeof(tools[0]);
     type.tool_authorization = AYNI_TOOLS_ON_DEMAND;
@@ -675,17 +832,39 @@ ayni_status_t Chat::configure_strategy() {
     }
     return status;
 }
+void Chat::on_tool_outcome(void *ctx, const ayni::strategies::ToolOutcome &outcome) {
+    auto &self = *static_cast<Chat *>(ctx);
+    if (!self.turn_) {
+        return;
+    }
+    const bool failed = outcome.local_refusal ||
+                        (outcome.logical_call_id != 0U &&
+                         ((outcome.outcome != 0U && outcome.outcome != AYNI_CALL_COMPLETED) ||
+                          outcome.status != AYNI_OK));
+    if (!failed || self.timing_.tool_failure_count >= self.timing_.tool_failures.size()) {
+        return;
+    }
+    self.timing_.tool_failures[self.timing_.tool_failure_count++] = {
+        outcome.model_call, outcome.logical_call_id, outcome.tool_index,
+        outcome.tool_count, outcome.outcome,         outcome.status,
+        outcome.reason,     outcome.effect,          outcome.local_refusal};
+}
 ayni_status_t Chat::decide(void *ctx, const ayni_task_snapshot_v1 *snapshot,
                            ayni_policy_output_v1 *output) {
     auto &self = *static_cast<Chat *>(ctx);
+    const auto started_us = uint64_t(esp_timer_get_time());
     const auto result = self.inner_.decide(self.inner_.ctx, snapshot, output);
+    const auto finished_us = uint64_t(esp_timer_get_time());
     if (result == AYNI_OK && self.turn_ && output->intent_count &&
-        output->intents[0].kind == AYNI_POLICY_REQUEST_CALL &&
+        (output->intents[0].kind == AYNI_POLICY_REQUEST_CALL ||
+         output->intents[0].kind == AYNI_POLICY_REQUEST_MODEL ||
+         output->intents[0].kind == AYNI_POLICY_REPORT_PROGRESS) &&
         self.timing_.tool_decision_count < self.timing_.tool_decisions.size()) {
         const auto &intent = output->intents[0];
         auto &decision = self.timing_.tool_decisions[self.timing_.tool_decision_count++];
         const auto key_size = std::min(intent.step_key_size, uint32_t(sizeof(intent.step_key)));
-        decision = {snapshot->task_id, uint64_t(esp_timer_get_time()), key_size, {}};
+        decision = {snapshot->task_id, finished_us, finished_us - started_us,
+                    intent.kind,       key_size,    {}};
         std::copy_n(intent.step_key, decision.key_size, decision.key.data());
     }
     return result;
@@ -823,13 +1002,46 @@ void Chat::trace_tool_io(uint64_t model_call, uint64_t next_call, uint64_t from_
             n(roots.us));
     }
 }
-void Chat::emit_tool_decisions(uint64_t durable_seq) {
+void Chat::emit_tool_decisions(uint64_t durable_seq, uint64_t step_elapsed_us,
+                               const ayni_step_report_v1 &report) {
+    const auto n = [](uint64_t value) { return static_cast<unsigned long long>(value); };
+    for (size_t i = 0; i < timing_.tool_failure_count; ++i) {
+        const auto &failure = timing_.tool_failures[i];
+        transport_.diagnostics().record_deferred(
+            "wifi tool_failure turn=%llu model_call=%llu item=%u/%u stage=%s call=%llu "
+            "outcome=%lu status=%ld reason=%lu effect=%lu\n",
+            n(turn_), n(failure.model_call), unsigned(failure.tool_index),
+            unsigned(failure.tool_count), failure.local_refusal ? "local_refusal" : "provider",
+            n(failure.logical_call_id), static_cast<unsigned long>(failure.outcome),
+            long(failure.status), static_cast<unsigned long>(failure.reason),
+            static_cast<unsigned long>(failure.effect));
+    }
+    timing_.tool_failure_count = 0;
     for (size_t i = 0; i < timing_.tool_decision_count; ++i) {
         const auto &decision = timing_.tool_decisions[i];
-        const auto n = [](uint64_t value) { return static_cast<unsigned long long>(value); };
+        uint64_t call_id = 0;
+        ayni_call_phase_t phase = 0;
+        ayni_call_wait_t wait_reason = 0;
+        if (decision.kind == AYNI_POLICY_REQUEST_CALL ||
+            decision.kind == AYNI_POLICY_REQUEST_MODEL) {
+            auto task = sized<ayni_task_info_v1>();
+            if (ayni_get_task(kernel_, decision.task, &task) == AYNI_OK && task.logical_call_id) {
+                call_id = task.logical_call_id;
+                auto call = sized<ayni_call_info_v1>();
+                if (ayni_get_call(kernel_, call_id, &call) == AYNI_OK) {
+                    phase = call.phase;
+                    wait_reason = call.wait_reason;
+                }
+            }
+        }
         transport_.diagnostics().record_deferred(
-            "wifi tool_decision turn=%llu task=%llu step=%.*s ready_us=%llu\n", n(turn_),
-            n(decision.task), int(decision.key_size), decision.key.data(), n(decision.at_us));
+            "wifi tool_decision turn=%llu task=%llu kind=%lu step=%.*s ready_us=%llu "
+            "decide_us=%llu step_us=%llu items=%lu more=%lu call=%llu phase=%lu wait=%lu\n",
+            n(turn_), n(decision.task), static_cast<unsigned long>(decision.kind),
+            int(decision.key_size), decision.key.data(), n(decision.at_us), n(decision.decide_us),
+            n(step_elapsed_us), static_cast<unsigned long>(report.items_done),
+            static_cast<unsigned long>(report.more_ready), n(call_id),
+            static_cast<unsigned long>(phase), static_cast<unsigned long>(wait_reason));
     }
     timing_.tool_decision_count = 0;
     const auto call = motor_.execution().latest_dispatch();
@@ -964,6 +1176,7 @@ ayni_status_t Chat::command(ayni_intent_kind_t kind, const void *body, uint64_t 
     return out.status;
 }
 void Chat::incoming(const Packet &p) {
+    const bool cancel_turn = p.kind == Kind::cancel || p.kind == Kind::barge_in;
     if (p.kind == Kind::tool_outline) {
         if (p.id == call_ && p.size <= tool_outline_bytes &&
             (model_ == ModelState::text || model_ == ModelState::tools) &&
@@ -999,9 +1212,19 @@ void Chat::incoming(const Packet &p) {
         progress_ = true;
         return;
     }
-    if (p.kind == Kind::cancel || p.kind == Kind::shutdown || p.kind == Kind::maintenance_stop) {
+    if (cancel_turn || p.kind == Kind::shutdown || p.kind == Kind::maintenance_stop) {
         motor_check_.cancel();
         reply_voice_.cancel();
+        speaker_.request_stop();
+        if (p.kind == Kind::cancel) {
+            motor_.cancel_sessions();
+            motor_.execution().request_soft_stop();
+            if (pending_user_ && (!p.id || p.id == pending_user_->id)) {
+                pending_user_.reset();
+            }
+        } else {
+            pending_user_.reset();
+        }
     }
     if (p.kind == Kind::maintenance_stop) {
         // Keep file ports alive while the API worker exits its borrowed reads.
@@ -1018,6 +1241,7 @@ void Chat::incoming(const Packet &p) {
         // Rebuild and OTA both require confirmed STOPPED before touching their flash
         // regions. Public shutdown needs no spare command/Goal slot to cancel work.
         announced_ = false;
+        pending_user_.reset();
         stop_outputs();
         if (!kernel_ || closing_ == Closing::stopped || closing_ == Closing::kernel) {
             return; // Already closing/closed; keep the original STOPPED report authoritative.
@@ -1028,7 +1252,7 @@ void Chat::incoming(const Packet &p) {
         progress_ = true;
         return;
     }
-    if (p.kind == Kind::cancel && turn_state_ != Turn::idle) {
+    if (cancel_turn && turn_state_ != Turn::idle) {
         reply_intent_ = ReplyIntent::cancelled;
     }
     if (p.kind == Kind::motor_settings || p.kind == Kind::motor_heartbeat ||
@@ -1077,40 +1301,76 @@ void Chat::incoming(const Packet &p) {
     } else if (p.kind == Kind::display_ack && screen_ == ScreenState::waiting &&
                p.id == screen_call_) {
         screen_ = p.size == 1 && p.body[0] == 1 ? ScreenState::painted : ScreenState::failed;
-    } else if (p.kind == Kind::user || p.kind == Kind::context_template) {
-        const bool probe = p.kind == Kind::context_template;
-        if (!announced_ || turn_state_ != Turn::idle || motor_check_.active() ||
-            forget_ != Forget::none || closing_ != Closing::open || !history_.ready() ||
-            (!probe && (!p.size || p.size > input_bytes))) {
+    } else if (p.kind == Kind::user || p.kind == Kind::recognized_user) {
+        if (!announced_ || motor_check_.active() || forget_ != Forget::none ||
+            closing_ != Closing::open || !p.size || p.size > input_bytes) {
+            status(p.id, "input refused: not ready/busy/over limit");
+            return;
+        }
+        const std::string_view incoming_text(reinterpret_cast<const char *>(p.body.data()), p.size);
+        if (turn_state_ == Turn::idle && history_.ready() && !pending_user_) {
+            start_user_turn(p.id, incoming_text);
+            return;
+        }
+        // End the old dialogue while the independently authorized operation follows the
+        // configured stop/hold/continue policy. Keep only the newest prompt (ADR-0114).
+        reply_voice_.cancel();
+        speaker_.request_stop();
+        const uint64_t superseded = pending_user_ ? pending_user_->id : turn_;
+        if (pending_user_) {
+            transport_.diagnostics().record(
+                "wifi barge_in_supersede dropped_turn=%llu new_turn=%llu\n",
+                static_cast<unsigned long long>(pending_user_->id),
+                static_cast<unsigned long long>(p.id));
+        }
+        pending_user_ = PendingUser{p.id, std::string(incoming_text), superseded,
+                                    uint64_t(esp_timer_get_time())};
+        if (turn_state_ == Turn::input) {
+            end_turn("turn failed/cancelled: superseded by newer input");
+        } else if (turn_state_ == Turn::answer) {
+            reply_intent_ = ReplyIntent::cancelled;
+            reply_end_ = "turn failed/cancelled; answer retained; no automatic retry";
+            turn_state_ = Turn::reply_done;
+        } else if (turn_state_ != Turn::idle) {
+            reply_intent_ = ReplyIntent::cancelled;
+            if (turn_state_ == Turn::running && (goal_ || history_.active())) {
+                if (!probe_ && history_.active() && history_.cancel() == AYNI_OK) {
+                    cancel_requested_ = false;
+                } else {
+                    cancel_requested_ = true;
+                }
+            }
+        }
+        progress_ = true;
+    } else if (p.kind == Kind::context_template) {
+        if (!announced_ || turn_state_ != Turn::idle || pending_user_.has_value() ||
+            motor_check_.active() || forget_ != Forget::none || closing_ != Closing::open ||
+            !history_.ready()) {
             status(p.id, "input refused: not ready/busy/over limit");
             return;
         }
         probe_.reset();
-        if (probe) {
-            if ((p.size != 0 && p.size != sizeof(uint32_t)) ||
-                (p.size && get32(p.body.data()) != current_history_probe &&
-                 get32(p.body.data()) > harness::model_body_bytes / SyntheticHistory::han.size())) {
-                status(p.id, "input refused: invalid diagnostic size");
-                return;
-            }
-            probe_.emplace();
-            const auto mode = p.size ? get32(p.body.data()) : 0;
-            if (mode == current_history_probe) {
-                probe_->source = ProbeTurn::Source::current_history;
-                const auto *current = history_.record();
-                transport_.diagnostics().record(
-                    "wifi probe current_history rounds=%lu history_bytes=%lu no_model_http=1\n",
-                    static_cast<unsigned long>(current ? current->round_count : 0),
-                    static_cast<unsigned long>(current ? current->history_bytes : 0));
-            } else {
-                probe_->characters = mode;
-            }
-            transport_.diagnostics().record("wifi probe template_begin history_rounds=%llu\n",
-                                            static_cast<unsigned long long>(rounds()));
-            input_ = "synthetic context diagnostic";
-        } else {
-            input_.assign(reinterpret_cast<const char *>(p.body.data()), p.size);
+        if ((p.size != 0 && p.size != sizeof(uint32_t)) ||
+            (p.size && get32(p.body.data()) != current_history_probe &&
+             get32(p.body.data()) > harness::model_body_bytes / SyntheticHistory::han.size())) {
+            status(p.id, "input refused: invalid diagnostic size");
+            return;
         }
+        probe_.emplace();
+        const auto mode = p.size ? get32(p.body.data()) : 0;
+        if (mode == current_history_probe) {
+            probe_->source = ProbeTurn::Source::current_history;
+            const auto *current = history_.record();
+            transport_.diagnostics().record(
+                "wifi probe current_history rounds=%lu history_bytes=%lu no_model_http=1\n",
+                static_cast<unsigned long>(current ? current->round_count : 0),
+                static_cast<unsigned long>(current ? current->history_bytes : 0));
+        } else {
+            probe_->characters = mode;
+        }
+        transport_.diagnostics().record("wifi probe template_begin history_rounds=%llu\n",
+                                        static_cast<unsigned long long>(rounds()));
+        input_ = "synthetic context diagnostic";
         turn_ = p.id;
         timing_ = {};
         model_requests_ = 0;
@@ -1130,13 +1390,13 @@ void Chat::incoming(const Packet &p) {
         progress_ = true;
         status(turn_, "accepted");
         trace("accepted", accepted);
-    } else if (p.kind == Kind::cancel && turn_state_ == Turn::answer) {
+    } else if (cancel_turn && turn_state_ == Turn::answer) {
         reply_end_ = "turn failed/cancelled; answer retained; no automatic retry";
         turn_state_ = Turn::reply_done;
         progress_ = true;
-    } else if (p.kind == Kind::cancel && turn_state_ == Turn::input) {
+    } else if (cancel_turn && turn_state_ == Turn::input) {
         end_turn("turn failed/cancelled before task creation; no automatic retry");
-    } else if (p.kind == Kind::cancel && (goal_ || history_.active())) {
+    } else if (cancel_turn && (goal_ || history_.active())) {
         cancel_requested_ = true;
         progress_ = true;
         status(p.id, "cancel queued; waiting for current command receipt");
@@ -1187,7 +1447,9 @@ ayni_status_t Chat::settle_session(uint64_t durable_seq, bool &settled) {
         if (goal.owner_instance_id != instance_) {
             continue;
         }
-        if (!chat_goal && !check_goal && !voice_goal) {
+        if (!chat_goal && !check_goal && !voice_goal &&
+            !motor_.owns_session({goal.goal_type_id, goal.goal_type_id_size},
+                                 goal.goal_type_version)) {
             // Missing types remain held by Core. Reject this deployment's old data
             // explicitly instead of waiting forever for its held Tasks (ADR-0108).
             status(0, "unsupported retained goal type; data preserved");
@@ -1333,37 +1595,47 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
     if (audio != AYNI_OK && audio != AYNI_BUSY) {
         return audio;
     }
-    if (turn_state_ == Turn::reply_done) {
-        // Drain the retained terminal before shutdown can release the shared session's file port.
-        // A full UI queue defers this tick, rather than losing the only end-of-turn notice.
-        const auto terminal = present_reply();
-        if (terminal != AYNI_OK || turn_state_ == Turn::reply_done) {
-            return terminal;
-        }
-    }
     auto info = sized<ayni_kernel_info_v1>();
     auto rc = ayni_get_kernel_info(kernel_, &info);
     // STOPPED cannot be stepped again while asynchronous device workers are joining.
     if (rc == AYNI_OK && info.lifecycle != AYNI_LIFECYCLE_STOPPED) {
         const auto started = uint64_t(esp_timer_get_time());
         rc = ayni_step(kernel_, step_units, step_us, &report);
+        const auto elapsed = uint64_t(esp_timer_get_time()) - started;
         if (turn_) {
-            const auto elapsed = uint64_t(esp_timer_get_time()) - started;
             ++timing_.step_calls;
             timing_.step_us += elapsed;
             timing_.max_step_us = std::max(timing_.max_step_us, elapsed);
         }
         if (rc == AYNI_OK) {
+            drain_reflex_events();
+            drain_audit_records();
             rc = ayni_get_kernel_info(kernel_, &info);
             if (rc == AYNI_OK && turn_) {
-                emit_tool_decisions(info.durable_seq);
+                emit_tool_decisions(info.durable_seq, elapsed, report);
             }
         }
     }
     if (rc != AYNI_OK) {
         return rc;
     }
+    const auto operation = info.lifecycle == AYNI_LIFECYCLE_RUNNING
+                               ? motor_.advance_sessions(kernel_, info.boot_epoch, info.durable_seq)
+                               : motor_.drain_sessions();
+    if (operation != AYNI_OK) {
+        return operation;
+    }
+    // UI backpressure must never bypass the Core, reflex or audit work above (ADR-0114).
+    if (turn_state_ == Turn::reply_done) {
+        const auto terminal = present_reply();
+        if (terminal != AYNI_OK) {
+            return terminal;
+        }
+    }
     if (info.lifecycle == AYNI_LIFECYCLE_STOPPED) {
+        if (!drain_terminal()) {
+            return AYNI_BUSY;
+        }
         transport_.allow_display(0);
         if (!motor_.execution().close() || !speaker_.close()) {
             return AYNI_BUSY;
@@ -1511,7 +1783,8 @@ ayni_status_t Chat::prepare_grant() {
             return AYNI_OK;
         }
     }
-    const bool motion = same(wanted, "motor.run");
+    const bool motion = same(wanted, "motor.run") || same(wanted, "motor.stream") ||
+                        same(wanted, "motor.steer") || same(wanted, stream_execute);
     const ayni_grant_create_v1 grant{sizeof(grant),
                                      wanted_version,
                                      wanted,
@@ -1526,6 +1799,27 @@ ayni_status_t Chat::prepare_grant() {
         ++grant_;
     }
     return accepted;
+}
+// Shutdown retains the session/file ports until terminal admission, with an explicit bounded
+// fallback if the UI has stopped consuming altogether. Normal turn delivery has no timeout.
+bool Chat::drain_terminal() {
+    if (turn_state_ != Turn::reply_done) {
+        terminal_drain_deadline_.reset();
+        return true;
+    }
+    const auto at = uint64_t(esp_timer_get_time());
+    constexpr uint64_t drain_limit_us = 2000000;
+    if (!terminal_drain_deadline_) {
+        terminal_drain_deadline_ = at + drain_limit_us;
+    }
+    if (at < *terminal_drain_deadline_) {
+        return false;
+    }
+    transport_.diagnostics().record("wifi terminal_delivery_timeout turn=%llu; closing ports\n",
+                                    static_cast<unsigned long long>(turn_));
+    end_turn(nullptr); // Explicitly recorded undelivered terminal; do not borrow closed ports.
+    terminal_drain_deadline_.reset();
+    return true;
 }
 ayni_status_t Chat::close_session(const ayni_kernel_info_v1 &info) {
     auto rc = AYNI_OK;
@@ -1544,6 +1838,10 @@ ayni_status_t Chat::close_session(const ayni_kernel_info_v1 &info) {
         if (rc != AYNI_OK) {
             return rc;
         }
+    }
+    motor_.close_sessions();
+    if (!motor_.sessions_drained() || !drain_terminal()) {
+        return AYNI_OK;
     }
     rc = ayni_begin_shutdown(kernel_);
     if (rc == AYNI_OK) {
@@ -1587,8 +1885,9 @@ ayni_status_t Chat::prepare_history(const ayni_kernel_info_v1 &info) {
                 return out;
             }};
         config.unfinished = ayni::runtime::conversation::UnfinishedTurn::discard;
-        config.persistence = ayni::strategies::Persistence::background;
+        config.persistence = ayni::strategies::Persistence::turn_boundary;
         config.observer = {this, on_publication_stage, on_publication_ack};
+        config.collection_mode = ayni::runtime::conversation::PublicationCollection::deferred;
         rc = history_.configure(config);
         if (rc != AYNI_OK) {
             return rc;
@@ -1608,7 +1907,9 @@ ayni_status_t Chat::prepare_history(const ayni_kernel_info_v1 &info) {
     rc = history_.poll_with_progress(session_again);
     progress_ = progress_ || session_again;
     if (rc != AYNI_OK && rc != AYNI_BUSY && !history_.held()) {
-        status(turn_, "conversation store failed; no answer shown");
+        status(turn_, answer_presented_early_
+                          ? "conversation store failed; answer shown but not saved"
+                          : "conversation store failed; no answer shown");
         return rc;
     }
     if (!announced_ && !commands_.pending() && history_.ready()) {
@@ -1651,7 +1952,7 @@ ayni_status_t Chat::prepare(const ayni_kernel_info_v1 &info) {
         }
         if (!scene.consumable) {
             const ayni_scene_set_enabled_v1 enabled{sizeof(enabled), 1, text(motor_scene),
-                                                    motor_version, 0};
+                                                    motor_scene_version, 0};
             return command(AYNI_INTENT_SCENE_SET_ENABLED, &enabled, nullptr, scene.revision);
         }
     }
@@ -1693,7 +1994,6 @@ void Chat::end_turn(const char *message) {
     // here, outside automatic speech startup and playback.
     flush_publication_diagnostics();
     emit_phase_trace("terminal", ended_snapshot);
-    transport_.diagnostics().drain_serial([](const char *line) { std::fputs(line, stdout); });
     input_.clear();
     answer_.clear();
     reply_voice_.reset();
@@ -1701,6 +2001,8 @@ void Chat::end_turn(const char *message) {
     reply_deadline_ = 0;
     reply_end_ = nullptr;
     reply_intent_ = ReplyIntent::present;
+    answer_presented_early_ = false;
+    early_answer_at_us_ = 0;
     goal_ = turn_ = 0;
     cancel_requested_ = false;
     turn_state_ = Turn::idle;
@@ -1833,8 +2135,45 @@ ayni_status_t Chat::observe_probe(const ayni_kernel_info_v1 &info) {
     }
     return AYNI_OK;
 }
+void Chat::start_user_turn(uint64_t id, std::string_view user_text) {
+    probe_.reset();
+    input_.assign(user_text.data(), user_text.size());
+    turn_ = id;
+    timing_ = {};
+    model_requests_ = 0;
+    const auto accepted = capture_phase_snapshot();
+    turn_started_ = accepted.at_us;
+    timing_.phase_started_us = turn_started_;
+    timing_.publication.reset(turn_);
+    timing_.last_motor_dispatch = motor_.execution().latest_dispatch();
+    timing_.storage = accepted.storage;
+    timing_.accepted_space = {timing_.storage.foreground_measures,
+                              timing_.storage.foreground_measure_us, timing_.storage.idle_measures,
+                              timing_.storage.idle_measure_us};
+    reply_intent_ = ReplyIntent::present;
+    answer_presented_early_ = false;
+    early_answer_at_us_ = 0;
+    hold_reported_ = false;
+    preparation_wait_ = {};
+    turn_state_ = Turn::input;
+    progress_ = true;
+    status(turn_, "accepted");
+    trace("accepted", accepted);
+}
 // One user turn: durable input body, Goal, completed Task, durable record, then the answer.
 ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
+    if (pending_user_ && turn_state_ == Turn::idle && history_.ready() && announced_ &&
+        closing_ == Closing::open && forget_ == Forget::none && !motor_check_.active()) {
+        auto next = std::move(*pending_user_);
+        pending_user_.reset();
+        const auto now_us = uint64_t(esp_timer_get_time());
+        const auto switch_ms = now_us >= next.at_us ? (now_us - next.at_us) / 1000 : 0;
+        transport_.diagnostics().record(
+            "wifi barge_in old_turn=%llu new_turn=%llu switch_ms=%llu\n",
+            static_cast<unsigned long long>(next.old_turn),
+            static_cast<unsigned long long>(next.id), static_cast<unsigned long long>(switch_ms));
+        start_user_turn(next.id, next.text);
+    }
     if (forget_ == Forget::requested && turn_state_ == Turn::idle && history_.ready()) {
         const auto rc = history_.forget(AYNI_CONTEXT_ERASE_ALL);
         if (rc == AYNI_OK) {
@@ -1939,6 +2278,20 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
             }
             return AYNI_OK;
         }
+        // 0 ms early answer delivery (ADR-0113): once checkpoint_ready populates the publication
+        // candidate in RAM, push Kind::answer to UI immediately while FileBodies/CONTEXT_ACK
+        // drain asynchronously in the background. Auto-TTS still binds after durable CONTEXT_ACK.
+        if (!answer_presented_early_ && reply_intent_ == ReplyIntent::present &&
+            closing_ == Closing::open) {
+            std::string preview;
+            if (history_.preview_answer(preview) == AYNI_OK && !preview.empty() &&
+                preview.size() <= tx_bytes &&
+                transport_.send(Kind::answer, turn_, preview.data(), preview.size())) {
+                answer_presented_early_ = true;
+                early_answer_at_us_ = uint64_t(esp_timer_get_time());
+                progress_ = true;
+            }
+        }
         ayni::runtime::conversation::TurnResult result;
         if (!history_.take_result(result)) {
             return AYNI_OK;
@@ -1950,6 +2303,14 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
                           long(result.status), static_cast<unsigned long>(result.reason));
             end_turn(detail);
             return AYNI_OK;
+        }
+        if (answer_presented_early_) {
+            const auto now_us = uint64_t(esp_timer_get_time());
+            const auto lead_ms =
+                now_us >= early_answer_at_us_ ? (now_us - early_answer_at_us_) / 1000 : 0;
+            transport_.diagnostics().record_ram("wifi early_answer turn=%llu lead_ms=%llu\n",
+                                                static_cast<unsigned long long>(turn_),
+                                                static_cast<unsigned long long>(lead_ms));
         }
         turn_state_ = Turn::saving;
     }
@@ -1990,7 +2351,9 @@ ayni_status_t Chat::converse(const ayni_kernel_info_v1 &info) {
 ayni_status_t Chat::present_reply() {
     if (turn_state_ == Turn::answer) {
         if (reply_intent_ == ReplyIntent::cancelled) {
-            reply_end_ = "turn failed/cancelled; answer retained; no automatic retry";
+            reply_end_ = answer_presented_early_
+                             ? "reply completed"
+                             : "turn failed/cancelled; answer retained; no automatic retry";
             turn_state_ = Turn::reply_done;
         } else if (uint64_t(esp_timer_get_time()) >= reply_deadline_) {
             reply_end_ = "turn failed: answer delivery timed out; answer retained";
@@ -1998,7 +2361,8 @@ ayni_status_t Chat::present_reply() {
         } else if (answer_.empty() || answer_.size() > tx_bytes) {
             reply_end_ = "turn failed: answer exceeds chat capacity";
             turn_state_ = Turn::reply_done;
-        } else if (transport_.send(Kind::answer, turn_, answer_.data(), answer_.size())) {
+        } else if (answer_presented_early_ ||
+                   transport_.send(Kind::answer, turn_, answer_.data(), answer_.size())) {
             reply_end_ = "reply completed";
             if (voice_reply_enabled_) {
                 reply_voice_.observe({this, on_voice_stage});

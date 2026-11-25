@@ -7,6 +7,7 @@ inline constexpr int32_t motor_percent_scale = 100;
 inline constexpr int32_t motor_percent_max = 90;
 inline constexpr uint32_t motor_plan_duration_ms_max = 60000;
 inline constexpr uint32_t motor_duration_ms_min = 50, motor_duration_step_ms = 5;
+inline constexpr size_t motor_segments_max = 8;
 // User's 2026-11-01 wiring revision, in driver input order D0, D1, D2, D3.
 inline constexpr std::array<uint32_t, 4> motor_pins{38, 39, 40, 41};
 // User's 2026-11-13 board calibration: only motor 2 reverses the signed input direction.
@@ -17,6 +18,11 @@ struct MotorCommand {
     int32_t first_percent = 0, second_percent = 0;
     uint32_t duration_ms = 0;
 };
+// Ordered 1..8 segment trajectory executed seamlessly inside one ControlSession (ADR-0112).
+struct MotorTrajectory {
+    std::array<MotorCommand, motor_segments_max> segments{};
+    uint32_t count = 0; // Valid trajectory has 1..motor_segments_max segments.
+};
 inline bool valid_motor_command(const MotorCommand &command) {
     return command.first_percent >= -motor_percent_max &&
            command.first_percent <= motor_percent_max &&
@@ -25,6 +31,40 @@ inline bool valid_motor_command(const MotorCommand &command) {
            command.duration_ms >= motor_duration_ms_min &&
            command.duration_ms <= motor_plan_duration_ms_max &&
            command.duration_ms % motor_duration_step_ms == 0;
+}
+// Provider commands retain the 50 ms minimum. Executor-bounded waveforms may use the last
+// 5 ms RMT block; all PWM and maximum-duration checks still share the public validator.
+inline bool valid_motor_waveform(const MotorCommand &command) {
+    auto public_command = command;
+    if (public_command.duration_ms < motor_duration_ms_min) {
+        public_command.duration_ms = motor_duration_ms_min;
+    }
+    return valid_motor_command(public_command) && command.duration_ms >= motor_duration_step_ms &&
+           command.duration_ms % motor_duration_step_ms == 0;
+}
+inline uint32_t total_duration_ms(const MotorTrajectory &trajectory) {
+    uint64_t total = 0;
+    const uint32_t limit = trajectory.count <= motor_segments_max ? trajectory.count : 0;
+    for (uint32_t at = 0; at < limit; ++at) {
+        total += trajectory.segments[at].duration_ms;
+    }
+    return total <= UINT32_MAX ? uint32_t(total) : UINT32_MAX;
+}
+inline bool valid_motor_trajectory(const MotorTrajectory &trajectory) {
+    if (trajectory.count == 0 || trajectory.count > motor_segments_max) {
+        return false;
+    }
+    uint64_t total_ms = 0;
+    bool has_nonzero = false;
+    for (uint32_t at = 0; at < trajectory.count; ++at) {
+        const auto &seg = trajectory.segments[at];
+        if (!valid_motor_command(seg)) {
+            return false;
+        }
+        total_ms += seg.duration_ms;
+        has_nonzero = has_nonzero || seg.first_percent != 0 || seg.second_percent != 0;
+    }
+    return has_nonzero && total_ms <= motor_plan_duration_ms_max;
 }
 // Return the D0..D3 index for a valid motor and Schema-normalized signed percentage.
 // Planning, RMT selection and PCNT expectations share the board's one polarity rule.

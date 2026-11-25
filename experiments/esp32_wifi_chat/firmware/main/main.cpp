@@ -19,6 +19,16 @@ constexpr uint32_t owner_stack_bytes = wifichat::owner_stack_capacity, io_stack_
 // model timeouts the composition checks itself are at most that late. A burst of ready work
 // still gives one tick away every burst_us so IDLE and the task watchdog run.
 constexpr uint64_t idle_us = 100000, hello_us = 1000000, burst_us = 20000, busy_us = 1000;
+constexpr uint32_t log_stack_bytes = 4096;
+StaticTask_t log_tcb;
+StackType_t log_stack[log_stack_bytes / sizeof(StackType_t)];
+void logs(void *context) {
+    auto &log = static_cast<wifichat::Transport *>(context)->diagnostics();
+    for (;;) {
+        log.drain_serial([](const char *line) { std::fputs(line, stdout); });
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
 StaticTask_t io_tcb;
 StackType_t io_stack[io_stack_bytes / sizeof(StackType_t)];
 void io(void *p) {
@@ -38,10 +48,22 @@ void *owner(void *) {
         std::puts("Wi-Fi voice transport allocation failed");
         vTaskSuspend(nullptr);
     }
-    auto *transport = new (region) wifichat::Transport;
+    // IDF's PSRAM atomic workaround emulates external-memory atomics with a lock.
+    // Keep the small control mailbox internal so its 32-bit state uses native S32C1I.
+    auto *control_region =
+        heap_caps_malloc(sizeof(wifichat::ControlMailbox), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (!control_region) {
+        vTaskSuspend(nullptr);
+    }
+    auto *control = new (control_region) wifichat::ControlMailbox;
+    auto *transport = new (region) wifichat::Transport(*control);
     esp_log_level_set(
         "*", ESP_LOG_NONE); // Only explicit, redacted diagnostics are emitted after this point.
     if (!transport->initialize()) {
+        vTaskSuspend(nullptr);
+    }
+    if (!xTaskCreateStatic(logs, "diagnostic-log", log_stack_bytes, transport, 1, log_stack,
+                           &log_tcb)) {
         vTaskSuspend(nullptr);
     }
     // The composition's large protocol lanes use PSRAM; its Host is separately internal.

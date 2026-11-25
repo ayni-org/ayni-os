@@ -293,7 +293,8 @@ bool read_call_record(ayni::foundation::Workspace &workspace, const uint8_t *bod
     for (uint32_t at = 0; at < context.sample_count; ++at) {
         context.samples[at] = {reader.u64(), reader.u64(), reader.u64()};
     }
-    if (!reader.ok() || !CallTable::valid_record(workspace, record)) {
+    if (!reader.ok() || record.contract.durability != catalog::CallDurability::durable ||
+        !CallTable::valid_record(workspace, record)) {
         return false;
     }
     out = record;

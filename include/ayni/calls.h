@@ -10,6 +10,7 @@
 #include <ayni/authority.h>
 #include <ayni/capability_values.h>
 #include <ayni/control.h>
+#include <ayni/execution.h>
 #include <ayni/resources.h>
 #include <ayni/subscriptions.h>
 
@@ -56,6 +57,13 @@ typedef uint32_t ayni_call_cancel_mode_t;
 #define AYNI_CALL_CANCEL_REQUEST ((ayni_call_cancel_mode_t)2)
 /* Can confirm remote cancellation; distinct from actuator stop. Since 0.31. */
 #define AYNI_CALL_CANCEL_CONFIRMED ((ayni_call_cancel_mode_t)3)
+typedef uint32_t ayni_call_durability_t;
+/* Default Tier 2: WAL ledger, DISPATCHING durability barrier and UNKNOWN reconciliation. Since
+ * 0.57. */
+#define AYNI_CALL_DURABILITY_DURABLE ((ayni_call_durability_t)0)
+/* Tier 0: boot-volatile execution with zero WAL/barrier and immediate RAM resource release on stop;
+ * allowed only inside CANCEL_ON_REBOOT Goals (ADR-0110). Since 0.57. */
+#define AYNI_CALL_DURABILITY_EPHEMERAL ((ayni_call_durability_t)1)
 /* Schema-normalized business value; authority is derived from it. Since 0.48. */
 #define AYNI_CALL_INPUT_VALUE 2u
 /* A MODEL body may keep the strategy's instructions apart from the data it
@@ -99,6 +107,16 @@ typedef uint32_t ayni_call_cancel_mode_t;
 #define AYNI_CALL_MODE_FOREGROUND 0u
 /* Explicit Task-owned action/subscription, permitting further decisions. Since 0.51. */
 #define AYNI_CALL_MODE_MANAGED 1u
+/* Explicit resource preemption policy for FOREGROUND Calls (ADR-0111). Since 0.58. */
+typedef uint32_t ayni_call_preemption_t;
+/* Ordinary FIFO admission; never preempts existing resource holders. Since 0.58. */
+#define AYNI_CALL_PREEMPT_NONE ((ayni_call_preemption_t)0)
+/* May preempt strictly lower-priority held EPHEMERAL cancellable Calls on conflicting resources
+ * after full authorization/schema preflight. Since 0.58. */
+#define AYNI_CALL_PREEMPT_LOWER ((ayni_call_preemption_t)1)
+/* May preempt equal- or lower-priority older held EPHEMERAL cancellable Calls on conflicting
+ * resources after full authorization/schema preflight. Since 0.58. */
+#define AYNI_CALL_PREEMPT_SUPERSEDE ((ayni_call_preemption_t)2)
 /* Since 0.31. Explicit trusted Binding selection and concrete typed arguments.
  * All views are copied by output.request_call before it returns. The model may
  * propose values, but cannot register a new Binding or endpoint. */
@@ -109,16 +127,13 @@ typedef struct ayni_call_request_v1 {
     uint32_t reserved;              /* Must be zero. */
     ayni_string_v1 step_key;        /* Stable nonempty Task-local identity. */
     ayni_string_v1 binding_id;      /* Exact trusted selection. */
-    ayni_scope_v1 arguments;        /* Reserved since 0.48; every member must be zero. */
-    ayni_string_v1 text; /* Reserved since 0.48; must be empty. Business input is value alone. */
-    ayni_value_v1 value; /* Since 0.48. VALUE input; legacy arguments/text must be empty. */
+    ayni_value_v1 value; /* Since 0.48. Normalized business input; sole input since 0.61. */
     uint32_t
         mode; /* Since 0.51. FOREGROUND by default; MANAGED only for TOOL action/subscription. */
-    uint32_t mode_reserved; /* Since 0.51. Must be zero. */
+    ayni_call_preemption_t
+        preemption; /* Since 0.58. Replaces mode_reserved (was zero); NONE, LOWER or SUPERSEDE. */
 } ayni_call_request_v1;
 
-/* Native typed business input. Since 0.48. */
-#define AYNI_TOOL_INPUT_VALUE 1u
 /* Lossless named adapter input, resolved by the owner. Since 0.48. */
 #define AYNI_TOOL_INPUT_ARGUMENTS 2u
 /* Opaque external protocol identity, separate from Ayni Call/operation/attempt. Since 0.48. */
@@ -217,6 +232,9 @@ typedef struct ayni_call_contract_v1 {
     const ayni_call_resource_v1 *resources; /* Null only when resource_count is zero. */
     /* Since 0.43. Required for SUBSCRIPTION, null for every other form. Copied. */
     const ayni_subscription_contract_v1 *subscription;
+    /* Since 0.57. DURABLE (0, default) or EPHEMERAL (1, Tier 0 zero-WAL execution). */
+    ayni_call_durability_t durability;
+    uint32_t durability_reserved; /* Since 0.57. Must be zero. */
 } ayni_call_contract_v1;
 
 /* Supplements the authority descriptor of the same exact ID/version. */
@@ -317,6 +335,10 @@ typedef struct ayni_provider_result_v1 {
      * Core requests persistence. The producer owns it until post succeeds and must
      * release it when cancellation or expiry replaces an undelivered result. */
     ayni_body_ref_v1 body;
+    /* Since 0.57. Optional local stop proof copied by value during ayni_provider_post.
+     * Accepted only on terminal posts for executors registered with
+     * AYNI_EXECUTOR_FLAG_INLINE_STOP_PROOF; null otherwise. */
+    const ayni_executor_status_v1 *execution_status;
 } ayni_provider_result_v1;
 
 /* Pure producer sizing of a complete proposal list and its optional assistant text;
@@ -394,7 +416,6 @@ typedef struct ayni_provider_request_v1 {
     ayni_string_v1 capability_id; /* Matched capability, not model-supplied endpoint. */
     ayni_string_v1 endpoint_id;   /* Trusted local endpoint token; never a URL. */
     ayni_scope_v1 arguments;      /* Complete concrete values actually authorized. */
-    ayni_string_v1 text;          /* Reserved since 0.48; empty. The business body is value. */
     /* Since 0.35. Borrowed through submit only; null for nonphysical I/O. Physical
      * Providers hand this permit to the gate: a local gate installs it before
      * acceptance returns; since 0.36 a remote one may receive it later, unless a

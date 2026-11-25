@@ -2,7 +2,6 @@
 #include <cstring>
 
 namespace ayni::control {
-namespace {
 // Local identity parsing is independent of Core's private catalog. This gate
 // must validate its C boundary even when no Kernel is linked (ADR-0049).
 bool valid_name(const ayni_catalog_name_v1 &name) {
@@ -18,11 +17,12 @@ bool valid_name(const ayni_catalog_name_v1 &name) {
     }
     return true;
 }
-int compare(const ayni_catalog_name_v1 &left, const ayni_catalog_name_v1 &right) {
+int compare_names(const ayni_catalog_name_v1 &left, const ayni_catalog_name_v1 &right) {
     const auto common = left.size < right.size ? left.size : right.size;
     const auto bytes = std::memcmp(left.data, right.data, common);
     return bytes != 0 ? bytes : (left.size < right.size ? -1 : left.size != right.size ? 1 : 0);
 }
+namespace {
 void clear_tail(ayni_catalog_name_v1 &name) {
     std::memset(name.data + name.size, 0, AYNI_CATALOG_ID_MAX_BYTES - name.size);
 }
@@ -64,11 +64,11 @@ ayni_status_t normalize_envelope(const ayni_control_envelope_v1 &input,
         clear_tail(range.field_id);
         clear_tail(range.unit);
         uint32_t at = index;
-        while (at != 0 && compare(range.field_id, value.fields[at - 1].field_id) < 0) {
+        while (at != 0 && compare_names(range.field_id, value.fields[at - 1].field_id) < 0) {
             value.fields[at] = value.fields[at - 1];
             --at;
         }
-        if (at != 0 && compare(range.field_id, value.fields[at - 1].field_id) == 0) {
+        if (at != 0 && compare_names(range.field_id, value.fields[at - 1].field_id) == 0) {
             return AYNI_INVALID_ARGUMENT;
         }
         value.fields[at] = range;
@@ -84,8 +84,9 @@ bool within(const ayni_control_envelope_v1 &approved, const ayni_control_envelop
     for (uint32_t at = 0; at < approved.count; ++at) {
         const auto &range = approved.fields[at];
         const auto &limit = limits.fields[at];
-        if (compare(range.field_id, limit.field_id) != 0 || compare(range.unit, limit.unit) != 0 ||
-            range.minimum < limit.minimum || range.maximum > limit.maximum) {
+        if (compare_names(range.field_id, limit.field_id) != 0 ||
+            compare_names(range.unit, limit.unit) != 0 || range.minimum < limit.minimum ||
+            range.maximum > limit.maximum) {
             return false;
         }
     }
@@ -106,7 +107,7 @@ bool valid_sample(const ayni_control_sample_v1 &sample, const ayni_execution_per
         }
         uint32_t found = 0;
         for (; found < permit.envelope.count; ++found) {
-            if (compare(value.field_id, permit.envelope.fields[found].field_id) == 0) {
+            if (compare_names(value.field_id, permit.envelope.fields[found].field_id) == 0) {
                 break;
             }
         }
@@ -114,7 +115,7 @@ bool valid_sample(const ayni_control_sample_v1 &sample, const ayni_execution_per
             return false;
         }
         const auto &range = permit.envelope.fields[found];
-        if (compare(value.unit, range.unit) != 0 || value.value < range.minimum ||
+        if (compare_names(value.unit, range.unit) != 0 || value.value < range.minimum ||
             value.value > range.maximum) {
             return false;
         }

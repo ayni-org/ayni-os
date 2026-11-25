@@ -19,6 +19,11 @@ enum class CallClass : uint32_t { tool = 1, model };
 enum class CallIdempotency : uint32_t { idempotent = 1, not_idempotent };
 enum class QueryAuthority : uint32_t { none = 1, best_effort, authoritative };
 enum class CancelMode : uint32_t { none = 1, request, confirmed };
+// Tier 2 durable WAL ledger vs Tier 0 boot-volatile ephemeral execution (ADR-0110).
+enum class CallDurability : uint32_t {
+    durable = AYNI_CALL_DURABILITY_DURABLE,
+    ephemeral = AYNI_CALL_DURABILITY_EPHEMERAL,
+};
 
 // Independent effect flags; neither model classification nor idempotency can
 // erase a declared effect or imply permission to retry an unknown operation.
@@ -68,6 +73,9 @@ struct CallContract {
     std::array<CallResource, resource_group_max> resources; // Copied, sorted by ID.
     std::optional<SubscriptionContract> subscription{}; // Present exactly for subscription form.
     ayni_bytes_v1 business_contract{}; // Complete original proof, borrowed from this fact's owner.
+    // Tier 2 durable WAL default; Tier 0 ephemeral requires a CANCEL_ON_REBOOT Goal (ADR-0110).
+    CallDurability durability = CallDurability::durable;
+    bool is_ephemeral() const { return durability == CallDurability::ephemeral; }
 };
 
 // One exact capability version's behavior, supplementing its authority domain.

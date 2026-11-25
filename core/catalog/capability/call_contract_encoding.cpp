@@ -26,6 +26,7 @@ void write_execution_contract(const CallContract &contract, foundation::BodyWrit
     writer.u32(contract.result_format);
     writer.u32(contract.input_text_limit);
     writer.u32(contract.result_text_limit);
+    writer.u32(static_cast<uint32_t>(contract.durability));
     writer.u32(contract.resource_count);
     for (uint32_t at = 0; at < contract.resource_count; ++at) {
         write_id(contract.resources[at].id, writer);
@@ -47,6 +48,7 @@ bool read_execution_contract(foundation::BodyReader &reader, CallContract &contr
     contract.result_format = reader.u32();
     contract.input_text_limit = reader.u32();
     contract.result_text_limit = reader.u32();
+    contract.durability = static_cast<CallDurability>(reader.u32());
     contract.resource_count = reader.u32();
     if (contract.resource_count > resource_group_max) {
         return false;

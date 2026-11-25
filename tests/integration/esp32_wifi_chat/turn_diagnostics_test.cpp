@@ -1,4 +1,5 @@
 // Diagnostic breakdown checks for ESP32 Wi-Fi Chat publication, model handoff and storage metrics.
+#include "../../support/latency_samples.h"
 #include "configuration.h"
 #include "diagnostic_log.h"
 #include "model_handoff.h"
@@ -214,11 +215,13 @@ struct FixedTextModel {
 };
 
 struct EndToEndOptions {
-    ayni::strategies::Persistence persistence = ayni::strategies::Persistence::background;
+    ayni::strategies::Persistence persistence = ayni::strategies::Persistence::turn_boundary;
     uint32_t confirm_busy_count = 2;
     uint32_t collect_busy_count = 3;
     uint64_t confirm_delay_us = 0;
     uint64_t collect_delay_us = 0;
+    uint32_t seed_bytes = 0;
+    ayni::test::LatencySamples *decide_wall = nullptr, *step_wall = nullptr;
     uint64_t log_emit_delay_us = 0; // Simulated synchronous stdout delay per emitted line.
 };
 
@@ -279,8 +282,8 @@ void expect_additive_summary(const wifichat::PublicationTimeline::Summary &summa
 
 EndToEndSample run_fixed_text_turn(const EndToEndOptions &opts) {
     constexpr uint64_t owner = 1, agent_id = 1;
-    constexpr uint32_t version = 1, step_items = 16;
-    constexpr uint64_t step_us = 4000, tick_us = 2000;
+    constexpr uint32_t version = 1, step_items = wifichat::owner_step_units;
+    constexpr uint64_t step_us = wifichat::owner_step_budget_us, tick_us = 2000;
     constexpr char chat_type[] = "wifi.chat", tools_cap[] = "wifi.model.tools",
                    reply_cap[] = "wifi.model.text", tools_bind[] = "wifi.tools",
                    reply_bind[] = "wifi.model";
@@ -385,7 +388,8 @@ EndToEndSample run_fixed_text_turn(const EndToEndOptions &opts) {
                      AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_REQUEST, 0,
                      wifichat::harness::request_timeout_ms, AYNI_CALL_INPUT_VALUE,
                      tools ? AYNI_CALL_RESULT_TOOL_CALLS : AYNI_CALL_RESULT_TEXT, input_bytes,
-                     static_cast<uint32_t>(wifichat::summary_bytes), 1, &call_resource, nullptr},
+                     static_cast<uint32_t>(wifichat::summary_bytes), 1, &call_resource, nullptr,
+                     AYNI_CALL_DURABILITY_DURABLE, 0},
                     &business};
         EXPECT_EQ(ayni_register_call_capability(kernel.get(), &caps[at]), AYNI_OK);
     }
@@ -437,6 +441,10 @@ EndToEndSample run_fixed_text_turn(const EndToEndOptions &opts) {
     loop_cfg.limits = {
         wifichat::harness::context_window_tokens, wifichat::harness::max_output_tokens,
         wifichat::harness::compact_target_tokens, wifichat::harness::tool_result_max_tokens};
+    if (opts.seed_bytes) {
+        // Benchmark retained histories up to 32 KiB without compacting away its seed input.
+        loop_cfg.limits.compact_target_tokens = 64U * 1024U;
+    }
     loop_cfg.reply_encoding = loop_cfg.summary_reply_encoding = ayni::model::ReplyEncoding::framed;
     loop_cfg.bodies = bodies.store();
     loop_cfg.body_progress = {&bodies, ayni::runtime::FileBodies::progress};
@@ -444,6 +452,25 @@ EndToEndSample run_fixed_text_turn(const EndToEndOptions &opts) {
     ayni::strategies::ToolLoop loop;
     EXPECT_EQ(loop.configure(loop_cfg, &workspace), AYNI_OK);
     auto strategy = loop.describe();
+    struct TimedStrategy {
+        ayni_strategy_v1 original;
+        const EndToEndOptions *options;
+        bool measuring = false;
+    } timed{strategy, &opts};
+    strategy.ctx = &timed;
+    strategy.decide = [](void *ctx, const ayni_task_snapshot_v1 *task, ayni_policy_output_v1 *out) {
+        auto &self = *static_cast<TimedStrategy *>(ctx);
+        const auto started = ayni::test::LatencySamples::Clock::now();
+        const auto code = self.original.decide(self.original.ctx, task, out);
+        if (self.measuring && self.options->decide_wall) {
+            self.options->decide_wall->add(started);
+        }
+        return code;
+    };
+    strategy.ready = [](void *ctx, uint64_t task) -> uint32_t {
+        auto &self = *static_cast<TimedStrategy *>(ctx);
+        return self.original.ready ? self.original.ready(self.original.ctx, task) : 1U;
+    };
     EXPECT_EQ(ayni_register_strategy(kernel.get(), &strategy), AYNI_OK);
     auto type = initialized<ayni_goal_type_v1>();
     type.version = version;
@@ -486,7 +513,11 @@ EndToEndSample run_fixed_text_turn(const EndToEndOptions &opts) {
 
     auto step_all = [&] {
         auto report = initialized<ayni_step_report_v1>();
+        const auto started = ayni::test::LatencySamples::Clock::now();
         EXPECT_EQ(kernel.step(step_items, step_us, report), AYNI_OK);
+        if (timed.measuring && opts.step_wall) {
+            opts.step_wall->add(started);
+        }
         if (commands.pending()) {
             EXPECT_EQ(commands.poll(), AYNI_OK);
         }
@@ -670,13 +701,16 @@ EndToEndSample run_fixed_text_turn(const EndToEndOptions &opts) {
     EXPECT_TRUE(until([&] { return session.ready(); }));
 
     // Turn 1: fixed initial history seed.
-    EXPECT_EQ(session.begin(text("固定初始历史问题")), AYNI_OK);
+    const std::string seed_text =
+        opts.seed_bytes ? std::string(opts.seed_bytes, 'h') : "固定初始历史问题";
+    EXPECT_EQ(session.begin(text(seed_text.c_str())), AYNI_OK);
     ayni::runtime::conversation::TurnResult seed{};
     EXPECT_TRUE(until([&] { return session.take_result(seed); }));
     EXPECT_TRUE(seed.published);
     EXPECT_EQ(session.record()->round_count, 1U);
 
     // Turn 2: fixed text input & reply; sampling only inside model_result_posted -> answer_saved.
+    timed.measuring = true;
     model.reply = "固定最终诊断回复正文，用于核对发布分段耗时。";
     obs.timeline.reset(2);
     obs.armed = true;
@@ -978,8 +1012,10 @@ TEST(TurnDiagnostics, ValueRolesAccountForShortMultichunkAndSharedBody) {
     const auto chunk = index(FileValueRole::body_chunk);
     const auto manifest = index(FileValueRole::owner_manifest);
     const auto before = values.metrics();
-    EXPECT_EQ(before.values[chunk].write.calls, 3U);
-    EXPECT_EQ(before.values[chunk].write.bytes, 5U + cross_chunk_bytes);
+    // ADR-0113 AYNB2: short (5 B <= 4 KiB) body is inlined into its owner_manifest (0 chunk I/O);
+    // only the cross-chunk (4097 B) body writes 2 body_chunk files.
+    EXPECT_EQ(before.values[chunk].write.calls, 2U);
+    EXPECT_EQ(before.values[chunk].write.bytes, cross_chunk_bytes);
     EXPECT_EQ(before.values[manifest].write.calls, 3U);
     EXPECT_GT(before.values[manifest].write.completion_us,
               before.values[manifest].write.service_us);
@@ -991,11 +1027,31 @@ TEST(TurnDiagnostics, ValueRolesAccountForShortMultichunkAndSharedBody) {
     port->release(port->context, &large);
     drain();
     const auto cleanup = wifichat::StoragePhaseDelta::between(before, values.metrics(), 0);
-    EXPECT_EQ(cleanup.values[chunk].remove.calls, 3U);
-    EXPECT_EQ(cleanup.values[chunk].remove.bytes, 5U + cross_chunk_bytes);
+    EXPECT_EQ(cleanup.values[chunk].remove.calls, 2U);
+    EXPECT_EQ(cleanup.values[chunk].remove.bytes, cross_chunk_bytes);
     EXPECT_EQ(cleanup.values[manifest].remove.calls, 2U);
     EXPECT_GT(cleanup.values[manifest].remove.bytes, 0U);
-    EXPECT_EQ(cleanup.value_remove_calls, 5U);
+    EXPECT_EQ(cleanup.value_remove_calls, 4U);
+}
+
+// ADR-0113: deferred ordinary publication omits collected while remaining complete and additive.
+TEST(TurnDiagnostics, PublicationTimelineDeferredOrderCompletesWithoutCollectedBoundary) {
+    wifichat::PublicationTimeline timeline;
+    timeline.reset(88);
+    StorageMetrics m{};
+    timeline.mark_model_posted(100000, m);
+    ASSERT_TRUE(timeline.record_stage(12, 34, Stage::checkpoint_ready, 110000, m));
+    ASSERT_TRUE(timeline.record_stage(12, 34, Stage::publish_durable, 150000, m));
+    ASSERT_TRUE(timeline.record_stage(12, 34, Stage::record_saved, 210000, m));
+    ASSERT_TRUE(timeline.record_stage(12, 34, Stage::context_ready, 250000, m));
+    ASSERT_TRUE(timeline.record_answer_saved(252000, m));
+    const auto summary = timeline.summary();
+    EXPECT_TRUE(summary.complete);
+    EXPECT_EQ(summary.order, Order::async);
+    EXPECT_EQ(summary.segment_count, 5U);
+    EXPECT_EQ(summary.total.wall_us, 152000U);
+    EXPECT_EQ(summary.segments[3].from, Boundary::record_saved);
+    EXPECT_EQ(summary.segments[3].to, Boundary::context_ready);
 }
 
 TEST(TurnDiagnostics, PublicationTimelineAsyncOrderRecordsEachBoundaryOnceAndSumsToTotal) {
@@ -1213,7 +1269,7 @@ TEST(TurnDiagnostics, StoragePhaseDeltaSeparatesOperationTypesAndActualLfsSize) 
 // Also verifies stage-armed backpressure and known-wait attribution to the exact owning segment.
 TEST(TurnDiagnostics, FixedTextTurnBackgroundPathCorrelatesUniqueBoundariesAndSumsExactly) {
     EndToEndOptions base_opts{};
-    base_opts.persistence = ayni::strategies::Persistence::background;
+    base_opts.persistence = ayni::strategies::Persistence::turn_boundary;
     const auto base = run_fixed_text_turn(base_opts);
     expect_additive_summary(base.summary);
     using RoleMetrics = ayni::hosts::esp_idf::ValueRoleMetrics;
@@ -1431,7 +1487,7 @@ TEST(TurnDiagnostics, CompletionOrderingAttributesTriggeringWriteAndRemoveToClos
 // answer_saved.
 TEST(TurnDiagnostics, DeferredOutputProducesIdenticalSamplesUnderInstantAndSlowLogSinks) {
     EndToEndOptions fast_opts{};
-    fast_opts.persistence = ayni::strategies::Persistence::background;
+    fast_opts.persistence = ayni::strategies::Persistence::turn_boundary;
     fast_opts.log_emit_delay_us = 0;
 
     EndToEndOptions slow_opts = fast_opts;
@@ -1519,3 +1575,25 @@ TEST(TurnDiagnostics, FormattedReportLinesFitWithinDiagnosticLogSlot) {
 }
 
 } // namespace
+
+// ADR-0114: real production ToolLoop decisions with short/medium/long persisted histories.
+TEST(TurnDiagnostics, OwnerWallLatencyReportsShortMediumAndLongHistories) {
+    for (const auto bytes : {512U, 8192U, 32768U}) {
+        ayni::test::LatencySamples decisions, steps;
+        EndToEndOptions options;
+        options.confirm_busy_count = options.collect_busy_count = 0;
+        options.seed_bytes = bytes;
+        options.decide_wall = &decisions;
+        options.step_wall = &steps;
+        for (unsigned repeat = 0; repeat < 64; ++repeat) {
+            run_fixed_text_turn(options);
+        }
+        char label[80];
+        std::snprintf(label, sizeof(label), "ToolLoop.decide/history_%u", bytes);
+        decisions.print(label);
+        std::snprintf(label, sizeof(label), "ayni_step/history_%u", bytes);
+        steps.print(label);
+        EXPECT_GE(decisions.size(), 100U);
+        EXPECT_GE(steps.size(), 100U);
+    }
+}

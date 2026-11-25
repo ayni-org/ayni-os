@@ -21,6 +21,7 @@
 #include "catalog/capability/business_encoding.h"
 #include "kernel/ports/attempt_sequence.h"
 #include "kernel/ports/executor_mailbox.h"
+#include "kernel/service/audit/audit_ring.h"
 #include "kernel/service/model/work_model.h"
 #include "knowledge/observation/observation_table.h"
 #include "resources/admission/resource_admission.h"
@@ -65,9 +66,11 @@ class ExecutionControl {
     ExecutionControl(WorkModel &work, resources::ResourceAdmission &resources,
                      resources::PermitTable &permits,
                      const knowledge::ObservationTable &observations, ExecutorMailbox &executors,
-                     AttemptSequence &attempts, const ayni_host_v1 &host, Transport transport)
+                     AttemptSequence &attempts, const ayni_host_v1 &host, AuditRing &audit,
+                     Transport transport)
         : work_(work), resources_(resources), permits_(permits), observations_(observations),
-          executors_(executors), attempts_(attempts), host_(host), transport_(transport) {}
+          executors_(executors), attempts_(attempts), host_(host), audit_(audit),
+          transport_(transport) {}
     ExecutionControl(const ExecutionControl &) = delete;
     ExecutionControl &operator=(const ExecutionControl &) = delete;
 
@@ -88,7 +91,8 @@ class ExecutionControl {
     // the executor's deadline. The caller rechecks authority, resources and
     // allowed before every call, so also after the answer arrived.
     PermitIssue issue(uint32_t index, const resources::ResourceClaim &claim,
-                      ayni_bytes_v1 arguments, uint64_t now_us);
+                      const work::CallInputView &input, const catalog::DecodedBusiness &proof,
+                      uint64_t now_us);
     // Read-only: whether issue would do more than wait for an answer.
     bool issue_ready(uint32_t index, uint64_t now_us) const;
     // The call left the dispatch path before its permit: its unanswered
@@ -103,6 +107,13 @@ class ExecutionControl {
     // absence may later prove it never started; false without a lease.
     bool delivery_ended(uint64_t call_id);
     bool request_stop(uint64_t call_id); // Asks the executor to stop; false without a lease.
+    // Validates and applies an inline stop status attached to a terminal Provider
+    // receipt for an executor declaring AYNI_EXECUTOR_FLAG_INLINE_STOP_PROOF (ADR-0110).
+    // Returns false on any mismatch so the caller falls back to STOP + STATUS polling.
+    bool accept_inline_stop(uint32_t index, const ayni_executor_status_v1 &status);
+    // Releases a confirmed stopped EPHEMERAL lease immediately in RAM without waiting
+    // on durable_seq, closing its executor lanes; false unless stopped and ephemeral.
+    bool release_ephemeral_stopped(uint64_t call_id);
     // The executor measured the stop and commit_stop has yet to record it.
     bool stop_measured(uint64_t call_id) const;
     // Records the measured stop in the call's facts at a new stamp; the
@@ -165,6 +176,12 @@ class ExecutionControl {
                             Mode mode) const;
     // Shared by dispatch and result: the saved observations are still current.
     bool dependencies_current(uint32_t index, uint64_t now_us) const;
+    // Emits one actuator quarantine or release audit record (ADR-0113).
+    void audit_actuator(ayni_audit_kind_t kind, uint32_t executor_index, uint64_t call_id,
+                        uint64_t permit_id, ayni_status_t status, uint32_t detail_code,
+                        bool ephemeral) const;
+    // Moves lease into stopping/quarantine and records the first transition once (ADR-0113).
+    bool quarantine_lease(uint64_t call_id, ayni_status_t status);
 
     WorkModel &work_;                         // Call, Scene, executor catalog and owner facts.
     resources::ResourceAdmission &resources_; // Whether a held claim may still execute.
@@ -173,6 +190,7 @@ class ExecutionControl {
     ExecutorMailbox &executors_;                      // Request lanes and answers per executor.
     AttemptSequence &attempts_;                       // Request identities, shared with Provider.
     const ayni_host_v1 &host_;                        // Clock for a result's dependencies.
+    AuditRing &audit_;                                // Kernel-owned RAM audit ring (ADR-0113).
     Transport transport_;
     uint32_t cursor_ = 0; // Fair scan of executor leases.
 };

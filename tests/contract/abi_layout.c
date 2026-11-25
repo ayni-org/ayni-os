@@ -5,16 +5,21 @@
  * measured in sizeof(void *) so that the same checks fit 32-bit targets; only the native build
  * compiles them so far.
  */
+#include <ayni/audit.h>
 #include <ayni/authority.h>
 #include <ayni/ayni.h>
 #include <ayni/bodies.h>
 #include <ayni/calls.h>
 #include <ayni/context.h>
 #include <ayni/control.h>
+#include <ayni/control_loop.h>
+#include <ayni/control_session.h>
 #include <ayni/directory.h>
 #include <ayni/execution.h>
 #include <ayni/memory.h>
+#include <ayni/observations.h>
 #include <ayni/operations.h>
+#include <ayni/reflex.h>
 #include <ayni/resources.h>
 #include <ayni/scenes.h>
 #include <ayni/storage_format.h>
@@ -100,9 +105,12 @@ AYNI_LAYOUT(config_grant_depth, offsetof(ayni_config_v1, grant_delegation_depth_
 AYNI_LAYOUT(config_goal_requirements, offsetof(ayni_config_v1, goal_requirement_capacity) == 104);
 AYNI_LAYOUT(config_resources, offsetof(ayni_config_v1, resource_capacity) == 108);
 AYNI_LAYOUT(config_resource_requests, offsetof(ayni_config_v1, resource_request_capacity) == 112);
-AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 188);
+AYNI_LAYOUT(config_size, sizeof(ayni_config_v1) == 200);
 AYNI_LAYOUT(config_business_contract_bytes,
             offsetof(ayni_config_v1, business_contract_max_bytes) == 184);
+AYNI_LAYOUT(config_reflex_capacity, offsetof(ayni_config_v1, reflex_capacity) == 188);
+AYNI_LAYOUT(config_reflex_event_capacity, offsetof(ayni_config_v1, reflex_event_capacity) == 192);
+AYNI_LAYOUT(config_audit_capacity, offsetof(ayni_config_v1, audit_capacity) == 196);
 
 AYNI_LAYOUT(config_device_capacity, offsetof(ayni_config_v1, device_capacity) == 144);
 AYNI_LAYOUT(config_component_capacity, offsetof(ayni_config_v1, component_capacity) == 148);
@@ -283,7 +291,7 @@ AYNI_LAYOUT(goal_type_strategy_id, offsetof(ayni_goal_type_v1, strategy_id) == 2
 AYNI_LAYOUT(goal_type_export_requirements,
             offsetof(ayni_goal_type_v1, export_requirements) == 24 + 6 * AYNI_PTR);
 AYNI_LAYOUT(work_profile_class, offsetof(ayni_work_profile_v1, work_class) == 0);
-AYNI_LAYOUT(work_profile_reserved, offsetof(ayni_work_profile_v1, reserved) == 4);
+AYNI_LAYOUT(work_profile_recovery, offsetof(ayni_work_profile_v1, recovery) == 4);
 AYNI_LAYOUT(work_profile_period, offsetof(ayni_work_profile_v1, background_period_min_us) == 8);
 AYNI_LAYOUT(work_profile_size, sizeof(ayni_work_profile_v1) == 16);
 AYNI_LAYOUT(goal_type_work_profile,
@@ -419,9 +427,7 @@ AYNI_LAYOUT(snapshot_step_count, offsetof(ayni_task_snapshot_v1, step_count) == 
 AYNI_LAYOUT(snapshot_step_capacity,
             offsetof(ayni_task_snapshot_v1, step_capacity) == 76 + 8 * AYNI_PTR);
 AYNI_LAYOUT(snapshot_steps, offsetof(ayni_task_snapshot_v1, steps) == 80 + 8 * AYNI_PTR);
-AYNI_LAYOUT(snapshot_reserved_call_tool,
-            offsetof(ayni_task_snapshot_v1, reserved_call_tool) == 80 + 11 * AYNI_PTR);
-AYNI_LAYOUT(snapshot_size, sizeof(ayni_task_snapshot_v1) == AYNI_ROUND8(96 + 19 * AYNI_PTR));
+AYNI_LAYOUT(snapshot_size, sizeof(ayni_task_snapshot_v1) == AYNI_ROUND8(96 + 18 * AYNI_PTR));
 
 AYNI_LAYOUT(policy_intent_struct_size, offsetof(ayni_policy_intent_v1, struct_size) == 0);
 AYNI_LAYOUT(policy_intent_kind, offsetof(ayni_policy_intent_v1, kind) == 4);
@@ -668,15 +674,19 @@ AYNI_LAYOUT(call_contract_result_text_limit,
             offsetof(ayni_call_contract_v1, result_text_limit) == 48);
 AYNI_LAYOUT(call_contract_resource_count, offsetof(ayni_call_contract_v1, resource_count) == 52);
 AYNI_LAYOUT(call_contract_resources, offsetof(ayni_call_contract_v1, resources) == 56);
-AYNI_LAYOUT(call_contract_size, sizeof(ayni_call_contract_v1) == 56 + 2 * AYNI_PTR);
+AYNI_LAYOUT(call_contract_durability,
+            offsetof(ayni_call_contract_v1, durability) == 56 + 2 * AYNI_PTR);
+AYNI_LAYOUT(call_contract_durability_reserved,
+            offsetof(ayni_call_contract_v1, durability_reserved) == 60 + 2 * AYNI_PTR);
+AYNI_LAYOUT(call_contract_size, sizeof(ayni_call_contract_v1) == 64 + 2 * AYNI_PTR);
 AYNI_LAYOUT(call_capability_struct_size, offsetof(ayni_call_capability_v1, struct_size) == 0);
 AYNI_LAYOUT(call_capability_version, offsetof(ayni_call_capability_v1, version) == 4);
 AYNI_LAYOUT(call_capability_capability_id, offsetof(ayni_call_capability_v1, capability_id) == 8);
 AYNI_LAYOUT(call_capability_contract,
             offsetof(ayni_call_capability_v1, contract) == 8 + 2 * AYNI_PTR);
 AYNI_LAYOUT(call_capability_business,
-            offsetof(ayni_call_capability_v1, business) == 64 + 4 * AYNI_PTR);
-AYNI_LAYOUT(call_capability_size, sizeof(ayni_call_capability_v1) == 64 + 5 * AYNI_PTR);
+            offsetof(ayni_call_capability_v1, business) == 72 + 4 * AYNI_PTR);
+AYNI_LAYOUT(call_capability_size, sizeof(ayni_call_capability_v1) == 72 + 5 * AYNI_PTR);
 AYNI_LAYOUT(provider_request_struct_size, offsetof(ayni_provider_request_v1, struct_size) == 0);
 AYNI_LAYOUT(provider_request_capability_version,
             offsetof(ayni_provider_request_v1, capability_version) == 4);
@@ -691,12 +701,11 @@ AYNI_LAYOUT(provider_request_endpoint_id,
             offsetof(ayni_provider_request_v1, endpoint_id) == 48 + 2 * AYNI_PTR);
 AYNI_LAYOUT(provider_request_arguments,
             offsetof(ayni_provider_request_v1, arguments) == 48 + 4 * AYNI_PTR);
-AYNI_LAYOUT(provider_request_text, offsetof(ayni_provider_request_v1, text) == 56 + 5 * AYNI_PTR);
 AYNI_LAYOUT(provider_request_subscription,
-            offsetof(ayni_provider_request_v1, subscription) == 56 + 8 * AYNI_PTR);
-AYNI_LAYOUT(provider_request_value, offsetof(ayni_provider_request_v1, value) == 56 + 9 * AYNI_PTR);
+            offsetof(ayni_provider_request_v1, subscription) == 56 + 6 * AYNI_PTR);
+AYNI_LAYOUT(provider_request_value, offsetof(ayni_provider_request_v1, value) == 56 + 7 * AYNI_PTR);
 AYNI_LAYOUT(provider_request_size,
-            sizeof(ayni_provider_request_v1) == AYNI_ROUND8(56 + 11 * AYNI_PTR));
+            sizeof(ayni_provider_request_v1) == AYNI_ROUND8(56 + 9 * AYNI_PTR));
 AYNI_LAYOUT(tool_struct_size, offsetof(ayni_tool_v1, struct_size) == 0);
 AYNI_LAYOUT(tool_binding_version, offsetof(ayni_tool_v1, binding_version) == 4);
 AYNI_LAYOUT(tool_binding_id, offsetof(ayni_tool_v1, binding_id) == 8);
@@ -764,8 +773,10 @@ AYNI_LAYOUT(provider_result_tool_reserved,
             offsetof(ayni_provider_result_v1, tool_reserved) == 52 + 2 * AYNI_PTR);
 AYNI_LAYOUT(provider_result_tool_calls,
             offsetof(ayni_provider_result_v1, tool_calls) == 56 + 2 * AYNI_PTR);
-AYNI_LAYOUT(provider_result_size,
-            sizeof(ayni_provider_result_v1) == AYNI_ROUND8(56 + 5 * AYNI_PTR) + 56);
+AYNI_LAYOUT(provider_result_execution_status, offsetof(ayni_provider_result_v1, execution_status) ==
+                                                  AYNI_ROUND8(56 + 5 * AYNI_PTR) + 56);
+AYNI_LAYOUT(provider_result_size, sizeof(ayni_provider_result_v1) ==
+                                      AYNI_ROUND8(AYNI_ROUND8(56 + 5 * AYNI_PTR) + 56 + AYNI_PTR));
 AYNI_LAYOUT(provider_result_body,
             offsetof(ayni_provider_result_v1, body) == AYNI_ROUND8(56 + 5 * AYNI_PTR) + 32);
 AYNI_LAYOUT(provider_result_model_usage,
@@ -797,10 +808,11 @@ AYNI_LAYOUT(ayni_call_request_v1_reserved, offsetof(ayni_call_request_v1, reserv
 AYNI_LAYOUT(ayni_call_request_v1_step_key, offsetof(ayni_call_request_v1, step_key) == 16);
 AYNI_LAYOUT(ayni_call_request_v1_binding_id,
             offsetof(ayni_call_request_v1, binding_id) == 16 + 2 * AYNI_PTR);
-AYNI_LAYOUT(ayni_call_request_v1_arguments,
-            offsetof(ayni_call_request_v1, arguments) == 16 + 4 * AYNI_PTR);
-AYNI_LAYOUT(ayni_call_request_v1_text, offsetof(ayni_call_request_v1, text) == 24 + 5 * AYNI_PTR);
-AYNI_LAYOUT(ayni_call_request_v1_size, sizeof(ayni_call_request_v1) == 32 + 9 * AYNI_PTR);
+AYNI_LAYOUT(ayni_call_request_v1_mode, offsetof(ayni_call_request_v1, mode) == 16 + 6 * AYNI_PTR);
+/* Since 0.58 (ADR-0111): preemption replaces mode_reserved with zero struct size change. */
+AYNI_LAYOUT(ayni_call_request_v1_preemption,
+            offsetof(ayni_call_request_v1, preemption) == 20 + 6 * AYNI_PTR);
+AYNI_LAYOUT(ayni_call_request_v1_size, sizeof(ayni_call_request_v1) == 24 + 6 * AYNI_PTR);
 
 AYNI_LAYOUT(ayni_task_call_result_v1_struct_size,
             offsetof(ayni_task_call_result_v1, struct_size) == 0);
@@ -897,7 +909,7 @@ AYNI_LAYOUT(config_executor_capacity, offsetof(ayni_config_v1, executor_capacity
 AYNI_LAYOUT(config_execution_binding_capacity,
             offsetof(ayni_config_v1, execution_binding_capacity) == 164);
 AYNI_LAYOUT(provider_request_execution_permit,
-            offsetof(ayni_provider_request_v1, execution_permit) == 56 + 7 * AYNI_PTR);
+            offsetof(ayni_provider_request_v1, execution_permit) == 56 + 5 * AYNI_PTR);
 AYNI_LAYOUT(observation_source_size, sizeof(ayni_observation_source_v1) == 24 + 4 * AYNI_PTR);
 AYNI_LAYOUT(observation_source_validity,
             offsetof(ayni_observation_source_v1, validity_max_us) == 16 + 4 * AYNI_PTR);
@@ -921,7 +933,10 @@ AYNI_LAYOUT(scene_info_size, sizeof(ayni_scene_info_v1) == 48);
 AYNI_LAYOUT(scene_info_barrier, offsetof(ayni_scene_info_v1, requires_seq) == 32);
 AYNI_LAYOUT(executor_status_size, sizeof(ayni_executor_status_v1) == 64);
 AYNI_LAYOUT(executor_status_control, offsetof(ayni_executor_status_v1, control) == 8);
-AYNI_LAYOUT(executor_size, sizeof(ayni_executor_v1) == AYNI_ROUND8(56 + 7 * AYNI_PTR));
+AYNI_LAYOUT(executor_flags, offsetof(ayni_executor_v1, flags) == 56 + 7 * AYNI_PTR);
+AYNI_LAYOUT(executor_flags_reserved,
+            offsetof(ayni_executor_v1, flags_reserved) == 60 + 7 * AYNI_PTR);
+AYNI_LAYOUT(executor_size, sizeof(ayni_executor_v1) == AYNI_ROUND8(64 + 7 * AYNI_PTR));
 AYNI_LAYOUT(executor_domain, offsetof(ayni_executor_v1, control_domain_id) == 8 + 2 * AYNI_PTR);
 AYNI_LAYOUT(executor_context, offsetof(ayni_executor_v1, ctx) == 56 + 2 * AYNI_PTR);
 AYNI_LAYOUT(executor_status_port, offsetof(ayni_executor_v1, status) == 56 + 6 * AYNI_PTR);
@@ -993,12 +1008,12 @@ AYNI_LAYOUT(task_tool_authority_source,
 AYNI_LAYOUT(task_tool_authority_stamp,
             offsetof(ayni_task_tool_authority_v1, authority_commit_seq) == 48);
 AYNI_LAYOUT(snapshot_directory_list,
-            offsetof(ayni_task_snapshot_v1, list_capabilities) == 96 + 15 * AYNI_PTR);
+            offsetof(ayni_task_snapshot_v1, list_capabilities) == 96 + 14 * AYNI_PTR);
 AYNI_LAYOUT(snapshot_directory_inspect,
-            offsetof(ayni_task_snapshot_v1, inspect_capability) == 96 + 16 * AYNI_PTR);
+            offsetof(ayni_task_snapshot_v1, inspect_capability) == 96 + 15 * AYNI_PTR);
 
 AYNI_LAYOUT(snapshot_capability_context,
-            offsetof(ayni_task_snapshot_v1, capability_context) == 96 + 17 * AYNI_PTR);
+            offsetof(ayni_task_snapshot_v1, capability_context) == 96 + 16 * AYNI_PTR);
 
 /* ABI 0.51: exact scalar operation identities and staged controls remain C99. */
 AYNI_LAYOUT(operation_ref_size, sizeof(ayni_operation_ref_v1) == 24);
@@ -1006,9 +1021,81 @@ AYNI_LAYOUT(operation_frontier_size, sizeof(ayni_operation_frontier_v1) == 40);
 AYNI_LAYOUT(operation_control_size, sizeof(ayni_operation_control_v1) == 80 + 2 * AYNI_PTR);
 AYNI_LAYOUT(operation_control_reference,
             offsetof(ayni_operation_control_v1, reference) == 8 + 2 * AYNI_PTR);
-AYNI_LAYOUT(snapshot_operation, offsetof(ayni_task_snapshot_v1, operation) == 96 + 18 * AYNI_PTR);
+AYNI_LAYOUT(snapshot_operation, offsetof(ayni_task_snapshot_v1, operation) == 96 + 17 * AYNI_PTR);
 AYNI_LAYOUT(policy_operation_control,
             offsetof(ayni_policy_output_v1, control_operation) == 24 + 4 * AYNI_PTR);
 AYNI_LAYOUT(sample_identity_size, sizeof(ayni_model_sample_v1) == 24);
 AYNI_LAYOUT(capability_context_size, sizeof(ayni_capability_context_v1) == 296);
 AYNI_LAYOUT(task_wait_form, offsetof(ayni_task_info_v1, wait_form) == 156);
+
+/* ABI 0.59 (ADR-0112): ControlSession, lock-free ObservationSlots, and ReflexRules. */
+AYNI_LAYOUT(reason_reflex_value, AYNI_REASON_REFLEX == 84u);
+AYNI_LAYOUT(observation_slot_info_size, sizeof(ayni_observation_slot_info_v1) == 40);
+AYNI_LAYOUT(observation_slot_info_published,
+            offsetof(ayni_observation_slot_info_v1, published) == 8);
+AYNI_LAYOUT(observation_slot_info_discarded,
+            offsetof(ayni_observation_slot_info_v1, discarded) == 32);
+AYNI_LAYOUT(reflex_rule_cooldown, offsetof(ayni_reflex_rule_v1, cooldown_us) == 24 + 2 * AYNI_PTR);
+AYNI_LAYOUT(reflex_rule_conditions, offsetof(ayni_reflex_rule_v1, conditions) == 40 + 4 * AYNI_PTR);
+AYNI_LAYOUT(reflex_rule_owner_agent,
+            offsetof(ayni_reflex_rule_v1, owner_agent_id) == AYNI_ROUND8(40 + 7 * AYNI_PTR));
+AYNI_LAYOUT(reflex_rule_input, offsetof(ayni_reflex_rule_v1, input) ==
+                                   AYNI_ROUND8(40 + 7 * AYNI_PTR) + 16 + 2 * AYNI_PTR);
+AYNI_LAYOUT(reflex_rule_size, sizeof(ayni_reflex_rule_v1) ==
+                                  AYNI_ROUND8(AYNI_ROUND8(40 + 7 * AYNI_PTR) + 24 + 5 * AYNI_PTR));
+AYNI_LAYOUT(reflex_info_size, sizeof(ayni_reflex_info_v1) == 56);
+AYNI_LAYOUT(reflex_info_last_fired, offsetof(ayni_reflex_info_v1, last_fired_us) == 24);
+AYNI_LAYOUT(reflex_info_active_call, offsetof(ayni_reflex_info_v1, active_call_id) == 48);
+AYNI_LAYOUT(reflex_event_size, sizeof(ayni_reflex_event_v1) == 136);
+AYNI_LAYOUT(reflex_event_action, offsetof(ayni_reflex_event_v1, action) == 24);
+AYNI_LAYOUT(reflex_event_rule_id, offsetof(ayni_reflex_event_v1, rule_id) == 64);
+AYNI_LAYOUT(reflex_event_trigger_source, offsetof(ayni_reflex_event_v1, trigger_source) == 100);
+AYNI_LAYOUT(control_segment_size, sizeof(ayni_control_segment_v1) == 656);
+AYNI_LAYOUT(control_segment_fields, offsetof(ayni_control_segment_v1, fields) == 16);
+AYNI_LAYOUT(control_session_step_size, sizeof(ayni_control_session_step_v1) == 688);
+AYNI_LAYOUT(control_session_step_active, offsetof(ayni_control_session_step_v1, active) == 32);
+AYNI_LAYOUT(control_session_info_size, sizeof(ayni_control_session_info_v1) == 40);
+AYNI_LAYOUT(control_session_info_transitions,
+            offsetof(ayni_control_session_info_v1, transitions) == 32);
+
+/* ABI 0.60 (ADR-0113): asynchronous RAM audit ring with zero implicit padding. */
+AYNI_LAYOUT(audit_record_struct_size, offsetof(ayni_audit_record_v1, struct_size) == 0);
+AYNI_LAYOUT(audit_record_kind, offsetof(ayni_audit_record_v1, kind) == 4);
+AYNI_LAYOUT(audit_record_seq, offsetof(ayni_audit_record_v1, seq) == 8);
+AYNI_LAYOUT(audit_record_boot_epoch, offsetof(ayni_audit_record_v1, boot_epoch) == 16);
+AYNI_LAYOUT(audit_record_at_us, offsetof(ayni_audit_record_v1, at_us) == 24);
+AYNI_LAYOUT(audit_record_subject_id, offsetof(ayni_audit_record_v1, subject_id) == 32);
+AYNI_LAYOUT(audit_record_auxiliary_id, offsetof(ayni_audit_record_v1, auxiliary_id) == 40);
+AYNI_LAYOUT(audit_record_status, offsetof(ayni_audit_record_v1, status) == 48);
+AYNI_LAYOUT(audit_record_reason, offsetof(ayni_audit_record_v1, reason) == 52);
+AYNI_LAYOUT(audit_record_detail_code, offsetof(ayni_audit_record_v1, detail_code) == 56);
+AYNI_LAYOUT(audit_record_flags, offsetof(ayni_audit_record_v1, flags) == 60);
+AYNI_LAYOUT(audit_record_label_size, offsetof(ayni_audit_record_v1, label_size) == 64);
+AYNI_LAYOUT(audit_record_reserved, offsetof(ayni_audit_record_v1, reserved) == 68);
+AYNI_LAYOUT(audit_record_label, offsetof(ayni_audit_record_v1, label) == 72);
+AYNI_LAYOUT(audit_record_size, sizeof(ayni_audit_record_v1) == 104);
+AYNI_LAYOUT(audit_info_struct_size, offsetof(ayni_audit_info_v1, struct_size) == 0);
+AYNI_LAYOUT(audit_info_capacity, offsetof(ayni_audit_info_v1, capacity) == 4);
+AYNI_LAYOUT(audit_info_pending, offsetof(ayni_audit_info_v1, pending) == 8);
+AYNI_LAYOUT(audit_info_reserved, offsetof(ayni_audit_info_v1, reserved) == 12);
+AYNI_LAYOUT(audit_info_next_seq, offsetof(ayni_audit_info_v1, next_seq) == 16);
+AYNI_LAYOUT(audit_info_dropped_overflow, offsetof(ayni_audit_info_v1, dropped_overflow) == 24);
+AYNI_LAYOUT(audit_info_drained_total, offsetof(ayni_audit_info_v1, drained_total) == 32);
+AYNI_LAYOUT(audit_info_size, sizeof(ayni_audit_info_v1) == 40);
+
+/* ADR-0114: parameter projection is a fixed C99 integer layout (Since 0.61). */
+AYNI_LAYOUT(reflex_param_size, sizeof(ayni_reflex_param_binding_v1) == 80);
+AYNI_LAYOUT(reflex_param_clamp, offsetof(ayni_reflex_param_binding_v1, input_min) == 24);
+AYNI_LAYOUT(reflex_param_bindings, offsetof(ayni_reflex_rule_v1, param_bindings) ==
+                                       AYNI_ROUND8(40 + 7 * AYNI_PTR) + 24 + 4 * AYNI_PTR);
+
+/* C-VER-002 / ADR-0114: pure ControlLoop C99 fields contain no pointers. */
+AYNI_LAYOUT(loop_sensor_limit_size, sizeof(ayni_control_sensor_limit_v1) == 32);
+AYNI_LAYOUT(loop_sensor_sample_size, sizeof(ayni_control_sensor_sample_v1) == 24);
+AYNI_LAYOUT(loop_fields, offsetof(ayni_control_loop_t, fields) == 8);
+AYNI_LAYOUT(loop_last_step, offsetof(ayni_control_loop_t, last_step_us) ==
+                                offsetof(ayni_control_loop_t, max_cycle_gap_us) + 16);
+AYNI_LAYOUT(loop_previous, offsetof(ayni_control_loop_t, previous) ==
+                               offsetof(ayni_control_loop_t, last_step_us) + 8);
+AYNI_LAYOUT(loop_size, sizeof(ayni_control_loop_t) == offsetof(ayni_control_loop_t, previous) +
+                                                          sizeof(ayni_control_segment_v1));

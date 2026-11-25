@@ -8,6 +8,9 @@ constexpr uint64_t index_magic = UINT64_C(0x314958444e5941); // AYNDXI1, ADR-010
 constexpr uint32_t word_bytes = 4, wide_bytes = 8, bits_per_byte = 8;
 constexpr uint32_t ref_bytes = 24;
 constexpr uint32_t raw_body = 0, call_result_view = 1;
+// Unshared small payloads (tool arguments, continuations, short inline text) are kept directly
+// inside the AYNDXI1 literal stream instead of creating individual FileBodies files (ADR-0113).
+constexpr uint32_t inline_literal_max_bytes = 512;
 void add(std::string &out, uint64_t value, uint32_t count) {
     for (uint32_t at = 0; at < count; ++at) {
         out.push_back(static_cast<char>(value));
@@ -182,14 +185,17 @@ ayni_status_t store_history(const ayni_body_store_v1 &bodies, Turn &turn) {
             const auto reference = found != turn.result_views.end()  ? found->second
                                    : raw != turn.history_texts.end() ? raw->second
                                                                      : BodyRef{};
-            payloads.push_back({message.text, reference,
-                                found == turn.result_views.end() ? raw_body : call_result_view});
+            if (reference.id || message.text.size > inline_literal_max_bytes) {
+                payloads.push_back(
+                    {message.text, reference,
+                     found == turn.result_views.end() ? raw_body : call_result_view});
+            }
         }
-        if (message.continuation.data.size) {
+        if (message.continuation.data.size > inline_literal_max_bytes) {
             payloads.push_back({message.continuation.data, {}});
         }
         for (uint32_t at = 0; at < message.count; ++at) {
-            if (message.functions[at].arguments.size) {
+            if (message.functions[at].arguments.size > inline_literal_max_bytes) {
                 payloads.push_back({message.functions[at].arguments, {}});
             }
         }

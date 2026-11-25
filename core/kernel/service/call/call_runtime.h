@@ -7,6 +7,7 @@
 #include "kernel/ports/attempt_sequence.h"
 #include "kernel/ports/provider_mailbox.h"
 #include "kernel/ports/subscription_ingress_port.h"
+#include "kernel/service/audit/audit_ring.h"
 #include "kernel/service/execution/execution_control.h"
 #include "kernel/service/model/work_model.h"
 #include "knowledge/observation/observation_table.h"
@@ -37,7 +38,8 @@ class CallRuntime {
                 resources::ResourceAdmission &resources, resources::PermitTable &permits,
                 knowledge::ObservationTable &observations,
                 SubscriptionIngressPort subscription_ingress, ProviderMailbox &mailbox,
-                ExecutorMailbox &executors, AttemptSequence &attempts, const ayni_host_v1 &host);
+                ExecutorMailbox &executors, AttemptSequence &attempts, const ayni_host_v1 &host,
+                AuditRing &audit);
     CallRuntime(const CallRuntime &) = delete;
     CallRuntime &operator=(const CallRuntime &) = delete;
 
@@ -55,10 +57,17 @@ class CallRuntime {
                                          knowledge::MemoryDependencies &dependencies);
     // A stale staged input asks the strategy to decide again without committing a hold.
     bool proposal_needs_redecision() const { return proposal_ && proposal_->redecide; }
+    // True iff the checked proposal creates a RAM-only Tier 0 EPHEMERAL Call (ADR-0110).
+    bool proposal_ephemeral() const {
+        return proposal_ && !proposal_->operation_index && !proposal_->wait_basis &&
+               !proposal_->subscription_index && proposal_->links.contract.is_ephemeral();
+    }
     // Accepts one checked intent. New Call identity, queue entry and Task state
     // share its transition; writes the new stable ID only when it creates a Call.
     bool accept(uint32_t task_index, foundation::TransitionStamp stamp, uint64_t now_us,
                 uint64_t &accepted_call);
+    // Accepts one checked Tier 0 EPHEMERAL Call purely in RAM (0 WAL transitions).
+    bool accept_ephemeral(uint32_t task_index, uint64_t now_us, uint64_t &accepted_call);
 
     // Range of monotonic Call IDs admitted by this step's decision pass. Only that pass
     // allocates Calls; IDs between the ends can also belong to other entity types.
@@ -88,11 +97,13 @@ class CallRuntime {
                                      ayni_capability_detail_v1 &out) const;
     using Mode = RuntimeMode;
     using Advance = RuntimeAdvance;
+    enum class JournalAdmission { available, blocked }; // Kernel commit capacity.
     // C-COMMIT-006: one journal-only transition for a fresh Call, after higher priority work.
-    Advance prepare_accepted(const AcceptedCalls &, uint64_t deadline_us, uint64_t durable_seq);
-    Advance advance(uint64_t now_us, uint64_t durable_seq, Mode mode);
+    // ephemeral_only restricts preparation to RAM-only Calls when log grouping cannot extend.
+    Advance prepare_accepted(const AcceptedCalls &, uint64_t deadline_us, uint64_t durable_seq,
+                             bool ephemeral_only = false,
+                             JournalAdmission admission = JournalAdmission::available);
     // Independent local stop/lease ports run even when persistence cannot admit work.
-    enum class JournalAdmission { available, blocked }; // Kernel's current commit capacity.
     Advance advance_managed(uint64_t now_us, uint64_t durable_seq, Mode mode,
                             JournalAdmission admission);
     bool control_ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const {
@@ -100,7 +111,8 @@ class CallRuntime {
                control_.ready(now_us, durable_seq, mode);
     }
     // Ready/deadline projection does not invoke Providers or mutate domain state.
-    bool ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const;
+    bool ready(uint64_t now_us, uint64_t durable_seq, Mode mode,
+               JournalAdmission admission = JournalAdmission::available) const;
     // Source/Task refusal frontier closes all affected gates even with no journal room.
     // This performs bounded owner bookkeeping only, never Provider callbacks.
     // Capture transient management gates before a following resume; no Provider/Executor I/O.
@@ -117,8 +129,25 @@ class CallRuntime {
     // Pure projection of the selected call's pending dependency; never caches it in Task.
     ayni_call_wait_t waiting(uint32_t index, uint64_t now_us, uint64_t durable_seq,
                              uint64_t &waited_us) const;
-    uint64_t next_deadline_us() const; // Monotonic; UINT64_MAX when no timer is pending.
+    // Future monotonic deadline; UINT64_MAX when no admitted timer is pending.
+    uint64_t next_deadline_us(uint64_t now_us, JournalAdmission admission) const;
     bool idle() const; // No retained delivery/queued runtime, independent of durable history.
+    // True iff no RAM-only EPHEMERAL call still holds transport or lease ownership.
+    bool ephemeral_idle() const;
+    // True iff at least one uncancelled cancellable EPHEMERAL Call currently holds resource_index.
+    bool has_ephemeral_holder(uint32_t resource_index) const;
+    // Soft-stops and cancels eligible held EPHEMERAL Calls on resource_index (ADR-0112).
+    // Returns AYNI_OK when >=1 holder was signalled, AYNI_NOT_FOUND when idle/already stopping,
+    // AYNI_DENIED when only Tier 2 DURABLE or non-cancellable holders occupy it.
+    ayni_status_t preempt_resource(uint32_t resource_index, uint64_t now_us,
+                                   work::CallCancelCause cause, uint64_t &out_affected);
+    // Admits a zero-LLM, zero-WAL deterministic EPHEMERAL reflex Call after live Agent,
+    // Grant/Scope, Scene and capacity preflight (ADR-0112).
+    ayni_status_t submit_reflex_call(uint64_t owner_agent_id, uint32_t binding_index,
+                                     ayni_string_v1 rule_id, ayni_bytes_v1 encoded_input,
+                                     uint64_t now_us, uint64_t durable_seq, uint64_t &out_call_id);
+    // True while a spawned reflex Call still owns runtime transport or physical lease state.
+    bool reflex_call_active(uint64_t call_id) const;
     // Every erased call has released its local transport/Provider borrow; unrelated calls may run.
     bool privacy_released() const;
     // After an automatic storage reload, map retained transport handles back to
@@ -170,7 +199,10 @@ class CallRuntime {
         std::optional<Delivery>
             delivery; // Present in barrier/submitted/waiting_stop, never lease_stop.
         std::optional<CollectionLease>
-            collection{}; // Subscription lease outlives an uncertain ended borrow.
+            collection{};       // Subscription lease outlives an uncertain ended borrow.
+        bool ephemeral = false; // True iff this active slot owns a RAM-only Tier 0 call.
+        // Preemption policy for queued admission; NONE keeps ordinary FIFO (ADR-0111).
+        ayni_call_preemption_t preemption = AYNI_CALL_PREEMPT_NONE;
     };
     struct Slot {
         std::optional<Active> active; // Exact boot-local delivery/claim owner, absent when idle.
@@ -184,6 +216,8 @@ class CallRuntime {
         catalog::BindingLinks links; // Catalog resolution, not cached authority or availability.
         uint32_t input_size;         // Canonical bytes in staging_, bounded by limits_.input_bytes.
         uint32_t mode = AYNI_CALL_MODE_FOREGROUND; // Copied explicit Task attachment selection.
+        // Copied preemption policy for queued admission; NONE keeps FIFO (ADR-0111).
+        ayni_call_preemption_t preemption = AYNI_CALL_PREEMPT_NONE;
         work::ModelContext model_context{}; // Captured visibility, never execution authority.
         bool redecide = false; // Final optional admission expired: discard this decision only.
         work::AuthorityReference
@@ -276,6 +310,11 @@ class CallRuntime {
     // Bound all newly accepted Call-owned and Task-owned storage before mutation.
     authority::GrantCheck check_call_capacity(uint32_t task_index, const Proposal &,
                                               const catalog::CallContract &) const;
+    // Decode proposal input, check authority/memory export, and prepare physical execution.
+    authority::GrantCheck check_proposal_authority(uint32_t task_index, Proposal &,
+                                                   const catalog::CallContract &, uint64_t now_us,
+                                                   uint64_t durable_seq,
+                                                   knowledge::MemoryDependencies &);
     // Commit existing-operation controls; never allocates another Call identity.
     bool accept_control(uint32_t task_index, foundation::TransitionStamp, uint64_t now_us);
     // ADR-0086: queued, unresolved or borrowed action occupies this Task's single slot.
@@ -298,10 +337,10 @@ class CallRuntime {
                                                ayni_bytes_v1 domain, const ayni_value_v1 &value,
                                                const catalog::CallContract &contract,
                                                const ayni_business_contract_v1 &proof) const;
-    resources::ResourceRequest resource_request(uint64_t call_id, uint64_t owner,
-                                                const catalog::BindingLinks &links,
-                                                const catalog::CallContract &contract,
-                                                const catalog::WorkProfile &profile) const;
+    resources::ResourceRequest
+    resource_request(uint64_t call_id, uint64_t owner, const catalog::BindingLinks &links,
+                     const catalog::CallContract &contract, const catalog::WorkProfile &profile,
+                     ayni_call_preemption_t preemption = AYNI_CALL_PREEMPT_NONE) const;
     // Fencing never drops pending receipts. Explicit unwritable shutdown may
     // discard volatile outcomes without reporting a committed business success.
     Advance drain_transport(Mode mode);
@@ -354,14 +393,24 @@ class CallRuntime {
     cancel_transport(Delivery &delivery); // One shared cancel port contract, never a terminal.
     bool transport_ready(Mode mode) const;
     // Nullopt means the mailbox had no readable receipt; any other result owns this turn.
-    std::optional<Advance> consume(uint64_t now_us, uint64_t durable_seq);
+    std::optional<Advance> consume(uint64_t now_us, uint64_t durable_seq, JournalAdmission);
     // apply_receipt, then any privacy discard; returns a body the result does not keep.
     ayni_status_t apply_delivery(uint32_t index, uint32_t task_index,
                                  const ProviderMessage &message, uint64_t durable_seq,
-                                 bool &terminal);
+                                 bool &terminal, JournalAdmission);
     // Applies one exact receipt to its invariant owner, before mailbox acknowledgement.
     ayni_status_t apply_receipt(uint32_t index, uint32_t task_index, const ProviderMessage &message,
-                                foundation::TransitionStamp stamp, bool &terminal);
+                                foundation::TransitionStamp stamp, bool &terminal,
+                                JournalAdmission);
+    // Validates inline stop proof or starts fallback STOP polling for a physical terminal.
+    std::optional<Advance> settle_execution_terminal(uint32_t index,
+                                                     const ProviderMessage &message);
+    // Applies RAM-only Task completion or durable UNKNOWN hold for a finished EPHEMERAL call.
+    ayni_status_t finish_ephemeral_task_call(uint32_t index, uint32_t task_index, JournalAdmission);
+    // True when an active call must stop/cancel before any further dispatch progress.
+    bool active_call_stopping(uint32_t at, uint32_t task_index, uint64_t now_us,
+                              uint64_t durable_seq, Mode mode,
+                              authority::GrantCheck &out_authority) const;
     Advance advance_query(uint32_t index, uint64_t now_us, uint64_t durable_seq, Mode mode);
     Advance prepare_query(uint32_t index);
     Advance dispatch_query(uint32_t index, uint64_t now_us);
@@ -370,24 +419,42 @@ class CallRuntime {
                        foundation::TransitionStamp stamp);
     Advance end_query(uint32_t index, ayni_status_t status, ayni_reason_t reason);
     // Scan domain calls and their shared admission queue after reliable ingress.
-    bool calls_ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const;
+    bool calls_ready(uint64_t now_us, uint64_t durable_seq, Mode mode, JournalAdmission) const;
     // Classifies an occupied slot. Queued still needs arbitration; prepared only needs a barrier.
     enum class CallReady { idle, queued, prepared, other };
     CallReady call_readiness(uint32_t index, uint64_t now_us, uint64_t durable_seq,
                              Mode mode) const;
     // Read-only scheduling projection against this scan's resource choice.
     CallReady scheduled_readiness(uint32_t index, uint64_t now_us, uint64_t durable_seq, Mode mode,
-                                  const resources::AdmissionChoice *choice) const;
+                                  const resources::AdmissionChoice *choice, JournalAdmission) const;
     // Pending releases, readable receipts and subscription wakeups precede call scheduling.
-    bool ready_before_calls(uint64_t now_us, uint64_t durable_seq, Mode mode) const;
+    bool ready_before_calls(uint64_t now_us, uint64_t durable_seq, Mode mode,
+                            JournalAdmission) const;
     // Pick one new Call to prepare only if no older or higher-priority Call can advance.
     std::optional<uint32_t> next_accepted_preparation(const AcceptedCalls &, uint64_t now_us,
-                                                      uint64_t durable_seq) const;
-    Advance advance_call(uint32_t index, uint64_t now_us, uint64_t durable_seq, Mode mode);
+                                                      uint64_t durable_seq, bool ephemeral_only,
+                                                      JournalAdmission) const;
+    static constexpr uint32_t no_task = UINT32_MAX; // Sentinel for Task-less reflex Calls.
+    bool resolve_call_task(uint32_t call_index, uint32_t &out_task_index) const;
+    // Match the same journal admission for the mailbox, queue projection and claim.
+    bool admits_call(uint32_t index, JournalAdmission) const;
+    static resources::ResourceAdmission::Admission resource_admission(JournalAdmission);
+    Advance advance(uint64_t now_us, uint64_t durable_seq, Mode mode, JournalAdmission);
+    Advance advance_call(uint32_t index, uint64_t now_us, uint64_t durable_seq, Mode mode,
+                         JournalAdmission);
+    Advance advance_reflex_call(uint32_t index, uint64_t now_us, uint64_t durable_seq, Mode mode,
+                                JournalAdmission);
+    CallReady reflex_call_readiness(uint32_t at, uint64_t now_us, uint64_t durable_seq,
+                                    Mode mode) const;
+    bool select_reflex_grant(uint64_t instance_id, const catalog::Binding &binding,
+                             ayni_bytes_v1 domain, const work::CallInputView &input,
+                             const catalog::CallContract &contract,
+                             const catalog::DecodedBusiness &proof, uint64_t now_us,
+                             uint64_t durable_seq, work::AuthorityReference &out) const;
     Advance restore_wait(uint32_t index, uint32_t task_index, uint64_t now_us, uint64_t durable_seq,
                          Mode mode);
     Advance progress_dispatch(uint32_t index, uint32_t task_index, uint64_t now_us,
-                              uint64_t durable_seq);
+                              uint64_t durable_seq, JournalAdmission);
     // Records PREPARED after the exact claim has been acquired.
     Advance record_preparation(uint32_t index);
     // Reserves a delivery and records DISPATCHING without submitting it to the Provider.
@@ -396,7 +463,16 @@ class CallRuntime {
     Advance dispatch(uint32_t index, uint32_t task_index, uint64_t now_us, uint64_t durable_seq);
     Advance expire_wait(uint32_t index, uint32_t task_index, resources::WaitAction action,
                         uint64_t now_us);
-    Advance cancel_local(uint32_t index, uint32_t task_index);
+    Advance cancel_local(uint32_t index, uint32_t task_index,
+                         ayni_reason_t reason = AYNI_REASON_NONE);
+    // Shared all-or-none victim check for preemption_ready() and trigger_preemption().
+    bool collect_preempt_victims(uint32_t waiter_index, uint64_t now_us, uint64_t durable_seq,
+                                 uint32_t *out_victims, uint32_t max_victims,
+                                 uint32_t &out_count) const;
+    // True when a queued preempting Call has eligible uncancelled EPHEMERAL conflicts (ADR-0111).
+    bool preemption_ready(uint32_t waiter_index, uint64_t now_us, uint64_t durable_seq) const;
+    // All-or-none soft preemption of eligible EPHEMERAL holders blocking waiter_index (ADR-0111).
+    Advance trigger_preemption(uint32_t waiter_index, uint64_t now_us, uint64_t durable_seq);
     void release(uint32_t index, uint64_t now_us); // Exact claim/waiter; delivery already drained.
     // Hands a body Core no longer names to the host body store, when one is installed.
     void release_body(const ayni_body_ref_v1 &ref) const;
@@ -418,11 +494,20 @@ class CallRuntime {
     Advance submit_provider(uint32_t index, uint32_t task_index, uint32_t provider_index,
                             const work::CallInputView &input, uint64_t now_us);
     ProviderMailbox::BlockedSlots
-    blocked_receipts() const; // Only retained terminals awaiting physical proof.
+    blocked_receipts(JournalAdmission admission = JournalAdmission::available) const;
     static bool runtime_retains(const void *context, uint64_t call_id);
     static bool submitted(Stage stage) {
         return stage == Stage::submitted || stage == Stage::waiting_stop;
     }
+    // Emits Call terminal, authority denial, and preemption records to AuditRing (ADR-0113).
+    void audit_call_terminal(uint32_t index, uint64_t now_us) const;
+    authority::GrantCheck audit_proposal_denial(uint32_t task_index, const Proposal &proposal,
+                                                authority::GrantCheck check, uint64_t now_us) const;
+    void audit_authority_denied(uint64_t subject_id, uint64_t auxiliary_id, ayni_status_t status,
+                                ayni_reason_t reason, const catalog::Binding &binding,
+                                const catalog::CallContract &contract, uint64_t now_us) const;
+    void audit_preempted(uint64_t victim_call_id, uint64_t preemptor_call_id, ayni_reason_t reason,
+                         bool physical, ayni_string_v1 label, uint64_t now_us) const;
 
     knowledge::ObservationTable
         &observations_; // Borrowed knowledge owner, never copied sample state.
@@ -435,6 +520,7 @@ class CallRuntime {
     AttemptSequence &attempts_;               // Shared Host/Provider attempt identity allocator.
     const ayni_host_v1
         &host_;           // Bounded callback clock/lock/wake services, lifetime held by Kernel.
+    AuditRing &audit_;    // Kernel-owned asynchronous RAM audit ring (ADR-0113).
     Limits limits_;       // Immutable arena dimensions, shared bounds with CallTable/mailbox.
     Slot *slots_;         // One optional volatile owner per stable call slot.
     uint8_t *staging_;    // Canonical proposed input, copied while callback views are alive.

@@ -32,12 +32,13 @@ struct DecisionAdmission {
     // Query-local sample: false iff no retained Grant has a boot compatibility
     // hold. The owner model cannot change during this synchronous query.
     bool inspect_compatibility;
+    bool journal_available; // True if this pass can publish a Task transition.
     // Packed Compatibility cells by retained Goal index; zero means unknown.
     mutable std::array<uint64_t, compatibility_word_count> compatibility{};
 
-    DecisionAdmission(const WorkModel &owner, uint64_t durable)
+    DecisionAdmission(const WorkModel &owner, uint64_t durable, bool room)
         : model(owner), durable_seq(durable),
-          inspect_compatibility(owner.grants.has_compatibility_holds()) {}
+          inspect_compatibility(owner.grants.has_compatibility_holds()), journal_available(room) {}
 
     // Share each Goal's static reference check across its READY Tasks. Slot
     // identities cannot change during the query; a later query starts fresh.
@@ -62,18 +63,42 @@ struct DecisionAdmission {
 // Missing evidence reaches the consumption check, which records its refusal.
 bool admission_ready(const void *context, const work::Task &task) {
     const auto &query = *static_cast<const DecisionAdmission *>(context);
+    // Old-boot CANCEL_ON_REBOOT Goals must cancel in do_due_work(), never decide (ADR-0110).
+    if (query.model.goal_lineage_boot_reset_pending(task.goal_index)) {
+        return false;
+    }
+    const auto &goal = query.model.goals.at(task.goal_index);
+    if (!query.journal_available &&
+        (!goal.work_profile.cancel_on_reboot() || task.volatile_state.decision_waits_for_journal)) {
+        return false;
+    }
     // Memory-capable decisions may consume their preceding call result or saved record.
-    // Wait for that Task transition's durable prefix instead of holding a normal I/O wait.
+    // Wait for that Task transition's durable prefix instead of holding a normal I/O wait,
+    // except for CANCEL_ON_REBOOT tasks with no unconfirmed durable call or provenance.
     if ((query.model.memories.capacity() != 0 || query.model.calls.capacity() != 0) &&
         task.commit_seq > query.durable_seq) {
-        return false;
+        bool needs_durable_task = !goal.work_profile.cancel_on_reboot() ||
+                                  query.model.provenance.find(work::ProvenanceKind::task, task.slot,
+                                                              task.task_id) != nullptr;
+        if (!needs_durable_task) {
+            for (uint32_t at = 0; at < query.model.calls.capacity(); ++at) {
+                if (query.model.calls.occupied(at) && !query.model.calls.state(at).ephemeral &&
+                    query.model.calls.identity(at).task_id == task.task_id &&
+                    query.model.calls.state(at).latest.transition.commit_seq > query.durable_seq) {
+                    needs_durable_task = true;
+                    break;
+                }
+            }
+        }
+        if (needs_durable_task) {
+            return false;
+        }
     }
     const auto &authority = query.model.task_authority;
     if (authority.contains(task.slot, task.task_id) &&
         authority.at(task.slot).phase == work::TaskAuthorityPhase::paused) {
         return false;
     }
-    const auto &goal = query.model.goals.at(task.goal_index);
     const auto &strategy = query.model.catalogs.strategies.at(
         query.model.catalogs.goal_types.at(goal.goal_type_index).strategy_index);
     if (strategy.ready &&
@@ -249,18 +274,20 @@ ayni_task_snapshot_v1 snapshot_of(const WorkModel &model, DecisionBuffer &decisi
     snapshot.goal_type_version = type.version;
     snapshot.goal_type_id = {type.id.data(), type.id.size()};
     snapshot.goal_parameters = model.goals.parameters(task.goal_index);
-    if (task.checkpoint_writer_version != 0U) {
-        snapshot.checkpoint.strategy_id = {task.checkpoint_writer_id.data(),
-                                           task.checkpoint_writer_id.size()};
-        snapshot.checkpoint.strategy_version = task.checkpoint_writer_version;
+    const uint32_t writer_version = work::TaskTable::live_checkpoint_writer_version(task);
+    if (writer_version != 0U) {
+        const auto &writer_id = work::TaskTable::live_checkpoint_writer_id(task);
+        snapshot.checkpoint.strategy_id = {writer_id.data(), writer_id.size()};
+        snapshot.checkpoint.strategy_version = writer_version;
     }
-    snapshot.checkpoint.state = model.tasks.checkpoint(task_index);
+    snapshot.checkpoint.state = model.tasks.live_checkpoint(task_index);
     ayni_task_step_v1 *steps = decisions.steps();
-    for (uint32_t step = 0; step < task.step_count; ++step) {
-        const catalog::CatalogId &key = model.tasks.step(task_index, step);
+    const uint32_t step_count = work::TaskTable::live_step_count(task);
+    for (uint32_t step = 0; step < step_count; ++step) {
+        const catalog::CatalogId &key = model.tasks.live_step(task_index, step);
         steps[step] = {{key.data(), key.size()}};
     }
-    snapshot.step_count = task.step_count;
+    snapshot.step_count = step_count;
     snapshot.step_capacity = model.tasks.step_capacity();
     snapshot.steps = steps;
     return snapshot;
@@ -312,21 +339,120 @@ Verdict judge_proposal(Verdict verdict, const DecisionBuffer &decisions, uint32_
     return verdict;
 }
 
-// Publish one already judged decision. Call acceptance is the same transition
-// as the strategy checkpoint, and any invariant failure is reported to Kernel.
+// Commits volatile steps and checkpoint into RAM without consuming a WAL transition (ADR-0110).
+void record_volatile(work::TaskTable &tasks, uint32_t task_index, const DecisionBuffer &decisions,
+                     uint32_t intent_count, const catalog::Strategy &writer,
+                     uint32_t checkpoint_size) {
+    for (uint32_t index = 0; index < intent_count; ++index) {
+        const ayni_policy_intent_v1 &intent = decisions.at(index);
+        if (intent.kind == AYNI_POLICY_REPORT_PROGRESS) {
+            static_cast<void>(tasks.add_volatile_step(task_index, step_key_of(intent)));
+        }
+    }
+    tasks.set_volatile_checkpoint(task_index, writer.id, writer.version,
+                                  decisions.checkpoint(checkpoint_size));
+}
+
+// Publishes an eligible CANCEL_ON_REBOOT volatile progress or EPHEMERAL call decision in RAM.
+// Returns std::nullopt when the decision must take the durable WAL commit path instead.
+std::optional<DecisionResult>
+publish_volatile_decision(WorkModel &model, DecisionBuffer &decisions, uint32_t index,
+                          const catalog::Strategy &strategy, const ayni_policy_output_v1 &output,
+                          Verdict verdict, CallRuntime &calls, OwnerClock clock,
+                          MemoryDecision &memory, uint64_t &accepted_call, bool journal_available) {
+    const auto &task = model.tasks.at(index);
+    const auto &goal = model.goals.at(task.goal_index);
+    if (!goal.work_profile.cancel_on_reboot()) {
+        return std::nullopt;
+    }
+    const auto *goal_prov =
+        model.provenance.find(work::ProvenanceKind::goal, task.goal_index, task.goal_id);
+    const auto *task_prov =
+        model.provenance.find(work::ProvenanceKind::task, task.slot, task.task_id);
+    // Goal-owned provenance (e.g. AYNI_GOAL_CONTEXT_AGENT) is already durable on the Goal and
+    // checked by task_invalid(); keep pure-RAM volatile steps/EPHEMERAL calls off WAL unless the
+    // Task adds new Memory reads or already owns durable provenance/checkpoint state
+    // (ADR-0110/0111).
+    const bool goal_only_deps =
+        goal_prov == nullptr
+            ? memory.dependencies().count == 0U
+            : knowledge::same_dependencies(memory.dependencies(), goal_prov->dependencies);
+    const bool pure_ram =
+        task_prov == nullptr && goal_only_deps && work::TaskTable::can_volatile_checkpoint(task);
+    if (verdict.kind == Verdict::Kind::progress) {
+        if (!pure_ram) {
+            return std::nullopt;
+        }
+        record_volatile(model.tasks, index, decisions, output.intent_count, strategy,
+                        output.checkpoint_size);
+        model.tasks.volatile_progress(index);
+        return DecisionResult::applied;
+    }
+    if (verdict.kind != Verdict::Kind::call || !calls.proposal_ephemeral()) {
+        return std::nullopt;
+    }
+    if (pure_ram) {
+        model.tasks.set_volatile_checkpoint(index, strategy.id, strategy.version,
+                                            decisions.checkpoint(output.checkpoint_size));
+    } else {
+        // Task carries durable provenance/checkpoint state or read new Memories beyond Goal
+        // provenance: persist checkpoint + provenance in one WAL batch when changed, then accept
+        // the EPHEMERAL call in RAM (CallTable::insert forbids EPHEMERAL calls).
+        const auto current = model.tasks.checkpoint(index);
+        const auto next = decisions.checkpoint(output.checkpoint_size);
+        const bool checkpoint_unchanged =
+            !work::TaskTable::can_volatile_checkpoint(task) &&
+            task.checkpoint_writer_version == strategy.version &&
+            task.checkpoint_writer_id.equals({strategy.id.data(), strategy.id.size()}) &&
+            current.size == next.size &&
+            (next.size == 0U || std::memcmp(current.data, next.data, next.size) == 0);
+        const bool provenance_unchanged =
+            task_prov == nullptr
+                ? goal_only_deps
+                : knowledge::same_dependencies(memory.dependencies(), task_prov->dependencies);
+        if (!checkpoint_unchanged || !provenance_unchanged) {
+            if (!journal_available) {
+                return std::nullopt;
+            }
+            const auto stamp = model.transitions.next();
+            model.tasks.fold_volatile_model_calls(index);
+            memory.publish(stamp);
+            model.tasks.set_checkpoint(index, strategy.id, strategy.version, next, stamp);
+            model.tasks.progress(index, stamp);
+        }
+    }
+    return calls.accept_ephemeral(index, clock.now_us(), accepted_call) ? DecisionResult::applied
+                                                                        : DecisionResult::internal;
+}
+
+// Publish one already judged decision. Volatile CANCEL_ON_REBOOT progress and
+// EPHEMERAL call turns stay purely in RAM (0 WAL transitions); durable decisions
+// share one transition with their checkpoint, memory, or Tier 2 call.
 DecisionResult publish_decision(WorkModel &model, DecisionBuffer &decisions, uint32_t index,
                                 const catalog::Strategy &strategy,
                                 const ayni_policy_output_v1 &output, Verdict verdict,
                                 CallRuntime &calls, OwnerClock clock, MemoryDecision &memory,
-                                uint64_t &accepted_call) {
+                                uint64_t &accepted_call, bool journal_available) {
     if (verdict.kind == Verdict::Kind::redecide) {
         return DecisionResult::none;
+    }
+    if (const auto fast =
+            publish_volatile_decision(model, decisions, index, strategy, output, verdict, calls,
+                                      clock, memory, accepted_call, journal_available)) {
+        return *fast;
+    }
+    // C-POLICY-001 exposes decisions as proposals. Discard this proposal and
+    // re-evaluate from the last accepted checkpoint when a durable batch fits.
+    if (!journal_available) {
+        model.tasks.set_decision_waits_for_journal(index, true);
+        return DecisionResult::applied;
     }
     work::WorkTables tables = model.tables();
     if (verdict.kind == Verdict::Kind::end && work::task_end_exhausts(tables, index, verdict.end)) {
         verdict = hold(AYNI_CAPACITY_EXCEEDED, AYNI_REASON_REVISION_EXHAUSTED);
     }
     const foundation::TransitionStamp stamp = model.transitions.next();
+    model.tasks.fold_volatile_model_calls(index);
     if (verdict.kind != Verdict::Kind::hold) {
         memory.publish(stamp);
     }
@@ -367,6 +493,32 @@ DecisionResult publish_decision(WorkModel &model, DecisionBuffer &decisions, uin
         break;
     }
     return DecisionResult::applied;
+}
+
+// Borrow the snapshot and proposal ports only for the synchronous policy callback.
+ayni_status_t ask_strategy(WorkModel &model, DecisionBuffer &decisions, uint32_t index,
+                           uint64_t now_us, uint64_t durable_seq, const catalog::Strategy &strategy,
+                           CallRuntime &calls, MemoryDecision &memory,
+                           ayni_policy_output_v1 &output) {
+    ayni_task_snapshot_v1 snapshot = snapshot_of(model, decisions, index, now_us);
+    snapshot.memory = model.memories.capacity() == 0 ? nullptr : memory.view();
+    output.struct_size = sizeof(output);
+    output.intent_capacity = strategy.max_intents_per_call;
+    output.intents = decisions.clear(strategy.max_intents_per_call);
+    // Startup checked the old writer against this strategy's reader promises
+    // and capacity; later decisions use this writer (ADR-0024, ADR-0056).
+    output.checkpoint_capacity = strategy.max_checkpoint_bytes;
+    output.checkpoint_size = snapshot.checkpoint.state.size;
+    output.checkpoint =
+        decisions.load_checkpoint(snapshot.checkpoint.state, strategy.max_checkpoint_bytes);
+    // Nothing changes while the strategy runs (C-POLICY-001), so the task
+    // it decides is still the one it saw.
+    calls.begin_decision(index, snapshot, output, durable_seq);
+    const ayni_status_t status =
+        model.call_out([&] { return strategy.decide(strategy.ctx, &snapshot, &output); });
+    calls.end_decision();
+    memory.close();
+    return status;
 }
 
 } // namespace
@@ -414,20 +566,27 @@ uint8_t *DecisionBuffer::load_checkpoint(ayni_bytes_v1 state, uint32_t capacity)
 
 DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t ready_before,
                            uint64_t now_us, uint64_t durable_seq, OwnerClock clock,
-                           CallRuntime &calls, uint64_t &accepted_call) {
+                           CallRuntime &calls, uint64_t &accepted_call, uint64_t volatile_before,
+                           bool journal_available) {
     accepted_call = 0;
     uint32_t index = 0;
-    const DecisionAdmission admission{model, durable_seq};
-    if (!model.tasks.next_ready(ready_before, index, {&admission, admission_ready})) {
+    const DecisionAdmission admission{model, durable_seq, journal_available};
+    if (!model.tasks.next_ready(ready_before, index, {&admission, admission_ready},
+                                volatile_before)) {
         return DecisionResult::none;
     }
+    model.tasks.set_decision_waits_for_journal(index, false);
     const work::Task &task = model.tasks.at(index);
     const auto authority = model.check_task_authority(index, clock.now_us(), durable_seq);
     if (authority.status != AYNI_OK) {
         if (authority.status == AYNI_BUSY) {
             return DecisionResult::none;
         }
-        model.pause_task_authority(index, clock.now_us(), durable_seq);
+        if (journal_available) {
+            model.pause_task_authority(index, clock.now_us(), durable_seq);
+        } else {
+            model.tasks.set_decision_waits_for_journal(index, true);
+        }
         return DecisionResult::applied;
     }
     const uint32_t strategy_index =
@@ -437,33 +596,25 @@ DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t
 
     MemoryDecision memory(model, index, durable_seq, clock, decisions.memory_staging());
     if (const auto source = memory.validate(); source != AYNI_OK) {
-        model.tasks.hold(index, source, memory_reason(source), model.transitions.next());
+        if (journal_available) {
+            model.tasks.hold(index, source, memory_reason(source), model.transitions.next());
+        } else {
+            model.tasks.set_decision_waits_for_journal(index, true);
+        }
         return DecisionResult::applied;
     }
-    ayni_task_snapshot_v1 snapshot = snapshot_of(model, decisions, index, now_us);
-    snapshot.memory = model.memories.capacity() == 0 ? nullptr : memory.view();
     ayni_policy_output_v1 output{};
-    output.struct_size = sizeof(output);
-    output.intent_capacity = strategy.max_intents_per_call;
-    output.intents = decisions.clear(strategy.max_intents_per_call);
-    // Startup checked the old writer against this strategy's reader promises
-    // and capacity; later decisions use this writer (ADR-0024, ADR-0056).
-    output.checkpoint_capacity = strategy.max_checkpoint_bytes;
-    output.checkpoint_size = snapshot.checkpoint.state.size;
-    output.checkpoint =
-        decisions.load_checkpoint(snapshot.checkpoint.state, strategy.max_checkpoint_bytes);
-    // Nothing changes while the strategy runs (C-POLICY-001), so the task
-    // it decides is still the one it saw.
-    calls.begin_decision(index, snapshot, output, durable_seq);
-    const ayni_status_t status =
-        model.call_out([&] { return strategy.decide(strategy.ctx, &snapshot, &output); });
-    calls.end_decision();
-    memory.close();
+    const auto status =
+        ask_strategy(model, decisions, index, now_us, durable_seq, strategy, calls, memory, output);
 
     // A non-reentrant callback can still run past a Grant deadline. Discard all
     // returned progress/checkpoint output before committing if authority expired.
     if (model.check_task_authority(index, clock.now_us(), durable_seq).status != AYNI_OK) {
-        model.pause_task_authority(index, clock.now_us(), durable_seq);
+        if (journal_available) {
+            model.pause_task_authority(index, clock.now_us(), durable_seq);
+        } else {
+            model.tasks.set_decision_waits_for_journal(index, true);
+        }
         decisions.scrub();
         calls.scrub_decision();
         return DecisionResult::applied;
@@ -483,14 +634,14 @@ DecisionResult decide_next(WorkModel &model, DecisionBuffer &decisions, uint64_t
     }
     verdict = judge_proposal(verdict, decisions, index, durable_seq, clock, calls, memory);
     const auto result = publish_decision(model, decisions, index, strategy, output, verdict, calls,
-                                         clock, memory, accepted_call);
+                                         clock, memory, accepted_call, journal_available);
     decisions.scrub();
     calls.scrub_decision();
     return result;
 }
 
-bool awaits_decision(const WorkModel &model, uint64_t durable_seq) {
-    const DecisionAdmission admission{model, durable_seq};
+bool awaits_decision(const WorkModel &model, uint64_t durable_seq, bool journal_available) {
+    const DecisionAdmission admission{model, durable_seq, journal_available};
     return model.tasks.has_ready({&admission, admission_ready});
 }
 

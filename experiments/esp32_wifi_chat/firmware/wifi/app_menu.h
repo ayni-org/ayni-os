@@ -36,6 +36,8 @@ inline std::optional<App> app_at(int x, int y) {
 }
 void draw_app_menu(Canvas &, bool voice_reply);
 void draw_motor_preferences(Canvas &, bool enabled, uint32_t limit, std::string_view status);
+void draw_motor_feedback(Canvas &, std::string_view status, std::string_view feedback);
+void draw_motor_steering(Canvas &, int32_t first, int32_t second, std::string_view status);
 void draw_voice_preferences(Canvas &, bool enabled, std::string_view status);
 struct PreferenceRow {
     std::string_view title;

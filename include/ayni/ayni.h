@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 56u
+#define AYNI_ABI_MINOR 61u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -199,7 +199,17 @@ typedef struct ayni_config_v1 {
      * BUSINESS_CONTRACT_BYTES_DEFAULT when call catalogs are enabled;
      * otherwise no proof byte region is allocated. Separate from Scope bytes. */
     uint32_t business_contract_max_bytes;
+    /* Since 0.59. Static deterministic ReflexRule slots; 0 disables (max 32). */
+    uint32_t reflex_capacity;
+    /* Since 0.59. Bounded fired-reflex event ring; 0 selects default when reflex_capacity > 0. */
+    uint32_t reflex_event_capacity;
+    /* Since 0.60 (ADR-0113). Bounded RAM audit ring slots; 0 disables with zero arena bytes. */
+    uint32_t audit_capacity;
 } ayni_config_v1;
+
+/* Bounded asynchronous RAM audit ring capacities. Since 0.60. */
+#define AYNI_AUDIT_CAPACITY_DEFAULT 0u
+#define AYNI_AUDIT_CAPACITY_MAX 1024u
 
 /* Original machine schemas and execution/projection proof per fact. Since 0.48. */
 #define AYNI_BUSINESS_CONTRACT_BYTES_DEFAULT 4096u
@@ -386,7 +396,7 @@ typedef struct ayni_storage_batch_v1 {
  * ayni_create copies the table; ctx and the functions it points to stay owned
  * by the caller and must remain valid until ayni_destroy returns AYNI_OK.
  * Further services are appended as they are implemented; their planned shape
- * is in include/ayni/draft/host_v1.h.
+ * is provided through <ayni/audit.h> (Since 0.60).
  */
 struct ayni_body_store_v1; /* include/ayni/bodies.h */
 
@@ -574,9 +584,9 @@ typedef struct ayni_step_report_v1 {
      * some already has and more_ready is set. That is the earliest of the
      * goals' expiries and either the next occurrence of a goal whose tasks
      * may advance, while the task table has room and an id is left, or else
-     * the end of such an occurrence's wait. Since 0.14 none while the
-     * storage buffer has no room for another transition: the post of the
-     * append that frees it wakes the owner. Since 0.15 also includes
+     * the end of such an occurrence's wait. Since 0.14 durable Goal timers
+     * are omitted while the storage buffer has no room. The append that
+     * frees it wakes the owner. Since 0.15 also includes
      * storage write intervals and retry backoff while new work is frozen;
      * an accepted request waits for its completion wake without a timer. */
     uint64_t next_deadline_us;
@@ -684,14 +694,16 @@ ayni_status_t ayni_start(ayni_kernel_t *kernel);
  * a step ends by starting the append of the oldest batch waiting when no
  * append is in flight, whatever is left of max_items and max_time_us; that
  * call is not an item, and applying its completion is one. When the buffer has no room for another
- * transition, the due work, decisions and events wait for the appends in flight, and more_ready
- * leaves them out. Since 0.15 failures and unknown results retry the same batch
+ * transition, due work, decisions and events requiring a batch wait for the appends in flight,
+ * and more_ready leaves them out. Since 0.59, eligible EPHEMERAL work continues, and more_ready
+ * and next_deadline_us include ready RAM work and its timers. Since 0.15 failures and unknown
+ * results retry the same batch
  * at most three times, with 10/50 ms backoff; only a failed attempt freezes
  * new transitions. Exhaustion enters FENCED, isolates the old writer and
  * reloads the durable state under a new boot epoch, or stays RESTRICTED if
  * isolation or recovery fails. Automatic snapshots drain the log, publish
  * an inactive slot and activate it before trimming covered history. These
- * maintenance stages also pause new work and report storage deadlines.
+ * maintenance stages also pause new durable work and report storage deadlines.
  * Recovery replays the log into the work model before it enters RUNNING: instances, goals,
  * tasks with their steps and checkpoints, and command mappings come back as the last stored
  * transition left them, while sessions do not. Every wait on the host clock starts again in full
@@ -1055,6 +1067,13 @@ typedef struct ayni_error_v1 {
 #define AYNI_REASON_TIME_UNTRUSTED ((ayni_reason_t)80)
 /* INVALID_STATE: independent group suspension; skipped autonomous backlog. Since 0.44. */
 #define AYNI_REASON_PAUSE_GROUP ((ayni_reason_t)81)
+/* CANCELLED: unfinished CANCEL_ON_REBOOT work cancelled on new boot epoch. Since 0.57. */
+#define AYNI_REASON_BOOT_RESET ((ayni_reason_t)82)
+/* CANCELLED: in-flight EPHEMERAL Call superseded by an authorized preempting Call. Since 0.58. */
+#define AYNI_REASON_PREEMPTED ((ayni_reason_t)83)
+/* CANCELLED: in-flight EPHEMERAL Call soft-stopped or preempted by a local ReflexRule. Since 0.59.
+ */
+#define AYNI_REASON_REFLEX ((ayni_reason_t)84)
 
 /* Principals: who a session acts for (C-AUTH-010). */
 typedef uint32_t ayni_principal_kind_t;
@@ -1215,10 +1234,17 @@ typedef uint32_t ayni_work_class_t;
 /* Ordinary/foreground/background resource wait, in microseconds. Since 0.33. */
 #define AYNI_RESOURCE_WAIT_DEFAULT_US UINT64_C(30000000)
 
-/* Trusted GoalType scheduling profile; all zero preserves ordinary behavior. Since 0.33. */
+typedef uint32_t ayni_goal_recovery_t;
+/* Default durable recovery: resume unfinished work across restarts. Since 0.57. */
+#define AYNI_GOAL_RECOVERY_RESUME ((ayni_goal_recovery_t)0)
+/* Session-ephemeral recovery: cancel unfinished work on new boot; permits EPHEMERAL calls. Since
+ * 0.57. */
+#define AYNI_GOAL_RECOVERY_CANCEL_ON_REBOOT ((ayni_goal_recovery_t)1)
+
+/* Trusted GoalType scheduling profile; all zero preserves ordinary durable behavior. Since 0.33. */
 typedef struct ayni_work_profile_v1 {
     ayni_work_class_t work_class;      /* One of WORK_*; never selected by a policy intent. */
-    uint32_t reserved;                 /* Must be zero. */
+    ayni_goal_recovery_t recovery;     /* Since 0.57. RESUME (0) or CANCEL_ON_REBOOT (1). */
     uint64_t background_period_min_us; /* BACKGROUND: 0 selects default, otherwise finite >= trigger
                                           minimum; other classes: 0. */
 } ayni_work_profile_v1;
@@ -1780,10 +1806,6 @@ typedef struct ayni_task_snapshot_v1 {
     const void *call_context;
     ayni_status_t (*call_result)(const void *context, ayni_string_v1 step_key,
                                  struct ayni_task_call_result_v1 *out);
-    /* Since 0.37 the call_tool callback; null since 0.54 (ADR-0096), keeping the layout
-     * (C-VER-002). A result's tool calls are read with ayni_tool_calls_read from its text,
-     * or from its body when it is stored. */
-    const void *reserved_call_tool;
     /* Since 0.40. Restricted memory view; null when memory is disabled. */
     const struct ayni_memory_view_v1 *memory;
     /* Planned civil identity/UTC; -1 for non-calendar Tasks. Since 0.41. */

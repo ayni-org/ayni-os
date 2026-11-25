@@ -149,7 +149,7 @@ class BackgroundStrategies : public StrategiesFixture {
   protected:
     BackgroundStrategies() {
         configure_loop = [](policies::ToolLoopConfig &config) {
-            config.persistence = policies::Persistence::background;
+            config.persistence = policies::Persistence::turn_boundary;
         };
     }
 };

@@ -6,6 +6,8 @@
 #include "transport.h"
 #include <atomic>
 #include <ayni/calls.h>
+#include <ayni/control_loop.h>
+#include <ayni/control_session.h>
 #include <ayni/execution.h>
 #include <freertos/task.h>
 #include <optional>
@@ -21,6 +23,15 @@ class MotorExecution {
     ayni_status_t initialize();
     ayni_executor_v1 ports();
     ayni_submit_result_t submit(const ayni_provider_request_v1 *, ayni_provider_completion_t *);
+    ayni_submit_result_t submit_stream(ayni_attempt_ref_v1, uint64_t call,
+                                       ayni_provider_completion_t *,
+                                       const ayni_execution_permit_v1 &, const MotorCommand &,
+                                       uint64_t session_goal, uint64_t expires_at_us,
+                                       uint64_t start_seq);
+    // Async recoverable soft-stop tool path: confirms GPIO low readback and keeps Mode::armed
+    // unless stop fails, in which case it auto-escalates to Mode::latched (ADR-0111).
+    ayni_submit_result_t submit_soft_stop(const ayni_provider_request_v1 *,
+                                          ayni_provider_completion_t *);
     ayni_submit_result_t cancel(ayni_attempt_ref_v1);
     ayni_status_t advance();
     uint64_t latest_dispatch() const { return latest_dispatch_; } // Owner thread only.
@@ -28,21 +39,36 @@ class MotorExecution {
     bool output_intervals(uint64_t from_us, uint64_t to_us, OutputIntervals &);
     void receive(Kind, uint64_t, const uint8_t *, size_t);
     void set_accepting(bool accepting) { accepting_.store(accepting, std::memory_order_release); }
-    void request_stop();
-    void request_local_stop() { request_stop(); }
+    void request_stop();      // Latched hard E-stop (Mode::latched until reboot).
+    void request_soft_stop(); // Recoverable soft-stop (stays Mode::armed unless stop fails).
+    void wake_control();      // Best-effort inbox nudge; the stop latch is separate.
     int describe(char *out, size_t capacity) const;
     bool close();
 
   private:
-    uint64_t latest_dispatch_ = 0; // Last Provider acceptance on the Core owner.
-    enum class Mode { disarmed, armed, latched, closed };
+    friend struct MotorExecutionTestPeer; // White-box host regression of worker-owned transitions.
+    uint64_t latest_dispatch_ = 0;        // Last Provider acceptance on the Core owner.
+    using Mode = ControlMode;
     enum class Phase { prepared, running, result };
     enum class Effect { none, possible, partial, complete };
     struct Pending {
         ayni_attempt_ref_v1 attempt{};
         ayni_provider_completion_t *completion = nullptr;
         ayni_execution_permit_v1 permit{};
-        MotorCommand command{};
+        MotorTrajectory trajectory{};
+        uint32_t segment_index = 0;      // Active segment index in trajectory.
+        uint32_t segments_completed = 0; // Hardware-verified completed segments.
+        bool streaming = false;          // Independent operation Goal owns this active envelope.
+        uint64_t session_goal = 0,
+                 target_seq = 0; // Exact mailbox target identity, 0 before receipt.
+        uint64_t accepted_at_us = 0,
+                 gate_ok_us = 0; // Executor clock for the current target receipt/Gate.
+        uint64_t reported_target_seq = 0,
+                 reported_hold_seq = 0; // Diagnostic frontiers, not authority.
+        uint64_t waveform_deadline_us =
+            0;                       // Last deadline installed in RMT; 0 before start/nonstream.
+        uint64_t deadline_us = 0;    // Fixed/shortenable stream expiry, never extended by steer.
+        MotorCommand effective{};    // Last effective setpoint accepted by PermitGate.
         uint64_t call = 0;           // Core Call identity, used only for timing correlation.
         uint64_t last_sample_us = 0; // Local capture time, telemetry only; zero before sample.
         Phase phase = Phase::prepared;
@@ -56,36 +82,43 @@ class MotorExecution {
         ayni_executor_completion_t *completion = nullptr;
         ayni_permit_epochs_v1 epochs{};
         uint64_t permit_id = 0;
+        uint64_t echoed_nonce = 0; // Fresh renewal nonce for AYNI_EXECUTOR_RENEW (ADR-0112).
     };
-    enum class MessageKind { start, cancel, port, frame };
+    struct SoftStopRequest {
+        ayni_attempt_ref_v1 attempt{};
+        ayni_provider_completion_t *completion = nullptr;
+    };
+    enum class MessageKind { start, cancel, port, frame, soft_stop, wake };
     struct Message {
         MessageKind kind = MessageKind::frame;
         Pending start{};
         ayni_attempt_ref_v1 cancel{};
         PortRequest port{};
+        SoftStopRequest soft_stop{};
         Kind frame_kind{};
         uint64_t frame_id = 0;
         uint32_t frame_size = 0;
         std::array<uint8_t, sizeof(uint32_t)> frame{};
     };
     static constexpr size_t inbox_slots = 8;
-    // Two-channel 5-second bench runs plus normal shutdown used 6156 bytes on IDF6.0.3.
-    // Keep 6132 bytes above that measured peak while restoring radio upload headroom.
     static constexpr uint32_t worker_stack_bytes = 12288, worker_priority = 7;
     static constexpr uint32_t snapshot_limit_mask = 0xff, snapshot_mode_shift = 8,
                               snapshot_mode_mask = 0xf, snapshot_busy = 1u << 12;
     ayni_status_t initialize_owner();
     bool send(const Message &);
-    void begin(Pending);
+    void begin(const Pending &);
     void reject(const Pending &, ayni_status_t);
     static void worker_entry(void *);
     void run();
-    void drain_inbox();
+    void handle_message(const Message &);
+    void drain_inbox(TickType_t wait_ticks);
     void publish_snapshot();
     void release_worker_storage();
     ayni_status_t advance_owner();
     void receive_owner(Kind, uint64_t, const uint8_t *, size_t);
-    void stop_owner();
+    void stop_owner(std::optional<ControlStopRequest> = {});
+    ayni_status_t soft_stop_owner(std::optional<ControlStopRequest> = {});
+    void serve_soft_stop(const SoftStopRequest &);
     bool close_owner();
     static ayni_status_t challenge_port(void *, ayni_attempt_ref_v1, const ayni_permit_epochs_v1 *,
                                         ayni_executor_completion_t *);
@@ -104,17 +137,25 @@ class MotorExecution {
     ayni_status_t challenge(const ayni_permit_epochs_v1 &, ayni_executor_nonce_v1 &);
     ayni_status_t status(uint64_t, ayni_executor_status_v1 &);
     ayni_control_observation_v1 live() const;
-    ayni_status_t stop_output();
+    ayni_status_t stop_output(std::optional<ControlStopRequest> = {});
     ayni_status_t post_result();
+    ayni_status_t hardware_command(const MotorCommand &, MotorCommand &) const;
+    void report_application(uint64_t applied_at_us);
     ayni_status_t sample();
     ayni_status_t advance_pending();
-    void end(ayni_call_outcome_t, ayni_status_t);
+    void apply_target(const ControlTarget &);
+    void apply_hold();
+    void end(ayni_call_outcome_t, ayni_status_t, std::optional<ControlStopRequest> = {});
+    bool within_operator_limit(const MotorCommand &) const;
     void publish_terminal();
     Transport &transport_;
     MotorOutput *output_ = nullptr; // Internal RAM; survives every RMT transmission.
     void *gate_memory_ = nullptr;
     size_t gate_bytes_ = 0;
     ayni_control_gate_t *gate_ = nullptr;
+    void *session_memory_ = nullptr;
+    size_t session_bytes_ = 0;
+    ayni_control_session_t *session_ = nullptr;
     ayni_permit_epochs_v1 epochs_{};
     uint64_t executor_boot_ = 0, current_permit_ = 0, refused_through_ = 0;
     uint64_t sequence_ = 0, terminal_notice_ = 0;
@@ -127,8 +168,10 @@ class MotorExecution {
     enum class Initialization { unattempted, failed, ready };
     Initialization initialization_ = Initialization::unattempted;
     // Independent latest-level interlocks bypass the command inbox.
-    std::atomic<bool> accepting_{false}, local_stop_{false}, inbox_open_{false}, closing_{false},
-        worker_stopped_{false};
+    std::atomic<bool> accepting_{false}, closing_{false}, worker_stopped_{false};
+    // High bit closes producer admission; low bits count borrows until xQueueSend returns.
+    static constexpr uint32_t inbox_closed = 1U << 31U;
+    std::atomic<uint32_t> inbox_access_{inbox_closed};
     std::atomic<uint64_t> heartbeat_capture_{0};
     std::atomic<ayni_status_t> worker_error_{AYNI_OK};
     std::atomic<uint32_t> snapshot_{motor_percent_max};
@@ -144,6 +187,11 @@ class MotorExecution {
     uint64_t last_cycle_us_ = 0, cycle_gap_max_us_ = 0;
     uint32_t limit_ = motor_percent_max;
     std::optional<Pending> pending_;
+    ayni_control_loop_t loop_{}; // Worker-owned explicit watchdog/shaping state.
+    uint32_t hold_scale_ = AYNI_CONTROL_LOOP_FULL_SCALE;
+    uint32_t last_hold_seq_ = 0; // Last policy request consumed, 0 before any hold.
+    // Worker-owned staging copied by session_open. Keep the bounded array out of the task stack.
+    std::array<ayni_control_segment_v1, motor_segments_max> session_segments_{};
     std::array<std::optional<PortRequest>, 4> requests_{};
 };
 } // namespace wifichat

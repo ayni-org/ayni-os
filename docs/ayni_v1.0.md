@@ -1,16 +1,16 @@
 # Ayni：通用原生 AgentOS 基础能力与实验实施计划
 
 > **文档性质**：工程实施计划与待实现契约，不代表已有软件能力。\
-> **文档版本**：v1.126 · 2026-11-16；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
+> **文档版本**：v1.128 · 2026-11-25；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
 > **产品定位**：跨平台、跨设备的通用原生 AgentOS；宿主与扩展决定提供哪些设备或软件能力，统一助理只是应用示例。\
 > **架构路线**：按 Ayni 的共享 Agent 状态、授权、资源及恢复需求设计原生 Core，复用宿主 OS，模型优先通过外部 API 获得；架构图仅参考 AIOS 的分层分组表达样式。\
 > **实施顺序**：先完成基础通用能力，再开展 ESP32-S3、Linux 系统等实验；设备与能力组合按实验目标选取，不要求宿主具备语音、视觉、运动或特定外设。\
 > **基准投入**：单人全职；阶段周期是相对工作量估算，不是开工日期或交付日期承诺。\
-> **当前状态**：通用基础与独立源码SDK已交付，见[基础报告](../reports/core/foundation-acceptance.md)和[独立接入报告](../reports/core/independent-consumption.md)。Native/ESP共用会话及结果；输入、历史、摘要引用、请求封套、ESP工具进度和按scope清理已精简，保留实际持久屏障及精确ACK，见[ADR-0108](adr/0108-unified-conversation-and-result-storage.md)、[ADR-0109](adr/0109-owned-conversation-text-and-scoped-cleanup.md)。当前源码ABI0.56/schema10、turn8/结果视图2/SQLite5，本地正常验证、ESP编译及独立复查通过。设备最后正常OTA为91c0c65-localreuse，当前候选暂不OTA；板端长单步、真实工具交接P95≤100 ms、新格式异常恢复、完整128K峰值及独立硬件停止链仍待对应证据。
+> **当前状态**：通用基础与独立源码SDK已交付，Native/Sim 基线见[基础报告](../reports/core/foundation-acceptance.md)与[独立接入报告](../reports/core/independent-consumption.md)。当前分支ABI0.61/schema11，通用独立授权操作、异步LCD、控制邮箱、ControlLoop及参数化Reflex已实现；后续审查发现的急停竞态、热改越限、待派发操作停止及owner日志阻塞已修复，见[ADR-0114](adr/0114-async-ui-streaming-control-and-parameterized-reflex.md)。相关主机回归、ASan/UBSan、目标并发TSan、独立复查及最后的固件编译通过。来源回合与独立操作分别授权，撤权、绝对到期与显式停止仍有效。没有新增OTA或真实动作；板端时延、实体传感避障、完整128K峰值、新格式异常恢复、硬件停止链及耐久仍待对应证据。
 
 > **本轮范围**：用户2026-10-31要求实施[独立工程接入与验收计划](architecture/independent-consumption-plan.md)：通用源码SDK、低栈工作区、Native/ESP存储及Host、共同应用和验收。平台适配保持独立目录，必要接口直接升级，正常存储和最小重开获授权；实机操作、付费模型及其他新专项不启动。
 
-> **计划入口**：[基础能力实施与实验计划](architecture/foundation-and-experiment-plan.md)统一记录现行工作包顺序、缺口、完成条件及实验进入条件；[通用能力架构计划](architecture/capability-centered-agentos-plan.md)与[发现、适配及代码处置计划](architecture/capability-discovery-and-adapters.md)继续描述机制与迁移边界。历史 MA 编号、已交付实现和实验结果保留；旧轮式设备试用路线不再作为通用 AgentOS 的必经发布链。
+> **计划入口**：[基础能力实施与实验计划](architecture/foundation-and-experiment-plan.md)统一记录现行工作包顺序、缺口、完成条件及实验进入条件；[低时延实时 AgentOS 架构演进计划](architecture/low-latency-realtime-agentos-plan.md)、[ADR-0110](adr/0110-ephemeral-execution-tier-and-immediate-resource-release.md)、[ADR-0111](adr/0111-soft-stop-preemption-and-barge-in.md)、[ADR-0112](adr/0112-control-session-observation-slot-and-reflex-rules.md)与[ADR-0113](adr/0113-coalesced-turn-persistence-and-audit-ring.md)记录三平面低时延、瞬态执行等级、软停止/原子抢占、流式控制会话、实时传感反射闭环、回合级合并落盘与异步定长审计环的分阶段演进路线；[通用能力架构计划](architecture/capability-centered-agentos-plan.md)与[发现、适配及代码处置计划](architecture/capability-discovery-and-adapters.md)继续描述机制与迁移边界。历史 MA 编号、已交付实现和实验结果保留；旧轮式设备试用路线不再作为通用 AgentOS 的必经发布链。
 
 ## 0. 执行摘要与已确定决策
 
@@ -1459,5 +1459,7 @@ v1.91 实施 AP-02：ABI 0.48/schema 4 统一业务 Schema/值、规范化后完
 v1.92 实施 AP-03 第一部分：可信配置采纳有界说明，Task 目录按当前授权分页/检查，Goal 冻结原允许列表；首次实际调用与 Call 同批绑定一份完整 Grant，已用依赖失效只暂停所属 Task。显式重新授权保留原整份 Scope、业务证明和精确 Binding，并作用于应用时完整 direct-live cohort。ABI 0.49/schema 5 直接升级、拒旧保留目录；外层对话格式本部分保持，固定四工具、标准消息、上下文预算和 Native Shell 装配留给第二部分（ADR-0085）。
 
 本次修订（v1.124，2026-11-16）：按用户要求统一共享Session/FileBodies和工具结果，删除Native独立发布/归档、旧接口/设置reader及无限缓存。默认持久草稿、Native显式追加和ESP后台策略共用机制；保留实时权限、取消、原Goal身份与实际保存/清理/精确ACK。私有turn8/ANRV2/SQLite5直接升级；本地正常检查和ESP编译通过，暂不OTA，见[ADR-0108](adr/0108-unified-conversation-and-result-storage.md)。
+
+本次修订（v1.127，2026-11-25）：依用户计划实施异步界面和流式操作，来源Call与独立根Goal分别取得授权，核心保持通用Goal/Task机制；ABI0.61清理废弃字段并加入ControlLoop/effective校验与参数化Reflex，schema11不变。主机测量独立于板端目标，固件在全部实现之后编译，本轮不OTA或真实运动。见[ADR-0114](adr/0114-async-ui-streaming-control-and-parameterized-reflex.md)。
 
 本次修订（v1.126，2026-11-16）：实施正文归属与收尾的七项精简；默认durable输入只暂存一次，摘要与历史复用不可变引用，请求封套单Writer，压缩结束去掉重复投影，ESP仅派生安全进度，Session按scope持久清理后精确ACK。关闭仍全局排空，权限、来源、隐私和UNKNOWN约束保持。C ABI及持久格式不变，本地正常验证与ESP编译通过，暂不OTA，见[ADR-0109](adr/0109-owned-conversation-text-and-scoped-cleanup.md)。

@@ -22,7 +22,8 @@ work::TaskTable::CallConstraints WorkModel::call_constraints(const void *context
         return result;
     }
     for (uint32_t at = 0; at < calls.capacity(); ++at) {
-        if (!calls.occupied(at) || calls.identity(at).task_id != task.task_id) {
+        if (!calls.occupied(at) || calls.state(at).ephemeral ||
+            calls.identity(at).task_id != task.task_id) {
             continue;
         }
         result.queued = result.queued ||
@@ -129,6 +130,39 @@ authority::GrantCheck WorkModel::check_grant(uint32_t index, uint64_t now_us, ui
     return check.status == AYNI_OK ? check_grant_subjects(chain) : check;
 }
 
+authority::GrantCheck WorkModel::check_ephemeral_call_authority(uint32_t call_index,
+                                                                uint64_t now_us,
+                                                                uint64_t durable_seq) const {
+    const auto &state = calls.state(call_index);
+    const auto &id = calls.identity(call_index);
+    if (state.reflex) {
+        // Reflex Calls belong to a live RUNNING AgentInstance, never a Task/Goal (ADR-0112).
+        const auto *agent = agents.find_instance(id.owner_instance_id);
+        if (agent == nullptr ||
+            work::AgentTable::effective_lifecycle(*agent) != AYNI_AGENT_RUNNING) {
+            return {AYNI_DENIED, AYNI_REASON_GRANT_SUBJECT};
+        }
+        if (id.authorization.grant_id == 0U) {
+            return {AYNI_DENIED, AYNI_REASON_GOAL_AUTHORITY_MISSING};
+        }
+    } else if (!state.ephemeral || id.authorization.grant_id == 0U) {
+        return {AYNI_OK, AYNI_REASON_NONE};
+    }
+    uint32_t grant_index = 0;
+    if (!grants.find(id.authorization.grant_id, grant_index) ||
+        grants.at(grant_index).revision != id.authorization.revision) {
+        return {AYNI_DENIED, AYNI_REASON_GOAL_AUTHORITY_MISSING};
+    }
+    if (state.reflex) {
+        return check_grant(grant_index, now_us, durable_seq, 0U);
+    }
+    uint32_t task_index = 0;
+    if (!tasks.find(id.task_id, task_index)) {
+        return {AYNI_DENIED, AYNI_REASON_GOAL_AUTHORITY_MISSING};
+    }
+    return check_grant(grant_index, now_us, durable_seq, tasks.at(task_index).goal_id);
+}
+
 // The Grant owner already proved every link/time/catalog condition. Checking
 // only work subjects preserves owner direction and the original error order.
 authority::GrantCheck
@@ -187,6 +221,17 @@ authority::GrantReclaimExclusions WorkModel::grant_reclaim_exclusions(uint64_t d
                 grants.find(calls.identity(source_call).authorization.grant_id, grant_index)) {
                 excluded.add(grant_index); // Original ceiling survives later rebindings.
             }
+        }
+    }
+    // Protect on-demand Grants borrowed by pending RAM-only EPHEMERAL calls (ADR-0110).
+    for (uint32_t at = 0; at < calls.capacity(); ++at) {
+        if (!calls.occupied(at) || !calls.state(at).ephemeral || calls.state(at).outcome != 0U) {
+            continue;
+        }
+        uint32_t grant_index = 0;
+        if (calls.identity(at).authorization.grant_id != 0U &&
+            grants.find(calls.identity(at).authorization.grant_id, grant_index)) {
+            excluded.add(grant_index);
         }
     }
     protect_content_grants(excluded);
@@ -277,8 +322,61 @@ bool apply_local_input(WorkModel &model, const catalog::CatalogId &source, uint6
     return true;
 }
 
+namespace {
+
+// Lowest-id live CANCEL_ON_REBOOT Goal from an earlier boot that still needs
+// automatic cancellation (ADR-0110). Selecting by goal_id guarantees ancestors
+// cancel before descendants so a subtree settles in one transition.
+bool next_boot_reset_goal(const WorkModel &model, uint32_t &out_index) {
+    uint32_t selected = work::GoalTable::no_index;
+    for (uint32_t index = 0; index < model.goals.size(); ++index) {
+        const auto &goal = model.goals.at(index);
+        if (!model.goal_boot_reset_pending(index) || goal.hold_reason == AYNI_REASON_BOOT_RESET) {
+            continue;
+        }
+        if (selected == work::GoalTable::no_index ||
+            goal.goal_id < model.goals.at(selected).goal_id) {
+            selected = index;
+        }
+    }
+    out_index = selected;
+    return selected != work::GoalTable::no_index;
+}
+
+// Holds an old-boot CANCEL_ON_REBOOT Goal and its live subtree tasks in RAM
+// when revision exhaustion prevents persisting GoalChange::cancel.
+void hold_boot_reset_subtree(WorkModel &model, uint32_t goal_index) {
+    model.goals.hold_restored(goal_index, AYNI_REASON_BOOT_RESET);
+    for (uint32_t at = 0; at < model.tasks.size(); ++at) {
+        const auto &task = model.tasks.at(at);
+        if (model.goals.in_subtree(task.goal_index, goal_index) &&
+            work::TaskTable::is_live(task.lifecycle)) {
+            model.tasks.hold_restored(at, AYNI_EXPIRED, AYNI_REASON_BOOT_RESET);
+        }
+    }
+    model.forget_due_work();
+}
+
+} // namespace
+
+bool WorkModel::goal_boot_reset_pending(uint32_t goal_index) const {
+    const auto &goal = goals.at(goal_index);
+    return work::GoalTable::is_live(goal.lifecycle) && goal.work_profile.cancel_on_reboot() &&
+           foundation::id_boot_epoch(goal.goal_id) < ids.boot_epoch();
+}
+
+bool WorkModel::goal_lineage_boot_reset_pending(uint32_t goal_index) const {
+    return !goals.visit_lineage(goal_index,
+                                [&](uint32_t at) { return !goal_boot_reset_pending(at); });
+}
+
 bool refresh_due_work(WorkModel &model, uint64_t now_us, uint64_t &out_next_us,
                       uint64_t durable_seq) {
+    uint32_t boot_reset_index = 0;
+    if (next_boot_reset_goal(model, boot_reset_index)) {
+        out_next_us = now_us;
+        return true;
+    }
     work::DueWork work{};
     const bool due = model.next_due_work(now_us, durable_seq, work, out_next_us);
     uint32_t index = 0;
@@ -295,8 +393,28 @@ bool refresh_due_work(WorkModel &model, uint64_t now_us, uint64_t &out_next_us,
     return due;
 }
 
+// Cancels one recovered CANCEL_ON_REBOOT Goal from a previous boot, or holds its live
+// subtree on revision exhaustion so unfinished pre-boot work never replays (ADR-0110).
+bool cancel_due_boot_reset(WorkModel &model, work::WorkTables &tables) {
+    uint32_t boot_reset_index = 0;
+    while (next_boot_reset_goal(model, boot_reset_index)) {
+        if (work::goal_end_exhausts(tables, boot_reset_index, work::GoalChange::cancel)) {
+            hold_boot_reset_subtree(model, boot_reset_index);
+            continue;
+        }
+        work::apply_goal_change(tables, boot_reset_index, work::GoalChange::cancel,
+                                model.transitions.next());
+        return true;
+    }
+    return false;
+}
+
 DueWorkResult do_due_work(WorkModel &model, uint64_t now_us, uint64_t authority_now_us,
                           uint64_t durable_seq) {
+    work::WorkTables tables = model.tables();
+    if (cancel_due_boot_reset(model, tables)) {
+        return DueWorkResult::applied;
+    }
     uint32_t grant_index = 0;
     uint64_t deadline = work::no_time;
     if (model.grants.next_expiry({model.ids.boot_epoch(), now_us, 0}, grant_index, deadline) &&
@@ -309,7 +427,6 @@ DueWorkResult do_due_work(WorkModel &model, uint64_t now_us, uint64_t authority_
     if (!model.next_due_work(now_us, durable_seq, work, next_us)) {
         return DueWorkResult::none;
     }
-    work::WorkTables tables = model.tables();
     if (work.kind != work::DueWork::Kind::expire) {
         const auto check =
             model.check_goal_authority(work.goal_index, authority_now_us, durable_seq);
@@ -375,7 +492,7 @@ DueWorkResult do_due_work(WorkModel &model, uint64_t now_us, uint64_t authority_
 
 uint32_t WorkModel::accepted_step_count(uint32_t task_index) const {
     const auto &task = tasks.at(task_index);
-    uint32_t count = task.step_count;
+    uint32_t count = work::TaskTable::live_step_count(task);
     for (uint32_t index = 0; index < calls.capacity(); ++index) {
         if (!calls.occupied(index) || calls.identity(index).task_id != task.task_id) {
             continue;

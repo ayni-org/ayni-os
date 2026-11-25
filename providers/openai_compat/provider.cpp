@@ -288,7 +288,8 @@ struct Provider::Impl {
                        AYNI_CALL_EFFECT_EGRESS | AYNI_CALL_EFFECT_BILLING, AYNI_CALL_NOT_IDEMPOTENT,
                        AYNI_CALL_QUERY_NONE, AYNI_CALL_CANCEL_REQUEST, 0, config.timeout_ms,
                        AYNI_CALL_INPUT_VALUE, config.result_format, call_input_bytes_max,
-                       call_result_bytes_max, 1, &resource, nullptr},
+                       call_result_bytes_max, 1, &resource, nullptr, AYNI_CALL_DURABILITY_DURABLE,
+                       0},
                       nullptr};
         input_schema[0].kind = AYNI_VALUE_OBJECT;
         input_schema[0].subtree_end = static_cast<uint32_t>(input_schema.size());

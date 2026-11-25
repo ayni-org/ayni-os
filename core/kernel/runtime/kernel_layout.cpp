@@ -93,12 +93,21 @@ void place_execution_context(Placer &placer, const KernelCapacities &capacities)
                  ObservationIngress::storage_size(capacities.observation_ingress_capacity,
                                                   capacities.observation_source_capacity,
                                                   capacities.call_capacity));
+    placer.place(Store::observation_slots, ObservationSlots::storage_alignment,
+                 ObservationSlots::storage_size(capacities.observation_source_capacity));
+    placer.place(Store::reflex_rules, ReflexTable::storage_alignment,
+                 ReflexTable::rule_storage_size(capacities.reflex_capacity,
+                                                capacities.call_input_max_bytes));
+    placer.place(Store::reflex_events, ReflexTable::storage_alignment,
+                 ReflexTable::event_storage_size(capacities.reflex_event_capacity));
     placer.place(Store::memories, knowledge::MemoryTable::storage_alignment,
                  knowledge::MemoryTable::storage_size(memory_limits(capacities)));
     placer.place(Store::contexts, knowledge::ContextTable::storage_alignment,
                  knowledge::ContextTable::storage_size(context_capacity(capacities)));
     placer.place(Store::provenance, work::ProvenanceTable::storage_alignment,
                  work::ProvenanceTable::storage_size(provenance_limits(capacities)));
+    placer.place(Store::audit_ring, AuditRing::storage_alignment,
+                 AuditRing::storage_size(capacities.audit_capacity));
 }
 
 } // namespace

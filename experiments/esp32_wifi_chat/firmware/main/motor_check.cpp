@@ -42,7 +42,12 @@ ayni_status_t MotorCheck::configure(Owner owner) {
     for (uint32_t motor = 0; motor < type_count; ++motor) {
         auto &p = profiles_[motor];
         p.input[0].kind = AYNI_VALUE_OBJECT;
-        p.input[0].subtree_end = p.input.size();
+        p.input[0].subtree_end = uint32_t(p.input.size());
+        p.input[1].kind = AYNI_VALUE_LIST;
+        p.input[1].field_id = 1;
+        p.input[1].subtree_end = uint32_t(p.input.size());
+        p.input[2].kind = AYNI_VALUE_OBJECT;
+        p.input[2].subtree_end = uint32_t(p.input.size());
         for (uint32_t at = 0; at < field_count; ++at) {
             auto &f = p.fields[at];
             f.struct_size = sizeof(f);
@@ -52,16 +57,17 @@ ayni_status_t MotorCheck::configure(Owner owner) {
             f.allowed.unit = motor_text(at == field_count - 1 ? "ms" : "percent");
             const int64_t value = at == field_count - 1 ? duration_ms : at == motor ? percent : 0;
             f.allowed.values.integer = {value, value};
-            auto &node = p.input[at + 1];
+            auto &node = p.input[at + 3];
             node.kind = AYNI_VALUE_I64;
             node.field_id = at + 1;
-            node.subtree_end = at + 2;
+            node.subtree_end = at + 4;
             node.value.integer = value;
         }
         p.step.name = motor_text("run");
         p.step.version = version;
         p.step.call.binding_id = motor_text("motor.run");
         p.step.call.binding_version = motor_version;
+        p.step.call.preemption = AYNI_CALL_PREEMPT_SUPERSEDE;
         // Explicit native input avoids the scalar template's extra empty text field.
         p.step.call.input = ayni_value_v1{p.input.data(), uint32_t(p.input.size())};
         rules_[motor] = {motor_text(types[motor]), version, &p.step, 1};
@@ -133,6 +139,7 @@ ayni_status_t MotorCheck::describe_type(uint32_t motor, ayni_goal_type_v1 &out) 
     type.trigger_kinds = AYNI_TRIGGER_BIT(AYNI_TRIGGER_ONCE);
     type.occurrence_wait_max_us = AYNI_OCCURRENCE_WAIT_UNBOUNDED;
     type.work_profile.work_class = AYNI_WORK_FOREGROUND;
+    type.work_profile.recovery = AYNI_GOAL_RECOVERY_CANCEL_ON_REBOOT;
     out = type;
     return AYNI_OK;
 }
@@ -215,12 +222,9 @@ void MotorCheck::cancel_goal(const ayni_goal_info_v1 &goal) {
     if (goal.lifecycle == AYNI_GOAL_ACTIVE || goal.lifecycle == AYNI_GOAL_PAUSED ||
         goal.lifecycle == AYNI_GOAL_PROPOSED) {
         const ayni_goal_target_v1 target{sizeof(target), 0, goal.goal_id};
-        const auto result =
-            owner_.submit(owner_.context, AYNI_INTENT_GOAL_CANCEL, &target, nullptr, goal.revision);
-        if (result.status != AYNI_OK && result.status != AYNI_BUSY) {
-            std::printf("motor check cancel status=%ld reason=%lu; waiting for stop\n",
-                        long(result.status), static_cast<unsigned long>(result.reason));
-        }
+        // The composition records command refusals in its RAM diagnostic lane. Stay in
+        // cancelling and retry until Core reports terminal; a refusal is never stop proof.
+        owner_.submit(owner_.context, AYNI_INTENT_GOAL_CANCEL, &target, nullptr, goal.revision);
     }
 }
 void MotorCheck::poll(ayni_kernel_t *kernel, uint64_t durable) {

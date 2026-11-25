@@ -18,7 +18,9 @@ using ayni::providers::shell::ProcessResult;
 ProcessConfig configuration() {
     ProcessConfig config;
     config.directory = "/tmp";
-    config.timeout_ms = 1000;
+    // Headroom for real /bin/sh + pipeline forks under parallel sanitizer CI load;
+    // timeout_terminates_sleeping_pipeline overrides this to 30 ms explicitly.
+    config.timeout_ms = 5000;
     config.output_bytes = 4096;
     config.environment_view.push_back(nullptr);
     return config;

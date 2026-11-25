@@ -163,7 +163,15 @@ Body goal_body(const GoalFields &fields) {
     body.u32(fields.trigger).u64(fields.delay_us).u64(fields.period_us);
     body.text(fields.trigger_source);
     body.u64(900).u64(60);
-    body.text(fields.parameters).u32(0).u64(0).u32(0).u32(0).u32(0).u32(AYNI_TOOLS_REQUIRED).u32(0);
+    body.text(fields.parameters)
+        .u32(0)
+        .u32(0)
+        .u64(0)
+        .u32(0)
+        .u32(0)
+        .u32(0)
+        .u32(AYNI_TOOLS_REQUIRED)
+        .u32(0);
     return body;
 }
 
@@ -310,7 +318,8 @@ TEST(WorkRecords, nondefault_goal_profile_has_explicit_journal_and_snapshot_enco
     fields.period_us = AYNI_BACKGROUND_PERIOD_DEFAULT_US;
     auto goal = goal_of(fields);
     const auto ordinary = written_goal(goal, fields.parameters);
-    goal.work_profile = {AYNI_WORK_BACKGROUND, AYNI_BACKGROUND_PERIOD_DEFAULT_US};
+    goal.work_profile = {AYNI_WORK_BACKGROUND, AYNI_GOAL_RECOVERY_RESUME,
+                         AYNI_BACKGROUND_PERIOD_DEFAULT_US};
     const auto body = written_goal(goal, fields.parameters, {true, false});
     ASSERT_EQ(body.size(), ordinary.size());
     constexpr auto tail = ayni::work::goal_work_profile_size + ayni::work::goal_group_tail_size +
@@ -477,13 +486,14 @@ TEST(WorkRecords, goal_record_parameters_end_the_body) {
     const Body empty = goal_body(fields);
     EXPECT_TRUE(reads_goal(empty));
 
-    constexpr uint32_t tail_size = 24 + ayni::catalog::tool_policy_header_bytes;
+    constexpr uint32_t tail_size = 28 + ayni::catalog::tool_policy_header_bytes;
     const std::vector<uint8_t> head(empty.bytes().begin(), empty.bytes().end() - tail_size - 4);
     const auto body = [&](uint32_t size) {
         return Body()
             .raw(head)
             .u32(size)
             .raw("ab")
+            .u32(0)
             .u32(0)
             .u64(0)
             .u32(0)

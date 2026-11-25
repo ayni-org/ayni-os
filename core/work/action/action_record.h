@@ -78,6 +78,10 @@ class ActionRecord {
     // out must be empty. The table/allocator owns global operation-ID uniqueness.
     static ayni_status_t prepare(const ActionIdentity &identity, ActionStamp stamp,
                                  std::optional<ActionRecord> &out);
+    // In-RAM Tier 0 EPHEMERAL preparation (ADR-0110): stamps carry zero
+    // transition/commit_seq and claim_dispatch() does not wait for durable_seq.
+    static ayni_status_t prepare_ephemeral(const ActionIdentity &identity, uint64_t boot_epoch,
+                                           std::optional<ActionRecord> &out);
     // One validator for live facts and the future persisted record reader.
     static bool valid(const ActionFact &fact);
     // Installs an already validated replay fact; prior DISPATCHING is sealed
@@ -130,6 +134,7 @@ class ActionRecord {
                          ActionStamp stamp);
     ActionFact fact_{};                       // Phase empty until prepare; then owned knowledge.
     Delivery delivery_ = Delivery::unclaimed; // This boot's one-shot submit guard, not persisted.
+    bool ephemeral_ = false;                  // True iff prepared in RAM without durable stamps.
 };
 
 } // namespace ayni::work

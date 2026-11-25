@@ -100,7 +100,9 @@ bool valid_text(ayni_string_v1 value) {
 }
 bool valid_call(const Call &call) {
     if (call.mode > AYNI_CALL_MODE_MANAGED ||
-        (call.kind == AYNI_POLICY_REQUEST_MODEL && call.mode != AYNI_CALL_MODE_FOREGROUND)) {
+        (call.kind == AYNI_POLICY_REQUEST_MODEL && call.mode != AYNI_CALL_MODE_FOREGROUND) ||
+        call.preemption > AYNI_CALL_PREEMPT_SUPERSEDE ||
+        (call.mode != AYNI_CALL_MODE_FOREGROUND && call.preemption != AYNI_CALL_PREEMPT_NONE)) {
         return false;
     }
     if (call.input) {
@@ -210,6 +212,7 @@ ayni_status_t request(const Call &call, ayni_string_v1 key, ayni_string_v1 text,
     request.binding_version = call.binding_version;
     request.step_key = key;
     request.mode = call.mode;
+    request.preemption = call.preemption;
     request.binding_id = call.binding_id;
     ayni::ValueBuilder<AYNI_AUTHORITY_FIELD_COUNT_MAX + 2U> builder;
     if (call.input) {

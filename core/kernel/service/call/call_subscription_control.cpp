@@ -326,6 +326,7 @@ bool CallRuntime::subscription_reopen_ready(uint32_t index, uint64_t now_us, uin
     }
     const auto &task = work_.tasks.at(task_index);
     return work::TaskTable::is_live(task.lifecycle) && task.lifecycle != AYNI_TASK_PAUSED &&
+           !work_.goal_lineage_boot_reset_pending(task.goal_index) &&
            task.call.end == work::TaskCall::End::none && !work::TaskTable::is_held(task) &&
            work_.check_task_authority(task_index, now_us, durable_seq).status == AYNI_OK &&
            task_content_current({work_, now_us, durable_seq}, task_index);

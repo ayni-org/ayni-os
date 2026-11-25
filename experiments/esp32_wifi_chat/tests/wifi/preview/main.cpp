@@ -18,6 +18,14 @@ int main(int argc, char **argv) {
     }
     if (mode == "motor") {
         draw_motor_preferences(*canvas, true, 90, "已启用");
+    } else if (mode == "motor_feedback") {
+        draw_motor_feedback(*canvas, "已启用",
+                            "已接收 #15\n已被覆盖 #13（2次）\n已应用 #15 M1:25 M2:25%\n已拒绝 #14 "
+                            "超出许可包络\n输出已停止（软停，可恢复）");
+        canvas->button(150, 32, 80, 26, "控制");
+    } else if (mode == "motor_steering") {
+        draw_motor_steering(*canvas, 20, -10, "已受理，应用结果见反馈");
+        canvas->button(150, 32, 80, 26, "控制");
     } else if (mode == "voice") {
         draw_voice_preferences(*canvas, true, "重启后保留");
     } else if (mode == "network") {
