@@ -177,3 +177,5 @@
 | [0113](0113-coalesced-turn-persistence-and-audit-ring.md) | 回合级粗粒度合并落盘、非阻塞答案呈现与异步定长审计环 | 已实施（阶段 4，待真机 OTA 实测） | ABI0.60（schema11 不变）、AYNB2、history 内联、deferred GC、AuditRing、AuditSink |
 
 | [0114](0114-async-ui-streaming-control-and-parameterized-reflex.md) | 异步界面、流式控制与传感参数反射 | 已实施；主机验证和固件编译通过，板端待测 | ABI0.61/schema11、通用独立操作、异步LCD、ControlLoop及参数绑定 |
+
+| [0115](0115-unknown-operation-history-and-work-retirement.md) | 四层生命周期、独立未决账本与落盘后结案审计 | 已实施；正常软件与固件编译通过，未部署 | ABI0.62/schema12、QUERY/ACK、双端16槽、Tier0朗读 |

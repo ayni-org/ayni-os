@@ -2,7 +2,7 @@
 
 - **关联**：计划 §2.8、§4.2「持久化」、§4.3、§4.4「升级」；ADR-0002、ADR-0016、ADR-0026、ADR-0027、ADR-0030、ADR-0031、ADR-0096；`MA-010`、`MA-006`；E2 F0–F8、F11、F12，E4 步骤 6
 - **属主**：`durability`（批次编码、持久前缀、快照、重放、栅栏记录、迁移机制）；领域记录的内容由各属主模块定义，`durability` 不理解其语义
-- **状态**：M1 当前批次与快照只读写 `storage_schema=11`（ADR-0110）；其他 schema（包括 0～10） 在新写入前只读受限并保留，不迁移、不自动清空或回退（ADR-0038 决策 6）。布局以本文件和编解码测试为准；Native/模拟证据不代表 ESP32 或真实 OTA 验证；C 的 Grant/完整命令扩展及 D 的撤销扩展各自验证与交付状态见 ADR-0030/0031；D 已通过 Native 场景、覆盖率与内存量测，#28 已合并
+- **状态**：M1 当前批次与快照只读写 `storage_schema=12`（ADR-0115）；其他 schema（包括 0～11） 在新写入前只读受限并保留，不迁移、不自动清空或回退（ADR-0038 决策 6）。布局以本文件和编解码测试为准；Native/模拟证据不代表 ESP32 或真实 OTA 验证；C 的 Grant/完整命令扩展及 D 的撤销扩展各自验证与交付状态见 ADR-0030/0031；D 已通过 Native 场景、覆盖率与内存量测，#28 已合并
 
 ## 编码约定
 
@@ -388,3 +388,36 @@ STARTED 的前台转后台、步骤完成、Task 前台释放同批；后台回�
 ### Binding 资源映射（schema 8 / ADR-0087）
 
 CALL_STATE 的资源组保存接受时已解析的实际 ID 与原需求单位；原业务证明内仍是 Capability 的逻辑组。固定长度与字段顺序不变。读写共用原 codec，本征校验要求非资源语义一致、需求数/单位一一对应；派发另要求当前确切 Binding 的有效完整契约与原 Call 相同。无持久配置映射表，无旧 schema reader/迁移。用户2026-10-31授权的最小正常重开/映射不兼容验证见 C-BIND-004；其他新故障/恢复专项仍未执行，不由此推定完整通过。
+
+## schema 12 独立未决操作（ADR-0115）
+
+当前 reader 只接受 schema12；schema11 及其他版本在安装 writer 前拒绝并保留原卷。退休迁移依原 GOAL/TASK 替换及完整 stamp 重建，不新增归档日志；Snapshot 使用 REQUIRED `unresolved_op`（29/v1），Journal 仅使用 REQUIRED `unresolved_op_state`（30/v1）。两种上下文禁止互换。缩容产生 `no_room`，不得误报损坏或截断。
+
+### unresolved_op（29/v1，Snapshot-only）
+
+标量小端、字符串/字节串带 u32 长度前缀；没有 native struct、指针、domain/input/result 正文。顺序：call/operation/task/owner 四个 u64；binding/capability/provider version 三个 u32；binding/capability/provider/endpoint/destination 五个 CatalogId 长度串；完整 execution contract（复用 CALL_STATE 编码：14 个 u32，含 durability、dedupe、resource_count，随后每资源 ID 长度串及 units u32）；created、archived、latest 三个 stamp（每个 boot/transition/commit 三 u64）；原 attempt（两 u64）；outcome/status/reason/revision 四 u32；business_contract 长度字节区；嵌入 ACTION_STATE（20/v1）长度字节区；has_stop u32（0/1），有则 phase/cause/target 三 u32；has_query u32（0/1），有则 query generation/phase 两 u32、requested stamp、attempt 两 u64、status/reason/conclusion 三 u32（60 B）；subscription contract 若存在则 source 长度串及 version/lease_ms 两 u32。
+
+固定字段和长度/选项标记合计 240 B，另加五个 ID 内容、资源字段、完整证明、ACTION_STATE 及可选字段。停止摘要只接受 STOPPED/NOT_STARTED；query、原 outcome/action 和时序复用原属主校验。archived 严格晚于退休前 latest 的 boot/transition/commit 顺序；archived 不晚于当前 latest。owner 必存在，历史 task 不在活跃表；call/operation 在所有对象间唯一。
+
+### unresolved_op_state（30/v1，Journal-only）
+
+按用户后续决定使用实际字段大小 **84 B**，不加无语义填充：
+
+| 偏移 | 字段 | 类型/约束 |
+|---|---|---|
+| 0 | call_id | u64，已存在账本行 |
+| 8 | change | u32，1 requested、2 dispatching、3 query_failed、4 resolved、5 acknowledged |
+| 12 | revision | u32，QUERY 请求增加一次；其他保持 |
+| 16 | generation | u32，query代际；从未查询的 ACK 为0 |
+| 20 | outcome | u32，原/权威终态 |
+| 24 | status | i32，分类查询或结案状态 |
+| 28 | reason | u32，分类原因 |
+| 32 | effect | u32，ActionEffect |
+| 36 | conclusion | u32，查询结论或0 |
+| 40 | reserved | u32，必须0 |
+| 44 | attempt | 两个 u64，独立 query attempt |
+| 60 | stamp | boot/transition/commit 三 u64 |
+
+requested 与同批唯一 UNRESOLVED_OP_QUERY 精确命令配对；acknowledged 与 ACKNOWLEDGE 命令配对，回执保留被删除项的原 CAS。dispatching/query_failed/resolved 独占该 transition，不允许尾随无关记录；resolved 必须原 query 处于 dispatching 且权威效果已知。共享 live 规则生成并逐字段比较 delta；旧动作永不重派发。
+
+PendingAudit 不持久化，无额外日志；已应用结案的 `after_seq` 只有在当前 writer `durable_seq` 覆盖后才进入 AuditRing。fenced reload 丢弃未落盘义务，历史快照/重放不重复发射旧 RAM 审计。正常 codec/关闭重开验证不代表新格式异常恢复专项已通过。

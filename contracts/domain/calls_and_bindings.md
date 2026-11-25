@@ -117,3 +117,11 @@ AP-03 第一部分新增 [Task 能力目录与按需授权](capability_directory
 | C-OP-004 | 样本正文限有效 BOOL/I64、完整来源/时间/质量/单位；无媒体。进入工具历史/模型/摘要时保存确切来源，接受、派发和消费复核；失效重建完整协议组及原操作事实，不重做已受理控制。最终文字完成 Task 并停止名下操作，借用仍待真实终态 | 把历史样本或派生答案交给下一 Task；最终答复后继续采集；来源重建丢失原操作引用 | `ManagedOperations.sample_wait_rebuild_keeps_current_reference_and_next_task_discards_sample_history`、`ManagedOperations.software_subscription_sample_is_readable_then_close_invalidates_context`、`TaskCallTest.background_unknown_release_preserves_an_existing_policy_hold`、`TaskCallTest.foreground_completion_preserves_another_calls_unknown_overlay`、`ManagedResultHarness.managed_read_preserves_reference_and_original_large_result_through_summary` |
 
 Task.call_unknown 独立于策略、资源等待、兼容及模型上限；Call 协调层维护其同批关系，诊断优先策略/资源、兼容、UNKNOWN、模型上限。revision 准入从 Call 属主查询额外的 UNKNOWN/解除/结束预留，不复制后台操作列表。资源等待覆盖 Task，恢复时须有原 Task 的真实未派发 Call，另一前台模型不能作为替代证明。普通 invoke 的业务结果处理保持，所有启用 Call 的 Task 决策先等其前一提交持久，避免策略回调副作用后再因同一持久屏障拒收。
+
+## 独立未决操作与退休（ABI 0.62 / ADR-0115）
+
+| ID | 规则 | 反例 | 验证 |
+|---|---|---|---|
+| C-CALL-016 | CallTable 仅有活跃工作；已结束 Task 的持久未决操作在整批容量/停稳/借用/查询预检后，于原工作替换批次原子迁入独立有界 OperationLedger。原契约完整保留、正文不复活；专属查询邮箱与调度保证不被活跃进度饿死。原 owner 可 QUERY 或人工 ACKNOWLEDGE，精确幂等/CAS；已知权威结论或人工结案立即移除，结案审计仅在当前 writer 确认落盘后发射，满审计队列背压。Tier0 UNKNOWN 存活期 HOLD，工作终止且停稳/无借用后可零WAL退休并留 EPHEMERAL 审计。账本默认0，满时不自动丢历史；缩容 no_room，不截断 | 永久钉住已结束工作；归档混入活跃表；改契约仍当原Provider；落盘前发出结案证据；UNKNOWN自动重试 | 模块与正常公开路径：`OperationLedgerTest.OwnerQueryUsesIndependentAttemptAndRemovesOnlyKnownAuthorityResult`、`OperationLedgerTest.AcknowledgementHasCASAndDurableAuditBackpressureWithoutExtraRows`、`LedgerCall.FullActiveCallStillAllowsDedicatedQueryAndDurableOnlyClosureAudit`、`LedgerCall.HumanClosureChecksCASAndRetainsExactIdempotentReceiptAfterRemoval`、`LedgerCall.NormalSnapshotRoundtripKeepsLedgerIndependentOfRetiredTaskAndCapacity`、`LedgerGoalCohort.TwoTerminalTasksCannotPartiallyEnterOneLedgerSlot`、`OperationLedgerTest.SnapshotRejectsMalformedSchemaInsideOtherwiseValidProof`、`MaximumLedgerCalls.All256ActiveCallsStillAllowOriginalProviderReconciliation`；专项与硬件证据仍未验证 |
+
+`ayni_unresolved_op_v1.task_id` 是历史引用，不能要求原 Task 仍存在；`ayni_get_call` 与 Call 枚举只返回活跃表。QUERY 不需要旧执行 Grant，但必须是当前持久 owner 的管理会话，只观察原 operation。ACK 不建立权威未执行证明、不解除物理停止隔离，也不授权重试旧操作。

@@ -829,3 +829,9 @@ LittleFS 例行对账等待约 20 ms 的空闲窗口，持续繁忙时最迟在�
 正常Web上传一次，22.11秒收到HTTP200、`updated/restarting=true`；从`b36b4a8-motorstack/ota_0`切至`d9f476e/ota_1`。新启动11.647秒会话就绪，16.687秒启动自确认status=0，最终`pending_verify=false/error=0`；确认后继续观察11.62秒，启动身份保持。公开设置摘要前后一致，密码和模型Key存在标志保持；启动保留原卷，容量查询`goals=4/4`，日志`lost=0/dropped=0`。本次仅上传应用，没有USB操作或擦卷，没有发起模型、语音或真实运动测试。
 
 镜像、实际配置/构建日志、升级脚本及脱敏前后状态保存在本机忽略目录`build/ota-d9f476e-20261125/`，属于仓库外证据。正常升级和启动就绪不替代板端控制时延、实体传感、独立硬件停止链、异常恢复、故障回退或耐久验收。
+
+## 2026-11-25 独立未决账本与朗读取消
+
+本分支ABI0.62/schema12将已退休Task的持久未决操作放入独立OperationLedger，默认ESP配置16槽，诊断列出call/operation/task及query状态。speaker.speak_text采用Tier0 EPHEMERAL，ReplyVoice重启取消；I²S停稳确认后的部分取消保留PARTIAL，未确认停止仍UNKNOWN。正常便携验证、Native消费者编译、独立审查及最终ESP编译与分区检查通过；决定与结果边界见[ADR-0115](../../docs/adr/0115-unknown-operation-history-and-work-retirement.md)。
+
+本包未OTA、USB、擦卷、调用模型/语音服务或真实运动。设备仍运行上一节正常确认的d9f476e/ABI0.61/schema11；新固件不读取旧卷，不自动清空。真实I²S/PWM/控制时延、Flash争用、新格式异常恢复、独立停止链和耐久未由主机回归或编译证明。
