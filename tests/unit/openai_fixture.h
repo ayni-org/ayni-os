@@ -257,8 +257,6 @@ class OpenaiFixture : public ::testing::Test {
                                          text("plan"),
                                          text("plan"),
                                          {},
-                                         {},
-                                         {},
                                          AYNI_CALL_MODE_FOREGROUND,
                                          0};
             if (value.finish(request.value) != AYNI_OK) {
@@ -371,8 +369,6 @@ class OpenaiFixture : public ::testing::Test {
                                                        0,
                                                        text("show"),
                                                        text("show"),
-                                                       {},
-                                                       {},
                                                        {nodes.data(), value.node_count},
                                                        AYNI_CALL_MODE_FOREGROUND,
                                                        0};

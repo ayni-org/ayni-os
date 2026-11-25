@@ -441,7 +441,7 @@ class ConversationProgress : public testing::Test {
         observed.reads.clear();
         observed.confirmed.clear();
     }
-    ayni::strategies::Persistence persistence = ayni::strategies::Persistence::background;
+    ayni::strategies::Persistence persistence = ayni::strategies::Persistence::turn_boundary;
     ayni::test::TempDirectory directory;
     ayni::hosts::native::PosixFiles files;
     Values values{files};

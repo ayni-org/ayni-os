@@ -699,8 +699,8 @@ struct EphemeralFixture {
         nodes[1].subtree_end = 2;
         nodes[1].value.integer = speed;
         ayni_call_request_v1 req{
-            sizeof(req), AYNI_POLICY_REQUEST_CALL, 1,    0, text(step_key), text("motor.bind"), {},
-            {},          {nodes.data(), 2},        mode, 0};
+            sizeof(req),        AYNI_POLICY_REQUEST_CALL, 1,    0, text(step_key),
+            text("motor.bind"), {nodes.data(), 2},        mode, 0};
         return output.request_call(output.call_context, &req);
     }
 
@@ -717,8 +717,6 @@ struct EphemeralFixture {
                                  0,
                                  text(step_key),
                                  text(binding),
-                                 {},
-                                 {},
                                  {&node, 1},
                                  AYNI_CALL_MODE_FOREGROUND,
                                  0};

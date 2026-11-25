@@ -214,7 +214,7 @@ struct FixedTextModel {
 };
 
 struct EndToEndOptions {
-    ayni::strategies::Persistence persistence = ayni::strategies::Persistence::background;
+    ayni::strategies::Persistence persistence = ayni::strategies::Persistence::turn_boundary;
     uint32_t confirm_busy_count = 2;
     uint32_t collect_busy_count = 3;
     uint64_t confirm_delay_us = 0;
@@ -1236,7 +1236,7 @@ TEST(TurnDiagnostics, StoragePhaseDeltaSeparatesOperationTypesAndActualLfsSize) 
 // Also verifies stage-armed backpressure and known-wait attribution to the exact owning segment.
 TEST(TurnDiagnostics, FixedTextTurnBackgroundPathCorrelatesUniqueBoundariesAndSumsExactly) {
     EndToEndOptions base_opts{};
-    base_opts.persistence = ayni::strategies::Persistence::background;
+    base_opts.persistence = ayni::strategies::Persistence::turn_boundary;
     const auto base = run_fixed_text_turn(base_opts);
     expect_additive_summary(base.summary);
     using RoleMetrics = ayni::hosts::esp_idf::ValueRoleMetrics;
@@ -1454,7 +1454,7 @@ TEST(TurnDiagnostics, CompletionOrderingAttributesTriggeringWriteAndRemoveToClos
 // answer_saved.
 TEST(TurnDiagnostics, DeferredOutputProducesIdenticalSamplesUnderInstantAndSlowLogSinks) {
     EndToEndOptions fast_opts{};
-    fast_opts.persistence = ayni::strategies::Persistence::background;
+    fast_opts.persistence = ayni::strategies::Persistence::turn_boundary;
     fast_opts.log_emit_delay_us = 0;
 
     EndToEndOptions slow_opts = fast_opts;

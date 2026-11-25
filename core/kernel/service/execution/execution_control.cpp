@@ -19,14 +19,12 @@ bool valid_nonce(const ayni_executor_nonce_v1 &nonce, uint64_t control_domain_id
 // Projection rows share this one Scene generation. Control envelope fields are
 // proven fixed at catalog close, but other Scene-limited fields can vary per
 // item, and must not borrow authorization from only the first item (ADR-0084).
-ayni_status_t ExecutionControl::authorize_input(
-    const catalog::ExecutionBinding &binding, ayni_string_v1 capability, uint32_t version,
-    ayni_bytes_v1 domain, const catalog::CallContract &contract, const work::CallInputView &input,
-    const catalog::DecodedBusiness &proof, uint64_t durable_seq, uint32_t &scene) const {
-    if (contract.input_format != catalog::call_value_input_format) {
-        return work_.scenes.authorize(view(binding.scene), binding.scene_version, capability,
-                                      version, input.arguments, durable_seq, scene);
-    }
+ayni_status_t ExecutionControl::authorize_input(const catalog::ExecutionBinding &binding,
+                                                ayni_string_v1 capability, uint32_t version,
+                                                ayni_bytes_v1 domain, const catalog::CallContract &,
+                                                const work::CallInputView &input,
+                                                const catalog::DecodedBusiness &proof,
+                                                uint64_t durable_seq, uint32_t &scene) const {
     const uint32_t count = catalog::projection_rows(proof.view(), input.value.view());
     if (count == 0U) {
         return AYNI_DENIED;

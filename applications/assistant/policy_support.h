@@ -75,7 +75,6 @@ inline ayni_status_t request(ayni_policy_output_v1 &o, const char *binding, ayni
     ayni_call_request_v1 r{sizeof(r), model ? AYNI_POLICY_REQUEST_MODEL : AYNI_POLICY_REQUEST_CALL,
                            1,         0,
                            key,       text(binding),
-                           {},        {},
                            {},        AYNI_CALL_MODE_FOREGROUND,
                            0};
     const auto status = value.finish(r.value);

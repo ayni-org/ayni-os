@@ -218,9 +218,9 @@ struct TokenLimits {
 // Discovery preserves existing consumers; preloaded sends the current authorized directory
 // as request-only tools. Neither mode changes Core authorization.
 enum class ToolExposure { discovery, preloaded };
-// Background requests saves while work progresses. turn_boundary stages during the turn
+// Durable confirms each dependent body; turn_boundary stages during the turn
 // and relies on Session's publication barrier. Select it with CANCEL_ON_REBOOT Goals.
-enum class Persistence { durable, background, turn_boundary };
+enum class Persistence { durable, turn_boundary };
 // Metadata-only observation of one tool proposal outcome in a model batch. Never carries
 // arguments, tool output text, or private payloads, and must not block or reenter Core.
 struct ToolOutcome {

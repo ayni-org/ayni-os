@@ -136,10 +136,6 @@ ayni_status_t CallRuntime::stage_business(const ayni_call_request_v1 &request, P
     }
     proposal.mode = request.mode;
     proposal.preemption = request.preemption;
-    if ((request.arguments.struct_size != 0U || request.arguments.field_count != 0U ||
-         request.arguments.fields != nullptr || request.text.size != 0U)) {
-        return AYNI_INVALID_ARGUMENT;
-    }
     const auto domain = catalogs_.capabilities.domain_view(proposal.links.capability);
     auto input_lease = work_.workspace.make<work::CallInputView>();
     auto proof_lease = work_.workspace.make<catalog::DecodedBusiness>();
@@ -218,10 +214,8 @@ void CallRuntime::stage_intent(const Proposal &proposal) {
 // Capturing the frontier within decide cannot race with owner sample application.
 ayni_status_t CallRuntime::stage_subscription_target(const ayni_call_request_v1 &request) {
     if (request.mode != AYNI_CALL_MODE_FOREGROUND || request.preemption != AYNI_CALL_PREEMPT_NONE ||
-        request.binding_version != 0 || request.binding_id.size != 0 || request.text.size != 0 ||
-        request.arguments.struct_size != 0 || request.arguments.field_count != 0 ||
-        request.arguments.fields != nullptr || request.value.node_count != 0U ||
-        request.value.nodes != nullptr) {
+        request.binding_version != 0 || request.binding_id.size != 0 ||
+        request.value.node_count != 0U || request.value.nodes != nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
     Proposal proposal{};

@@ -97,7 +97,7 @@ ayni_status_t encode_business_input_with_proof(ayni::foundation::Workspace &work
 namespace {
 // Shared boundary preflight preserves the public failure order before proof decoding.
 ayni_status_t check_saved_input(const catalog::CallContract &contract, ayni_bytes_v1 body) {
-    if (contract.input_format != catalog::call_value_input_format) {
+    if (!saved_value_input(contract)) {
         return AYNI_UNSUPPORTED_VERSION;
     }
     if (body.size > contract.input_text_limit) {

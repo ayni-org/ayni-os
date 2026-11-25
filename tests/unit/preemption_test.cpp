@@ -775,17 +775,9 @@ struct PreemptionFixture {
         nodes[1].field_id = execution_field_id;
         nodes[1].subtree_end = 2;
         nodes[1].value.integer = speed;
-        ayni_call_request_v1 req{sizeof(req),
-                                 AYNI_POLICY_REQUEST_CALL,
-                                 1,
-                                 0,
-                                 text(step_key),
-                                 text(binding),
-                                 {},
-                                 {},
-                                 {nodes.data(), 2},
-                                 mode,
-                                 preemption};
+        ayni_call_request_v1 req{
+            sizeof(req),   AYNI_POLICY_REQUEST_CALL, 1,    0,         text(step_key),
+            text(binding), {nodes.data(), 2},        mode, preemption};
         return output.request_call(output.call_context, &req);
     }
 
@@ -803,8 +795,6 @@ struct PreemptionFixture {
                                  0,
                                  text(step_key),
                                  text(binding),
-                                 {},
-                                 {},
                                  {&node, 1},
                                  mode,
                                  preemption};
@@ -1335,7 +1325,7 @@ struct SessionHarness {
     ayni_business_contract_v1 text_business{};
     ayni_call_capability_v1 model_cap{};
     ayni_strategy_v1 strat{};
-    ayni::strategies::Persistence persistence = ayni::strategies::Persistence::background;
+    ayni::strategies::Persistence persistence = ayni::strategies::Persistence::turn_boundary;
     ayni::runtime::conversation::UnfinishedTurn unfinished =
         ayni::runtime::conversation::UnfinishedTurn::discard;
 
@@ -1595,7 +1585,7 @@ TEST(Preemption, BackgroundDiscardCancelsWithZeroRootWritesAndPreservesSharedHis
     EXPECT_EQ(h.files.root_writes, writes_after_turn1 + 1U);
 }
 
-// Test 9 (ADR-0111): Regression guard — Persistence::background + UnfinishedTurn::retain still
+// Test 9 (ADR-0111): Regression guard — Persistence::turn_boundary + UnfinishedTurn::retain still
 // saves the cancelled draft durably and requires explicit abandon().
 TEST(Preemption, BackgroundRetainStillPersistsDraftOnCancel) {
     SessionHarness h;

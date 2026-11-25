@@ -110,7 +110,7 @@ bool action_matches(const CallRecord &record) {
 // and a present typed result unless its body was explicitly made unavailable.
 bool valid_business_content(ayni::foundation::Workspace &workspace, const CallRecord &record) {
     const auto &state = record.state;
-    if ((record.contract.input_format == catalog::call_value_input_format ||
+    if ((saved_value_input(record.contract) ||
          record.contract.result_format == catalog::call_value_result_format) &&
         record.contract.business_contract.size == 0U) {
         return false;

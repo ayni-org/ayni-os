@@ -32,7 +32,7 @@ constexpr char reply_capability[] = "wifi.model.text", reply_binding[] = "wifi.m
                tools_capability[] = "wifi.model.tools", tools_binding[] = "wifi.tools";
 constexpr const char *grant_capabilities[] = {reply_capability, tools_capability, "screen.text",
                                               "speaker.tone",   "speaker.speech", "motor.status",
-                                              "motor.plan",     "motor.run",      "motor.stop"};
+                                              "motor.run",      "motor.stop"};
 constexpr uint64_t motor_grant_us = UINT64_C(24) * 60 * 60 * 1000000;
 constexpr uint64_t grant_count = sizeof(grant_capabilities) / sizeof(grant_capabilities[0]);
 // Deployment-neutral identity; tool protocol and authorization rules come from
@@ -788,7 +788,6 @@ ayni_status_t Chat::configure_strategy() {
         {text("speaker.play_tone"), version, AYNI_TOOL_ROLE_CAPABILITY},
         {text("speaker.speak_text"), SpeechProfile::capability_version, AYNI_TOOL_ROLE_CAPABILITY},
         {text("motor.status"), motor_version, AYNI_TOOL_ROLE_CAPABILITY},
-        {text("motor.plan"), motor_version, AYNI_TOOL_ROLE_CAPABILITY},
         {text("motor.run"), motor_version, AYNI_TOOL_ROLE_CAPABILITY},
         {text("motor.stop"), motor_version, AYNI_TOOL_ROLE_CAPABILITY}};
     auto type = sized<ayni_goal_type_v1>();

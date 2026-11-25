@@ -127,17 +127,13 @@ typedef struct ayni_call_request_v1 {
     uint32_t reserved;              /* Must be zero. */
     ayni_string_v1 step_key;        /* Stable nonempty Task-local identity. */
     ayni_string_v1 binding_id;      /* Exact trusted selection. */
-    ayni_scope_v1 arguments;        /* Reserved since 0.48; every member must be zero. */
-    ayni_string_v1 text; /* Reserved since 0.48; must be empty. Business input is value alone. */
-    ayni_value_v1 value; /* Since 0.48. VALUE input; legacy arguments/text must be empty. */
+    ayni_value_v1 value; /* Since 0.48. Normalized business input; sole input since 0.61. */
     uint32_t
         mode; /* Since 0.51. FOREGROUND by default; MANAGED only for TOOL action/subscription. */
     ayni_call_preemption_t
         preemption; /* Since 0.58. Replaces mode_reserved (was zero); NONE, LOWER or SUPERSEDE. */
 } ayni_call_request_v1;
 
-/* Native typed business input. Since 0.48. */
-#define AYNI_TOOL_INPUT_VALUE 1u
 /* Lossless named adapter input, resolved by the owner. Since 0.48. */
 #define AYNI_TOOL_INPUT_ARGUMENTS 2u
 /* Opaque external protocol identity, separate from Ayni Call/operation/attempt. Since 0.48. */
@@ -420,7 +416,6 @@ typedef struct ayni_provider_request_v1 {
     ayni_string_v1 capability_id; /* Matched capability, not model-supplied endpoint. */
     ayni_string_v1 endpoint_id;   /* Trusted local endpoint token; never a URL. */
     ayni_scope_v1 arguments;      /* Complete concrete values actually authorized. */
-    ayni_string_v1 text;          /* Reserved since 0.48; empty. The business body is value. */
     /* Since 0.35. Borrowed through submit only; null for nonphysical I/O. Physical
      * Providers hand this permit to the gate: a local gate installs it before
      * acceptance returns; since 0.36 a remote one may receive it later, unless a

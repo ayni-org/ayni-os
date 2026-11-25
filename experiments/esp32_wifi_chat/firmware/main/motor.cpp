@@ -12,7 +12,7 @@ constexpr uint32_t version = motor_version, reply_bytes_max = motor_reply_bytes_
                    input_bytes_max = motor_input_bytes_max;
 constexpr uint32_t motor1_field = 1, motor2_field = 2, duration_field = 3;
 constexpr uint32_t request_timeout_ms = 1000;
-constexpr const char *identities[] = {"motor.status", "motor.plan", "motor.run", "motor.stop"};
+constexpr const char *identities[] = {"motor.status", "motor.run", "motor.stop"};
 ayni_string_v1 text(const char *s) {
     return {s, uint32_t(std::strlen(s))};
 }
@@ -39,29 +39,7 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
     result_.kind = AYNI_VALUE_TEXT;
     result_.subtree_end = 1;
     result_.max_count = reply_bytes_max;
-    plan_input_[0].kind = AYNI_VALUE_OBJECT;
-    plan_input_[0].subtree_end = plan_input_.size();
-    for (uint32_t at = motor1_field; at < plan_input_.size(); ++at) {
-        auto &node = plan_input_[at];
-        node.kind = at == duration_field ? AYNI_VALUE_U64 : AYNI_VALUE_I64;
-        node.field_id = at;
-        node.subtree_end = at + 1;
-        node.flags = AYNI_SCHEMA_REQUIRED;
-        node.name = text(at == motor1_field   ? "motor1_percent"
-                         : at == motor2_field ? "motor2_percent"
-                                              : "duration_ms");
-        node.unit = text(at == duration_field ? "ms" : "percent");
-        if (at == duration_field) {
-            node.min_u64 = motor_duration_ms_min;
-            node.max_u64 = motor_plan_duration_ms_max;
-        } else {
-            node.min_i64 = -motor_percent_max;
-            node.max_i64 = motor_percent_max;
-        }
-    }
     business_[0] = {{&status_input_, 1}, {&result_, 1}, 0, 0, nullptr};
-    business_[1] = {
-        {plan_input_.data(), uint32_t(plan_input_.size())}, {&result_, 1}, 0, 0, nullptr};
     run_input_ = motor_run_schema();
     std::array<ayni_authority_field_desc_v1, 3> fields{};
     for (uint32_t at = 0; at < fields.size(); ++at) {
@@ -81,17 +59,17 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
         projections_[at].path[2] = at + 1;
         projections_[at].unit = node.unit;
     }
-    business_[2] = {{run_input_.data(), uint32_t(run_input_.size())},
+    business_[1] = {{run_input_.data(), uint32_t(run_input_.size())},
                     {&result_, 1},
                     uint32_t(projections_.size()),
                     0,
                     projections_.data()};
-    business_[3] = business_[0];
+    business_[2] = business_[0];
     resource_ = {text("motor.actuator"), 1, 0};
     for (uint32_t at = 0; at < offers_.size(); ++at) {
         const ayni_capability_desc_v1 authority{
             sizeof(authority), version, text(identities[at]),
-            at == 2 ? 3U : 0U, 0,       at == 2 ? fields.data() : nullptr};
+            at == 1 ? 3U : 0U, 0,       at == 1 ? fields.data() : nullptr};
         auto rc = checked(identities[at], ayni_register_capability(kernel, &authority));
         if (rc != AYNI_OK) {
             return rc;
@@ -105,7 +83,7 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
                         input_bytes_max, reply_bytes_max, 0, nullptr, nullptr,
                         AYNI_CALL_DURABILITY_EPHEMERAL, 0},
                        &business_[at]};
-        if (at == 2) {
+        if (at == 1) {
             auto &contract = offers_[at].contract;
             contract.form = AYNI_CALL_ACTION;
             contract.effects = AYNI_CALL_EFFECT_PHYSICAL;
@@ -153,7 +131,6 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
         }
         constexpr const char *summaries[]{
             "Read TA6586 wiring and manual-bench readiness; power/shaft state is not measured.",
-            "Compute a TA6586 software plan without output.",
             "Run a bounded 1..8 segment TA6586 PWM session continuously while local motor control "
             "is enabled; no per-action approval.",
             "Request recoverable local motor soft-stop and confirm GPIO low readback; stays "
@@ -161,8 +138,6 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
         constexpr const char *parameters[]{
             "UNARY: use operation=\"invoke\" or omit operation; start is unsupported. Empty "
             "object.",
-            "UNARY: use operation=\"invoke\" or omit operation; start is unsupported. "
-            "Required integer motor1_percent and motor2_percent: -90..90; duration_ms: 50..60000.",
             "ACTION: operation=\"invoke\" waits for completion (managed start is unsupported on "
             "ephemeral bench motor calls). "
             "Required field segments: ordered array of 1..8 objects, each with required integers "
@@ -195,24 +170,21 @@ ayni_status_t Motor::configure(ayni_kernel_t *kernel) {
             binding.capability_id,
             text(summaries[at]),
             text(parameters[at]),
-            text(at == 2 ? "Reports actual multi-segment waveform and locally measured controller "
+            text(at == 1 ? "Reports actual multi-segment waveform and locally measured controller "
                            "output-stop facts. No wheel observation is inferred. "
                            "Target, wheel distance and RPM remain unverified. Manual raised-wheel "
                            "bench only; external watchdog/reset-disable are not verified."
-                 : at == 3
+                 : at == 2
                      ? "Confirms controller PWM disable and GPIO low readback (stop_confirmed) "
                        "and whether motor stays armed; does not measure shaft standstill or "
                        "driver power-off. Query motor.status for local controller state."
-                     : "Configured wiring/supply are not electrical measurements. A plan does "
-                       "not move motors."),
-            text(at == 1   ? "{\"motor1_percent\":50,\"motor2_percent\":0,\"duration_ms\":5000}"
-                 : at == 2 ? "{\"segments\":[{\"motor1_percent\":50,\"motor2_percent\":50,"
-                             "\"duration_ms\":1000},{\"motor1_percent\":-40,\"motor2_percent\":40,"
-                             "\"duration_ms\":500}]}"
-                           : "{}"),
-            at == 2 ? 3U : 0U,
+                     : "Configured wiring/supply are not electrical measurements."),
+            text(at == 1 ? "{\"segments\":[{\"motor1_percent\":50,\"motor2_percent\":50,\"duration_"
+                           "ms\":1000}]}"
+                         : "{}"),
+            at == 1 ? 3U : 0U,
             0,
-            at == 2 ? descriptions : nullptr};
+            at == 1 ? descriptions : nullptr};
         rc = checked("usage", ayni_register_capability_usage(kernel, text(summaries[at]), &usage));
     }
     const ayni_resource_desc_v1 resource{sizeof(resource),
@@ -272,10 +244,10 @@ ayni_submit_result_t Motor::submit(void *ctx, const ayni_provider_request_v1 *re
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     auto &self = *static_cast<Motor *>(ctx);
-    if (same(request->capability_id, identities[2])) {
+    if (same(request->capability_id, identities[1])) {
         return self.execution_.submit(request, completion);
     }
-    if (same(request->capability_id, identities[3])) {
+    if (same(request->capability_id, identities[2])) {
         // Recoverable soft-stop: confirm GPIO low readback on the control worker and stay armed.
         return self.execution_.submit_soft_stop(request, completion);
     }
@@ -283,29 +255,6 @@ ayni_submit_result_t Motor::submit(void *ctx, const ayni_provider_request_v1 *re
     int size = 0;
     if (same(request->capability_id, identities[0])) {
         size = self.execution_.describe(reply, sizeof(reply));
-    } else if (same(request->capability_id, identities[1])) {
-        ayni::ValueReader value;
-        if (value.read(request->value) != AYNI_OK) {
-            return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
-        }
-        const auto *first = value.field(motor1_field), *second = value.field(motor2_field);
-        const auto *duration = value.field(duration_field);
-        if (!first || !second || !duration || first->kind != AYNI_VALUE_I64 ||
-            second->kind != AYNI_VALUE_I64 || duration->kind != AYNI_VALUE_U64) {
-            return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
-        }
-        const auto duty =
-            motor_duties(int32_t(first->value.integer), int32_t(second->value.integer));
-        size = std::snprintf(
-            reply, sizeof(reply),
-            "{\"motion_enabled\":false,\"executed\":false,\"duration_ms\":%lu,"
-            "\"gpio_d0_d1_d2_d3\":[%lu,%lu,%lu,%lu],\"planned_duty_percent\":[%lu,%lu,%lu,%lu],"
-            "\"after_plan\":\"all-low-coast\",\"mode\":\"software-planning-only\"}",
-            static_cast<unsigned long>(duration->value.unsigned_integer),
-            static_cast<unsigned long>(motor_pins[0]), static_cast<unsigned long>(motor_pins[1]),
-            static_cast<unsigned long>(motor_pins[2]), static_cast<unsigned long>(motor_pins[3]),
-            static_cast<unsigned long>(duty[0]), static_cast<unsigned long>(duty[1]),
-            static_cast<unsigned long>(duty[2]), static_cast<unsigned long>(duty[3]));
     } else {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }

@@ -690,19 +690,6 @@ ayni_status_t Session::poll_step(bool *again) {
     if (phase_ == Phase::failed) {
         return failure_;
     }
-    // Only the active draft needs ongoing persistence requests. Once a completed
-    // candidate owns confirmation, or a volatile discard cancel is active, do not
-    // submit new background draft writes.
-    if (config_.persistence == strategies::Persistence::background && current_.id &&
-        (phase_ == Phase::start_turn || phase_ == Phase::turn) &&
-        !(volatile_discard() && end_request_ == EndRequest::cancel)) {
-        const auto stored = confirm(current_);
-        if (stored != AYNI_OK && stored != AYNI_NOT_READY) {
-            failure_ = stored;
-            phase_ = Phase::failed;
-            return stored;
-        }
-    }
     if (phase_ == Phase::empty) {
         return AYNI_INVALID_STATE;
     }

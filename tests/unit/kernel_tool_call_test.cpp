@@ -375,13 +375,7 @@ class ToolCalls : public ::testing::Test {
     static ayni_submit_result_t submit(void *ctx, const ayni_provider_request_v1 *request,
                                        ayni_provider_completion_t *completion) {
         auto &self = *static_cast<ToolCalls *>(ctx);
-        Pending call{request->attempt,
-                     completion,
-                     string_of(request->endpoint_id),
-                     string_of(request->text),
-                     {},
-                     {},
-                     {}};
+        Pending call{request->attempt, completion, string_of(request->endpoint_id), {}, {}, {}, {}};
         if (request->value.node_count != 0U) {
             for (uint32_t at = 1; at < request->value.node_count; ++at) {
                 const auto &node = request->value.nodes[at];
@@ -435,8 +429,6 @@ class ToolCalls : public ::testing::Test {
                                          0,
                                          text("plan"),
                                          text("planner"),
-                                         {},
-                                         {},
                                          {},
                                          AYNI_CALL_MODE_FOREGROUND,
                                          0};
@@ -500,8 +492,6 @@ class ToolCalls : public ::testing::Test {
                                                        0,
                                                        text("act"),
                                                        state.call.function_name,
-                                                       {},
-                                                       {},
                                                        {nodes.data(), value.node_count},
                                                        AYNI_CALL_MODE_FOREGROUND,
                                                        0};

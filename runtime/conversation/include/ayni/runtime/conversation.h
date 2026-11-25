@@ -30,7 +30,7 @@ struct TurnResult {
     bool published = false; // True only after the exact publication ACK became durable.
 };
 // Publication boundaries emitted once per publication in actual path order:
-// background runs checkpoint_ready -> publish_durable; direct/reopen runs publish_durable ->
+// turn_boundary runs checkpoint_ready -> publish_durable; direct/reopen runs publish_durable ->
 // checkpoint_ready; both then run record_saved -> collected -> context_ready.
 enum class PublicationStage {
     checkpoint_ready, // Completed durable Task checkpoint copied into publication candidate.
@@ -85,13 +85,13 @@ class Session {
     ayni_status_t poll();
     // again is reset each call and set for a newly runnable local cleanup/ACK transition.
     ayni_status_t poll_with_progress(bool &again) { return poll_step(&again); }
-    // OK copies input. Durable mode saves its draft before admission; background mode stages
-    // it and starts the Goal while saving proceeds. One turn at a time per Session.
+    // OK copies input. Durable mode saves its draft before admission; turn_boundary stages
+    // it in RAM and saves it with the completed turn. One turn at a time per Session.
     // Completion is ready() with a new last_round; the final answer crosses Core ACK durability.
     ayni_status_t begin(ayni_string_v1 user, uint64_t memory_id = 0);
     ayni_status_t forget(ayni_context_action_t action, uint64_t turn = 0);
     // Owner-thread, nonblocking. Durable/retaining modes wait for actual durable Core termination
-    // before discarding a saved draft; background+discard clears an unpersisted RAM draft once
+    // before discarding a saved draft; turn_boundary+discard clears an unpersisted RAM draft once
     // Core records termination without writing storage (ADR-0111). Publication already in flight
     // completes and is never rolled back.
     ayni_status_t cancel();

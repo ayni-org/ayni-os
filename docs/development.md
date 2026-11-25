@@ -340,7 +340,7 @@ Xtensa GCC15的`-Os`对上游链接标签成功路径产生maybe-uninitialized�
 
 ### 共享正文与后台会话
 
-ABI0.55要求完整body descriptor；旧write接口仍持久确认后成功。stage只在有界内存接收，share取得独立scope引用，confirm请求保存且不阻塞。FileBodies暂存需要正数cache预算；每次至多一个4 KiB文件借用，Core请求优先。Session/ToolLoop默认durable，ESP明确background；portable Profile::create_in可显式选择同一策略用于正常软件回归。模型临时输入在原Call终态持久后过期；原始模型提议及必要结果后台保存，不能以trim删除尚未保存的所有者。
+ABI0.55要求完整body descriptor；旧write接口仍持久确认后成功。stage只在有界内存接收，share取得独立scope引用，confirm请求保存且不阻塞。FileBodies暂存需要正数cache预算；每次至多一个4 KiB文件借用，Core请求优先。Session/ToolLoop默认durable，ESP明确turn_boundary（ABI0.61删除background）；portable Profile::create_in可显式选择同一策略用于正常软件回归。模型临时输入在原Call终态持久后过期；原始模型提议及必要结果后台保存，不能以trim删除尚未保存的所有者。
 
 Core schema10、ConversationRecord6、turn8、结果视图2、SQLite5直接升级且拒旧保留。首次完整Call及快照type21/v2，后续journal状态type21/v3。新格式异常恢复未验证；本轮不执行板卡更新或清理，后续只通过既有停止/关闭后的指定分区流程处置旧数据，见ADR-0104及ADR-0108。
 

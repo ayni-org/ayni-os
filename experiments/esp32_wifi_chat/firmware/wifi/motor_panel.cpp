@@ -37,9 +37,15 @@ bool MotorPanel::tick(Transport &transport, bool healthy, int64_t now) {
                          feedback.applied_seq != feedback_.applied_seq ||
                          feedback.rejected_seq != feedback_.rejected_seq ||
                          feedback.stop_confirmed_seq != feedback_.stop_confirmed_seq ||
-                         feedback.stop_requested_seq != feedback_.stop_requested_seq;
+                         feedback.stop_requested_seq != feedback_.stop_requested_seq ||
+                         feedback.control_mode != feedback_.control_mode ||
+                         feedback.busy != feedback_.busy ||
+                         feedback.hold_active != feedback_.hold_active ||
+                         feedback.applied_motor1 != feedback_.applied_motor1 ||
+                         feedback.applied_motor2 != feedback_.applied_motor2;
     if (changed) {
         feedback_ = feedback;
+        control_.observe(feedback.control_mode);
         const char *reason =
             feedback.reject_reason == ControlRejectReason::no_active_session ? "无活跃许可会话"
             : feedback.reject_reason == ControlRejectReason::out_of_envelope ? "超出许可包络"
@@ -59,8 +65,9 @@ bool MotorPanel::tick(Transport &transport, bool healthy, int64_t now) {
             (unsigned long long)feedback.rejected_seq, reason,
             feedback.stop_requested_seq > feedback.stop_confirmed_seq ? "正在停机，等待硬件确认"
             : !feedback.stop_confirmed_seq ? "尚无停止确认"
-            : feedback.control_mode == 1   ? "输出已停止（软停，可恢复）"
-                                           : "输出已停止（急停锁存/未启用）");
+            : feedback.control_mode == uint8_t(ControlMode::armed)
+                ? "输出已停止（软停，可恢复）"
+                : "输出已停止（急停锁存/未启用）");
         feedback_text_ = text;
     }
     if (!healthy && active()) {

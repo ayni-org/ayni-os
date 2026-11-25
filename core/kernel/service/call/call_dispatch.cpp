@@ -273,7 +273,6 @@ CallRuntime::Advance CallRuntime::submit_provider(uint32_t index, uint32_t task_
         view(id.capability_id),
         view(id.endpoint),
         arguments.view(),
-        {},
         permit,
         contract.subscription ? &subscription : nullptr,
         input.value.count == 0U ? ayni_value_v1{} : input.value.view()};

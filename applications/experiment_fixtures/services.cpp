@@ -89,17 +89,9 @@ ayni_status_t shared_summary(const ayni_task_snapshot_v1 &s, ayni_policy_output_
         value.object();
         value.text(AYNI_MODEL_BODY_FIELD_ID, {source.data(), size});
         value.end();
-        ayni_call_request_v1 call{sizeof(call),
-                                  AYNI_POLICY_REQUEST_MODEL,
-                                  1,
-                                  0,
-                                  text("shared.summary.v1"),
-                                  text("model"),
-                                  {},
-                                  {},
-                                  {},
-                                  AYNI_CALL_MODE_FOREGROUND,
-                                  0};
+        ayni_call_request_v1 call{
+            sizeof(call), AYNI_POLICY_REQUEST_MODEL, 1, 0, text("shared.summary.v1"), text("model"),
+            {},           AYNI_CALL_MODE_FOREGROUND, 0};
         const auto built = value.finish(call.value);
         if (built != AYNI_OK) {
             return built;

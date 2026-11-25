@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 60u
+#define AYNI_ABI_MINOR 61u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -396,7 +396,7 @@ typedef struct ayni_storage_batch_v1 {
  * ayni_create copies the table; ctx and the functions it points to stay owned
  * by the caller and must remain valid until ayni_destroy returns AYNI_OK.
  * Further services are appended as they are implemented; their planned shape
- * is in include/ayni/draft/host_v1.h.
+ * is provided through <ayni/audit.h> (Since 0.60).
  */
 struct ayni_body_store_v1; /* include/ayni/bodies.h */
 
@@ -1806,10 +1806,6 @@ typedef struct ayni_task_snapshot_v1 {
     const void *call_context;
     ayni_status_t (*call_result)(const void *context, ayni_string_v1 step_key,
                                  struct ayni_task_call_result_v1 *out);
-    /* Since 0.37 the call_tool callback; null since 0.54 (ADR-0096), keeping the layout
-     * (C-VER-002). A result's tool calls are read with ayni_tool_calls_read from its text,
-     * or from its body when it is stored. */
-    const void *reserved_call_tool;
     /* Since 0.40. Restricted memory view; null when memory is disabled. */
     const struct ayni_memory_view_v1 *memory;
     /* Planned civil identity/UTC; -1 for non-calendar Tasks. Since 0.41. */

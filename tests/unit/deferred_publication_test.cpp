@@ -290,7 +290,7 @@ class DeferredPublicationTest : public testing::Test {
         }
     }
 
-    ayni::strategies::Persistence persistence = ayni::strategies::Persistence::background;
+    ayni::strategies::Persistence persistence = ayni::strategies::Persistence::turn_boundary;
     InMemoryFiles files;
     QueuedValues values{files};
     ayni::hosts::sim::Host host;

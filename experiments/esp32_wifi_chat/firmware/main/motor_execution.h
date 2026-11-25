@@ -41,7 +41,7 @@ class MotorExecution {
 
   private:
     uint64_t latest_dispatch_ = 0; // Last Provider acceptance on the Core owner.
-    enum class Mode { disarmed, armed, latched, closed };
+    using Mode = ControlMode;
     enum class Phase { prepared, running, result };
     enum class Effect { none, possible, partial, complete };
     struct Pending {

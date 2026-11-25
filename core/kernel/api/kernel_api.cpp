@@ -4,8 +4,8 @@
 // shutdown, destroy, completion and event posting. They check arguments and
 // struct sizes; lifecycle semantics live in kernel_lifecycle.cpp. The work
 // model's entry points are in work_api.cpp; other implemented entry points
-// live in the corresponding files in this directory. The remaining Host
-// trace draft (include/ayni/draft/host_v1.h) has no symbols yet.
+// live in the corresponding files in this directory.
+// Audit export is implemented through the public <ayni/audit.h> interface.
 
 #include "catalog/abi_checks.h"
 #include "catalog/catalog_id.h"

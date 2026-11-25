@@ -14,6 +14,7 @@ enum class ControlRejectReason : uint32_t {
     disarmed_or_latched,
     interlock_fault
 };
+enum class ControlMode : uint8_t { disarmed, armed, latched, closed };
 enum class ControlStopKind : uint32_t { soft_stop = 1, hard_estop = 2 };
 enum class ControlTargetSource : uint8_t { structured = 1, authorized_model = 2 };
 // A desired setpoint only; the executor still requires the live Core session envelope.
@@ -106,7 +107,7 @@ class ControlMailbox {
         execution_.stop_confirmed_seq = std::max<uint64_t>(execution_.stop_confirmed_seq, seq);
         execution_.stopped_at_us = stopped_us;
         execution_.stop_cause = cause;
-        execution_.control_mode = armed ? armed_mode : execution_.control_mode;
+        execution_.control_mode = armed ? uint8_t(ControlMode::armed) : execution_.control_mode;
         execution_.busy = 0;
         feedback_.publish(execution_);
         confirmed_.store(uint32_t(execution_.stop_confirmed_seq), std::memory_order_release);
@@ -189,7 +190,6 @@ class ControlMailbox {
     static constexpr uint32_t exhausted_sequence = UINT32_MAX >> hold_shift,
                               max_sequence = exhausted_sequence - 1U, full_scale = 100;
     static constexpr uint8_t target_kind = 1, hold_kind = 2, soft_kind = 3, hard_kind = 4;
-    static constexpr uint8_t armed_mode = 1;
     uint32_t next_sequence() {
         auto current = sequence_.load(std::memory_order_relaxed);
         while (current < max_sequence) {

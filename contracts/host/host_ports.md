@@ -2,7 +2,7 @@
 
 - **关联**：计划 §2.1、§3.2「所有权/异步/线程」、§4.1、§4.2、§4.3；ADR-0002、ADR-0006、ADR-0014、ADR-0015、ADR-0016、ADR-0019、ADR-0020、ADR-0021、ADR-0026、ADR-0027；`MA-003`、`MA-005`、`MA-007`、`MA-010`；E1 步骤 10，E2 F2、F7、F12
 - **属主**：`kernel`（端口的调用方、事件入口与完成槽）；各 Host 实现（`hosts/native`、`hosts/esp_idf`、`hosts/sim`）
-- **头文件**：已实现部分 `include/ayni/ayni.h`（`ayni_host_v1`：时钟、唤醒、入口临界区与八个存储端口；`ayni_completion_post`；`ayni_post_event`）；计划部分 `include/ayni/draft/host_v1.h`
+- **头文件**：已实现部分 `include/ayni/ayni.h`（`ayni_host_v1`：时钟、唤醒、入口临界区与八个存储端口；`ayni_completion_post`；`ayni_post_event`）；审计出口 `include/ayni/audit.h`
 
 Host 为 Kernel 维护自身不变量提供平台服务（ADR-0006）：时钟、持久存储、唤醒与日志出口。网络、模型、媒体与设备 I/O 不是 Host 端口，而是经 Binding 调用的 Provider（`provider.md`）。
 
@@ -24,7 +24,7 @@ Host 为 Kernel 维护自身不变量提供平台服务（ADR-0006）：时钟�
 | `ayni_post_event` | Host → Kernel | 任意非 ISR 线程 | 只等待入口锁 | 返回 `OK`（已入队，解锁后 `wake`）/ `BUSY`（队列满）/ `CAPACITY_EXCEEDED`（ABI 0.25 起，同一 ingress 实例累计接受的输入序号达到 UINT64_MAX）/ `INVALID_STATE`（`CONFIGURING`、`STOPPED`） | M1 已实现（本地输入，ADR-0021；其他事件种类为草案） |
 | `ayni_completion_post` | Host → Kernel | 任意非 ISR 线程 | 只等待入口锁 | 写入预留的完成槽，然后 `wake` | M1 已实现 |
 
-端口名与 `ayni_host_v1`（已实现部分）和 `include/ayni/draft/host_v1.h`（计划部分）的成员名一致。
+端口名与 `ayni_host_v1`（已实现部分）的成员名一致；审计记录通过 `<ayni/audit.h>` 独立读取。
 
 八个存储函数为 append、read_prefix、read_log、fence_writers、write_snapshot、read_snapshot、trim_prefix、free_bytes。`ayni_create` 仍允许没有存储或只有旧 append/read_prefix pair 的 Host 表（其余存储端口为空）；pair 缺一或新扩展只提供一部分时拒绝。`ayni_start` 要求八个函数齐备，否则返回 `UNSUPPORTED` 并保持 `CONFIGURING`；不以成功桩补齐缺失能力。
 

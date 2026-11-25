@@ -112,3 +112,5 @@ ADR-0109直接升级C++ BodyCollection：异步实现须提供collected(scope)�
 ABI 0.57–0.59（ADR-0110/0111/0112）依次升级Core存储至schema 11，新增`EPHEMERAL`执行等级、`CANCEL_ON_REBOOT`、内联停稳证明、资源抢占策略、`ControlSession`、`ObservationSlots`与`ReflexRule`；0.x调用方重编译。
 
 ABI 0.60（ADR-0113）在`ayni_config_v1`尾部追加`audit_capacity`（`sizeof == 200`，默认0禁用且零arena开销），新增严格C99头文件`<ayni/audit.h>`（`ayni_audit_record_v1` 104 B、`ayni_audit_info_v1` 40 B、`ayni_get_audit_info`、`ayni_take_audit_records`）；Core `storage_schema`保持11不变，无新增WAL记录或迁移。外层`FileBodies`正文manifest独立升为AYNB格式2（`<= 4096 B`内联存储），旧格式1拒绝返回`AYNI_UNSUPPORTED_VERSION`并保留原文件；可选Host `AuditSink`使用独立`AYAU`格式1轮转文件。所有0.x调用方重编译。
+
+ABI 0.61（ADR-0114）删除已废弃的 Call arguments/text、Provider text、Task reserved_call_tool、AYNI_TOOL_INPUT_VALUE 及旧 Host 草案。Persistence 只保留 durable / turn_boundary，全仓调用方统一重编译；Core schema 保持 11，持久记录的 input_format 仍在解码边界严格校验。新增控制整形与动态 Reflex 接口的最终布局随同一 ABI 收敛。
