@@ -2,6 +2,8 @@
 // ayni_control_gate (ABI 0.59). Verifies seamless time- and hardware-timed transitions,
 // ring compaction, live target replacement, short-lease renewal, and fail-closed boundaries.
 
+#include "../support/latency_samples.h"
+#include <ayni/control_loop.h>
 #include <ayni/control_session.h>
 #include <gtest/gtest.h>
 
@@ -401,4 +403,83 @@ TEST_F(ControlSessionTest, EndOfTrajectoryChecksGateObserveBeforeCompleting) {
     EXPECT_EQ(gate_info().stop_cause, AYNI_CONTROL_STOP_EXPIRED);
 }
 
+// ADR-0114: shaped outputs pass the actual gate envelope, preserving push_segment queue.
+TEST_F(ControlSessionTest, EffectiveTickPreservesDesiredAndQueuedSegments) {
+    const auto permit = make_permit(AYNI_FORM_SESSION, 90, 0);
+    const auto target = make_segment(40, -40, 0);
+    ASSERT_EQ(ayni_control_session_open(session, gate, &permit, &target, 1, 0, &live), AYNI_OK);
+    const auto queued = make_segment(30, 30, 0);
+    ASSERT_EQ(ayni_control_session_push_segment(session, &queued), AYNI_OK);
+    auto effective = make_segment(10, -10, 0);
+    ayni_control_session_step_v1 step{};
+    step.struct_size = sizeof(step);
+    ASSERT_EQ(ayni_control_session_tick_effective(session, 1, &live, &effective, &step), AYNI_OK);
+    EXPECT_EQ(step.active.fields[0].value, 10);
+    EXPECT_EQ(step.segment_count, 2U);
+    ASSERT_EQ(ayni_control_session_tick_effective(session, 2, &live, &step.active, &step), AYNI_OK);
+    EXPECT_EQ(step.active.fields[0].value, 10); // In-place input/output alias retains effective.
+    ASSERT_EQ(ayni_control_session_tick(session, 3, &live, &step), AYNI_OK);
+    EXPECT_EQ(step.active.fields[0].value, 40);
+    ASSERT_EQ(ayni_control_session_advance_segment(session, 4, &live, &step), AYNI_OK);
+    EXPECT_EQ(step.active.fields[0].value, 30);
+}
+// ADR-0114: amplification, reversal and a reduced value outside a narrow permit fail closed.
+TEST_F(ControlSessionTest, EffectiveTickRejectsAmplificationAndRequiresActualEnvelope) {
+    const auto permit = make_permit(AYNI_FORM_SESSION, 91, 0, 1000, 20, 60);
+    const auto target = make_segment(40, 40, 0);
+    ASSERT_EQ(ayni_control_session_open(session, gate, &permit, &target, 1, 0, &live), AYNI_OK);
+    auto effective = make_segment(10, 10, 0);
+    ayni_control_session_step_v1 step{};
+    step.struct_size = sizeof(step);
+    EXPECT_NE(ayni_control_session_tick_effective(session, 1, &live, &effective, &step), AYNI_OK);
+    EXPECT_EQ(step.state, AYNI_CONTROL_SESSION_STOPPING);
+}
+// ADR-0114: tightening checks independently reject amplification and sign reversal.
+TEST_F(ControlSessionTest, EffectiveTickRejectsAmplificationAndSignReversal) {
+    uint64_t permit_id = 100;
+    for (const auto invalid : {int64_t(41), int64_t(-1)}) {
+        const auto at_us = permit_id * 10;
+        const auto permit = make_permit(AYNI_FORM_SESSION, permit_id++, at_us);
+        const auto target = make_segment(40, 40, 0);
+        ASSERT_EQ(ayni_control_session_open(session, gate, &permit, &target, 1, at_us, &live),
+                  AYNI_OK);
+        auto effective = make_segment(invalid, 40, 0);
+        ayni_control_session_step_v1 step{};
+        step.struct_size = sizeof(step);
+        EXPECT_NE(ayni_control_session_tick_effective(session, at_us + 1, &live, &effective, &step),
+                  AYNI_OK);
+        EXPECT_EQ(step.state, AYNI_CONTROL_SESSION_STOPPING);
+        ASSERT_EQ(ayni_control_session_confirm_stopped(session, at_us + 2), AYNI_OK);
+    }
+}
+// ADR-0114: measure actual local pure limiter plus actual PermitGate effective validation.
+TEST_F(ControlSessionTest, LocalLoopWallLatencyMeetsHostBudget) {
+    const auto permit = make_permit(AYNI_FORM_SESSION, 120, 0);
+    const auto desired = make_segment(40, -40, 0);
+    ASSERT_EQ(ayni_control_session_open(session, gate, &permit, &desired, 1, 0, &live), AYNI_OK);
+    ayni_control_loop_t loop{};
+    loop.struct_size = sizeof(loop);
+    loop.field_count = desired.field_count;
+    loop.fields[0] = desired.fields[0].field_id;
+    loop.fields[1] = desired.fields[1].field_id;
+    loop.max_cycle_gap_us = 100;
+    ayni::test::LatencySamples samples;
+    for (unsigned at = 0; at < 2000; ++at) {
+        const auto start = ayni::test::LatencySamples::Clock::now();
+        ayni_control_segment_v1 effective{};
+        ayni_control_loop_action_t action = 0;
+        ASSERT_EQ(
+            ayni_control_loop_limit(&loop, &desired, nullptr, 0, 1, 25, &effective, &action, &loop),
+            AYNI_OK);
+        ASSERT_EQ(action, AYNI_LOOP_APPLY);
+        ayni_control_session_step_v1 step{};
+        step.struct_size = sizeof(step);
+        ASSERT_EQ(ayni_control_session_tick_effective(session, 1, &live, &effective, &step),
+                  AYNI_OK);
+        samples.add(start);
+    }
+    samples.print("ControlLoop+tick_effective");
+    EXPECT_LT(samples.percentile(99), 30);
+    EXPECT_LT(samples.percentile(100), 200);
+}
 } // namespace

@@ -23,6 +23,8 @@ struct ControlTarget {
     int32_t motor1 = 0, motor2 = 0;
     uint32_t duration_ms = 0;
     ControlTargetSource source = ControlTargetSource::structured;
+    uint64_t session_goal =
+        0; // 0 selects the sole active structured session; model targets are exact.
 };
 // Receipt and execution frontiers are independent: receiving never implies hardware application.
 struct ControlFeedbackSnapshot {
@@ -46,6 +48,15 @@ struct ControlHold {
 // Sequence exhaustion refuses ordinary commands and permanently latches a hard stop.
 class ControlMailbox {
   public:
+    // Reserve an ordered start identity without publishing an active-session target.
+    // The worker publishes receipt only when it consumes the queued start message.
+    uint32_t reserve_start() { return next_sequence(); }
+    void mark_start_received(uint64_t seq, uint64_t at_us) {
+        execution_.accepted_seq = seq;
+        execution_.accepted_at_us = at_us;
+        execution_.accepted_kind = target_kind;
+        feedback_.publish(execution_);
+    }
     bool submit(ControlTarget target, uint64_t now_us, uint64_t *out_seq = nullptr) {
         uint32_t issued = 0;
         const bool sent = targets_.write(
@@ -112,7 +123,7 @@ class ControlMailbox {
         feedback_.publish(execution_);
         confirmed_.store(uint32_t(execution_.stop_confirmed_seq), std::memory_order_release);
     }
-    bool request_hold(uint32_t percent) {
+    bool request_hold(uint32_t percent, uint32_t *out_seq = nullptr) {
         if (percent > full_scale) {
             return false;
         }
@@ -124,6 +135,9 @@ class ControlMailbox {
         while ((state >> hold_shift) < seq) {
             if (hold_.compare_exchange_weak(state, (seq << hold_shift) | percent,
                                             std::memory_order_release, std::memory_order_acquire)) {
+                if (out_seq) {
+                    *out_seq = seq;
+                }
                 return true;
             }
         }
@@ -164,9 +178,11 @@ class ControlMailbox {
         feedback_.read(ui_execution_, false);
         receipts_.read(ui_receipt_, false);
         auto out = ui_execution_;
-        out.accepted_seq = ui_receipt_.accepted_seq;
-        out.accepted_at_us = ui_receipt_.accepted_at_us;
-        out.accepted_kind = ui_receipt_.accepted_kind;
+        if (ui_receipt_.accepted_seq > out.accepted_seq) {
+            out.accepted_seq = ui_receipt_.accepted_seq;
+            out.accepted_at_us = ui_receipt_.accepted_at_us;
+            out.accepted_kind = ui_receipt_.accepted_kind;
+        }
         out.superseded_seq = ui_receipt_.superseded_seq;
         out.superseded_count = ui_receipt_.superseded_count;
         const auto held = hold();

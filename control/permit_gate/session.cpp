@@ -23,6 +23,34 @@ bool segment_within_permit(const ayni_control_segment_v1 &segment,
     return valid_sample(probe, permit);
 }
 
+// An externally shaped setpoint may only narrow each corresponding signed value.
+// PermitGate still validates the actual narrowed values against the authorized envelope.
+bool tightens(const ayni_control_segment_v1 &effective, const ayni_control_segment_v1 &desired) {
+    if (structure(effective.struct_size, sizeof(effective)) != AYNI_OK ||
+        effective.field_count != desired.field_count ||
+        effective.duration_us != desired.duration_us) {
+        return false;
+    }
+    for (uint32_t at = 0; at < desired.field_count; ++at) {
+        const auto &source = desired.fields[at];
+        const ayni_control_value_v1 *value = nullptr;
+        for (uint32_t find = 0; find < effective.field_count; ++find) {
+            if (compare_names(effective.fields[find].field_id, source.field_id) == 0) {
+                if (value) {
+                    return false;
+                }
+                value = &effective.fields[find];
+            }
+        }
+        if (!value || compare_names(value->unit, source.unit) != 0 ||
+            (source.value >= 0 ? value->value < 0 || value->value > source.value
+                               : value->value > 0 || value->value < source.value)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // Saturating elapsed check avoids uint64_t overflow on large duration_us values.
 bool segment_elapsed(uint64_t now_us, uint64_t started_us, uint64_t duration_us) {
     return duration_us != 0U && now_us >= started_us && (now_us - started_us) >= duration_us;
@@ -45,13 +73,13 @@ bool ayni_control_session::valid_segment(const ayni_control_segment_v1 &segment)
 }
 
 ayni_status_t ayni_control_session::emit_sample(uint64_t now_us,
-                                                const ayni_control_observation_v1 *live) {
+                                                const ayni_control_observation_v1 *live,
+                                                const ayni_control_segment_v1 &seg) {
     if (sequence == UINT64_MAX) {
         state = AYNI_CONTROL_SESSION_STOPPING;
         static_cast<void>(ayni_control_stop(gate, permit.permit_id, now_us));
         return AYNI_CAPACITY_EXCEEDED;
     }
-    const auto &seg = segments[segment_index];
     ayni_control_sample_v1 sample{};
     sample.struct_size = sizeof(sample);
     sample.count = seg.field_count;
@@ -234,9 +262,10 @@ ayni_status_t ayni_control_session_renew(ayni_control_session_t *session,
 
 // Advances elapsed time-bounded segments seamlessly in the same tick and validates the active
 // setpoint via ayni_control_sample() so every cycle stays inside permit/lease/interlock bounds.
-ayni_status_t ayni_control_session_tick(ayni_control_session_t *session, uint64_t now_us,
-                                        const ayni_control_observation_v1 *live,
-                                        ayni_control_session_step_v1 *out_step) {
+static ayni_status_t tick_session(ayni_control_session_t *session, uint64_t now_us,
+                                  const ayni_control_observation_v1 *live,
+                                  ayni_control_session_step_v1 *out_step,
+                                  const ayni_control_segment_v1 *effective) {
     if (session == nullptr || out_step == nullptr) {
         return AYNI_INVALID_ARGUMENT;
     }
@@ -274,12 +303,40 @@ ayni_status_t ayni_control_session_tick(ayni_control_session_t *session, uint64_
             return AYNI_OK;
         }
     }
-    const auto rc = session->emit_sample(now_us, live);
+    const auto &desired = session->segments[session->segment_index];
+    if (effective && !tightens(*effective, desired)) {
+        session->state = AYNI_CONTROL_SESSION_STOPPING;
+        static_cast<void>(ayni_control_stop(session->gate, session->permit.permit_id, now_us));
+        session->describe_step(now_us, false, *out_step);
+        return AYNI_DENIED;
+    }
+    const auto rc = session->emit_sample(now_us, live, effective ? *effective : desired);
     if (rc == AYNI_OK) {
         session->first_sample_emitted = true;
     }
     session->describe_step(now_us, rc == AYNI_OK && transitioned, *out_step);
+    if (rc == AYNI_OK && effective) {
+        out_step->active = *effective;
+    }
     return rc;
+}
+
+ayni_status_t ayni_control_session_tick(ayni_control_session_t *session, uint64_t now_us,
+                                        const ayni_control_observation_v1 *live,
+                                        ayni_control_session_step_v1 *out_step) {
+    return tick_session(session, now_us, live, out_step, nullptr);
+}
+ayni_status_t ayni_control_session_tick_effective(ayni_control_session_t *session, uint64_t now_us,
+                                                  const ayni_control_observation_v1 *live,
+                                                  const ayni_control_segment_v1 *effective,
+                                                  ayni_control_session_step_v1 *out_step) {
+    if (!effective) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    // Caller may reuse out_step.active as its override. Retain the validated value before
+    // describe_step writes the output, so hardware never receives the unshaped desired value.
+    const auto retained = *effective;
+    return tick_session(session, now_us, live, out_step, &retained);
 }
 
 // Advances immediately on hardware segment completion (e.g. RMT PWM finish) without wall-clock
@@ -313,7 +370,7 @@ ayni_status_t ayni_control_session_advance_segment(ayni_control_session_t *sessi
     ++session->transitions;
     session->segment_started_us = now_us;
     session->target_replaced = false;
-    const auto rc = session->emit_sample(now_us, live);
+    const auto rc = session->emit_sample(now_us, live, session->segments[session->segment_index]);
     if (rc == AYNI_OK) {
         session->first_sample_emitted = true;
     }

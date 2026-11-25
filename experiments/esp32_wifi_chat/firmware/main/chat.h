@@ -1,5 +1,6 @@
 #pragma once
 #include "../wifi/model_buffer.h"
+#include "configuration.h"
 #include "motor.h"
 #include "motor_check.h"
 #include "reply_voice.h"
@@ -41,6 +42,7 @@ class Chat {
     void incoming(const Packet &);
     void record_owner_wait(uint64_t entered_us, uint64_t exited_us);
     void stop_outputs() {
+        motor_.close_sessions();
         reply_voice_.set_accepting(false);
         speaker_.set_accepting(false);
         speaker_.request_stop();
@@ -199,7 +201,7 @@ class Chat {
     uint64_t turn_started_ = 0;
     // Owner-only per-turn wall time. step_us is ayni_step() wall time (includes preemption);
     // storage snapshots are cumulative completed work, sampled as deltas at phase boundaries.
-    static constexpr uint32_t step_units = 32;
+    static constexpr uint32_t step_units = owner_step_units;
     struct TurnTiming {
         uint64_t step_calls = 0, step_us = 0, max_step_us = 0, conversation_us = 0;
         uint64_t phase_started_us = 0;

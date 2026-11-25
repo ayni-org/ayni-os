@@ -1,0 +1,3 @@
+add_library(ayni_runtime_operation_session STATIC operation_session.cpp)
+target_include_directories(ayni_runtime_operation_session PUBLIC include)
+target_link_libraries(ayni_runtime_operation_session PUBLIC ayni_core PRIVATE ayni_core_options)

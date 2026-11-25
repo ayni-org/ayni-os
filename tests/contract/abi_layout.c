@@ -12,6 +12,7 @@
 #include <ayni/calls.h>
 #include <ayni/context.h>
 #include <ayni/control.h>
+#include <ayni/control_loop.h>
 #include <ayni/control_session.h>
 #include <ayni/directory.h>
 #include <ayni/execution.h>
@@ -1082,3 +1083,13 @@ AYNI_LAYOUT(audit_info_dropped_overflow, offsetof(ayni_audit_info_v1, dropped_ov
 AYNI_LAYOUT(audit_info_drained_total, offsetof(ayni_audit_info_v1, drained_total) == 32);
 AYNI_LAYOUT(audit_info_size, sizeof(ayni_audit_info_v1) == 40);
 
+/* C-VER-002 / ADR-0114: pure ControlLoop C99 fields contain no pointers. */
+AYNI_LAYOUT(loop_sensor_limit_size, sizeof(ayni_control_sensor_limit_v1) == 32);
+AYNI_LAYOUT(loop_sensor_sample_size, sizeof(ayni_control_sensor_sample_v1) == 24);
+AYNI_LAYOUT(loop_fields, offsetof(ayni_control_loop_t, fields) == 8);
+AYNI_LAYOUT(loop_last_step, offsetof(ayni_control_loop_t, last_step_us) ==
+                                offsetof(ayni_control_loop_t, max_cycle_gap_us) + 16);
+AYNI_LAYOUT(loop_previous, offsetof(ayni_control_loop_t, previous) ==
+                               offsetof(ayni_control_loop_t, last_step_us) + 8);
+AYNI_LAYOUT(loop_size, sizeof(ayni_control_loop_t) == offsetof(ayni_control_loop_t, previous) +
+                                                          sizeof(ayni_control_segment_v1));

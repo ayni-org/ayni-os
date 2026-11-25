@@ -307,17 +307,20 @@ void MotorExecution::reject(const Pending &request, ayni_status_t cause) {
 void MotorExecution::begin(const Pending &incoming) {
     // UI state-notice backpressure (terminal_notice_) must not deny an authorized motor start
     // (ADR-0111); Mode::armed/gate/interlocks/output_->disabled() remain the safety gates.
-    bool within_limit = valid_motor_trajectory(incoming.trajectory);
+    bool within_limit =
+        incoming.streaming
+            ? incoming.trajectory.count == 1 && valid_motor_command(incoming.trajectory.segments[0])
+            : valid_motor_trajectory(incoming.trajectory);
     for (uint32_t at = 0; within_limit && at < incoming.trajectory.count; ++at) {
         const auto &seg = incoming.trajectory.segments[at];
         within_limit =
             seg.first_percent >= -int32_t(limit_) && seg.first_percent <= int32_t(limit_) &&
             seg.second_percent >= -int32_t(limit_) && seg.second_percent <= int32_t(limit_);
     }
-    if (pending_ || transport_.control_mailbox().stop_pending() || !gate_ || !session_ ||
-        !live().interlocks_ok || incoming.permit.permit_id <= refused_through_ ||
+    if (pending_ || transport_.control_mailbox().target_blocked(incoming.target_seq) || !gate_ ||
+        !session_ || !live().interlocks_ok || incoming.permit.permit_id <= refused_through_ ||
         !admission_.permits(incoming.permit.echoed_nonce) || !output_->disabled() ||
-        !within_limit) {
+        !within_limit || (incoming.streaming && now() >= incoming.deadline_us)) {
         reject(incoming, AYNI_DENIED);
         return;
     }
@@ -343,25 +346,186 @@ void MotorExecution::begin(const Pending &incoming) {
         return;
     }
     pending_ = incoming;
+    pending_->accepted_at_us = now();
+    const auto held = transport_.control_mailbox().hold();
+    last_hold_seq_ = held.seq;
+    hold_scale_ =
+        held.seq > incoming.target_seq ? held.scale_percent : AYNI_CONTROL_LOOP_FULL_SCALE;
+    transport_.control_mailbox().mark_start_received(incoming.target_seq, now());
+    loop_ = {};
+    loop_.struct_size = sizeof(loop_);
+    loop_.field_count = 2;
+    constexpr uint64_t max_cycle_gap_us = 20000;
+    loop_.max_cycle_gap_us = max_cycle_gap_us;
+    loop_.fields[0] = limits.fields[0].field_id;
+    loop_.fields[1] = limits.fields[1].field_id;
     current_permit_ = incoming.permit.permit_id;
     sequence_ = 0;
     trace("permit-accepted", AYNI_OK);
 }
+// RMT's finite waveform also obeys the original Goal deadline, including initial handoff delay.
+ayni_status_t MotorExecution::hardware_command(const MotorCommand &desired,
+                                               MotorCommand &out) const {
+    out = desired;
+    if (pending_->streaming) {
+        const auto at = now();
+        const auto remaining_ms =
+            pending_->deadline_us > at ? (pending_->deadline_us - at) / 1000U : 0;
+        out.duration_ms = uint32_t(remaining_ms / motor_duration_step_ms) * motor_duration_step_ms;
+        if (out.duration_ms < motor_duration_ms_min) {
+            return AYNI_EXPIRED;
+        }
+    }
+    return AYNI_OK;
+}
+// Shape the immutable desired target, validate THAT effective output through PermitGate,
+// then update hardware only if duty changed. Desired/queued trajectory remain untouched.
 ayni_status_t MotorExecution::sample() {
     auto &p = *pending_;
     const auto observation = live();
     const auto sampled_at = now();
+    auto desired = session_segments_[p.segment_index];
+    ayni_control_segment_v1 effective{};
+    ayni_control_loop_action_t action = AYNI_LOOP_SOFT_STOP;
+    // No physical distance sensor is enabled in this bench composition. Required-source
+    // freshness/quality and cycle limits are handled by the same portable limiter when configured.
+    auto rc = ayni_control_loop_limit(&loop_, &desired, nullptr, 0, sampled_at, hold_scale_,
+                                      &effective, &action, &loop_);
+    if (rc != AYNI_OK || action != AYNI_LOOP_APPLY) {
+        transport_.control_mailbox().mark_rejected(p.target_seq,
+                                                   ControlRejectReason::interlock_fault,
+                                                   rc == AYNI_OK ? AYNI_EXPIRED : rc, sampled_at);
+        return rc == AYNI_OK ? AYNI_EXPIRED : rc;
+    }
     ayni_control_session_step_v1 step{};
     step.struct_size = sizeof(step);
-    const auto rc = ayni_control_session_tick(session_, sampled_at, &observation, &step);
-    if (rc == AYNI_OK) {
-        p.last_sample_us = sampled_at;
-        ++sequence_;
+    rc = ayni_control_session_tick_effective(session_, sampled_at, &observation, &effective, &step);
+    if (rc != AYNI_OK || step.state != AYNI_CONTROL_SESSION_ACTIVE) {
+        const auto rejected =
+            hold_scale_ < AYNI_CONTROL_LOOP_FULL_SCALE ? uint64_t(last_hold_seq_) : p.target_seq;
+        transport_.control_mailbox().mark_rejected(rejected,
+                                                   rc == AYNI_DENIED
+                                                       ? ControlRejectReason::out_of_envelope
+                                                       : ControlRejectReason::interlock_fault,
+                                                   rc == AYNI_OK ? AYNI_EXPIRED : rc, sampled_at);
+        return rc == AYNI_OK ? AYNI_EXPIRED : rc;
     }
-    return rc == AYNI_OK && step.state != AYNI_CONTROL_SESSION_ACTIVE ? AYNI_EXPIRED : rc;
+    p.gate_ok_us = now();
+    const MotorCommand shaped{int32_t(step.active.fields[0].value),
+                              int32_t(step.active.fields[1].value),
+                              p.trajectory.segments[p.segment_index].duration_ms};
+    if (p.phase == Phase::running && (p.effective.first_percent != shaped.first_percent ||
+                                      p.effective.second_percent != shaped.second_percent ||
+                                      (p.streaming && p.waveform_deadline_us != p.deadline_us))) {
+        auto hardware = shaped;
+        const auto bounded = hardware_command(shaped, hardware);
+        if (bounded != AYNI_OK) {
+            return bounded;
+        }
+        if (output_->replace_active(hardware) != ESP_OK) {
+            return AYNI_INTERNAL;
+        }
+        p.waveform_deadline_us = p.deadline_us;
+        const auto timing = output_->replacement_timing();
+        transport_.diagnostics().record_deferred(
+            "wifi motor_hot call=%llu phase=%s gap_us=%llu\n", (unsigned long long)p.call,
+            timing.reverse_or_coast ? "reverse_gap_us" : "hot_gap_us",
+            (unsigned long long)timing.gap_us);
+    }
+    p.effective = shaped;
+    p.last_sample_us = sampled_at;
+    ++sequence_;
+    if (p.phase == Phase::running && p.target_seq) {
+        report_application(now());
+    }
+    return AYNI_OK;
+}
+// Capture first actual application once per accepted target/hold, never printing on control worker.
+void MotorExecution::report_application(uint64_t applied_at_us) {
+    auto &p = *pending_;
+    const auto applied_seq = std::max(p.target_seq, uint64_t(last_hold_seq_));
+    transport_.control_mailbox().mark_applied(applied_seq, p.effective.first_percent,
+                                              p.effective.second_percent, applied_at_us);
+    if (p.target_seq != p.reported_target_seq) {
+        transport_.diagnostics().record_deferred(
+            "wifi control_apply seq=%llu call=%llu accepted_at_us=%llu gate_ok_us=%llu "
+            "applied_at_us=%llu\n",
+            (unsigned long long)p.target_seq, (unsigned long long)p.call,
+            (unsigned long long)p.accepted_at_us, (unsigned long long)p.gate_ok_us,
+            (unsigned long long)applied_at_us);
+        p.reported_target_seq = p.target_seq;
+    }
+    if (last_hold_seq_ > p.target_seq && last_hold_seq_ != p.reported_hold_seq) {
+        transport_.diagnostics().record_deferred(
+            "wifi control_hold seq=%lu phase=hold_applied applied_at_us=%llu scale_pct=%lu\n",
+            (unsigned long)last_hold_seq_, (unsigned long long)applied_at_us,
+            (unsigned long)hold_scale_);
+        p.reported_hold_seq = last_hold_seq_;
+    }
+}
+// Latest-wins may only narrow/update an already active independent session. A model target
+// additionally names its exact session; structured local controls select the sole active one.
+void MotorExecution::apply_target(const ControlTarget &target) {
+    auto &mailbox = transport_.control_mailbox();
+    ControlRejectReason reason = ControlRejectReason::none;
+    if (mailbox.target_blocked(target.seq)) {
+        reason = ControlRejectReason::stop_pending;
+    } else if (mode_ != Mode::armed) {
+        reason = ControlRejectReason::disarmed_or_latched;
+    } else if (!pending_ || !pending_->streaming || pending_->phase == Phase::result ||
+               (target.session_goal && target.session_goal != pending_->session_goal)) {
+        reason = ControlRejectReason::no_active_session;
+    } else if (!live().interlocks_ok) {
+        reason = ControlRejectReason::interlock_fault;
+    }
+    if (reason != ControlRejectReason::none) {
+        mailbox.mark_rejected(target.seq, reason, AYNI_DENIED, now());
+        return;
+    }
+    auto &p = *pending_;
+    if (!valid_motor_command({target.motor1, target.motor2, target.duration_ms}) ||
+        target.duration_ms > p.trajectory.segments[0].duration_ms) {
+        mailbox.mark_rejected(target.seq, ControlRejectReason::out_of_envelope, AYNI_DENIED, now());
+        return;
+    }
+    auto desired = session_segments_[0];
+    desired.fields[0].value = target.motor1;
+    desired.fields[1].value = target.motor2;
+    const auto updated = ayni_control_session_replace_target(session_, &desired, now());
+    if (updated != AYNI_OK) {
+        mailbox.mark_rejected(target.seq, ControlRejectReason::out_of_envelope, updated, now());
+        return;
+    }
+    session_segments_[0] = desired;
+    p.target_seq = target.seq;
+    p.accepted_at_us = target.accepted_at_us;
+    p.deadline_us = std::min(p.deadline_us, now() + uint64_t(target.duration_ms) * 1000U);
+    if (target.seq > last_hold_seq_) {
+        hold_scale_ = AYNI_CONTROL_LOOP_FULL_SCALE;
+    }
+}
+void MotorExecution::apply_hold() {
+    const auto held = transport_.control_mailbox().hold();
+    if (held.seq == last_hold_seq_) {
+        return;
+    }
+    last_hold_seq_ = held.seq;
+    hold_scale_ = held.scale_percent;
+    if (hold_scale_ < AYNI_CONTROL_LOOP_FULL_SCALE && !pending_) {
+        transport_.control_mailbox().mark_rejected(held.seq, ControlRejectReason::no_active_session,
+                                                   AYNI_NOT_READY, now());
+    }
+    if (hold_scale_ < AYNI_CONTROL_LOOP_FULL_SCALE && pending_ && !pending_->streaming) {
+        transport_.control_mailbox().mark_rejected(held.seq, ControlRejectReason::no_active_session,
+                                                   AYNI_DENIED, now());
+        // A dialogue-owned trajectory cannot survive cancellation, even if its union happens
+        // to contain low speeds. Only an independently authorized stream supports hold.
+        transport_.request_motor_soft_stop();
+    }
 }
 ayni_status_t MotorExecution::stop_output() {
     const auto requested = transport_.control_mailbox().stop_request();
+    admission_.disable(); // Any start carrying a pre-stop handshake is permanently refused.
     ayni_status_t stopped = AYNI_OK;
     if (session_ && gate_ && current_permit_) {
         stopped = ayni_control_session_soft_stop(session_, now());
@@ -374,6 +538,7 @@ ayni_status_t MotorExecution::stop_output() {
     if (stopped != AYNI_OK) {
         return stopped;
     }
+    const auto readback_at_us = now();
     // C-STOP-006: actual controller output readback, separate from wheel/target facts.
     // Only a successful stop() plus gate confirmation may advance the mailbox stop frontier.
     if (gate_ && current_permit_) {
@@ -385,8 +550,14 @@ ayni_status_t MotorExecution::stop_output() {
         info.struct_size = sizeof(info);
         if (!current_permit_ || (ayni_control_get_info(gate_, &info) == AYNI_OK &&
                                  info.phase == AYNI_CONTROL_STOPPED)) {
+            const auto confirmed_at_us = now();
             transport_.control_mailbox().confirm_stop(requested.seq, mode_ == Mode::armed,
-                                                      info.stop_cause, now());
+                                                      info.stop_cause, confirmed_at_us);
+            transport_.diagnostics().record_deferred(
+                "wifi control_stop seq=%lu phase=stop_confirmed hw_low_readback_us=%llu "
+                "confirmed_at_us=%llu\n",
+                (unsigned long)requested.seq, (unsigned long long)readback_at_us,
+                (unsigned long long)confirmed_at_us);
         }
     }
     return stopped;
@@ -503,7 +674,7 @@ ayni_status_t MotorExecution::post_result() {
         (unsigned long)p.segments_completed, (unsigned long)total_duration_ms(p.trajectory),
         (long)last.first_percent, (long)last.second_percent, (unsigned long)last.duration_ms,
         p.effect == Effect::none ? "false" : "true",
-        p.effect == Effect::complete ? "true" : "false", (long)p.status);
+        !p.streaming && p.effect == Effect::complete ? "true" : "false", (long)p.status);
     if (length <= 0 || size_t(length) >= sizeof(json)) {
         return AYNI_CAPACITY_EXCEEDED;
     }
@@ -572,13 +743,10 @@ ayni_status_t MotorExecution::advance_owner() {
             }
         }
     }
+    apply_hold();
     ControlTarget target;
     if (mailbox.take_target(target)) {
-        // Batch 1 introduces a safe mailbox before Batch 3 wires authorized streaming targets.
-        const auto reason = mailbox.target_blocked(target.seq) ? ControlRejectReason::stop_pending
-                            : mode_ != Mode::armed ? ControlRejectReason::disarmed_or_latched
-                                                   : ControlRejectReason::no_active_session;
-        mailbox.mark_rejected(target.seq, reason, AYNI_DENIED, now());
+        apply_target(target);
     }
     if (transport_.motor_disable_requested() && mode_ != Mode::latched && mode_ != Mode::closed) {
         admission_.disable();
@@ -639,27 +807,44 @@ ayni_status_t MotorExecution::advance_pending() {
         if (sample() != AYNI_OK) {
             end(AYNI_CALL_FAILED, AYNI_DENIED);
         } else {
+            MotorCommand hardware;
+            const auto bounded = hardware_command(p.effective, hardware);
+            if (bounded != AYNI_OK) {
+                end(AYNI_CALL_FAILED, bounded);
+                return AYNI_OK;
+            }
             p.effect = Effect::possible; // Even a partially failed SDK start can have effects.
-            if (output_->start(p.trajectory.segments[0]) != ESP_OK) {
+            if (output_->start(hardware) != ESP_OK) {
                 mode_ = Mode::latched;
                 end(AYNI_CALL_FAILED, AYNI_INTERNAL);
             } else {
                 p.phase = Phase::running;
+                p.waveform_deadline_us = p.deadline_us;
                 const auto started_us = now();
+                if (p.target_seq) {
+                    report_application(started_us);
+                }
                 mark_output_start(p.call, started_us);
                 trace_handoff("output_started", p.call, started_us);
-                transport_.diagnostics().record("wifi motor_segment call=%llu seg=1/%lu gap_us=0\n",
-                                                static_cast<unsigned long long>(p.call),
-                                                static_cast<unsigned long>(p.trajectory.count));
+                transport_.diagnostics().record_deferred(
+                    "wifi motor_segment call=%llu seg=1/%lu gap_us=0\n",
+                    static_cast<unsigned long long>(p.call),
+                    static_cast<unsigned long>(p.trajectory.count));
                 trace("pwm-started", AYNI_OK);
             }
         }
     } else if (p.phase == Phase::running) {
-        if (sample() != AYNI_OK) {
+        if (p.streaming && now() >= p.deadline_us) {
+            p.effect = Effect::complete; // The bounded session completed, not a fixed wheel target.
+            end(AYNI_CALL_COMPLETED, AYNI_OK);
+        } else if (sample() != AYNI_OK) {
             end(AYNI_CALL_CANCELLED, AYNI_EXPIRED);
         } else {
             const auto state = output_->poll_segment();
-            if (state == MotorOutput::Poll::completed) {
+            if (state == MotorOutput::Poll::completed && p.streaming) {
+                p.effect = Effect::complete;
+                end(AYNI_CALL_COMPLETED, AYNI_OK);
+            } else if (state == MotorOutput::Poll::completed) {
                 ++p.segments_completed;
                 const auto done_us = now();
                 ayni_control_session_step_v1 next_step{};
@@ -673,12 +858,19 @@ ayni_status_t MotorExecution::advance_pending() {
                     end(AYNI_CALL_COMPLETED, AYNI_OK);
                 } else {
                     p.segment_index = next_step.segment_index;
-                    if (output_->transition(p.trajectory.segments[p.segment_index]) != ESP_OK) {
+                    // Validate the new segment's shaped output before the hardware transition.
+                    // Prepared suppresses hot replacement of the just-completed waveform.
+                    p.phase = Phase::prepared;
+                    const auto shaped = sample();
+                    p.phase = Phase::running;
+                    if (shaped != AYNI_OK) {
+                        end(AYNI_CALL_CANCELLED, shaped);
+                    } else if (output_->transition(p.effective) != ESP_OK) {
                         mode_ = Mode::latched;
                         end(AYNI_CALL_FAILED, AYNI_INTERNAL);
                     } else {
                         const auto gap_us = now() - done_us;
-                        transport_.diagnostics().record(
+                        transport_.diagnostics().record_deferred(
                             "wifi motor_segment call=%llu seg=%lu/%lu gap_us=%llu\n",
                             static_cast<unsigned long long>(p.call),
                             static_cast<unsigned long>(p.segment_index + 1U),

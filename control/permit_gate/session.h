@@ -22,8 +22,9 @@ struct ayni_control_session {
 
     // Validates one segment shape and field bounds against permit.envelope (reuses valid_sample).
     bool valid_segment(const ayni_control_segment_v1 &segment) const;
-    // Emits one fresh sample for segments[segment_index] into the bound gate.
-    ayni_status_t emit_sample(uint64_t now_us, const ayni_control_observation_v1 *live);
+    // Emits the actual effective output into the bound gate, keeping desired segments intact.
+    ayni_status_t emit_sample(uint64_t now_us, const ayni_control_observation_v1 *live,
+                              const ayni_control_segment_v1 &effective);
     // Populates out_step from current state without mutating gate or segments.
     void describe_step(uint64_t now_us, bool transitioned,
                        ayni_control_session_step_v1 &out_step) const;

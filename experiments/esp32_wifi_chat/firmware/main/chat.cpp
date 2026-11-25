@@ -21,10 +21,8 @@
 namespace wifichat {
 namespace {
 constexpr uint64_t probe_record_id = UINT64_C(0x43545850524f4245);
-// 250 ms covers one ToolLoop decision plus post-decide encoding on ESP32-S3 so Core's
-// prepare_accepted_calls() batches REQUEST_CALL + PREPARED + DISPATCHING into one append
-// while step_units and Core urgent-stop preemption checks stay unchanged.
-constexpr uint32_t version = 1, step_us = 250000;
+// Cooperative owner budget is measured and documented in ADR-0114; a single callback can overrun.
+constexpr uint32_t version = 1, step_us = owner_step_budget_us;
 constexpr uint64_t presentation_wait_us = UINT64_C(120) * 1000000;
 constexpr uint64_t principal = 1;
 constexpr char chat_type[] = "wifi.chat", probe_type[] = "wifi.context-probe";
@@ -32,7 +30,8 @@ constexpr char reply_capability[] = "wifi.model.text", reply_binding[] = "wifi.m
                tools_capability[] = "wifi.model.tools", tools_binding[] = "wifi.tools";
 constexpr const char *grant_capabilities[] = {reply_capability, tools_capability, "screen.text",
                                               "speaker.tone",   "speaker.speech", "motor.status",
-                                              "motor.run",      "motor.stop"};
+                                              "motor.run",      "motor.stop",     "motor.stream",
+                                              "motor.steer",    stream_execute};
 constexpr uint64_t motor_grant_us = UINT64_C(24) * 60 * 60 * 1000000;
 constexpr uint64_t grant_count = sizeof(grant_capabilities) / sizeof(grant_capabilities[0]);
 // Deployment-neutral identity; tool protocol and authorization rules come from
@@ -462,6 +461,18 @@ ayni_status_t Chat::configure() {
         rc = check("motor", motor_.configure(kernel_));
     }
     if (rc == AYNI_OK) {
+        ayni::runtime::OperationSession::Commands commands;
+        commands.context = this;
+        commands.submit = [](void *context, ayni_intent_kind_t kind, const void *body, uint64_t *id,
+                             uint32_t revision) {
+            ayni::runtime::OperationSession::SubmitResult result;
+            result.status =
+                static_cast<Chat *>(context)->command(kind, body, id, revision, &result.reason);
+            return result;
+        };
+        rc = check("operation session", motor_.configure_session(kernel_, &workspace_, commands));
+    }
+    if (rc == AYNI_OK) {
         rc = check("motor check", configure_motor_check());
     }
     if (rc == AYNI_OK) {
@@ -546,7 +557,7 @@ ayni_status_t Chat::configure_reflexes() {
                                    200,
                                    obstacle_cooldown_us,
                                    text(motor_scene),
-                                   motor_version,
+                                   motor_scene_version,
                                    1,
                                    &cond,
                                    text("motor.actuator"),
@@ -789,7 +800,9 @@ ayni_status_t Chat::configure_strategy() {
         {text("speaker.speak_text"), SpeechProfile::capability_version, AYNI_TOOL_ROLE_CAPABILITY},
         {text("motor.status"), motor_version, AYNI_TOOL_ROLE_CAPABILITY},
         {text("motor.run"), motor_version, AYNI_TOOL_ROLE_CAPABILITY},
-        {text("motor.stop"), motor_version, AYNI_TOOL_ROLE_CAPABILITY}};
+        {text("motor.stop"), motor_version, AYNI_TOOL_ROLE_CAPABILITY},
+        {text("motor.stream"), motor_version, AYNI_TOOL_ROLE_CAPABILITY},
+        {text("motor.steer"), motor_version, AYNI_TOOL_ROLE_CAPABILITY}};
     auto type = sized<ayni_goal_type_v1>();
     type.version = version;
     type.goal_type_id = text(probe_type);
@@ -1159,6 +1172,7 @@ ayni_status_t Chat::command(ayni_intent_kind_t kind, const void *body, uint64_t 
     return out.status;
 }
 void Chat::incoming(const Packet &p) {
+    const bool cancel_turn = p.kind == Kind::cancel || p.kind == Kind::barge_in;
     if (p.kind == Kind::tool_outline) {
         if (p.id == call_ && p.size <= tool_outline_bytes &&
             (model_ == ModelState::text || model_ == ModelState::tools) &&
@@ -1194,11 +1208,12 @@ void Chat::incoming(const Packet &p) {
         progress_ = true;
         return;
     }
-    if (p.kind == Kind::cancel || p.kind == Kind::shutdown || p.kind == Kind::maintenance_stop) {
+    if (cancel_turn || p.kind == Kind::shutdown || p.kind == Kind::maintenance_stop) {
         motor_check_.cancel();
         reply_voice_.cancel();
         speaker_.request_stop();
         if (p.kind == Kind::cancel) {
+            motor_.cancel_sessions();
             motor_.execution().request_soft_stop();
             if (pending_user_ && (!p.id || p.id == pending_user_->id)) {
                 pending_user_.reset();
@@ -1233,7 +1248,7 @@ void Chat::incoming(const Packet &p) {
         progress_ = true;
         return;
     }
-    if (p.kind == Kind::cancel && turn_state_ != Turn::idle) {
+    if (cancel_turn && turn_state_ != Turn::idle) {
         reply_intent_ = ReplyIntent::cancelled;
     }
     if (p.kind == Kind::motor_settings || p.kind == Kind::motor_heartbeat ||
@@ -1282,7 +1297,7 @@ void Chat::incoming(const Packet &p) {
     } else if (p.kind == Kind::display_ack && screen_ == ScreenState::waiting &&
                p.id == screen_call_) {
         screen_ = p.size == 1 && p.body[0] == 1 ? ScreenState::painted : ScreenState::failed;
-    } else if (p.kind == Kind::user) {
+    } else if (p.kind == Kind::user || p.kind == Kind::recognized_user) {
         if (!announced_ || motor_check_.active() || forget_ != Forget::none ||
             closing_ != Closing::open || !p.size || p.size > input_bytes) {
             status(p.id, "input refused: not ready/busy/over limit");
@@ -1293,11 +1308,10 @@ void Chat::incoming(const Packet &p) {
             start_user_turn(p.id, incoming_text);
             return;
         }
-        // Live barge-in (ADR-0111): immediately soft-stop in-flight outputs (stays ARMED),
-        // cancel the active turn, and retain only the newest prompt in the 1-slot buffer.
+        // End the old dialogue while the independently authorized operation follows the
+        // configured stop/hold/continue policy. Keep only the newest prompt (ADR-0114).
         reply_voice_.cancel();
         speaker_.request_stop();
-        motor_.execution().request_soft_stop();
         const uint64_t superseded = pending_user_ ? pending_user_->id : turn_;
         if (pending_user_) {
             transport_.diagnostics().record(
@@ -1372,13 +1386,13 @@ void Chat::incoming(const Packet &p) {
         progress_ = true;
         status(turn_, "accepted");
         trace("accepted", accepted);
-    } else if (p.kind == Kind::cancel && turn_state_ == Turn::answer) {
+    } else if (cancel_turn && turn_state_ == Turn::answer) {
         reply_end_ = "turn failed/cancelled; answer retained; no automatic retry";
         turn_state_ = Turn::reply_done;
         progress_ = true;
-    } else if (p.kind == Kind::cancel && turn_state_ == Turn::input) {
+    } else if (cancel_turn && turn_state_ == Turn::input) {
         end_turn("turn failed/cancelled before task creation; no automatic retry");
-    } else if (p.kind == Kind::cancel && (goal_ || history_.active())) {
+    } else if (cancel_turn && (goal_ || history_.active())) {
         cancel_requested_ = true;
         progress_ = true;
         status(p.id, "cancel queued; waiting for current command receipt");
@@ -1429,7 +1443,9 @@ ayni_status_t Chat::settle_session(uint64_t durable_seq, bool &settled) {
         if (goal.owner_instance_id != instance_) {
             continue;
         }
-        if (!chat_goal && !check_goal && !voice_goal) {
+        if (!chat_goal && !check_goal && !voice_goal &&
+            !motor_.owns_session({goal.goal_type_id, goal.goal_type_id_size},
+                                 goal.goal_type_version)) {
             // Missing types remain held by Core. Reject this deployment's old data
             // explicitly instead of waiting forever for its held Tasks (ADR-0108).
             status(0, "unsupported retained goal type; data preserved");
@@ -1599,6 +1615,12 @@ ayni_status_t Chat::tick(ayni_step_report_v1 &report, bool &again) {
     if (rc != AYNI_OK) {
         return rc;
     }
+    const auto operation = info.lifecycle == AYNI_LIFECYCLE_RUNNING
+                               ? motor_.advance_sessions(kernel_, info.boot_epoch, info.durable_seq)
+                               : motor_.drain_sessions();
+    if (operation != AYNI_OK) {
+        return operation;
+    }
     // UI backpressure must never bypass the Core, reflex or audit work above (ADR-0114).
     if (turn_state_ == Turn::reply_done) {
         const auto terminal = present_reply();
@@ -1757,7 +1779,8 @@ ayni_status_t Chat::prepare_grant() {
             return AYNI_OK;
         }
     }
-    const bool motion = same(wanted, "motor.run");
+    const bool motion = same(wanted, "motor.run") || same(wanted, "motor.stream") ||
+                        same(wanted, "motor.steer") || same(wanted, stream_execute);
     const ayni_grant_create_v1 grant{sizeof(grant),
                                      wanted_version,
                                      wanted,
@@ -1812,7 +1835,8 @@ ayni_status_t Chat::close_session(const ayni_kernel_info_v1 &info) {
             return rc;
         }
     }
-    if (!drain_terminal()) {
+    motor_.close_sessions();
+    if (!motor_.sessions_drained() || !drain_terminal()) {
         return AYNI_OK;
     }
     rc = ayni_begin_shutdown(kernel_);
@@ -1924,7 +1948,7 @@ ayni_status_t Chat::prepare(const ayni_kernel_info_v1 &info) {
         }
         if (!scene.consumable) {
             const ayni_scene_set_enabled_v1 enabled{sizeof(enabled), 1, text(motor_scene),
-                                                    motor_version, 0};
+                                                    motor_scene_version, 0};
             return command(AYNI_INTENT_SCENE_SET_ENABLED, &enabled, nullptr, scene.revision);
         }
     }

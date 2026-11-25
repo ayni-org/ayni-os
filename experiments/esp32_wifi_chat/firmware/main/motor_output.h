@@ -20,6 +20,14 @@ class MotorOutput {
     esp_err_t transition(const MotorCommand &next);
     // Polls current segment completion while keeping RMT channels warm for transition().
     Poll poll_segment();
+    // Abort only the in-flight waveform, then replace it under the SAME active permit.
+    // Same-direction channels stay allocated; reversals/coast use detach_motor low readback.
+    esp_err_t replace_active(const MotorCommand &next);
+    struct ReplacementTiming {
+        bool reverse_or_coast = false; // True when pin routing changes, not just duty.
+        uint64_t gap_us = 0;           // Local SDK update duration; no physical wheel timing claim.
+    };
+    const ReplacementTiming &replacement_timing() const { return replacement_timing_; }
     esp_err_t stop();
     bool disabled() const; // Actual GPIO input/matrix/output readback, not shaft measurement.
     bool counts(std::array<int, 4> &out) const;
@@ -45,6 +53,7 @@ class MotorOutput {
     esp_err_t detach_motor(size_t motor);
     esp_err_t prepare(size_t motor, int32_t percent);
     esp_err_t apply_segment(const MotorCommand &command);
+    ReplacementTiming replacement_timing_{}; // Control-worker owned diagnostic of last hot update.
     State state_ = State::cold;
     esp_err_t last_error_ = ESP_OK;
     std::array<Counter, 4> counters_{};

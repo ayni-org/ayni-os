@@ -93,6 +93,15 @@ ayni_status_t ayni_control_session_renew(ayni_control_session_t *session,
 ayni_status_t ayni_control_session_tick(ayni_control_session_t *session, uint64_t now_us,
                                         const ayni_control_observation_v1 *live,
                                         ayni_control_session_step_v1 *out_step);
+/* Like tick(), but validates the actual externally tightened setpoint: each field has the
+ * same ID/unit and sign-or-zero, magnitude no greater than the selected desired segment.
+ * duration_us is unchanged. Rechecks the permit envelope on the EFFECTIVE values; violations
+ * enter STOPPING. Preserves desired and the entire queued trajectory. Since 0.61.
+ * The override must match the segment selected after this tick's time expiry processing. */
+ayni_status_t ayni_control_session_tick_effective(ayni_control_session_t *session, uint64_t now_us,
+                                                  const ayni_control_observation_v1 *live,
+                                                  const ayni_control_segment_v1 *effective_override,
+                                                  ayni_control_session_step_v1 *out_step);
 /* Hardware-timed handoff: advance immediately to the next queued segment on exact hardware
  * completion, validating it via ayni_control_sample() in the same call. Moves to COMPLETED
  * when no next segment remains. Since 0.59. */

@@ -6,6 +6,9 @@
 #include <optional>
 
 namespace ayni::control {
+// Catalog-name syntax/order shared by envelopes, effective samples and loop configuration.
+bool valid_name(const ayni_catalog_name_v1 &name);
+int compare_names(const ayni_catalog_name_v1 &left, const ayni_catalog_name_v1 &right);
 // Canonical numeric envelopes are shared by config and permit validation.
 ayni_status_t normalize_envelope(const ayni_control_envelope_v1 &input,
                                  ayni_control_envelope_v1 &out);

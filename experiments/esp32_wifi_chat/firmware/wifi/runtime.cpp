@@ -99,7 +99,9 @@ class Runtime {
     void clear_preview();
     void cancel();
     void start_motor_check(uint32_t motor);
-    void send(std::string_view text, uint64_t id = 0);
+    enum class InputStage { new_instruction, recognized };
+    void send(std::string_view text, uint64_t id = 0,
+              InputStage input_stage = InputStage::new_instruction);
     void save_restart();
     void web_changes();
     void begin_restart();
@@ -372,7 +374,7 @@ void Runtime::start_motor_check(uint32_t motor) {
     motor_check_id_ = id;
     message("已提交本地自检，无需模型");
 }
-void Runtime::send(std::string_view text, uint64_t id) {
+void Runtime::send(std::string_view text, uint64_t id, InputStage input_stage) {
     if (voice_setting_) {
         message("语音开关同步中，尚未发送输入");
         return;
@@ -397,13 +399,11 @@ void Runtime::send(std::string_view text, uint64_t id) {
     }
     const bool barge_in = busy();
     if (barge_in) {
-        if (motor_.active()) {
-            transport_.request_motor_soft_stop();
-        }
         api_.cancel_all();
         clear_preview();
     }
-    if (!transport_.post(Kind::user, id, text.data(), text.size())) {
+    if (!transport_.post(input_stage == InputStage::recognized ? Kind::recognized_user : Kind::user,
+                         id, text.data(), text.size())) {
         message("输入队列已满，未发送");
         return;
     }
@@ -749,7 +749,7 @@ void Runtime::results() {
                 answer_.clear();
                 page_ = Page::history;
                 current_page_ = 0;
-                send(transcript_, job->input.id);
+                send(transcript_, job->input.id, InputStage::recognized);
             } else {
                 message(job->error.data());
             }
@@ -1553,12 +1553,12 @@ void Runtime::run() {
         size_t bytes = 0;
         if (remote_.take_audio(recording, bytes)) {
             const bool barge_in = busy();
+            if (!barge_in && can_barge_in && motor_.active()) {
+                transport_.apply_barge_in();
+            }
             bool barge_in_cancelled = true;
             if (barge_in && can_barge_in && api_started_) {
-                if (motor_.active()) {
-                    transport_.request_motor_soft_stop();
-                }
-                barge_in_cancelled = transport_.post(Kind::cancel, turn_, nullptr, 0);
+                barge_in_cancelled = transport_.post(Kind::barge_in, turn_, nullptr, 0);
                 if (barge_in_cancelled) {
                     api_.cancel_all();
                     clear_preview();

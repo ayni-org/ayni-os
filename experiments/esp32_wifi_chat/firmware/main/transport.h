@@ -1,4 +1,5 @@
 #pragma once
+#include "barge_in.h"
 #include "control_mailbox.h"
 #include "diagnostic_log.h"
 #include "display.h"
@@ -47,6 +48,9 @@ class Transport {
     ControlMailbox &control_mailbox() { return control_; }
     bool submit_motor_target(ControlTarget target, uint64_t *seq = nullptr);
     bool request_motor_hold(uint32_t percent);
+    // Atomic configuration snapshot; default hold at 25%, no language parsing.
+    bool set_barge_in_policy(BargeInPolicy, uint32_t hold_percent = default_hold_scale_percent);
+    void apply_barge_in();
     void set_motor_active(bool active) { motor_active_.store(active, std::memory_order_release); }
     // Startup before the I/O task; context has the composition's boot lifetime.
     void attach_motor_wake(void *context, void (*wake)(void *)) {
@@ -67,6 +71,9 @@ class Transport {
     void *motor_context_ = nullptr;
     void (*wake_motor_)(void *) = nullptr;
     std::atomic<bool> motor_active_{false};
+    static constexpr uint32_t policy_shift = 8, policy_mask = 255;
+    std::atomic<uint32_t> barge_in_{(uint32_t(BargeInPolicy::hold) << policy_shift) |
+                                    default_hold_scale_percent};
     ControlMailbox &control_; // Composition-owned internal RAM on ESP; boot lifetime.
     static constexpr size_t progress_bytes = 512;
     LatestSlot<BasicPacket<progress_bytes>> progress_;

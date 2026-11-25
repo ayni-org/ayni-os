@@ -3,6 +3,7 @@
 #include "speaker.h"
 #include "wake.h"
 #include <algorithm>
+#include <ayni/control_loop.h>
 #include <cstring>
 #include <esp_random.h>
 #include <esp_timer.h>
@@ -99,16 +100,22 @@ bool Transport::take_output(Packet &out) {
     return true;
 }
 void Transport::request_motor_stop() {
-    control_.request_stop(ControlStopKind::hard_estop);
+    const auto at = uint64_t(esp_timer_get_time());
+    const auto request = control_.request_stop(ControlStopKind::hard_estop);
     if (wake_motor_) {
         wake_motor_(motor_context_);
     }
+    diagnostics_.record_deferred("wifi control_stop seq=%lu requested_at_us=%llu kind=hard_estop\n",
+                                 (unsigned long)request.seq, (unsigned long long)at);
 }
 void Transport::request_motor_soft_stop() {
-    control_.request_stop(ControlStopKind::soft_stop);
+    const auto at = uint64_t(esp_timer_get_time());
+    const auto request = control_.request_stop(ControlStopKind::soft_stop);
     if (wake_motor_) {
         wake_motor_(motor_context_);
     }
+    diagnostics_.record_deferred("wifi control_stop seq=%lu requested_at_us=%llu kind=soft_stop\n",
+                                 (unsigned long)request.seq, (unsigned long long)at);
 }
 bool Transport::submit_motor_target(ControlTarget target, uint64_t *seq) {
     const bool sent = control_.submit(target, uint64_t(esp_timer_get_time()), seq);
@@ -118,11 +125,36 @@ bool Transport::submit_motor_target(ControlTarget target, uint64_t *seq) {
     return sent;
 }
 bool Transport::request_motor_hold(uint32_t percent) {
-    const bool sent = control_.request_hold(percent);
+    uint32_t seq = 0;
+    const auto at = uint64_t(esp_timer_get_time());
+    const bool sent = control_.request_hold(percent, &seq);
     if (sent && wake_motor_) {
         wake_motor_(motor_context_);
     }
+    if (sent) {
+        diagnostics_.record_deferred(
+            "wifi control_hold seq=%lu accepted_at_us=%llu scale_pct=%lu\n", (unsigned long)seq,
+            (unsigned long long)at, (unsigned long)percent);
+    }
     return sent;
+}
+bool Transport::set_barge_in_policy(BargeInPolicy policy, uint32_t percent) {
+    if (uint32_t(policy) > uint32_t(BargeInPolicy::continue_motion) ||
+        percent > AYNI_CONTROL_LOOP_FULL_SCALE) {
+        return false;
+    }
+    barge_in_.store((uint32_t(policy) << policy_shift) | percent, std::memory_order_release);
+    return true;
+}
+void Transport::apply_barge_in() {
+    const auto settings = barge_in_.load(std::memory_order_acquire);
+    const auto policy = BargeInPolicy(settings >> policy_shift);
+    if (policy == BargeInPolicy::stop) {
+        request_motor_soft_stop();
+    } else {
+        request_motor_hold(policy == BargeInPolicy::hold ? settings & policy_mask
+                                                         : AYNI_CONTROL_LOOP_FULL_SCALE);
+    }
 }
 bool Transport::post(Kind kind, uint64_t id, const void *body, size_t bytes) {
     if (bytes > tx_bytes || (bytes && !body)) {
@@ -158,6 +190,12 @@ bool Transport::post(Kind kind, uint64_t id, const void *body, size_t bytes) {
     packet.size = static_cast<uint32_t>(bytes);
     if (bytes) {
         std::memcpy(packet.body.data(), body, bytes);
+    }
+    // One policy boundary for every admitted natural-language producer. Reserve its input slot
+    // before changing control policy, and publish the hold/stop before owner can read the input.
+    if ((kind == Kind::user || kind == Kind::barge_in) &&
+        motor_active_.load(std::memory_order_acquire)) {
+        apply_barge_in();
     }
     if (xQueueSend(input_, &slot, 0) != pdTRUE) {
         xQueueSend(input_free_, &slot, 0);

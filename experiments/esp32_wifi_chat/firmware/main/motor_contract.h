@@ -8,6 +8,7 @@ inline constexpr uint32_t motor_version = 3, motor_procedure_us = 65000000,
                           motor_session_lease_us = 2000000, motor_sample_age_us = 100000,
                           motor_poll_us = 200000;
 inline constexpr uint64_t motor_domain = 1;
+inline constexpr uint32_t motor_scene_version = 4;
 // Contract limits of the four motor tools; 768 bytes fits 8 encoded segments (~608 B).
 inline constexpr uint32_t motor_input_bytes_max = 768, motor_reply_bytes_max = 1024;
 inline constexpr const char *motor_fields[]{"motor1_percent", "motor2_percent", "duration_ms"};

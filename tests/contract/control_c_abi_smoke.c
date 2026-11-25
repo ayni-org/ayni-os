@@ -1,5 +1,6 @@
 /* C-PERMIT-012/ADR-0049/ADR-0112: gate and ControlSession link from C99 without Core. */
 #include <ayni/control.h>
+#include <ayni/control_loop.h>
 #include <ayni/control_session.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,7 +53,21 @@ int main(void) {
     printf("control gate: %zu bytes, alignment %zu; session: %zu bytes, alignment %zu; permit: %zu "
            "bytes\n",
            bytes, alignment, session_bytes, session_alignment, sizeof(ayni_execution_permit_v1));
-    return (destroyed == AYNI_OK && session_info == AYNI_OK &&
+    ayni_control_loop_t loop = {0};
+    loop.struct_size = sizeof(loop);
+    loop.field_count = 1;
+    loop.fields[0] = config.limits.fields[0].field_id;
+    loop.max_cycle_gap_us = 100;
+    ayni_control_segment_v1 desired = {0}, effective = {0};
+    desired.struct_size = sizeof(desired);
+    desired.field_count = 1;
+    desired.fields[0] =
+        (ayni_control_value_v1){config.limits.fields[0].field_id, config.limits.fields[0].unit, 1};
+    ayni_control_loop_action_t action = 0;
+    const ayni_status_t limited =
+        ayni_control_loop_limit(&loop, &desired, NULL, 0, 0, 100, &effective, &action, &loop);
+    return (limited == AYNI_OK && action == AYNI_LOOP_APPLY && effective.fields[0].value == 1 &&
+            destroyed == AYNI_OK && session_info == AYNI_OK &&
             info.state == AYNI_CONTROL_SESSION_IDLE && session_destroyed == AYNI_OK)
                ? 0
                : 1;

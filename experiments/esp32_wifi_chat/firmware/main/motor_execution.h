@@ -6,6 +6,7 @@
 #include "transport.h"
 #include <atomic>
 #include <ayni/calls.h>
+#include <ayni/control_loop.h>
 #include <ayni/control_session.h>
 #include <ayni/execution.h>
 #include <freertos/task.h>
@@ -22,6 +23,10 @@ class MotorExecution {
     ayni_status_t initialize();
     ayni_executor_v1 ports();
     ayni_submit_result_t submit(const ayni_provider_request_v1 *, ayni_provider_completion_t *);
+    ayni_submit_result_t submit_stream(ayni_attempt_ref_v1, uint64_t call,
+                                       ayni_provider_completion_t *,
+                                       const ayni_execution_permit_v1 &, const MotorCommand &,
+                                       uint64_t session_goal, uint64_t expires_at_us);
     // Async recoverable soft-stop tool path: confirms GPIO low readback and keeps Mode::armed
     // unless stop fails, in which case it auto-escalates to Mode::latched (ADR-0111).
     ayni_submit_result_t submit_soft_stop(const ayni_provider_request_v1 *,
@@ -51,8 +56,19 @@ class MotorExecution {
         MotorTrajectory trajectory{};
         uint32_t segment_index = 0;      // Active segment index in trajectory.
         uint32_t segments_completed = 0; // Hardware-verified completed segments.
-        uint64_t call = 0;               // Core Call identity, used only for timing correlation.
-        uint64_t last_sample_us = 0;     // Local capture time, telemetry only; zero before sample.
+        bool streaming = false;          // Independent operation Goal owns this active envelope.
+        uint64_t session_goal = 0,
+                 target_seq = 0; // Exact mailbox target identity, 0 before receipt.
+        uint64_t accepted_at_us = 0,
+                 gate_ok_us = 0; // Executor clock for the current target receipt/Gate.
+        uint64_t reported_target_seq = 0,
+                 reported_hold_seq = 0; // Diagnostic frontiers, not authority.
+        uint64_t waveform_deadline_us =
+            0;                       // Last deadline installed in RMT; 0 before start/nonstream.
+        uint64_t deadline_us = 0;    // Fixed/shortenable stream expiry, never extended by steer.
+        MotorCommand effective{};    // Last effective setpoint accepted by PermitGate.
+        uint64_t call = 0;           // Core Call identity, used only for timing correlation.
+        uint64_t last_sample_us = 0; // Local capture time, telemetry only; zero before sample.
         Phase phase = Phase::prepared;
         Effect effect = Effect::none;
         ayni_call_outcome_t outcome = AYNI_CALL_COMPLETED;
@@ -121,8 +137,12 @@ class MotorExecution {
     ayni_control_observation_v1 live() const;
     ayni_status_t stop_output();
     ayni_status_t post_result();
+    ayni_status_t hardware_command(const MotorCommand &, MotorCommand &) const;
+    void report_application(uint64_t applied_at_us);
     ayni_status_t sample();
     ayni_status_t advance_pending();
+    void apply_target(const ControlTarget &);
+    void apply_hold();
     void end(ayni_call_outcome_t, ayni_status_t);
     void publish_terminal();
     Transport &transport_;
@@ -164,6 +184,9 @@ class MotorExecution {
     uint64_t last_cycle_us_ = 0, cycle_gap_max_us_ = 0;
     uint32_t limit_ = motor_percent_max;
     std::optional<Pending> pending_;
+    ayni_control_loop_t loop_{}; // Worker-owned explicit watchdog/shaping state.
+    uint32_t hold_scale_ = AYNI_CONTROL_LOOP_FULL_SCALE;
+    uint32_t last_hold_seq_ = 0; // Last policy request consumed, 0 before any hold.
     // Worker-owned staging copied by session_open. Keep the bounded array out of the task stack.
     std::array<ayni_control_segment_v1, motor_segments_max> session_segments_{};
     std::array<std::optional<PortRequest>, 4> requests_{};

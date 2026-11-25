@@ -298,6 +298,51 @@ esp_err_t MotorOutput::transition(const MotorCommand &next) {
     }
     return apply_segment(next);
 }
+// RMT borrows waveform memory until completion/disable. Never patch a live buffer.
+// IDF 6.0.3 rmt_tx_disable synchronously stops TX and returns its interrupted descriptor.
+esp_err_t MotorOutput::replace_active(const MotorCommand &next) {
+    if (state_ != State::running || !valid_motor_command(next)) {
+        return state_ == State::running ? ESP_ERR_INVALID_ARG : ESP_ERR_INVALID_STATE;
+    }
+    const auto began = uint64_t(esp_timer_get_time());
+    const std::array<int32_t, 2> wanted{next.first_percent, next.second_percent};
+    bool reverse_or_coast = false;
+    esp_err_t rc = ESP_OK;
+    for (size_t at = 0; at < outputs_.size(); ++at) {
+        reverse_or_coast = reverse_or_coast || (active_percent_[at] == 0) != (wanted[at] == 0) ||
+                           (active_percent_[at] && wanted[at] &&
+                            motor_input(at, active_percent_[at]) != motor_input(at, wanted[at]));
+        if (outputs_[at].channel) {
+            retain_error(rc, rmt_disable(outputs_[at].channel));
+        }
+    }
+    std::array<int, 4> measured{};
+    if (rc == ESP_OK && !counts(measured)) {
+        rc = ESP_FAIL;
+    }
+    if (rc == ESP_OK) {
+        // The old finite transaction was deliberately truncated. Its actual PCNT count is the
+        // new baseline; it must not be counted as an exactly completed trajectory segment.
+        for (size_t at = 0; at < expected_.size(); ++at) {
+            expected_[at] = uint32_t(measured[at]);
+        }
+        for (auto &output : outputs_) {
+            if (output.channel) {
+                retain_error(rc, rmt_enable(output.channel));
+            }
+        }
+    }
+    if (rc == ESP_OK) {
+        rc = apply_segment(next);
+    }
+    if (rc != ESP_OK) {
+        stop();
+        last_error_ = rc;
+        state_ = State::fault;
+    }
+    replacement_timing_ = {reverse_or_coast, uint64_t(esp_timer_get_time()) - began};
+    return rc;
+}
 MotorOutput::Poll MotorOutput::poll_segment() {
     if (state_ != State::running) {
         return Poll::failed;

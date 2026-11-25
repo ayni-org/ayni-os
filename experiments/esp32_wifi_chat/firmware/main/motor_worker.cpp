@@ -135,9 +135,10 @@ ayni_submit_result_t MotorExecution::submit(const ayni_provider_request_v1 *requ
             values[node.field_id - 1] = node.value.integer;
             seen |= 1u << (node.field_id - 1);
         }
-        if (seen != 0x7u || values[0] < -motor_percent_max || values[0] > motor_percent_max ||
-            values[1] < -motor_percent_max || values[1] > motor_percent_max ||
-            values[2] < motor_duration_ms_min || values[2] > motor_plan_duration_ms_max) {
+        if (seen != 0x7u || values[0] < -int64_t(motor_percent_max) ||
+            values[0] > motor_percent_max || values[1] < -int64_t(motor_percent_max) ||
+            values[1] > motor_percent_max || values[2] < motor_duration_ms_min ||
+            values[2] > motor_plan_duration_ms_max) {
             return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
         }
         start.trajectory.segments[start.trajectory.count++] = {
@@ -151,12 +152,41 @@ ayni_submit_result_t MotorExecution::submit(const ayni_provider_request_v1 *requ
     start.completion = completion;
     start.permit = *request->execution_permit;
     const auto dispatched = uint64_t(esp_timer_get_time());
-    if (!send(message)) {
+    start.target_seq = transport_.control_mailbox().reserve_start();
+    if (!start.target_seq || !send(message)) {
         return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
     }
     // Core calls this Provider only after its dispatch barrier is already durable.
     latest_dispatch_ = start.call;
     trace_handoff("dispatch", start.call, dispatched);
+    return AYNI_SUBMIT_ACCEPTED;
+}
+ayni_submit_result_t MotorExecution::submit_stream(ayni_attempt_ref_v1 attempt, uint64_t call,
+                                                   ayni_provider_completion_t *completion,
+                                                   const ayni_execution_permit_v1 &permit,
+                                                   const MotorCommand &initial,
+                                                   uint64_t session_goal, uint64_t expires_at_us) {
+    if (!completion || !session_goal || !valid_motor_command(initial) ||
+        permit.form != AYNI_FORM_SESSION) {
+        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    }
+    Message message{};
+    message.kind = MessageKind::start;
+    auto &start = message.start;
+    start.attempt = attempt;
+    start.call = call;
+    start.completion = completion;
+    start.permit = permit;
+    start.trajectory.count = 1;
+    start.trajectory.segments[0] = initial;
+    start.streaming = true;
+    start.deadline_us = expires_at_us;
+    start.session_goal = session_goal;
+    start.target_seq = transport_.control_mailbox().reserve_start();
+    if (!start.target_seq || !send(message)) {
+        return AYNI_SUBMIT_REJECTED_NOT_RETAINED;
+    }
+    latest_dispatch_ = call;
     return AYNI_SUBMIT_ACCEPTED;
 }
 ayni_submit_result_t MotorExecution::submit_soft_stop(const ayni_provider_request_v1 *request,
@@ -227,8 +257,9 @@ void MotorExecution::publish_snapshot() {
         limit_ | (uint32_t(mode_) << snapshot_mode_shift) | (pending_ ? snapshot_busy : 0);
     state_notice_ = state_notice_ || value != snapshot_.load(std::memory_order_relaxed);
     snapshot_.store(value, std::memory_order_release);
-    transport_.control_mailbox().publish_mode(uint8_t(mode_),
-                                              pending_ && pending_->phase == Phase::running, false);
+    transport_.control_mailbox().publish_mode(
+        uint8_t(mode_), pending_ && pending_->phase == Phase::running,
+        pending_ && pending_->streaming && hold_scale_ < AYNI_CONTROL_LOOP_FULL_SCALE);
 }
 void MotorExecution::handle_message(const Message &message) {
     switch (message.kind) {

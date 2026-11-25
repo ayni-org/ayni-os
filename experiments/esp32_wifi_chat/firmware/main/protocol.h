@@ -75,7 +75,9 @@ enum class Kind : uint8_t {
     context_template = 41, // Fixed synthetic ToolLoop turn; never saved in the real conversation.
     template_model_request = 42, // Explicit local diagnostic route; ordinary model calls stay HTTP.
     voice_reply_setting = 43,    // Desired automatic speech mode; explicit tools stay available.
-    voice_reply_state = 44       // Owner acknowledgement of a live preference update.
+    voice_reply_state = 44,      // Owner acknowledgement of a live preference update.
+    barge_in = 45,               // Cancel old turn while applying configured motor policy.
+    recognized_user = 46         // Completion of the ASR instruction already handled at capture.
 };
 // Populated on API-worker model deliveries only. Zero generation identifies the template route.
 struct ModelDeliveryTiming {

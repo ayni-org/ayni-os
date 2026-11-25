@@ -1,6 +1,9 @@
+#include "../../support/latency_samples.h"
+#include "../wifi/motor_panel_text.h"
 #include "control_mailbox.h"
 #include "transport.h"
 #include <atomic>
+#include <ayni/control_loop.h>
 #include <future>
 #include <gtest/gtest.h>
 #include <thread>
@@ -134,5 +137,97 @@ TEST(ControlMailbox, OutputSaturationLeavesAllInputSlotsAndModelLaneAvailable) {
     EXPECT_FALSE(transport.receive(packet));
     EXPECT_FALSE(transport.post(Kind::user, 0, &packet, input_bytes + 1));
     EXPECT_FALSE(transport.send(Kind::answer, 0, &packet, summary_bytes + 1));
+}
+TEST(ControlMailbox, QueuedStartDoesNotEnterHotTargetLaneAndStopBarrierStillRejectsIt) {
+    // ADR-0114: starts have one ordered admission lane; a confirmed stop still fences old starts.
+    ControlMailbox mailbox;
+    const auto start = mailbox.reserve_start();
+    ControlTarget target;
+    EXPECT_FALSE(mailbox.take_target(target));
+    const auto stop = mailbox.request_stop(ControlStopKind::soft_stop);
+    mailbox.confirm_stop(stop.seq, true, 0, 5);
+    EXPECT_FALSE(mailbox.stop_pending());
+    EXPECT_TRUE(mailbox.target_blocked(start));
+    const auto fresh = mailbox.reserve_start();
+    EXPECT_FALSE(mailbox.target_blocked(fresh));
+}
+TEST(ControlMailbox, BargeInDefaultsToHoldAndExplicitCancelStillStops) {
+    // ADR-0114: policy applies only to natural language; explicit cancel retains soft-stop.
+    ControlMailbox control;
+    Transport transport(control);
+    ASSERT_TRUE(transport.initialize());
+    transport.apply_barge_in();
+    EXPECT_EQ(control.hold().scale_percent, default_hold_scale_percent);
+    ASSERT_TRUE(transport.set_barge_in_policy(BargeInPolicy::continue_motion));
+    transport.apply_barge_in();
+    EXPECT_EQ(control.hold().scale_percent, AYNI_CONTROL_LOOP_FULL_SCALE);
+    EXPECT_FALSE(control.stop_pending());
+    ASSERT_TRUE(transport.set_barge_in_policy(BargeInPolicy::stop));
+    transport.apply_barge_in();
+    EXPECT_TRUE(control.stop_pending());
+    const auto stop = control.stop_request();
+    control.confirm_stop(stop.seq, true, 0, 10);
+    ASSERT_TRUE(transport.set_barge_in_policy(BargeInPolicy::continue_motion));
+    transport.set_motor_active(true);
+    transport.post(Kind::cancel, 0, nullptr, 0);
+    EXPECT_TRUE(control.stop_pending());
+    EXPECT_EQ(control.stop_request().kind, ControlStopKind::soft_stop);
+}
+TEST(ControlMailbox, TargetReceiptWallLatencyMeetsHostBudget) {
+    // ADR-0114: real mailbox copies and receipt publication, without scheduler or hardware claims.
+    ControlMailbox mailbox;
+    ayni::test::LatencySamples samples;
+    for (unsigned at = 0; at < 2000; ++at) {
+        const auto start = ayni::test::LatencySamples::Clock::now();
+        ASSERT_TRUE(mailbox.submit({0, 0, 40, -40, 100}, at));
+        samples.add(start);
+        ControlTarget target;
+        ASSERT_TRUE(mailbox.take_target(target));
+    }
+    samples.print("ControlMailbox.submit");
+    EXPECT_LT(samples.percentile(99), 50);
+    EXPECT_LT(samples.percentile(100), 500);
+}
+TEST(ControlMailbox, NaturalInputAppliesPolicyOnceAfterInputCapacityReservation) {
+    // ADR-0114: admission has one policy entry; a refused full-queue input cannot issue a hold.
+    ControlMailbox control;
+    Transport transport(control);
+    ASSERT_TRUE(transport.initialize());
+    transport.set_motor_active(true);
+    for (unsigned at = 0; at < input_packet_slots; ++at) {
+        ASSERT_TRUE(transport.post(Kind::user, at, "hello", 5));
+        EXPECT_EQ(control.hold().seq, at + 1U);
+    }
+    EXPECT_FALSE(transport.post(Kind::user, 99, "hello", 5));
+    EXPECT_EQ(control.hold().seq, input_packet_slots);
+}
+TEST(ControlMailbox, RecognitionCompletionCannotReapplyHoldAfterANewerStructuredTarget) {
+    // ADR-0114: ASR capture and its later text are one instruction, with one control-policy event.
+    ControlMailbox control;
+    Transport transport(control);
+    ASSERT_TRUE(transport.initialize());
+    transport.set_motor_active(true);
+    ASSERT_TRUE(transport.post(Kind::barge_in, 1, nullptr, 0));
+    const auto hold = control.hold();
+    uint64_t target_seq = 0;
+    ASSERT_TRUE(transport.submit_motor_target({0, 0, 30, 30, 100}, &target_seq));
+    ASSERT_TRUE(transport.post(Kind::recognized_user, 2, "hello", 5));
+    EXPECT_EQ(control.hold().seq, hold.seq);
+    EXPECT_GT(target_seq, hold.seq);
+}
+TEST(ControlMailbox, RunningSessionDoesNotPresentHistoricalStopAsCurrentFact) {
+    // ADR-0114 / C-STOP-006: an old stop proof cannot describe a subsequently active session.
+    ControlFeedbackSnapshot feedback;
+    feedback.control_mode = uint8_t(ControlMode::armed);
+    feedback.stop_requested_seq = feedback.stop_confirmed_seq = 1;
+    EXPECT_STREQ(wifichat::wifi::motor_output_text(feedback), "输出已停止（软停，可恢复）");
+    feedback.busy = 1;
+    feedback.applied_seq = 2;
+    feedback.applied_motor1 = 40;
+    EXPECT_STREQ(wifichat::wifi::motor_output_text(feedback), "会话运行中");
+    feedback.hold_active = 1;
+    EXPECT_STREQ(wifichat::wifi::motor_output_text(feedback), "会话保持中");
+    feedback.stop_requested_seq = 3;
+    EXPECT_STREQ(wifichat::wifi::motor_output_text(feedback), "正在停机，等待硬件确认");
 }
 } // namespace

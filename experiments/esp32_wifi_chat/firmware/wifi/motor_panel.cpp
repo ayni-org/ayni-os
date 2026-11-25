@@ -1,5 +1,6 @@
 #include "motor_panel.h"
 #include "app_menu.h"
+#include "motor_panel_text.h"
 #include <cstdio>
 #include <yyjson.h>
 namespace wifichat::wifi {
@@ -62,12 +63,7 @@ bool MotorPanel::tick(Transport &transport, bool healthy, int64_t now) {
             (unsigned long long)feedback.accepted_seq, (unsigned long long)feedback.superseded_seq,
             (unsigned long long)feedback.superseded_count, (unsigned long long)feedback.applied_seq,
             long(feedback.applied_motor1), long(feedback.applied_motor2),
-            (unsigned long long)feedback.rejected_seq, reason,
-            feedback.stop_requested_seq > feedback.stop_confirmed_seq ? "正在停机，等待硬件确认"
-            : !feedback.stop_confirmed_seq ? "尚无停止确认"
-            : feedback.control_mode == uint8_t(ControlMode::armed)
-                ? "输出已停止（软停，可恢复）"
-                : "输出已停止（急停锁存/未启用）");
+            (unsigned long long)feedback.rejected_seq, reason, motor_output_text(feedback));
         feedback_text_ = text;
     }
     if (!healthy && active()) {
