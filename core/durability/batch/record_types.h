@@ -40,7 +40,12 @@ constexpr uint16_t context = 26;                   // knowledge/context
 constexpr uint16_t memory = 23;                    // knowledge/memory
 constexpr uint16_t scene = 22;                     // authority/scene
 
+constexpr uint16_t unresolved_op = 29;       // work/operation: snapshot-only full row.
+constexpr uint16_t unresolved_op_state = 30; // work/operation: journal-only query/closure.
+
 constexpr uint16_t all[] = {
+    unresolved_op,
+    unresolved_op_state,
     boot_epoch,
     instance,
     goal,

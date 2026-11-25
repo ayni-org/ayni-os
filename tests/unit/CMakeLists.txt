@@ -41,6 +41,7 @@ add_executable(ayni_unit_tests
     action_record_test.cpp
     call_input_test.cpp
     call_table_test.cpp
+    operation_ledger_test.cpp
     call_contract_test.cpp
     tool_calls_test.cpp
     kernel_tool_call_test.cpp

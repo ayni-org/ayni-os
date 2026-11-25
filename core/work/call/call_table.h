@@ -236,6 +236,8 @@ class CallTable {
     // Task retirement prerequisite: every retained call is known and durable, and the
     // release queue has room for every body reference those rows hold.
     bool can_retire_task(uint64_t task_id, uint64_t durable_seq) const;
+    // Counts durable unresolved operations for atomic handoff; no mutation or retirement change.
+    uint32_t unresolved_durable_count(uint64_t task_id) const;
     // Body references a retirement of task_id would queue, and whether the queue has room for
     // refs of them, so a caller retiring several Tasks in one commit checks their sum.
     uint32_t task_body_refs(uint64_t task_id) const;

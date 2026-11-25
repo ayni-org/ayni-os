@@ -94,6 +94,8 @@ ayni_add_core_module(work
         work/call/call_records.cpp
         work/call/call_restore.cpp
         work/subscription/subscription_fact.cpp
+        work/operation/operation_ledger.cpp
+        work/operation/operation_records.cpp
         work/call/call_table.cpp
         work/call/call_subscription.cpp
         work/call/tool_calls.cpp

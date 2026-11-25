@@ -660,6 +660,17 @@ uint32_t CallTable::task_body_refs(uint64_t task_id) const {
     return refs;
 }
 
+uint32_t CallTable::unresolved_durable_count(uint64_t task_id) const {
+    uint32_t count = 0;
+    for (uint32_t at = 0; at < limits_.capacity; ++at) {
+        if (occupied(at) && identity(at).task_id == task_id && !state(at).ephemeral &&
+            unresolved(at)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 bool CallTable::can_retire_task(uint64_t task_id, uint64_t durable_seq) const {
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         const auto &entry = slots_[at].entry;
