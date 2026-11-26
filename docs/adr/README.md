@@ -179,3 +179,4 @@
 | [0114](0114-async-ui-streaming-control-and-parameterized-reflex.md) | 异步界面、流式控制与传感参数反射 | 已实施；主机验证和固件编译通过，板端待测 | ABI0.61/schema11、通用独立操作、异步LCD、ControlLoop及参数绑定 |
 
 | [0115](0115-unknown-operation-history-and-work-retirement.md) | 四层生命周期、独立未决账本与落盘后结案审计 | 已实施；正常软件与OTA启动自确认通过 | ABI0.62/schema12、QUERY/ACK、双端16槽、Tier0朗读 |
+| [0116](0116-apache-license-and-public-copy.md) | Apache-2.0 许可证与保留历史的公开副本 | 已接受，用户选定 | 原创代码/文档许可、第三方声明、公开 main；原仓库保留 |

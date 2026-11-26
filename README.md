@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/RobotSe7en/ayni/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/RobotSe7en/ayni/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/ayni-org/ayni-os/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ayni-org/ayni-os/actions/workflows/ci.yml/badge.svg"></a>
   <a href="docs/development.md"><img alt="C++17" src="https://img.shields.io/badge/Core-C%2B%2B17-blue"></a>
   <a href="include/ayni/ayni.h"><img alt="C99 API" src="https://img.shields.io/badge/API-C99-blue"></a>
 </p>
@@ -28,6 +28,8 @@
 可移植 C++17 Core 管理系统状态，规则与 ToolLoop 决定如何推进工作，Host 和 Provider 提供异步服务。桌面助理与 ESP32-S3 触屏实验复用这套基础；具体应用、模型和外设由部署选择。
 
 > **当前状态：** 通用基础与独立源码 SDK 已交付，Native/Sim 软件验证见[基础报告](reports/core/foundation-acceptance.md)和[独立接入报告](reports/core/independent-consumption.md)。当前分支实验性 C ABI 为 **0.62**，Core storage schema 为 **12**（独立未决操作账本、QUERY/ACK 与落盘后审计见[ADR-0115](docs/adr/0115-unknown-operation-history-and-work-retirement.md)；异步界面、通用独立操作及参数反射见[ADR-0114](docs/adr/0114-async-ui-streaming-control-and-parameterized-reflex.md)）。ESP32 触屏 Wi-Fi/语音实验独立推进；完整硬件停止链与耐久验收仍未完成。
+
+公开仓库保留原项目的提交历史。报告中指向 `RobotSe7en/ayni` 的历史 PR 和 CI 证据仍保存在原私有仓库，访问需要相应权限；它们未随 Git 推送迁移，见 [ADR-0116](docs/adr/0116-apache-license-and-public-copy.md)。
 
 ## 核心理念
 
@@ -61,8 +63,8 @@ C99 API、C++17 封装和源码 SDK 支持独立工程接入，`runtime/` 选择
 sudo apt-get install -y build-essential cmake ninja-build python3 git \
     libcurl4-openssl-dev libsqlite3-dev
 
-git clone https://github.com/RobotSe7en/ayni.git
-cd ayni
+git clone https://github.com/ayni-org/ayni-os.git
+cd ayni-os
 
 # 先检查可用内存、swap、CPU 和其他任务，再按资源预算调整并行度。
 export CMAKE_BUILD_PARALLEL_LEVEL=2
@@ -171,4 +173,6 @@ README 的组织参考 [dagent](https://github.com/RobotSe7en/dagent)。架构�
 
 ## 许可证
 
-项目许可证尚未确定，将在首次公开发布前决定；依赖和源码复用按各自许可证审查。
+Copyright 2026 Ayni contributors.
+
+除另有声明的第三方组件与资源外，本项目的代码和文档采用 [Apache License 2.0](LICENSE)，版权声明见 [NOTICE](NOTICE)。第三方许可证及来源见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

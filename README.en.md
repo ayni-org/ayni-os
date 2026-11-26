@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/RobotSe7en/ayni/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/RobotSe7en/ayni/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/ayni-org/ayni-os/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ayni-org/ayni-os/actions/workflows/ci.yml/badge.svg"></a>
   <a href="docs/development.md"><img alt="C++17" src="https://img.shields.io/badge/Core-C%2B%2B17-blue"></a>
   <a href="include/ayni/ayni.h"><img alt="C99 API" src="https://img.shields.io/badge/API-C99-blue"></a>
 </p>
@@ -27,7 +27,9 @@
 
 A portable C++17 Core manages system state, rules and ToolLoop strategies advance work, and Hosts and Providers supply asynchronous services. The desktop assistant and ESP32-S3 touchscreen experiment reuse this foundation; each deployment selects its applications, models, and peripherals.
 
-> **Current status:** The general foundation and standalone source SDK are delivered. Native/Sim software evidence is indexed in the [foundation report](reports/core/foundation-acceptance.md) and [independent integration report](reports/core/independent-consumption.md). The current experimental C ABI is **0.54**, and the Core storage schema is **9** ([ADR-0096](docs/adr/0096-core-stores-body-references.md)). The ESP32 touchscreen Wi-Fi/voice experiment proceeds separately; full hardware stop-chain and endurance acceptance remain incomplete.
+> **Current status:** The general foundation and standalone source SDK are delivered. Native/Sim software evidence is indexed in the [foundation report](reports/core/foundation-acceptance.md) and [independent integration report](reports/core/independent-consumption.md). The current experimental C ABI is **0.62**, and the Core storage schema is **12** ([ADR-0115](docs/adr/0115-unknown-operation-history-and-work-retirement.md) covers the independent unresolved-operation ledger, QUERY/ACK, and post-durability audit; [ADR-0114](docs/adr/0114-async-ui-streaming-control-and-parameterized-reflex.md) covers the asynchronous UI, independent operations, and parameterized reflex rules). The ESP32 touchscreen Wi-Fi/voice experiment proceeds separately; full hardware stop-chain and endurance acceptance remain incomplete.
+
+This public repository preserves the original project's commit history. Historical PR and CI links to `RobotSe7en/ayni` still refer to the original private repository and require access to it; those records were not copied by the Git push. See [ADR-0116](docs/adr/0116-apache-license-and-public-copy.md).
 
 ## Core Ideas
 
@@ -61,8 +63,8 @@ Install a C++17 toolchain, CMake, Ninja, Python, and development packages for li
 sudo apt-get install -y build-essential cmake ninja-build python3 git \
     libcurl4-openssl-dev libsqlite3-dev
 
-git clone https://github.com/RobotSe7en/ayni.git
-cd ayni
+git clone https://github.com/ayni-org/ayni-os.git
+cd ayni-os
 
 # Check available memory, swap, CPUs, and other jobs; adjust to the resource budget.
 export CMAKE_BUILD_PARALLEL_LEVEL=2
@@ -173,4 +175,6 @@ README organization follows [dagent](https://github.com/RobotSe7en/dagent). The 
 
 ## License
 
-A project license has not yet been selected and will be decided before the first public release. Dependencies and source reuse are reviewed under their respective licenses.
+Copyright 2026 Ayni contributors.
+
+Except for third-party components and assets with their own notices, this project's code and documentation are licensed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution and third-party licenses.
