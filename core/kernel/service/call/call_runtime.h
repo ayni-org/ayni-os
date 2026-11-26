@@ -192,6 +192,12 @@ class CallRuntime {
         std::optional<work::CallCancelCause> inhibition{}; // Sticky user stop for this execution
                                                            // attempt until budgeted cancellation.
     };
+    // Exactly one independent read-only transport; never borrows an active CallTable slot.
+    struct LedgerQuery {
+        uint64_t call_id;  // Stable retired operation ID, not a reusable ledger index.
+        Stage stage;       // barrier or submitted, both own delivery's reservation.
+        Delivery delivery; // Sole owner of the extra mailbox reservation and cancellation.
+    };
     struct Active {
         uint64_t call_id; // Matches this CallTable slot; detects any premature replacement.
         Stage stage; // queued: no claim; prepared: claim only; barrier/submitted: delivery too.
@@ -344,6 +350,8 @@ class CallRuntime {
     // Fencing never drops pending receipts. Explicit unwritable shutdown may
     // discard volatile outcomes without reporting a committed business success.
     Advance drain_transport(Mode mode);
+    // One reliable terminal/notice while closing or fencing, without domain publication.
+    Advance drain_transport_receipt(const ProviderMailbox::BlockedSlots *filter);
     static constexpr uint64_t microseconds_per_millisecond = 1000; // Host request unit conversion.
     // Current latest sample/state frontier, independent of renewal ACK count.
     work::OperationWait subscription_wait_basis(uint32_t index) const;
@@ -418,6 +426,15 @@ class CallRuntime {
     bool consume_query(uint32_t index, uint32_t task_index, const ProviderMessage &message,
                        foundation::TransitionStamp stamp);
     Advance end_query(uint32_t index, ayni_status_t status, ayni_reason_t reason);
+    // Independent low-frequency ledger queries, with their own mailbox slot (ADR-0115).
+    Advance advance_operation_query(uint64_t now_us, uint64_t durable_seq, Mode mode);
+    bool operation_query_ready(uint64_t now_us, uint64_t durable_seq, Mode mode) const;
+    Advance prepare_operation_query(uint32_t index);
+    Advance dispatch_operation_query(uint32_t index, uint64_t now_us);
+    Advance end_operation_query(uint32_t index, ayni_status_t status, ayni_reason_t reason);
+    Advance consume_operation_query(const ProviderMessage &, const ProviderReceipt &);
+    bool matches_operation_receipt(const ProviderReceipt &) const;
+
     // Scan domain calls and their shared admission queue after reliable ingress.
     bool calls_ready(uint64_t now_us, uint64_t durable_seq, Mode mode, JournalAdmission) const;
     // Classifies an occupied slot. Queued still needs arbitration; prepared only needs a barrier.
@@ -496,6 +513,10 @@ class CallRuntime {
     ProviderMailbox::BlockedSlots
     blocked_receipts(JournalAdmission admission = JournalAdmission::available) const;
     static bool runtime_retains(const void *context, uint64_t call_id);
+    // Active Calls may consume at most their own configured slots, preserving the ledger reserve.
+    bool call_mailbox_full() const {
+        return mailbox_.in_flight() - (ledger_query_ ? 1U : 0U) >= limits_.capacity;
+    }
     static bool submitted(Stage stage) {
         return stage == Stage::submitted || stage == Stage::waiting_stop;
     }
@@ -526,6 +547,8 @@ class CallRuntime {
     uint8_t *staging_;    // Canonical proposed input, copied while callback views are alive.
     uint8_t *receipt_;    // Owner copy; mailbox retains original until domain publication succeeds.
     uint8_t *normalized_; // Owner-only result normalization bytes, erased after consumption.
+    std::optional<LedgerQuery>
+        ledger_query_;                 // Sole boot-local retired-query borrow; no domain copies.
     std::optional<Decision> decision_; // Present only during decide; callback capability lease.
     std::optional<Proposal> proposal_; // Copied proposal survives callback until consumed/reset.
     enum class NextLane {

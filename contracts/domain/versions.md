@@ -11,7 +11,7 @@ Ayni 有三个互相独立的版本域，以及随领域对象走的语义版本
 | 存储 | `storage_schema`、记录版本、迁移版本 | 日志批次、快照、NVS 记录（`storage/`） |
 | 领域语义 | 能力、Scene、GoalType、检查点各自的 `version` | 注册目录与 ActionRecord 绑定的语义 |
 
-当前 Core 存储只接受 schema 10（ADR-0104）；`ayni/storage_format.h` 的 `AYNI_STORAGE_SCHEMA_CURRENT` 是当前二进制的编译期声明，供编解码器与验证产物共用，不代替介质校验或授权迁移；记录版本按当前存储上下文唯一，详见 [记录格式](../storage/records.md) 与 ADR-0084。下文 ABI 演进中的旧 schema/布局说明保留历史含义，不是当前 reader 支持表。
+当前 Core 存储只接受 schema 12（ADR-0115）；`ayni/storage_format.h` 的 `AYNI_STORAGE_SCHEMA_CURRENT` 是当前二进制的编译期声明，供编解码器与验证产物共用，不代替介质校验或授权迁移；记录版本按当前存储上下文唯一，详见 [记录格式](../storage/records.md) 与 ADR-0084。下文 ABI 演进中的旧 schema/布局说明保留历史含义，不是当前 reader 支持表。
 
 ## ABI
 
@@ -114,3 +114,7 @@ ABI 0.57–0.59（ADR-0110/0111/0112）依次升级Core存储至schema 11，新�
 ABI 0.60（ADR-0113）在`ayni_config_v1`尾部追加`audit_capacity`（`sizeof == 200`，默认0禁用且零arena开销），新增严格C99头文件`<ayni/audit.h>`（`ayni_audit_record_v1` 104 B、`ayni_audit_info_v1` 40 B、`ayni_get_audit_info`、`ayni_take_audit_records`）；Core `storage_schema`保持11不变，无新增WAL记录或迁移。外层`FileBodies`正文manifest独立升为AYNB格式2（`<= 4096 B`内联存储），旧格式1拒绝返回`AYNI_UNSUPPORTED_VERSION`并保留原文件；可选Host `AuditSink`使用独立`AYAU`格式1轮转文件。所有0.x调用方重编译。
 
 ABI 0.61（ADR-0114）删除已废弃的 Call arguments/text、Provider text、Task reserved_call_tool、AYNI_TOOL_INPUT_VALUE 及旧 Host 草案。Persistence 只保留 durable / turn_boundary，全仓调用方统一重编译；Core schema 保持 11，持久记录的 input_format 仍在解码边界严格校验。新增 `control_loop.h` 纯函数、`ayni_control_session_tick_effective` 与 Reflex 参数绑定尾部字段；布局由 C99 ABI 检查固定。运行期 OperationSession 仅组合既有 Goal/Task API，不增加 Core 存储记录或可持久化句柄。
+
+ABI0.62 增加独立未决操作配置、对象、查询与管理命令，旧调用方统一重编译；ayni_call_info_v1 和104 B审计记录布局保持。schema12拒收并保留旧schema11卷，无迁移或自动擦除；独立账本满/缩容沿用STATE_EXCEEDS_CAPACITY。type29仅快照、type30仅日志，见ADR-0115。
+
+ABI0.62发布前审查修复将`ayni_unresolved_op_v1`末尾预留u32定义为`query_authority`（原NONE/BEST_EFFORT/AUTHORITATIVE）；结构仍192 B，字段偏移188。Core投影、Native CLI及ESP诊断同步使用，各源码消费者重编译，持久布局和schema12不变，见ADR-0115的2026-11-26补充。

@@ -192,6 +192,20 @@ ayni_status_t read_business_body(ayni::foundation::Workspace &workspace, ayni_by
     value.execution.business_contract = body;
     return AYNI_OK;
 }
+// Both replay forms require canonical schemas and a result kind matching the saved format.
+ayni_status_t read_validated_business(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body,
+                                      DecodedBusiness &value) {
+    const auto status = read_business_body(workspace, body, value, decode_schema);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    if ((value.execution.result_format == call_text_result_format ||
+         value.execution.result_format == call_tool_calls_result_format) &&
+        value.result.nodes[0].kind != AYNI_VALUE_TEXT) {
+        return AYNI_INVALID_ARGUMENT;
+    }
+    return AYNI_OK;
+}
 } // namespace
 
 ayni_status_t decode_business(ayni::foundation::Workspace &workspace, ayni_bytes_v1 domain,
@@ -205,14 +219,9 @@ ayni_status_t decode_business(ayni::foundation::Workspace &workspace, ayni_bytes
         return AYNI_CAPACITY_EXCEEDED;
     }
     auto &value = *value_lease;
-    const auto read = read_business_body(workspace, body, value, decode_schema);
+    const auto read = read_validated_business(workspace, body, value);
     if (read != AYNI_OK) {
         return read;
-    }
-    if ((value.execution.result_format == call_text_result_format ||
-         value.execution.result_format == call_tool_calls_result_format) &&
-        value.result.nodes[0].kind != AYNI_VALUE_TEXT) {
-        return AYNI_INVALID_ARGUMENT;
     }
     ProjectionShape shape;
     const auto admitted = validate_projection_schemas_admitted(domain, value.view(), shape);
@@ -221,6 +230,28 @@ ayni_status_t decode_business(ayni::foundation::Workspace &workspace, ayni_bytes
     }
     out = value;
     return AYNI_OK;
+}
+
+ayni_status_t decode_business_proof(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body,
+                                    DecodedBusiness &out) {
+    const auto header = check_business_header(body);
+    if (header != AYNI_OK) {
+        return header;
+    }
+    auto candidate = workspace.make<DecodedBusiness>();
+    if (!candidate) {
+        return AYNI_CAPACITY_EXCEEDED;
+    }
+    const auto status = read_validated_business(workspace, body, *candidate);
+    if (status != AYNI_OK) {
+        return status;
+    }
+    ProjectionShape shape;
+    const auto mapped = validate_business_schemas_admitted(candidate->view(), shape);
+    if (mapped == AYNI_OK) {
+        out = *candidate;
+    }
+    return mapped;
 }
 
 ayni_status_t read_admitted_business(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body,

@@ -54,10 +54,11 @@ struct KernelCapacities {
     uint32_t observation_source_capacity = 0;  // Static sources and current-boot samples.
     uint32_t observation_ingress_capacity = 0; // Optional fixed Host sample FIFO.
     uint32_t business_contract_max_bytes =
-        0;                              // Bytes per original proof; zero with no call catalogs.
-    uint32_t reflex_capacity = 0;       // Static ReflexRules; zero disables (ADR-0112).
-    uint32_t reflex_event_capacity = 0; // Bounded reflex event ring; zero when reflex disabled.
-    uint32_t audit_capacity = 0;        // Bounded RAM audit ring; zero disables (ADR-0113).
+        0;                               // Bytes per original proof; zero with no call catalogs.
+    uint32_t reflex_capacity = 0;        // Static ReflexRules; zero disables (ADR-0112).
+    uint32_t reflex_event_capacity = 0;  // Bounded reflex event ring; zero when reflex disabled.
+    uint32_t unresolved_op_capacity = 0; // Independent retired operation slots; zero disables.
+    uint32_t audit_capacity = 0;         // Bounded RAM audit ring; zero disables (ADR-0113).
 };
 
 // Validated limits from ayni_config_v1 that do not change the layout.
@@ -78,33 +79,34 @@ struct KernelLimits {
 // entry here, so a new store is added once and layout_for, storage_at and the
 // arena test reach it by name (ADR-0051).
 enum class Store : uint32_t {
-    workspace,            // Kernel-owned synchronous codec candidates, never persisted.
-    ingress,              // EventIngress: queued events and their bodies.
-    completions,          // CompletionPool: Host completion slots.
-    storage_buffer,       // Bytes of the storage I/O; needs no alignment.
-    agents,               // AgentTable.
-    goal_types,           // GoalTypeRegistry.
-    goals,                // GoalTable.
-    calendars,            // CalendarTable: civil rules and stable cursors.
-    sessions,             // SessionTable.
-    tasks,                // TaskTable.
-    strategies,           // StrategyRegistry.
-    decisions,            // DecisionBuffer: one decision's views, intents and checkpoint.
-    commands,             // CommandTable: windows, exact requests and pending revocations.
-    capabilities,         // CapabilityRegistry.
-    grants,               // GrantTable, with its Gates and both byte regions.
-    goal_authority,       // Goal-owned ceilings/references, one slot per Goal index.
-    task_authority,       // Task-owned admission references, one slot per stable Task slot.
-    resource_catalog,     // ResourceRegistry: immutable descriptions, no live state.
-    resource_states,      // ResourceAdmission: live occupancy/health, never persistent.
-    resource_requests,    // ResourceAdmission: bounded pending/held resource groups.
-    devices,              // DeviceCatalog: copied immutable device identities.
-    components,           // DeviceCatalog: copied component-to-device relationships.
-    call_capabilities,    // CallCapabilityRegistry: copied execution contracts.
-    providers,            // ProviderRegistry: trusted offers and callback descriptors.
-    bindings,             // BindingRegistry: immutable exact implementation selections.
-    calls,                // CallTable: work-owned identities, state and bodies.
-    call_runtime,         // CallRuntime: boot-local I/O ownership, staging and receipt copies.
+    workspace,         // Kernel-owned synchronous codec candidates, never persisted.
+    ingress,           // EventIngress: queued events and their bodies.
+    completions,       // CompletionPool: Host completion slots.
+    storage_buffer,    // Bytes of the storage I/O; needs no alignment.
+    agents,            // AgentTable.
+    goal_types,        // GoalTypeRegistry.
+    goals,             // GoalTable.
+    calendars,         // CalendarTable: civil rules and stable cursors.
+    sessions,          // SessionTable.
+    tasks,             // TaskTable.
+    strategies,        // StrategyRegistry.
+    decisions,         // DecisionBuffer: one decision's views, intents and checkpoint.
+    commands,          // CommandTable: windows, exact requests and pending revocations.
+    capabilities,      // CapabilityRegistry.
+    grants,            // GrantTable, with its Gates and both byte regions.
+    goal_authority,    // Goal-owned ceilings/references, one slot per Goal index.
+    task_authority,    // Task-owned admission references, one slot per stable Task slot.
+    resource_catalog,  // ResourceRegistry: immutable descriptions, no live state.
+    resource_states,   // ResourceAdmission: live occupancy/health, never persistent.
+    resource_requests, // ResourceAdmission: bounded pending/held resource groups.
+    devices,           // DeviceCatalog: copied immutable device identities.
+    components,        // DeviceCatalog: copied component-to-device relationships.
+    call_capabilities, // CallCapabilityRegistry: copied execution contracts.
+    providers,         // ProviderRegistry: trusted offers and callback descriptors.
+    bindings,          // BindingRegistry: immutable exact implementation selections.
+    calls,             // CallTable: work-owned identities, state and bodies.
+    unresolved_ops, // OperationLedger: retired unresolved metadata, proof bytes and pending audits.
+    call_runtime,   // CallRuntime: boot-local I/O ownership, staging and receipt copies.
     provider_completions, // ProviderMailbox: reliable delivery, separate from Host slots.
     execution_catalog,    // ExecutionRegistry: copied executor ports and binding constraints.
     permits,              // PermitTable: volatile local leases and quarantine links.

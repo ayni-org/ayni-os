@@ -38,4 +38,6 @@ Core 不自行分配内存（ADR-0014）。调用方先用 `ayni_kernel_memory_r
 
 日志与恢复、快照维护分时使用同一存储缓冲；维护先冻结新 transition 并排空 journal，再按完整记录分页，不复制 WorkModel，也不为整份快照分配另一块内存。默认缓冲为 `3 × max(W+4, 256)`，W 为按配置和各记录上界保守加总的 transition 批次预算；显式容量还须容纳最大的静态快照记录。预算包含 Grant 创建、启动到期结算、D 根撤销/清理 progress 及完整 auth mapping，不表示全部预留记录可在一条公开路径中同时发生。
 
-调用方内存需求以 [`tools/measure_kernel_memory.c`](../tools/measure_kernel_memory.c) 的输出为准，本文不手写数字：它对默认值、最小工作容量、Native 双 Agent 调用和双 Agent 执行 4 个配置调用 `ayni_kernel_memory_requirements`，与 `runtime/common` 的默认配置一致（ADR-0053）。改变存储尺寸或放置的 PR 在说明中给出改前改后的输出；各版本的历史数字在对应 ADR（如 ADR-0027～0031、ADR-0051）。这里只是调用方内存，不包括 Host 的线程、文件缓存或运行时自身的分配，也不能替代 ESP32 RAM 与栈的实测。
+调用方内存需求以 [`tools/measure_kernel_memory.c`](../tools/measure_kernel_memory.c) 的输出为准，本文不手写数字：它对默认值、最小工作容量、Native 双 Agent 调用/执行、启用 16 槽账本及全部最大容量配置调用 `ayni_kernel_memory_requirements`，复用 `runtime/common` 的默认配置机制（ADR-0053）。改变存储尺寸或放置的 PR 在说明中给出改前改后的输出；各版本的历史数字在对应 ADR（如 ADR-0027～0031、ADR-0051）。这里只是调用方内存，不包括 Host 的线程、文件缓存或运行时自身的分配，也不能替代 ESP32 RAM 与栈的实测。
+
+ABI0.62/schema12：活跃Call、工作槽、未决账本和AuditRing生命周期分离，原工作替换批次完成两阶段交接，不追加归档WAL。默认账本关闭，Native/ESP部署显式启用；实现与验证边界见[ADR-0115](../docs/adr/0115-unknown-operation-history-and-work-retirement.md)。

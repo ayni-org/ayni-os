@@ -42,6 +42,10 @@ ayni_status_t encode_admitted_business(ayni::foundation::Workspace &workspace,
 // Failure preserves out; all decoded text borrows body until that body changes.
 ayni_status_t decode_business(ayni::foundation::Workspace &workspace, ayni_bytes_v1 domain,
                               ayni_bytes_v1 body, DecodedBusiness &out);
+// Untrusted domainless history: validates canonical schemas, execution and mappings.
+// Domain coverage was proved at admission; reconciliation still compares the full saved proof.
+ayni_status_t decode_business_proof(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body,
+                                    DecodedBusiness &out);
 // Internal immutable owner proof, already admitted against its original domain at catalog close
 // or Call replay. Materializes views without revalidating/re-encoding the same schemas.
 ayni_status_t read_admitted_business(ayni::foundation::Workspace &workspace, ayni_bytes_v1 body,

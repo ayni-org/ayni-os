@@ -49,6 +49,7 @@ static inline ayni_config_v1 ayni_measure_maximum_config(void) {
     c.provider_capacity = AYNI_PROVIDER_CAPACITY_MAX;
     c.binding_capacity = AYNI_BINDING_CAPACITY_MAX;
     c.call_capacity = AYNI_CALL_CAPACITY_MAX;
+    c.unresolved_op_capacity = AYNI_UNRESOLVED_OP_CAPACITY_MAX;
     c.call_input_max_bytes = AYNI_CALL_INPUT_BYTES_MAX;
     c.call_result_max_bytes = AYNI_CALL_RESULT_BYTES_MAX;
     c.device_capacity = AYNI_DEVICE_CAPACITY_MAX;

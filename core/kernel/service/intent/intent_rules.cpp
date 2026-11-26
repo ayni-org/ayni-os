@@ -446,6 +446,54 @@ ayni_status_t query_call(WorkModel &model, const Intent &intent, IntentOutcome &
     return AYNI_OK;
 }
 
+// ADR-0115: owner management closes or queries a historical operation without its retired Task.
+ayni_status_t query_unresolved_op(WorkModel &model, const Intent &intent, IntentOutcome &outcome,
+                                  IntentFailure &failure) {
+    uint32_t index = 0;
+    if (!model.unresolved_ops.find(intent.target_id, index)) {
+        return refuse(AYNI_NOT_FOUND, AYNI_REASON_NONE,
+                      object_ref(AYNI_OBJECT_UNRESOLVED_OP, intent.target_id), failure);
+    }
+    const auto current = object_ref(AYNI_OBJECT_UNRESOLVED_OP, intent.target_id,
+                                    model.unresolved_ops.state(index).revision);
+    const auto status = model.unresolved_ops.check_query(index, intent.expected_revision);
+    if (status != AYNI_OK) {
+        return refuse(status, AYNI_REASON_NONE, current, failure);
+    }
+    const auto stamp = model.transitions.next();
+    if (model.unresolved_ops.request_query(index, {model.ids.boot_epoch(), stamp}) != AYNI_OK) {
+        return AYNI_INTERNAL;
+    }
+    outcome.object = object_ref(AYNI_OBJECT_UNRESOLVED_OP, intent.target_id,
+                                model.unresolved_ops.state(index).revision);
+    outcome.commit_seq = stamp.commit_seq;
+    wake_for_due_work(outcome);
+    return AYNI_OK;
+}
+ayni_status_t acknowledge_unresolved_op(WorkModel &model, const Intent &intent,
+                                        IntentOutcome &outcome, IntentFailure &failure) {
+    uint32_t index = 0;
+    if (!model.unresolved_ops.find(intent.target_id, index)) {
+        return refuse(AYNI_NOT_FOUND, AYNI_REASON_NONE,
+                      object_ref(AYNI_OBJECT_UNRESOLVED_OP, intent.target_id), failure);
+    }
+    const auto current = object_ref(AYNI_OBJECT_UNRESOLVED_OP, intent.target_id,
+                                    model.unresolved_ops.state(index).revision);
+    const auto status = model.unresolved_ops.check_acknowledge(index, intent.expected_revision);
+    if (status != AYNI_OK) {
+        return refuse(status, AYNI_REASON_NONE, current, failure);
+    }
+    const auto stamp = model.transitions.next();
+    if (model.unresolved_ops.acknowledge_and_remove(index, {model.ids.boot_epoch(), stamp}) !=
+        AYNI_OK) {
+        return AYNI_INTERNAL;
+    }
+    outcome.object = current;
+    outcome.commit_seq = stamp.commit_seq;
+    wake_for_due_work(outcome);
+    return AYNI_OK;
+}
+
 ayni_status_t change_instance(WorkModel &model, const Intent &intent, IntentOutcome &outcome,
                               IntentFailure &failure) {
     uint32_t index = 0;
@@ -510,6 +558,10 @@ ayni_status_t apply_rules(WorkModel &model, const Intent &intent, const authorit
         return approve_goal(model, intent, session, now_us, durable_seq, outcome, failure);
     case AYNI_INTENT_GOAL_REAUTHORIZE:
         return reauthorize_goal(model, intent, now_us, durable_seq, input, outcome, failure);
+    case AYNI_INTENT_UNRESOLVED_OP_QUERY:
+        return query_unresolved_op(model, intent, outcome, failure);
+    case AYNI_INTENT_UNRESOLVED_OP_ACKNOWLEDGE:
+        return acknowledge_unresolved_op(model, intent, outcome, failure);
     case AYNI_INTENT_CALL_QUERY_RESULT:
         return query_call(model, intent, outcome, failure);
     case AYNI_INTENT_TASK_RESUME_WAIT:
@@ -614,6 +666,8 @@ CommandTable::ExactLookup find_command(WorkModel &model, const Intent &intent,
         return model.commands.find_exact(principal_id, intent.command_id, intent.pause_group);
     case AYNI_INTENT_SCENE_SET_ENABLED:
         return model.commands.find_exact(principal_id, intent.command_id, intent.scene);
+    case AYNI_INTENT_UNRESOLVED_OP_QUERY:
+    case AYNI_INTENT_UNRESOLVED_OP_ACKNOWLEDGE:
     case AYNI_INTENT_CALL_QUERY_RESULT:
     case AYNI_INTENT_TASK_RESUME_WAIT:
         return model.commands.find_exact(

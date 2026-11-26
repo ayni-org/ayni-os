@@ -66,6 +66,7 @@ struct WorkModel {
           goal_authority(storage[Store::goal_authority], goal_authority_limits(capacities)),
           task_authority(storage[Store::task_authority], task_authority_limits(capacities)),
           calls(storage[Store::calls], call_limits(capacities)),
+          unresolved_ops(storage[Store::unresolved_ops], operation_limits(capacities)),
           memories(storage[Store::memories], memory_limits(capacities)),
           contexts(storage[Store::contexts], context_capacity(capacities)),
           provenance(storage[Store::provenance], provenance_limits(capacities)),
@@ -146,7 +147,11 @@ struct WorkModel {
     void release_task_references(const work::TaskAuthorityRecord &record, uint64_t commit_seq);
     // Release and clear exact Task metadata before its terminal Goal gives way.
     // release_seq is zero in replay, which forgets call body references (ADR-0096).
-    void retire_goal_task_metadata(uint32_t goal_index, uint64_t commit_seq, uint64_t release_seq);
+    ayni_status_t retire_goal_task_metadata(uint32_t goal_index, work::ActionStamp stamp,
+                                            uint64_t release_seq);
+    // Two-phase, bodyless handoff in the existing work replacement batch (ADR-0115).
+    ayni_status_t retire_task_calls(uint64_t task_id, work::ActionStamp stamp,
+                                    uint64_t release_seq);
     // Persist authorization pause for this Goal and its direct live Task admissions;
     // preserve their user/strategy state and saturated revisions.
     void pause_goal_authority(uint32_t index);
@@ -211,7 +216,9 @@ struct WorkModel {
     // Work-owned immutable ceilings and selected Grant identities; no live Grant cache.
     work::GoalAuthorityTable goal_authority;
     work::TaskAuthorityTable task_authority; // Independent historical selections; no Scope copy.
-    work::CallTable calls;           // Original call identities, canonical bodies and action facts.
+    work::CallTable calls; // Original call identities, canonical bodies and action facts.
+    work::OperationLedger
+        unresolved_ops; // Sole owner of retired unresolved operations and audit obligations.
     knowledge::MemoryTable memories; // Sole owner of memory facts, bodies and provenance.
     knowledge::ContextTable
         contexts; // File publication barriers and complete sources; no file text.

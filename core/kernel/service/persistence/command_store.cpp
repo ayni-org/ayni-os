@@ -130,6 +130,23 @@ bool matches_target_command(const WorkModel &model, const durability::SnapshotMe
         return false;
     }
     uint32_t index = 0;
+    if (mapping.kind == AYNI_INTENT_UNRESOLVED_OP_QUERY ||
+        mapping.kind == AYNI_INTENT_UNRESOLVED_OP_ACKNOWLEDGE) {
+        if (!model.unresolved_ops.find(mapping.object.id, index)) {
+            // ADR-0115: a removed history row can retain a receipt, but an active Call has
+            // never belonged to this command's target namespace.
+            return !model.calls.find(mapping.object.id, index);
+        }
+        if (mapping.kind == AYNI_INTENT_UNRESOLVED_OP_ACKNOWLEDGE) {
+            return false;
+        }
+        const auto &state = model.unresolved_ops.state(index);
+        return state.revision >= mapping.object.revision &&
+               state.archived.transition.commit_seq < mapping.commit_seq && state.query &&
+               state.query->requested.transition.commit_seq >= mapping.commit_seq &&
+               (state.revision != mapping.object.revision ||
+                state.query->requested.transition.commit_seq == mapping.commit_seq);
+    }
     if (mapping.kind == AYNI_INTENT_CALL_QUERY_RESULT) {
         if (!model.calls.find(mapping.object.id, index)) {
             return true; // A resolved call can give way while its command receipt remains.

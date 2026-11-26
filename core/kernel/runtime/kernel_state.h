@@ -325,6 +325,8 @@ struct ayni_kernel {
     bool has_room() const { return storage_has_room(); }
     // Enters FENCED after the RUNNING writer exhausts its retries.
     void settle_log();
+    // Publish bodyless closure evidence only after the current writer confirms its commit.
+    void flush_durable_operation_audits();
     // Explicit call-local context; never stored in Kernel or retained by a service.
     using StepContext = ayni::kernel::StepContext;
     // Each storage owner may advance once, sharing the call's item budget.

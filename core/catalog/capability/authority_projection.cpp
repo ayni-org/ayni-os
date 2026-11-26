@@ -190,10 +190,6 @@ void fill_operand(const ayni_value_node_v1 &node, const ayni_authority_projectio
 ayni_status_t validate_business_definition(ayni::foundation::Workspace &workspace,
                                            const ayni_business_contract_v1 &business,
                                            ProjectionShape &out) {
-    if (business.reserved != 0U || business.projection_count > AYNI_AUTHORITY_FIELD_COUNT_MAX ||
-        ((business.projection_count != 0U) != (business.projections != nullptr))) {
-        return AYNI_INVALID_ARGUMENT;
-    }
     auto status = validate_schema(workspace, business.input);
     if (status != AYNI_OK) {
         return status;
@@ -202,6 +198,15 @@ ayni_status_t validate_business_definition(ayni::foundation::Workspace &workspac
     if (status != AYNI_OK) {
         return status;
     }
+    return validate_business_schemas_admitted(business, out);
+}
+
+ayni_status_t validate_business_schemas_admitted(const ayni_business_contract_v1 &business,
+                                                 ProjectionShape &out) {
+    if (business.reserved != 0U || business.projection_count > AYNI_AUTHORITY_FIELD_COUNT_MAX ||
+        ((business.projection_count != 0U) != (business.projections != nullptr))) {
+        return AYNI_INVALID_ARGUMENT;
+    }
     ProjectionShape shape;
     FieldOrder order{};
     for (uint32_t at = 0; at < business.projection_count; ++at) {
@@ -209,6 +214,7 @@ ayni_status_t validate_business_definition(ayni::foundation::Workspace &workspac
         if (projection.field_id == 0U || projection.path_count == 0U ||
             projection.path_count > AYNI_VALUE_DEPTH_MAX ||
             projection.scale > AYNI_DECIMAL_SCALE_MAX ||
+            (projection.flags != 0U && projection.flags != AYNI_PROJECTION_BOOL_I64) ||
             (projection.unit.size != 0U && !CatalogId::is_valid(projection.unit)) ||
             !insert_field_order(business.projections, at, order)) {
             return AYNI_INVALID_ARGUMENT;

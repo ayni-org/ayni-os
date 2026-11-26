@@ -31,6 +31,9 @@ bool same_execution_identity(const ExecutionFact &left, const ExecutionFact &rig
 bool execution_advances(const std::optional<ExecutionFact> &before,
                         const std::optional<ExecutionFact> &after);
 bool execution_stopped(const ExecutionFact &fact); // STOPPED or proven NOT_STARTED only.
+// One intrinsic stopped-phase/cause/target rule for live confirmation and retained history.
+bool valid_execution_stop(ayni_execution_phase_t phase, ayni_control_stop_cause_t cause,
+                          ayni_execution_target_t target);
 // Current CALL_STATE execution tail; no native struct bytes or monotonic times.
 constexpr uint32_t execution_record_fixed_bytes = 112;
 constexpr uint32_t execution_field_fixed_bytes = 16;

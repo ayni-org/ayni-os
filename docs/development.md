@@ -62,13 +62,15 @@ cmake --build build/native
 ctest --test-dir build/native --output-on-failure
 ```
 
-换用 Clang：在配置前设置 `CC=clang CXX=clang++`，并用 `-B` 指定另一个构建目录。只有带版本号的可执行文件时，使用对应的 `CC=clang-18 CXX=clang++-18`；GCC 同理可用 `CC=gcc-13 CXX=g++-13`。`AYNI_HOST` 目前只接受 `native`；ESP32 固件用下文的 `idf.py` 构建。`ayni-sim` 无参数时保留原演示；正常夹具入口见下节，完整 profile 已提供 `--experiment HARNESS`、`--experiment E2`、`--experiment E1`、`--experiment E3` 与 `--experiment E4`，均须加 `--output NEW_DIRECTORY`；精确切断和版本探针须启用 `AYNI_BUILD_TESTS`。无参数演示每次运行在系统临时目录（`TMPDIR`，默认 `/tmp`）下新建状态目录，Native Host 的日志文件写在其中，Kernel 完成恢复并停机后删除该目录。Native Host 的单元测试与 Host 存储契约测试同样在临时目录中创建并删除存储文件，所以运行它们需要可写、支持 `fdatasync`、文件锁、rename 和目录同步的临时目录。状态目录包含 `commit_log`、双槽文件 `snapshot_0` / `snapshot_1` 及稳定锁文件 `.ayni_storage_lock`，轮转还会产生临时输出；保留设备状态时须保留整个目录。当前批次与快照只读写 schema 10；schema 0..9 及其他不支持的 schema 在新写入前只读受限并保留，不迁移、不清空、不回退旧快照（ADR-0082）。开发使用新的状态目录；回退需原二进制与原状态目录。
+换用 Clang：在配置前设置 `CC=clang CXX=clang++`，并用 `-B` 指定另一个构建目录。只有带版本号的可执行文件时，使用对应的 `CC=clang-18 CXX=clang++-18`；GCC 同理可用 `CC=gcc-13 CXX=g++-13`。`AYNI_HOST` 目前只接受 `native`；ESP32 固件用下文的 `idf.py` 构建。`ayni-sim` 无参数时保留原演示；正常夹具入口见下节，完整 profile 已提供 `--experiment HARNESS`、`--experiment E2`、`--experiment E1`、`--experiment E3` 与 `--experiment E4`，均须加 `--output NEW_DIRECTORY`；精确切断和版本探针须启用 `AYNI_BUILD_TESTS`。无参数演示每次运行在系统临时目录（`TMPDIR`，默认 `/tmp`）下新建状态目录，Native Host 的日志文件写在其中，Kernel 完成恢复并停机后删除该目录。Native Host 的单元测试与 Host 存储契约测试同样在临时目录中创建并删除存储文件，所以运行它们需要可写、支持 `fdatasync`、文件锁、rename 和目录同步的临时目录。状态目录包含 `commit_log`、双槽文件 `snapshot_0` / `snapshot_1` 及稳定锁文件 `.ayni_storage_lock`，轮转还会产生临时输出；保留设备状态时须保留整个目录。当前批次与快照只读写 schema 12；schema 0..11 及其他不支持的 schema 在新写入前只读受限并保留，不迁移、不清空、不回退旧快照（ADR-0082）。开发使用新的状态目录；回退需原二进制与原状态目录。
 
 ESP-IDF 存储工作恢复时，需量测 schema 3 下典型操作的实际日志写入字节数、达到快照/轮转阈值的操作次数及快照写入量，并结合目标 Flash 的擦除块、擦写次数和写入策略评估代价。记录正文的固定部分长度不等于整次操作的写入量，变长字段、批次封装和快照也须计入；当前尚无这组测量，不以 Native arena 数字代替 Flash 耐久证据。此项随 ESP-IDF 存储验证进行，不启动 M2 或硬件工作。
 
 ### 测试并行与编译缓存
 
 `ctest` 默认一次只跑一个用例，而 `gtest_discover_tests` 把每个 GoogleTest 用例注册成一个独立进程，串行时进程启动占了大部分时间，sanitizer 预设下尤其明显。按上文的资源预算设置 `CTEST_PARALLEL_LEVEL` 即可并行。用例的存储文件各在 `mkdtemp` 新建的临时目录里，彼此不共享文件。2026-10-23 限制在 2 个 CPU 上实测：`native-asan` 由 77 s 降到 40 s，`native-tsan` 由 39 s 降到 19 s，并行数 4 不比 2 更快。预设不写死并行数，因为合适的值取决于当时的资源预算。
+
+主机墙钟时延测试统一标记为 `host_latency` 并设置 `RUN_SERIAL`，由 `tests/support/host_latency_tests.cmake` 在 GoogleTest 发现后应用；运行这些用例时同一 CTest 不并发其他测试，避免把 ASan 进程启动和并发负载计入微基准门限。其他功能测试仍按资源预算并行。可用 `ctest --preset native-asan -L host_latency` 单独运行该组；原有门限和样本保留，这种隔离不提供操作系统实时保证，也不替代板端时延证据。
 
 单元测试目标 `ayni_unit_tests` 用预编译头：每个测试文件都 include 的 `gtest.h` 解析一次约 0.9 s，现在连同几个常用标准库头每次构建只解析一次。测试文件仍应 include 自己用到的头；每周的 clang-tidy 运行关掉预编译头构建，以发现漏掉的 include，本地也可以在配置时加 `-DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON` 检查。Release 下测试代码按 `-O1` 编译，Core 仍是 `-O3`：测试只负责驱动 Core，按 `-O3` 优化测试代码只增加构建时间。
 
@@ -347,3 +349,5 @@ Core schema10、ConversationRecord6、turn8、结果视图2、SQLite5直接升�
 Native已使用共享Session/FileBodies，只有SqliteValues保留SQLite I/O；默认durable、显式retain_and_append。共享默认retain仍要求显式abandon；保留模式正常关闭/重开挂接原Goal，不复制新动作。pending_result供异步通知读取正文后再消费，awaiting_turn只表示原Core回合等待，不能将保存/清理当空闲。详见ADR-0108及Native会话契约。
 
 ADR-0114 新增 SDK 组件 `operation_session` / `Ayni::OperationSession`：只依赖公开 Core API，配置精确 Binding、需求导出器、最大生命周期与组合根的独占命令流。注册对象不可复制/移动，配置借用及回调地址存活至 Kernel 成功销毁；创建、激活、推进及关闭只由 owner 在线程外层调用，Provider 回调只保存有界数据。开启与推进时间使用同一 Host 单调时钟，完整示例与无设备正常场景见 `tests/unit/operation_session_test.cpp`。
+
+ABI0.62/schema12新增独立未决账本，Native CLI通过`/unresolved`列举、`/query <id>`统一对账、`/ack <id>`人工结案；解析/格式化正常检查为`NativeCliCommands.*`。Core arena工具同时查询16槽和最大未决容量，不分配最大配置的整个arena。旧schema11卷拒绝保留，部署/清理另行授权，见ADR-0115。

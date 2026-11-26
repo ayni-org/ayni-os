@@ -23,7 +23,7 @@ CallRuntime::Advance CallRuntime::end_query(uint32_t index, ayni_status_t status
 // Query has its own transport attempt and durable barrier. It only reads the
 // original operation; it consumes no execution permit or Task model-call count.
 CallRuntime::Advance CallRuntime::prepare_query(uint32_t index) {
-    if (mailbox_.in_flight() == limits_.capacity) {
+    if (call_mailbox_full()) {
         return Advance::idle;
     }
     const auto &id = work_.calls.identity(index);
@@ -144,7 +144,7 @@ bool CallRuntime::query_ready(uint32_t index, uint64_t now_us, uint64_t durable_
         return mode != Mode::running ||
                work_.calls.state(index).query->phase == work::CallQuery::Phase::dispatching ||
                (work_.calls.state(index).latest.transition.commit_seq <= durable_seq &&
-                mailbox_.in_flight() < limits_.capacity);
+                !call_mailbox_full());
     }
     uint32_t task_index = 0;
     const bool content_current =
@@ -162,9 +162,7 @@ bool CallRuntime::query_ready(uint32_t index, uint64_t now_us, uint64_t durable_
 // the original Task only if it still waits for that call; cancellation is final.
 bool CallRuntime::consume_query(uint32_t index, uint32_t task_index, const ProviderMessage &message,
                                 foundation::TransitionStamp stamp) {
-    const auto kind = message.kind == ProviderMessageKind::completed ? AYNI_CALL_COMPLETED
-                      : message.kind == ProviderMessageKind::failed  ? AYNI_CALL_FAILED
-                                                                     : AYNI_CALL_ABANDONED;
+    const auto kind = provider_query_outcome(message.kind);
     work::CallResult result{
         kind,
         message.status,

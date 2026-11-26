@@ -15,6 +15,17 @@ bool matches_target_revision(const CommandMapping &mapping, uint64_t id, uint32_
            mapping.effect == AYNI_INTENT_EFFECT_CHANGED;
 }
 
+// ADR-0115: acknowledgement removes the row; its receipt retains the acknowledged CAS
+// instead of inventing a revision of an object that no longer exists (including UINT32_MAX).
+bool matches_target_result(const CommandMapping &mapping, const TargetCommand &command) {
+    if (command.kind == AYNI_INTENT_UNRESOLVED_OP_ACKNOWLEDGE) {
+        return mapping.object.origin_device_id == 0 && mapping.object.id == command.target_id &&
+               mapping.object.revision == command.expected_revision &&
+               mapping.effect == AYNI_INTENT_EFFECT_CHANGED;
+    }
+    return matches_target_revision(mapping, command.target_id, command.expected_revision);
+}
+
 // The complete typed request and CAS result share one intrinsic command proof.
 bool matches_pause_group_result(const CommandMapping &mapping, ayni_bytes_v1 bytes) {
     work::PauseGroupChange command{};
@@ -173,7 +184,7 @@ bool matches_management_target(const CommandMapping &mapping, ayni_bytes_v1 byte
     } else if (is_target_command(mapping.kind)) {
         TargetCommand command{};
         if (!read_target_command(bytes, command) || command.kind != mapping.kind ||
-            !matches_target_revision(mapping, command.target_id, command.expected_revision)) {
+            !matches_target_result(mapping, command)) {
             return false;
         }
     } else if (mapping.kind == AYNI_INTENT_TASK_RAISE_MODEL_LIMIT) {

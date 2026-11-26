@@ -2,7 +2,7 @@
 # standalone Wi-Fi checks build this same target without widening experiment dependencies.
 include("${AYNI_ROOT}/cmake/AyniMarkdown.cmake")
 add_executable(ayni_esp32_chat_integration_tests
-    configuration_test.cpp reply_voice_kernel_test.cpp speech_text_test.cpp
+    configuration_test.cpp reply_voice_kernel_test.cpp speech_text_test.cpp speaker_result_test.cpp
     turn_diagnostics_test.cpp transport_test_support.cpp model_delivery_test.cpp control_mailbox_test.cpp motor_registration_test.cpp
     "${AYNI_ROOT}/experiments/esp32_wifi_chat/firmware/main/motor.cpp"
     "${AYNI_ROOT}/experiments/esp32_wifi_chat/firmware/main/motor_sessions.cpp"
@@ -43,3 +43,6 @@ target_link_libraries(ayni_esp32_motor_execution_tests PRIVATE Ayni::Core Ayni::
     ayni_core_internal ayni_host_sim yyjson ayni_warnings GTest::gtest_main)
 gtest_discover_tests(ayni_esp32_motor_execution_tests NO_PRETTY_VALUES PROPERTIES TIMEOUT 30
     DISCOVERY_TIMEOUT ${AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS})
+# Both discovered executables must be included before applying per-test isolation.
+set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES
+    "${AYNI_ROOT}/tests/support/host_latency_tests.cmake")

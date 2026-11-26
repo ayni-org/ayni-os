@@ -41,6 +41,7 @@ add_executable(ayni_unit_tests
     action_record_test.cpp
     call_input_test.cpp
     call_table_test.cpp
+    operation_ledger_test.cpp
     call_contract_test.cpp
     tool_calls_test.cpp
     kernel_tool_call_test.cpp
@@ -134,6 +135,9 @@ target_compile_options(ayni_unit_tests PRIVATE
 # -O3 made the Release build about 40% slower and checked nothing more.
 target_compile_options(ayni_unit_tests PRIVATE $<$<CONFIG:Release>:-O1>)
 gtest_discover_tests(ayni_unit_tests DISCOVERY_TIMEOUT ${AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS})
+# Apply properties after PRE_TEST discovery has registered the individual tests.
+set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES
+    "${AYNI_ROOT}/tests/support/host_latency_tests.cmake")
 
 # Separate protocol executable keeps network fixture dependencies out of Core tests.
 add_executable(ayni_openai_provider_tests openai_provider_test.cpp)
@@ -202,3 +206,10 @@ target_link_libraries(ayni_deferred_publication_tests PRIVATE ayni_runtime_porta
     ayni_host_sim ayni_host_storage ayni_warnings GTest::gtest_main)
 gtest_discover_tests(ayni_deferred_publication_tests
     DISCOVERY_TIMEOUT ${AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS})
+
+# CLI parsing/formatting is portable and exercises only public management views (ADR-0115).
+add_executable(ayni_cli_command_tests native_cli_commands_test.cpp
+    "${AYNI_ROOT}/targets/native_cli/commands.cpp" "${AYNI_ROOT}/targets/native_cli/format.cpp")
+target_include_directories(ayni_cli_command_tests PRIVATE "${AYNI_ROOT}/targets/native_cli")
+target_link_libraries(ayni_cli_command_tests PRIVATE ayni_runtime_assistant ayni_warnings GTest::gtest_main)
+gtest_discover_tests(ayni_cli_command_tests DISCOVERY_TIMEOUT ${AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS})

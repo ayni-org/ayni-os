@@ -35,6 +35,8 @@ typedef uint32_t ayni_audit_kind_t;
 #define AYNI_AUDIT_REFLEX_EVENT ((ayni_audit_kind_t)6)
 /* Kernel lifecycle transitioned (e.g. RUNNING, RESTRICTED, DRAINING, STOPPED). Since 0.60. */
 #define AYNI_AUDIT_LIFECYCLE ((ayni_audit_kind_t)7)
+/* Unresolved operation closed; emitted only after its commit is durable. Since 0.62. */
+#define AYNI_AUDIT_OPERATION_RESOLVED ((ayni_audit_kind_t)8)
 
 /* Bit flags carried in ayni_audit_record_v1.flags. Since 0.60. */
 /* Associated Call or action was Tier 0 RAM-only EPHEMERAL. Since 0.60. */
@@ -45,6 +47,8 @@ typedef uint32_t ayni_audit_kind_t;
 #define AYNI_AUDIT_FLAG_PREEMPTED ((uint32_t)(1u << 2))
 /* Action was denied by authority, Scene, or reflex policy. Since 0.60. */
 #define AYNI_AUDIT_FLAG_DENIED ((uint32_t)(1u << 3))
+/* Human acknowledgement, without authoritative effect knowledge. Since 0.62. */
+#define AYNI_AUDIT_FLAG_ACKNOWLEDGED ((uint32_t)(1u << 4))
 
 /*
  * One immutable fixed-width audit record (104 bytes, zero implicit padding).

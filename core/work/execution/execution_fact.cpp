@@ -27,6 +27,14 @@ bool same_reference(const ayni_observation_ref_v1 &a, const ayni_observation_ref
 bool execution_stopped(const ExecutionFact &fact) {
     return fact.phase == AYNI_EXECUTION_STOPPED || fact.phase == AYNI_EXECUTION_NOT_STARTED;
 }
+bool valid_execution_stop(ayni_execution_phase_t phase, ayni_control_stop_cause_t cause,
+                          ayni_execution_target_t target) {
+    return (phase == AYNI_EXECUTION_STOPPED || phase == AYNI_EXECUTION_NOT_STARTED) &&
+           cause <= AYNI_CONTROL_STOP_CLOCK && target <= AYNI_TARGET_UNSATISFIED &&
+           (phase == AYNI_EXECUTION_STOPPED
+                ? cause != AYNI_CONTROL_STOP_NONE
+                : cause == AYNI_CONTROL_STOP_NONE && target == AYNI_TARGET_UNVERIFIED);
+}
 bool valid_execution_metadata(const ExecutionFact &fact) {
     const auto &epochs = fact.epochs;
     if (catalog::validate_execution_binding(fact.binding) != AYNI_OK || fact.scene_seq == 0 ||
@@ -34,10 +42,9 @@ bool valid_execution_metadata(const ExecutionFact &fact) {
         epochs.authority_epoch == 0 || epochs.executor_boot_epoch == 0 ||
         epochs.safety_epoch == 0 || epochs.calibration_version == 0 || epochs.reserved != 0 ||
         fact.phase < AYNI_EXECUTION_PREPARED || fact.phase > AYNI_EXECUTION_NOT_STARTED ||
-        fact.target > AYNI_TARGET_UNSATISFIED || fact.stop_cause > AYNI_CONTROL_STOP_CLOCK ||
-        (fact.phase == AYNI_EXECUTION_STOPPED ? fact.stop_cause == AYNI_CONTROL_STOP_NONE
-                                              : fact.stop_cause != AYNI_CONTROL_STOP_NONE ||
-                                                    fact.target != AYNI_TARGET_UNVERIFIED) ||
+        (execution_stopped(fact) ? !valid_execution_stop(fact.phase, fact.stop_cause, fact.target)
+                                 : fact.stop_cause != AYNI_CONTROL_STOP_NONE ||
+                                       fact.target != AYNI_TARGET_UNVERIFIED) ||
         fact.dependency_count > fact.dependencies.size()) {
         return false;
     }

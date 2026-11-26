@@ -46,21 +46,21 @@ KernelCapacities capacities() {
     return capacities;
 }
 
-// ADR-0059: one descriptor owns each family; persisted order remains Grant/work/call/Scene/command.
+// ADR-0059/0115: one descriptor owns each family; unresolved history follows active Calls.
 TEST(PersistentStore, every_record_kind_has_one_store_and_a_stable_snapshot_position) {
     using ayni::kernel::StorePosition;
     const uint16_t order[] = {
-        record_type::instance,       record_type::grant,           record_type::goal,
-        record_type::task,           record_type::calendar,        record_type::call,
-        record_type::scene,          record_type::context,         record_type::memory,
-        record_type::provenance,     record_type::privacy_cleanup, record_type::pause_group,
-        record_type::command_mapping};
+        record_type::instance,      record_type::grant,          record_type::goal,
+        record_type::task,          record_type::calendar,       record_type::call,
+        record_type::unresolved_op, record_type::scene,          record_type::context,
+        record_type::memory,        record_type::provenance,     record_type::privacy_cleanup,
+        record_type::pause_group,   record_type::command_mapping};
     const StorePosition positions[] = {
-        StorePosition::instances,    StorePosition::before_work, StorePosition::goals,
-        StorePosition::tasks,        StorePosition::after_work,  StorePosition::after_work,
-        StorePosition::after_work,   StorePosition::after_work,  StorePosition::after_work,
-        StorePosition::after_work,   StorePosition::after_work,  StorePosition::after_work,
-        StorePosition::after_cleanup};
+        StorePosition::instances,  StorePosition::before_work,  StorePosition::goals,
+        StorePosition::tasks,      StorePosition::after_work,   StorePosition::after_work,
+        StorePosition::after_work, StorePosition::after_work,   StorePosition::after_work,
+        StorePosition::after_work, StorePosition::after_work,   StorePosition::after_work,
+        StorePosition::after_work, StorePosition::after_cleanup};
     ASSERT_EQ(persistent_store_count, std::size(order));
     ASSERT_EQ(persistent_store_count, std::size(positions));
     for (uint32_t rank = 0; rank < persistent_store_count; ++rank) {

@@ -21,7 +21,8 @@ struct TargetCommand {
 };
 // Recognized exact target commands share one encoding and typed validator.
 inline bool is_target_command(ayni_intent_kind_t kind) {
-    return kind == AYNI_INTENT_CALL_QUERY_RESULT || kind == AYNI_INTENT_TASK_RESUME_WAIT;
+    return kind == AYNI_INTENT_CALL_QUERY_RESULT || kind == AYNI_INTENT_TASK_RESUME_WAIT ||
+           kind == AYNI_INTENT_UNRESOLVED_OP_QUERY || kind == AYNI_INTENT_UNRESOLVED_OP_ACKNOWLEDGE;
 }
 // records.md: kind/u32, revision/u32, target/u64, little endian.
 constexpr uint32_t target_command_size = 16;

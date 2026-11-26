@@ -1468,10 +1468,10 @@ TEST(ReflexAndSession, ReflexPreemptCallZeroLlmZeroWalAndAuthorityEnforcement) {
 }
 
 // Test 6 (ADR-0112): ayni_set_reflex_enabled() toggles rules in RAM with 0 WAL writes,
-// and rebooting on the exact schema 11 storage volume restores RUNNING with volatile toggle reset
+// and rebooting on the exact schema 12 storage volume restores RUNNING with volatile toggle reset
 // to AYNI_REFLEX_FLAG_ENABLED_BY_DEFAULT.
-TEST(ReflexAndSession, ReflexRuntimeToggleAndSchema11Compatibility) {
-    EXPECT_EQ(AYNI_STORAGE_SCHEMA_CURRENT, 11U);
+TEST(ReflexAndSession, ReflexRuntimeToggleAndSchema12Compatibility) {
+    EXPECT_EQ(AYNI_STORAGE_SCHEMA_CURRENT, 12U);
     ReflexFixture fix;
     fix.extra_configure = [](ayni_kernel_t *kernel) {
         const ayni_observation_condition_v1 cond{text("sensor.obstacle_mm"), 1, 0, 0, 200,

@@ -114,6 +114,10 @@ ayni_status_t decode_body(const ayni_intent_v1 &raw, Intent &out_intent) {
         return read_pause_group_change(raw, out_intent.pause_group);
     case AYNI_INTENT_SCENE_SET_ENABLED:
         return read_scene_change(raw, out_intent.scene);
+    case AYNI_INTENT_UNRESOLVED_OP_QUERY:
+    case AYNI_INTENT_UNRESOLVED_OP_ACKNOWLEDGE:
+        return read_target(raw.body, &ayni_unresolved_op_target_v1::logical_call_id,
+                           out_intent.target_id);
     case AYNI_INTENT_CALL_QUERY_RESULT:
         return read_target(raw.body, &ayni_call_query_result_v1::logical_call_id,
                            out_intent.target_id);

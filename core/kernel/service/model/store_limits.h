@@ -20,6 +20,7 @@
 #include "knowledge/memory/memory_table.h"
 #include "work/call/call_table.h"
 #include "work/goal/goal_authority.h"
+#include "work/operation/operation_ledger.h"
 #include "work/provenance/provenance_table.h"
 #include "work/task/task_authority.h"
 #include "work/task/task_table.h"
@@ -70,6 +71,10 @@ inline work::GoalAuthorityTable::Limits goal_authority_limits(const KernelCapaci
 inline work::TaskAuthorityTable::Limits task_authority_limits(const KernelCapacities &capacities) {
     return {capacities.task_capacity, capacities.goal_requirement_capacity,
             capacities.call_capacity ? capacities.task_step_capacity : 0U};
+}
+
+inline work::OperationLedger::Limits operation_limits(const KernelCapacities &c) {
+    return {c.unresolved_op_capacity, c.business_contract_max_bytes};
 }
 
 inline work::CallTable::Limits call_limits(const KernelCapacities &capacities) {

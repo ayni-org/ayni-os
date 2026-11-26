@@ -70,8 +70,7 @@ bool CallTable::query_advances(const CallState &before, const CallState &after) 
     }
     const auto &next = *after.query;
     if (!before.query || before.query->phase == CallQuery::Phase::finished) {
-        const uint32_t generation =
-            before.query ? before.query->generation + 1U : initial_query_revision;
+        const uint32_t generation = work::query_revision(before.query);
         return next.generation == generation && next.phase == CallQuery::Phase::requested;
     }
     const auto &old = *before.query;

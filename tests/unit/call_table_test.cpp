@@ -325,7 +325,7 @@ TEST_F(CallTableTest, queued_cancellation_never_creates_a_possible_dispatch) {
     EXPECT_TRUE(calls.can_retire_task(identity.task_id, 2));
 }
 
-TEST_F(CallTableTest, abandoned_outcome_retains_identity_and_cannot_be_retried_or_reclaimed) {
+TEST_F(CallTableTest, abandoned_outcome_cannot_retry_but_can_handoff_to_independent_ledger) {
     dispatch();
     const CallResult unknown{AYNI_CALL_ABANDONED,
                              AYNI_RESULT_UNKNOWN,
@@ -334,7 +334,8 @@ TEST_F(CallTableTest, abandoned_outcome_retains_identity_and_cannot_be_retried_o
                              {nullptr, 0}};
     ASSERT_EQ(calls.finish(::ayni::test::codec_workspace(), index, unknown, stamp(4)), AYNI_OK);
     EXPECT_EQ(calls.action(index)->phase, ActionPhase::result_unknown);
-    EXPECT_FALSE(calls.can_retire_task(identity.task_id, UINT64_MAX));
+    // ADR-0115: Call owner permits handoff; WorkModel separately reserves ledger capacity.
+    EXPECT_TRUE(calls.can_retire_task(identity.task_id, UINT64_MAX));
     EXPECT_EQ(calls.begin_dispatch(index, {boot, 6}, stamp(5)), AYNI_INVALID_STATE);
     EXPECT_FALSE(calls.claim_dispatch(index, boot, UINT64_MAX));
     EXPECT_EQ(calls.state(index).attempt.request_id, 5U);
@@ -539,7 +540,8 @@ TEST_F(CallTableTest, failed_attempt_with_unknown_effect_retains_its_ledger) {
                   {AYNI_CALL_FAILED, AYNI_NOT_READY, AYNI_REASON_NONE, ActionEffect::unknown, {}},
                   stamp(4)),
               AYNI_OK);
-    EXPECT_FALSE(calls.can_retire_task(identity.task_id, UINT64_MAX));
+    // ADR-0115: Call owner permits handoff; WorkModel separately reserves ledger capacity.
+    EXPECT_TRUE(calls.can_retire_task(identity.task_id, UINT64_MAX));
 }
 
 // Record boundary: no truncation or partially decoded identity escapes.
@@ -1389,5 +1391,6 @@ TEST_F(CallTableTest, replay_cannot_reopen_an_unknown_subscription_with_a_legal_
               unknown.state.latest.transition.commit_seq);
     EXPECT_EQ(calls.state(index).subscription->generation, unknown.state.subscription->generation);
     EXPECT_TRUE(calls.unresolved(index));
-    EXPECT_FALSE(calls.can_retire_task(identity.task_id, UINT64_MAX));
+    // ADR-0115: Call owner permits handoff; WorkModel separately reserves ledger capacity.
+    EXPECT_TRUE(calls.can_retire_task(identity.task_id, UINT64_MAX));
 }

@@ -47,9 +47,10 @@ bool WorkModel::retains_task(const void *context, const work::Task &task) {
         }
     }
     // Known terminal facts are encoded before a later replacement transition.
-    // Unknown or pending calls retain the Task even after local cancellation.
+    // Pending/unstopped Calls retain the Task; durable unknowns need independent ledger room.
     // A privacy pass needs the retained target identity until its exact command bodies expire.
-    return model.privacy.pending() || !model.calls.can_retire_task(task.task_id, UINT64_MAX);
+    return model.privacy.pending() || !model.calls.can_retire_task(task.task_id, UINT64_MAX) ||
+           !model.unresolved_ops.has_room(model.calls.unresolved_durable_count(task.task_id));
 }
 
 bool WorkModel::retains_goal(const void *context, const work::Goal &goal) {
@@ -59,6 +60,7 @@ bool WorkModel::retains_goal(const void *context, const work::Goal &goal) {
     }
     // The Goal's Tasks retire in one commit, so their body references must fit together.
     uint32_t refs = 0;
+    uint32_t unresolved = 0;
     for (uint32_t index = 0; index < model.tasks.size(); ++index) {
         const auto &task = model.tasks.at(index);
         if (task.goal_id != goal.goal_id) {
@@ -68,8 +70,9 @@ bool WorkModel::retains_goal(const void *context, const work::Goal &goal) {
             return true;
         }
         refs += model.calls.task_body_refs(task.task_id);
+        unresolved += model.calls.unresolved_durable_count(task.task_id);
     }
-    return !model.calls.release_fits(refs);
+    return !model.calls.release_fits(refs) || !model.unresolved_ops.has_room(unresolved);
 }
 
 void WorkModel::refresh_calendars(work::CalendarClock clock) {
@@ -260,7 +263,10 @@ bool WorkModel::insert_goal(const work::NewGoal &goal, uint64_t goal_id,
     const auto replacing = goals.giving_way();
     if (replacing != work::GoalTable::no_index) {
         // All creation admission has passed; terminal Tasks leave with this exact Goal.
-        retire_goal_task_metadata(replacing, stamp.commit_seq, stamp.commit_seq);
+        if (retire_goal_task_metadata(replacing, {ids.boot_epoch(), stamp}, stamp.commit_seq) !=
+            AYNI_OK) {
+            return false;
+        }
     }
     auto work = tables();
     if (!work::insert_goal(work, goal, goal_id, stamp, out_index)) {

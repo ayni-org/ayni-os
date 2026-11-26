@@ -293,11 +293,29 @@ Reply Assistant::Impl::manage(const Command &command) {
         ayni_call_info_v1 call{};
         call.struct_size = sizeof(call);
         const auto status = ayni_get_call(node.kernel(), command.id, &call);
+        if (status == AYNI_NOT_FOUND) {
+            auto op = initialized<ayni_unresolved_op_v1>();
+            const auto found = ayni_get_unresolved_op(node.kernel(), command.id, &op);
+            if (found != AYNI_OK) {
+                return failure(found);
+            }
+            const ayni_unresolved_op_target_v1 body{sizeof(body), 0, command.id};
+            return submit(AYNI_INTENT_UNRESOLVED_OP_QUERY, &body, op.revision);
+        }
         if (status != AYNI_OK) {
             return failure(status);
         }
         const ayni_call_query_result_v1 body{sizeof(body), 0, command.id};
         return submit(AYNI_INTENT_CALL_QUERY_RESULT, &body, call.query_revision);
+    }
+    case Operation::acknowledge_op: {
+        auto op = initialized<ayni_unresolved_op_v1>();
+        const auto status = ayni_get_unresolved_op(node.kernel(), command.id, &op);
+        if (status != AYNI_OK) {
+            return failure(status);
+        }
+        const ayni_unresolved_op_target_v1 body{sizeof(body), 0, command.id};
+        return submit(AYNI_INTENT_UNRESOLVED_OP_ACKNOWLEDGE, &body, op.revision);
     }
     case Operation::raise_limit:
     case Operation::resume_wait: {
@@ -410,6 +428,8 @@ Reply Assistant::Impl::describe(const Command &command) const {
     } else {
         const auto kind = command.operation == Operation::goals   ? AYNI_OBJECT_GOAL
                           : command.operation == Operation::tasks ? AYNI_OBJECT_TASK
+                          : command.operation == Operation::unresolved_ops
+                              ? AYNI_OBJECT_UNRESOLVED_OP
                           : command.operation == Operation::calls ? AYNI_OBJECT_CALL
                                                                   : AYNI_OBJECT_GRANT;
         std::vector<uint64_t> objects;
@@ -429,6 +449,10 @@ Reply Assistant::Impl::describe(const Command &command) const {
                 task.struct_size = sizeof(task);
                 reply.status = ayni_get_task(node.kernel(), id, &task);
                 reply.tasks.push_back(task);
+            } else if (kind == AYNI_OBJECT_UNRESOLVED_OP) {
+                auto op = initialized<ayni_unresolved_op_v1>();
+                reply.status = ayni_get_unresolved_op(node.kernel(), id, &op);
+                reply.unresolved_ops.push_back(op);
             } else if (kind == AYNI_OBJECT_CALL) {
                 ayni_call_info_v1 call{};
                 call.struct_size = sizeof(call);
@@ -488,6 +512,7 @@ Reply Assistant::execute(const Command &command) {
         case Operation::goals:
         case Operation::tasks:
         case Operation::calls:
+        case Operation::unresolved_ops:
         case Operation::grants:
         case Operation::conversation:
             return impl_->describe(command);

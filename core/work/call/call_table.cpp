@@ -344,12 +344,7 @@ ayni_status_t CallTable::confirm_execution(uint32_t index, ayni_execution_phase_
                                            ayni_execution_target_t target, ActionStamp stamp) {
     auto &entry = *slots_[index].entry;
     if (!entry.state.execution || execution_stopped(*entry.state.execution) ||
-        !advances(entry, stamp) ||
-        (phase != AYNI_EXECUTION_STOPPED && phase != AYNI_EXECUTION_NOT_STARTED) ||
-        (phase == AYNI_EXECUTION_STOPPED
-             ? cause == AYNI_CONTROL_STOP_NONE || cause > AYNI_CONTROL_STOP_CLOCK
-             : cause != AYNI_CONTROL_STOP_NONE || target != AYNI_TARGET_UNVERIFIED) ||
-        target > AYNI_TARGET_UNSATISFIED) {
+        !advances(entry, stamp) || !valid_execution_stop(phase, cause, target)) {
         return AYNI_INVALID_STATE;
     }
     auto &execution = *entry.state.execution;
@@ -660,11 +655,22 @@ uint32_t CallTable::task_body_refs(uint64_t task_id) const {
     return refs;
 }
 
+uint32_t CallTable::unresolved_durable_count(uint64_t task_id) const {
+    uint32_t count = 0;
+    for (uint32_t at = 0; at < limits_.capacity; ++at) {
+        if (occupied(at) && identity(at).task_id == task_id && !state(at).ephemeral &&
+            unresolved(at)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 bool CallTable::can_retire_task(uint64_t task_id, uint64_t durable_seq) const {
     for (uint32_t at = 0; at < limits_.capacity; ++at) {
         const auto &entry = slots_[at].entry;
         if (entry && entry->identity.task_id == task_id &&
-            (pending(*entry) || (!entry->state.ephemeral && unresolved(at)) ||
+            (pending(*entry) || query_pending(at) ||
              (entry->state.execution && !execution_stopped(*entry->state.execution)) ||
              (runtime_retains_ != nullptr &&
               runtime_retains_(retention_context_, entry->identity.call_id)) ||

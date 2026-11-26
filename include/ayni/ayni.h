@@ -41,7 +41,7 @@ extern "C" {
  * caller built against an older minor of the same major is accepted.
  */
 #define AYNI_ABI_MAJOR 0u
-#define AYNI_ABI_MINOR 61u
+#define AYNI_ABI_MINOR 62u
 
 /*
  * Status codes (contracts/domain/status_codes.md). 0 is success and negative
@@ -205,6 +205,8 @@ typedef struct ayni_config_v1 {
     uint32_t reflex_event_capacity;
     /* Since 0.60 (ADR-0113). Bounded RAM audit ring slots; 0 disables with zero arena bytes. */
     uint32_t audit_capacity;
+    /* Retired durable unresolved operation slots; zero disables. Since 0.62. */
+    uint32_t unresolved_op_capacity;
 } ayni_config_v1;
 
 /* Bounded asynchronous RAM audit ring capacities. Since 0.60. */
@@ -225,6 +227,9 @@ typedef struct ayni_config_v1 {
 
 /* Since 0.31. Bounded retained call bodies; no implicit history eviction. */
 #define AYNI_CALL_CAPACITY_MAX 256u
+/* Independent unresolved operation ledger bounds. Since 0.62. */
+#define AYNI_UNRESOLVED_OP_CAPACITY_DEFAULT 0u
+#define AYNI_UNRESOLVED_OP_CAPACITY_MAX 256u
 #define AYNI_CALL_INPUT_BYTES_DEFAULT 4096u
 #define AYNI_CALL_INPUT_BYTES_MAX 131072u
 #define AYNI_CALL_RESULT_BYTES_DEFAULT 4096u
@@ -839,6 +844,8 @@ typedef uint32_t ayni_object_kind_t;
 
 /* Persistent generic work gate. Since 0.44. */
 #define AYNI_OBJECT_PAUSE_GROUP ((ayni_object_kind_t)21)
+/* Retired unresolved operation, independent of active Calls. Since 0.62. */
+#define AYNI_OBJECT_UNRESOLVED_OP ((ayni_object_kind_t)22)
 
 /*
  * Reference to a versioned object (plan section 3.6). A reference carries no
@@ -1545,6 +1552,16 @@ typedef uint32_t ayni_intent_kind_t;
 #define AYNI_PAUSE_GROUP_COUNT 8U
 /* Owner management CAS, exact nonzero command identity. Since 0.44. */
 #define AYNI_INTENT_PAUSE_GROUP_SET ((ayni_intent_kind_t)24)
+/* Query original Provider of a retired unresolved operation. Since 0.62. */
+#define AYNI_INTENT_UNRESOLVED_OP_QUERY ((ayni_intent_kind_t)25)
+/* Human closure without claiming known effects or permitting replay. Since 0.62. */
+#define AYNI_INTENT_UNRESOLVED_OP_ACKNOWLEDGE ((ayni_intent_kind_t)26)
+/* Owner management CAS in intent.expected_revision; exact nonzero command ID. Since 0.62. */
+typedef struct ayni_unresolved_op_target_v1 {
+    uint32_t struct_size;     /* sizeof this structure. */
+    uint32_t reserved;        /* Must be zero. */
+    uint64_t logical_call_id; /* Original retained unresolved operation Call ID. */
+} ayni_unresolved_op_target_v1;
 /* Desired independent group gate; never changes a Goal's user pause. Since 0.44. */
 typedef struct ayni_pause_group_set_v1 {
     uint32_t struct_size; /* sizeof this structure. */
