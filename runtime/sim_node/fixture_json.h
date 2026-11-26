@@ -83,6 +83,7 @@ inline std::string configuration_json(const ayni_config_v1 &config) {
     AYNI_FIXTURE_CONFIG_FIELD(reflex_capacity);
     AYNI_FIXTURE_CONFIG_FIELD(reflex_event_capacity);
     AYNI_FIXTURE_CONFIG_FIELD(audit_capacity);
+    AYNI_FIXTURE_CONFIG_FIELD(unresolved_op_capacity);
 #undef AYNI_FIXTURE_CONFIG_FIELD
     return result + '}';
 }

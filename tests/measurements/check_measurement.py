@@ -41,6 +41,6 @@ with tempfile.TemporaryDirectory(prefix="ayni-measure-") as directory:
 # counts depend on ABI/platform/build; compare profiles instead of fixing them.
 arena_query = subprocess.run([sys.argv[2]], check=True, text=True, capture_output=True)
 rows = re.findall(r"status=(\d+) bytes=(\d+) alignment=(\d+)", arena_query.stdout)
-assert len(rows) == 5 and all(status == "0" for status, _, _ in rows)
-default, minimum, calls, execution, maximum = (int(row[1]) for row in rows)
-assert 0 < minimum < default < calls < execution < maximum
+assert len(rows) == 6 and all(status == "0" for status, _, _ in rows)
+default, minimum, calls, execution, ledger_execution, maximum = (int(row[1]) for row in rows)
+assert 0 < minimum < default < calls < execution < ledger_execution < maximum

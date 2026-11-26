@@ -6,11 +6,11 @@
       "case_id": "E4.S6.compat_matrix_matches",
       "writer": {
         "strategy": "1",
-        "storage": "11"
+        "storage": "12"
       },
       "reader": {
         "strategy": "2",
-        "storage": "11"
+        "storage": "12"
       },
       "expected": "completed; exact checkpoint preserved",
       "assertions": {
@@ -99,7 +99,7 @@
         "storage": "0"
       },
       "reader": {
-        "storage": "11"
+        "storage": "12"
       },
       "expected": "RESTRICTED; bytes preserved; no new writer/output",
       "assertions": {
@@ -116,7 +116,7 @@
         "storage": "2"
       },
       "reader": {
-        "storage": "11"
+        "storage": "12"
       },
       "expected": "RESTRICTED; bytes preserved; no new writer/output",
       "assertions": {
@@ -133,7 +133,7 @@
         "storage": "65535"
       },
       "reader": {
-        "storage": "11"
+        "storage": "12"
       },
       "expected": "RESTRICTED; no rollback to older state/output",
       "assertions": {
@@ -147,11 +147,11 @@
     {
       "case_id": "E4.S6.unsupported_record_version",
       "writer": {
-        "storage": "11",
+        "storage": "12",
         "required_task_state": "65535"
       },
       "reader": {
-        "storage": "11",
+        "storage": "12",
         "required_task_state_max": "1"
       },
       "expected": "RESTRICTED; required unknown record retained",
