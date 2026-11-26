@@ -135,6 +135,9 @@ target_compile_options(ayni_unit_tests PRIVATE
 # -O3 made the Release build about 40% slower and checked nothing more.
 target_compile_options(ayni_unit_tests PRIVATE $<$<CONFIG:Release>:-O1>)
 gtest_discover_tests(ayni_unit_tests DISCOVERY_TIMEOUT ${AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS})
+# Apply properties after PRE_TEST discovery has registered the individual tests.
+set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES
+    "${AYNI_ROOT}/tests/support/host_latency_tests.cmake")
 
 # Separate protocol executable keeps network fixture dependencies out of Core tests.
 add_executable(ayni_openai_provider_tests openai_provider_test.cpp)

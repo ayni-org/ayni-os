@@ -43,3 +43,6 @@ target_link_libraries(ayni_esp32_motor_execution_tests PRIVATE Ayni::Core Ayni::
     ayni_core_internal ayni_host_sim yyjson ayni_warnings GTest::gtest_main)
 gtest_discover_tests(ayni_esp32_motor_execution_tests NO_PRETTY_VALUES PROPERTIES TIMEOUT 30
     DISCOVERY_TIMEOUT ${AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS})
+# Both discovered executables must be included before applying per-test isolation.
+set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES
+    "${AYNI_ROOT}/tests/support/host_latency_tests.cmake")

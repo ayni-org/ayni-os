@@ -70,6 +70,8 @@ ESP-IDF 存储工作恢复时，需量测 schema 3 下典型操作的实际日�
 
 `ctest` 默认一次只跑一个用例，而 `gtest_discover_tests` 把每个 GoogleTest 用例注册成一个独立进程，串行时进程启动占了大部分时间，sanitizer 预设下尤其明显。按上文的资源预算设置 `CTEST_PARALLEL_LEVEL` 即可并行。用例的存储文件各在 `mkdtemp` 新建的临时目录里，彼此不共享文件。2026-10-23 限制在 2 个 CPU 上实测：`native-asan` 由 77 s 降到 40 s，`native-tsan` 由 39 s 降到 19 s，并行数 4 不比 2 更快。预设不写死并行数，因为合适的值取决于当时的资源预算。
 
+主机墙钟时延测试统一标记为 `host_latency` 并设置 `RUN_SERIAL`，由 `tests/support/host_latency_tests.cmake` 在 GoogleTest 发现后应用；运行这些用例时同一 CTest 不并发其他测试，避免把 ASan 进程启动和并发负载计入微基准门限。其他功能测试仍按资源预算并行。可用 `ctest --preset native-asan -L host_latency` 单独运行该组；原有门限和样本保留，这种隔离不提供操作系统实时保证，也不替代板端时延证据。
+
 单元测试目标 `ayni_unit_tests` 用预编译头：每个测试文件都 include 的 `gtest.h` 解析一次约 0.9 s，现在连同几个常用标准库头每次构建只解析一次。测试文件仍应 include 自己用到的头；每周的 clang-tidy 运行关掉预编译头构建，以发现漏掉的 include，本地也可以在配置时加 `-DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON` 检查。Release 下测试代码按 `-O1` 编译，Core 仍是 `-O3`：测试只负责驱动 Core，按 `-O3` 优化测试代码只增加构建时间。
 
 装了 ccache 时，在首次配置前设置 `CMAKE_C_COMPILER_LAUNCHER=ccache` 与 `CMAKE_CXX_COMPILER_LAUNCHER=ccache`（环境变量或 `-D` 均可），之后没有变化的文件直接取缓存。因为有预编译头，还要设置 `CCACHE_SLOPPINESS=pch_defines,time_macros,include_file_mtime,include_file_ctime`，否则 ccache 不缓存单元测试。编译带 `-g` 时 ccache 把工作目录（即构建目录）算进缓存键，所以构建目录换了路径不会命中。
