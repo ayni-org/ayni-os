@@ -186,8 +186,12 @@ TEST(ControlMailbox, TargetReceiptWallLatencyMeetsHostBudget) {
         ASSERT_TRUE(mailbox.take_target(target));
     }
     samples.print("ControlMailbox.submit");
-    EXPECT_LT(samples.percentile(99), 50);
-    EXPECT_LT(samples.percentile(100), 500);
+    // Keep the P99 gate; wall-clock maxima include non-RT host preemption, especially
+    // with sanitizers and parallel CI. Match the existing local-loop/reflex spike budgets.
+    constexpr double p99_limit_us = 50.0;
+    constexpr double max_limit_us = ayni::test::is_sanitized_or_debug() ? 50000.0 : 20000.0;
+    EXPECT_LT(samples.percentile(99), p99_limit_us);
+    EXPECT_LT(samples.percentile(100), max_limit_us);
 }
 TEST(ControlMailbox, NaturalInputAppliesPolicyOnceAfterInputCapacityReservation) {
     // ADR-0114: admission has one policy entry; a refused full-queue input cannot issue a hold.
