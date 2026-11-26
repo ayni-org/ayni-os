@@ -43,6 +43,16 @@ target_link_libraries(ayni_esp32_motor_execution_tests PRIVATE Ayni::Core Ayni::
     ayni_core_internal ayni_host_sim yyjson ayni_warnings GTest::gtest_main)
 gtest_discover_tests(ayni_esp32_motor_execution_tests NO_PRETTY_VALUES PROPERTIES TIMEOUT 30
     DISCOVERY_TIMEOUT ${AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS})
-# Both discovered executables must be included before applying per-test isolation.
+
+# Compile the real output driver. The SDK substitute preserves GPIO ownership changes on
+# RMT deletion and finite-waveform edge counts; it does not claim physical waveform timing.
+add_executable(ayni_esp32_motor_output_tests motor_output_test.cpp
+    "${AYNI_ROOT}/experiments/esp32_wifi_chat/firmware/main/motor_output.cpp")
+target_include_directories(ayni_esp32_motor_output_tests PRIVATE motor_output_shim transport_shim
+    "${AYNI_ROOT}/experiments/esp32_wifi_chat/firmware/main")
+target_link_libraries(ayni_esp32_motor_output_tests PRIVATE ayni_warnings GTest::gtest_main)
+gtest_discover_tests(ayni_esp32_motor_output_tests NO_PRETTY_VALUES PROPERTIES TIMEOUT 30
+    DISCOVERY_TIMEOUT ${AYNI_GTEST_DISCOVERY_TIMEOUT_SECONDS})
+# All discovered executables must be included before applying per-test isolation.
 set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES
     "${AYNI_ROOT}/tests/support/host_latency_tests.cmake")

@@ -2,6 +2,7 @@
 #include <driver/gpio.h>
 #include <esp_rom_gpio.h>
 #include <esp_timer.h>
+#include <limits>
 #include <soc/gpio_sig_map.h>
 #include <soc/io_mux_reg.h>
 #include <soc/rmt_reg.h>
@@ -15,6 +16,9 @@ static_assert(SOC_RMT_SUPPORT_TX_LOOP_COUNT && SOC_RMT_SUPPORT_TX_LOOP_AUTO_STOP
 // IDF 6.0.3 batches finite loops above 1023 and auto-stops each hardware batch.
 // PCNT extends its signed hardware counter through limit interrupts.
 static_assert(motor_plan_duration_ms_max <= INT32_MAX);
+static_assert(motor_plan_duration_ms_max / motor_duration_step_ms <=
+                  static_cast<uint32_t>(std::numeric_limits<int>::max()),
+              "validated motor duration must fit the signed RMT loop count");
 void retain_error(esp_err_t &first, esp_err_t next) {
     if (first == ESP_OK && next != ESP_OK) {
         first = next;
@@ -102,8 +106,7 @@ esp_err_t MotorOutput::coast_pins() {
     gpio_config_t config{};
     for (auto pin : motor_pins) {
         retain_error(rc, gpio_set_level(static_cast<gpio_num_t>(pin), 0));
-        esp_rom_gpio_connect_out_signal(static_cast<gpio_num_t>(pin), SIG_GPIO_OUT_IDX, false,
-                                        false);
+        esp_rom_gpio_connect_out_signal(pin, SIG_GPIO_OUT_IDX, false, false);
         config.pin_bit_mask |= UINT64_C(1) << pin;
     }
     config.mode = GPIO_MODE_INPUT_OUTPUT;
@@ -144,13 +147,9 @@ esp_err_t MotorOutput::detach_motor(size_t motor) {
     for (size_t dir = 0; dir < motor_inputs_per_channel; ++dir) {
         const auto pin = motor_pins[motor * motor_inputs_per_channel + dir];
         retain_error(rc, gpio_set_level(static_cast<gpio_num_t>(pin), 0));
-        esp_rom_gpio_connect_out_signal(static_cast<gpio_num_t>(pin), SIG_GPIO_OUT_IDX, false,
-                                        false);
+        esp_rom_gpio_connect_out_signal(pin, SIG_GPIO_OUT_IDX, false, false);
         config.pin_bit_mask |= UINT64_C(1) << pin;
     }
-    config.mode = GPIO_MODE_INPUT_OUTPUT;
-    config.pull_down_en = GPIO_PULLDOWN_ENABLE;
-    retain_error(rc, gpio_config(&config));
     if (output.channel) {
         const auto removed = rmt_del_channel(output.channel);
         retain_error(rc, removed);
@@ -158,6 +157,11 @@ esp_err_t MotorOutput::detach_motor(size_t motor) {
             output.channel = nullptr;
         }
     }
+    // IDF 6.0.3 rmt_tx_destroy disables its GPIO output. Reclaim GPIO only after deletion
+    // so both H-bridge inputs remain actively low before reversal/coast (ADR-0112).
+    config.mode = GPIO_MODE_INPUT_OUTPUT;
+    config.pull_down_en = GPIO_PULLDOWN_ENABLE;
+    retain_error(rc, gpio_config(&config));
     for (size_t dir = 0; dir < motor_inputs_per_channel; ++dir) {
         const auto pin = motor_pins[motor * motor_inputs_per_channel + dir];
         if (gpio_get_level(static_cast<gpio_num_t>(pin)) != 0) {
@@ -243,7 +247,7 @@ esp_err_t MotorOutput::apply_segment(const MotorCommand &command) {
             const size_t input = motor_input(m, next[m]);
             expected_[input] += command.duration_ms;
             rmt_transmit_config_t tx{};
-            tx.loop_count = command.duration_ms / motor_duration_step_ms;
+            tx.loop_count = static_cast<int>(command.duration_ms / motor_duration_step_ms);
             tx.flags.eot_level = 0;
             tx.flags.queue_nonblocking = true;
             rc = rmt_transmit(outputs_[m].channel, outputs_[m].encoder, outputs_[m].waveform.data(),
@@ -406,8 +410,7 @@ esp_err_t MotorOutput::stop() {
     // Detach before deleting the last RMT channel can power down its shared peripheral.
     for (auto pin : motor_pins) {
         retain_error(rc, gpio_set_level(static_cast<gpio_num_t>(pin), 0));
-        esp_rom_gpio_connect_out_signal(static_cast<gpio_num_t>(pin), SIG_GPIO_OUT_IDX, false,
-                                        false);
+        esp_rom_gpio_connect_out_signal(pin, SIG_GPIO_OUT_IDX, false, false);
     }
     if (sync_) {
         const auto removed = rmt_del_sync_manager(sync_);
