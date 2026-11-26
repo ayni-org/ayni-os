@@ -1,0 +1,3 @@
+#pragma once
+#define SOC_RMT_SUPPORT_TX_LOOP_COUNT 1
+#define SOC_RMT_SUPPORT_TX_LOOP_AUTO_STOP 1

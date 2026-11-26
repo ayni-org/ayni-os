@@ -102,8 +102,7 @@ esp_err_t MotorOutput::coast_pins() {
     gpio_config_t config{};
     for (auto pin : motor_pins) {
         retain_error(rc, gpio_set_level(static_cast<gpio_num_t>(pin), 0));
-        esp_rom_gpio_connect_out_signal(static_cast<gpio_num_t>(pin), SIG_GPIO_OUT_IDX, false,
-                                        false);
+        esp_rom_gpio_connect_out_signal(pin, SIG_GPIO_OUT_IDX, false, false);
         config.pin_bit_mask |= UINT64_C(1) << pin;
     }
     config.mode = GPIO_MODE_INPUT_OUTPUT;
@@ -144,13 +143,9 @@ esp_err_t MotorOutput::detach_motor(size_t motor) {
     for (size_t dir = 0; dir < motor_inputs_per_channel; ++dir) {
         const auto pin = motor_pins[motor * motor_inputs_per_channel + dir];
         retain_error(rc, gpio_set_level(static_cast<gpio_num_t>(pin), 0));
-        esp_rom_gpio_connect_out_signal(static_cast<gpio_num_t>(pin), SIG_GPIO_OUT_IDX, false,
-                                        false);
+        esp_rom_gpio_connect_out_signal(pin, SIG_GPIO_OUT_IDX, false, false);
         config.pin_bit_mask |= UINT64_C(1) << pin;
     }
-    config.mode = GPIO_MODE_INPUT_OUTPUT;
-    config.pull_down_en = GPIO_PULLDOWN_ENABLE;
-    retain_error(rc, gpio_config(&config));
     if (output.channel) {
         const auto removed = rmt_del_channel(output.channel);
         retain_error(rc, removed);
@@ -158,6 +153,11 @@ esp_err_t MotorOutput::detach_motor(size_t motor) {
             output.channel = nullptr;
         }
     }
+    // IDF 6.0.3 rmt_tx_destroy disables its GPIO output. Reclaim GPIO only after deletion
+    // so both H-bridge inputs remain actively low before reversal/coast (ADR-0112).
+    config.mode = GPIO_MODE_INPUT_OUTPUT;
+    config.pull_down_en = GPIO_PULLDOWN_ENABLE;
+    retain_error(rc, gpio_config(&config));
     for (size_t dir = 0; dir < motor_inputs_per_channel; ++dir) {
         const auto pin = motor_pins[motor * motor_inputs_per_channel + dir];
         if (gpio_get_level(static_cast<gpio_num_t>(pin)) != 0) {
@@ -406,8 +406,7 @@ esp_err_t MotorOutput::stop() {
     // Detach before deleting the last RMT channel can power down its shared peripheral.
     for (auto pin : motor_pins) {
         retain_error(rc, gpio_set_level(static_cast<gpio_num_t>(pin), 0));
-        esp_rom_gpio_connect_out_signal(static_cast<gpio_num_t>(pin), SIG_GPIO_OUT_IDX, false,
-                                        false);
+        esp_rom_gpio_connect_out_signal(pin, SIG_GPIO_OUT_IDX, false, false);
     }
     if (sync_) {
         const auto removed = rmt_del_sync_manager(sync_);

@@ -6,7 +6,7 @@
 > **架构路线**：按 Ayni 的共享 Agent 状态、授权、资源及恢复需求设计原生 Core，复用宿主 OS，模型优先通过外部 API 获得；架构图仅参考 AIOS 的分层分组表达样式。\
 > **实施顺序**：先完成基础通用能力，再开展 ESP32-S3、Linux 系统等实验；设备与能力组合按实验目标选取，不要求宿主具备语音、视觉、运动或特定外设。\
 > **基准投入**：单人全职；阶段周期是相对工作量估算，不是开工日期或交付日期承诺。\
-> **当前状态**：通用基础与独立源码SDK已交付，Native/Sim基线见[基础报告](../reports/core/foundation-acceptance.md)。本分支ABI0.62/schema12，独立OperationLedger将持久未决操作与活跃Call及工作容量分离，提供QUERY/人工ACK和落盘后结案审计；朗读采用Tier0并保持停稳与借用归还规则，见[ADR-0115](adr/0115-unknown-operation-history-and-work-retirement.md)。相关正常便携回归、Native消费者编译、独立审查及最终ESP固件编译与分区检查通过。设备已正常OTA到44278a8/ABI0.62/schema12并完成启动自确认；本次旧聊天、任务及未决记录按用户授权清理，配置保留。板端时延、新格式异常恢复、完整128K峰值、实体停止链与耐久仍待对应证据。
+> **当前状态**：通用基础与独立源码SDK已交付，Native/Sim基线见[基础报告](../reports/core/foundation-acceptance.md)。本分支ABI0.62/schema12，独立OperationLedger将持久未决操作与活跃Call及工作容量分离，提供QUERY/人工ACK和落盘后结案审计；朗读采用Tier0并保持停稳与借用归还规则，见[ADR-0115](adr/0115-unknown-operation-history-and-work-retirement.md)。相关正常便携回归、Native消费者编译、独立审查及最终ESP固件编译与分区检查通过。设备已正常OTA到`motor-coast-fix`/ABI0.62/schema12并完成启动自确认；本次保留会话卷与配置，分段切零修复及验证见[实验记录](../experiments/esp32_wifi_chat/WIFI.md#2026-11-26-分段动作切零修复)。板端时延、新格式异常恢复、完整128K峰值、实体停止链与耐久仍待对应证据。
 
 > **本轮范围**：用户2026-10-31要求实施[独立工程接入与验收计划](architecture/independent-consumption-plan.md)：通用源码SDK、低栈工作区、Native/ESP存储及Host、共同应用和验收。平台适配保持独立目录，必要接口直接升级，正常存储和最小重开获授权；实机操作、付费模型及其他新专项不启动。
 
