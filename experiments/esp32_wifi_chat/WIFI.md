@@ -864,3 +864,5 @@ LittleFS 例行对账等待约 20 ms 的空闲窗口，持续繁忙时最迟在�
 最终ESP-IDF6.0.3/GCC15.2.0候选`motor-coast-fix`本地编译、镜像校验和分区检查通过，镜像2880496 B，3 MiB槽余8%。沿用原Wi-Fi sdkconfig、PSRAM配置和分区，候选镜像保存在本机忽略目录`build/ota-motor-coast-fix-20261126/`；构建与测试分别显式2/1任务，IDF构建另设`IDF_PY_BUILD_JOBS=2`。用户随后明确要求完成验证后OTA，正常部署结果另记如下。
 
 用户随后授权的一次正常Wi-Fi OTA耗时41.86秒，返回HTTP200及`updated/restarting=true`，从`44278a8/ota_1`切至`motor-coast-fix/ota_0`。新启动5.589秒会话就绪，10.628秒自确认`status=0`；最终`pending_verify=false/error=0`，确认后继续观察21.58秒，boot保持3897869803，未见会话失败或kernel stopped/held。原卷正常打开，启动`goals=2/4`；公开配置逐字段比较相同（含密码/模型Key存在标志），本次未擦卷或迁移数据。新启动日志`lost=0/dropped=0`。部署记录和候选镜像在本机忽略目录`build/ota-motor-coast-fix-20261126/`；本次没有主动请求模型、语音或运动，正常OTA不替代分段动作、真实换向/停机时延与独立硬件停止链实测。
+
+[#144](https://github.com/RobotSe7en/ayni/pull/144)的GCC13 CI发现循环数从无符号时长隐式赋给SDK的`int`字段被`-Werror=sign-conversion`拒绝；此前AppleClang检查未报告该告警。驱动沿用既有时长/步长校验，将SDK边界转换写明，并以编译期断言证明最大循环数可装入`int`，不改变计算结果或增加运行时调用。严格Xtensa GCC15语法检查已先复现同类失败、修正后通过；7项驱动ASan/UBSan回归及范围内独立复查通过。CI最终结果见该PR。本次编译兼容修正没有再次OTA。

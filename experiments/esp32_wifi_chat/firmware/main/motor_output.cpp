@@ -2,6 +2,7 @@
 #include <driver/gpio.h>
 #include <esp_rom_gpio.h>
 #include <esp_timer.h>
+#include <limits>
 #include <soc/gpio_sig_map.h>
 #include <soc/io_mux_reg.h>
 #include <soc/rmt_reg.h>
@@ -15,6 +16,9 @@ static_assert(SOC_RMT_SUPPORT_TX_LOOP_COUNT && SOC_RMT_SUPPORT_TX_LOOP_AUTO_STOP
 // IDF 6.0.3 batches finite loops above 1023 and auto-stops each hardware batch.
 // PCNT extends its signed hardware counter through limit interrupts.
 static_assert(motor_plan_duration_ms_max <= INT32_MAX);
+static_assert(motor_plan_duration_ms_max / motor_duration_step_ms <=
+                  static_cast<uint32_t>(std::numeric_limits<int>::max()),
+              "validated motor duration must fit the signed RMT loop count");
 void retain_error(esp_err_t &first, esp_err_t next) {
     if (first == ESP_OK && next != ESP_OK) {
         first = next;
@@ -243,7 +247,7 @@ esp_err_t MotorOutput::apply_segment(const MotorCommand &command) {
             const size_t input = motor_input(m, next[m]);
             expected_[input] += command.duration_ms;
             rmt_transmit_config_t tx{};
-            tx.loop_count = command.duration_ms / motor_duration_step_ms;
+            tx.loop_count = static_cast<int>(command.duration_ms / motor_duration_step_ms);
             tx.flags.eot_level = 0;
             tx.flags.queue_nonblocking = true;
             rc = rmt_transmit(outputs_[m].channel, outputs_[m].encoder, outputs_[m].waveform.data(),
