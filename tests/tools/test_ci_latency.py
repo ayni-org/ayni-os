@@ -23,7 +23,8 @@ CASES = {
 }
 
 
-@unittest.skipUnless(shutil.which("cmake") and shutil.which("ctest"), "CMake/CTest required")
+@unittest.skipUnless(all(shutil.which(tool) for tool in ("cmake", "ctest", "ninja")),
+                     "CMake/CTest/Ninja required")
 class CiLatencyTest(unittest.TestCase):
     def test_pre_test_discovery_isolates_latency_cases_and_keeps_ordinary_cases_parallel(self):
         # PRE_TEST registers cases at CTest runtime, not at CMake configure time.
@@ -47,11 +48,14 @@ class CiLatencyTest(unittest.TestCase):
             cmake.append('set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES '
                          f'"{ROOT / "tests/support/host_latency_tests.cmake"}")')
             (source / "CMakeLists.txt").write_text("\n".join(cmake) + "\n")
-            subprocess.run(["cmake", "-S", str(source), "-B", str(source / "build")],
-                           check=True, capture_output=True, text=True)
+            # CI installs Ninja, not Make; use the same explicit generator as its presets.
+            configured = subprocess.run(["cmake", "-G", "Ninja", "-S", str(source),
+                                         "-B", str(source / "build")],
+                                        capture_output=True, text=True)
+            self.assertEqual(configured.returncode, 0, configured.stdout + configured.stderr)
             result = subprocess.run(["ctest", "--test-dir", str(source / "build"),
-                                     "--show-only=json-v1"], check=True,
-                                    capture_output=True, text=True)
+                                     "--show-only=json-v1"], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             tests = json.loads(result.stdout)["tests"]
             expected_latency = {case for cases in CASES.values() for case in cases}
             self.assertEqual({test["name"] for test in tests}, expected_latency |
