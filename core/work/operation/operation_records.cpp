@@ -110,7 +110,8 @@ uint32_t operation_record_max(OperationLedger::Limits limits) {
     constexpr uint32_t route_id_count = 5;
     return operation_record_fixed_bytes + route_id_count * catalog::CatalogId::max_size +
            catalog::resource_group_max *
-               (foundation::string_field_size(catalog::CatalogId::max_size) + sizeof(uint32_t)) +
+               (foundation::string_field_size(catalog::CatalogId::max_size) +
+                static_cast<uint32_t>(sizeof(uint32_t))) +
            limits.business_bytes + action_state_record_max_size + operation_stop_bytes +
            operation_query_bytes + operation_subscription_bytes + catalog::CatalogId::max_size;
 }
