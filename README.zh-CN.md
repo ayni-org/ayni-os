@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Agent 共用系统，能力按需接入。</strong><br>
-  面向多 Agent 软件与嵌入式系统的可移植内核——本地授权治理、有界内存、类型化能力契约与崩溃安全恢复，覆盖从 Linux 宿主到 ESP32-S3 微控制器。
+  面向多 Agent 软件与嵌入式系统的可移植内核——三平面实时解耦架构、权限单向收紧、有界内存、类型化能力契约与崩溃安全恢复，覆盖从 Linux 宿主到 ESP32-S3 微控制器。
 </p>
 
 <p align="center">
@@ -24,6 +24,7 @@
 
 <p align="center">
   <a href="#为什么选择-ayni">为什么选择 Ayni</a> ·
+  <a href="#三平面架构">三平面模型</a> ·
   <a href="#核心能力">核心能力</a> ·
   <a href="#快速开始">快速开始</a> ·
   <a href="#架构设计">架构设计</a> ·
@@ -52,6 +53,48 @@ Ayni 不把任务、记忆或硬件执行权交给提示词或外部模型服务
 | **记忆与隐私** | 共享全局上下文，隐式外发数据 | 默认私有记忆、共享与外发独立授权、来源追踪与删除 lineage |
 | **开销与可移植性** | 重型运行时与无界堆分配 | 无异常/无 RTTI 的 C++17 Core，调用方持有对齐 arena，可移植至 Linux、Sim 与 ESP32-S3 |
 | **能力契约** | 松散的字符串/JSON 工具封装 | 版本化类型契约、按权限过滤的目录发现、多实例资源绑定、unary/action/subscription 全生命周期 |
+
+## 三平面架构
+
+许多机器人与具身智能方案采用简单的**「大小脑两层拼接」**（慢 Python 调大模型发指令 + 快 C++ 跑控制环），往往只按快慢拆开，却留下两类失控隐患：**要么大脑幻觉发出的越界参数直接冲进控制环，要么快路径的本地反射脱离用户权限治理。**
+
+Ayni 按时间尺度将系统拆分为**三个解耦平面**（见[低时延实时演进计划](docs/architecture/low-latency-realtime-agentos-plan.md)），对应神经科学中的**「大脑皮层 + 基底核/脊髓反射弧 + 小脑」**三级体系，确保慢平面（LLM、网络、Flash I/O）永不阻塞快平面（权限仲裁、传感反射与本地控制）：
+
+| 神经系统类比 | Ayni 对应平面与模块 | 架构时间尺度 | 职责与数据边界 |
+|---|---|---|---|
+| **大脑皮层**<br>*（慢思考 / System 2）* | **平面 3 — 慢速认知与持久化平面**<br>[`tool_loop.cpp`](strategies/builtin/tool_loop.cpp) · 模型 Provider · [`conversation.h`](runtime/conversation/include/ayni/runtime/conversation.h) | 百毫秒 ～ 秒级 *（全异步）* | 自然语言理解、跨轮记忆、多步规划、回合级合并落盘与异步 `AuditRing`。**没有外设直控权**——所有模型输出都只是不可信提案。 |
+| **基底核 + 脊髓反射弧**<br>*（动作门控与条件反射）* | **平面 2 — 内存内核协调与反射平面**<br>`core/`（`CallRuntime` · [`resource_admission.cpp`](core/resources/admission/resource_admission.cpp) · [`observation_slots.cpp`](core/kernel/runtime/ingress/observation_slots.cpp) · [`reflex_engine.cpp`](core/kernel/service/reflex/reflex_engine.cpp)） | 亚毫秒 ～ 毫秒级 *（快路径零同步 WAL）* | **基底核职能**：`Grant`/`Scope`/`Scene` 强校验、多任务原子抢占（`PREEMPT`/`SUPERSEDE`），区分持久账本（`Tier 2`）与瞬态动作（`Tier 0`）。<br>**脊髓反射职能**：无锁三缓冲 `ObservationSlot` 直接驱动 `ReflexRule`（`0 LLM / 0 WAL`），仅接受新鲜 `MEASURED` 实测源（拒绝 `INFERRED` 推断源），瞬间触发软停或抢占，并异步通知上层。 |
+| **小脑 + 运动神经元**<br>*（高频运动协调与保护）* | **平面 1 — 实时控制与本地停止平面** *（可选）*<br>`control/permit_gate/`（[`control_session.h`](include/ayni/control_session.h) · [`loop.cpp`](control/permit_gate/loop.cpp) · [`gate.cpp`](control/permit_gate/gate.cpp)） | 微秒 ～ 5 ms *（零堆分配、零 Flash I/O）* | 运行在独立高优控制循环：多段轨迹无缝切换、加减速斜率限幅（Slew）、按传感距离连续收紧出力，并逐拍校验租约、看门狗与联锁。即使大脑断网或中枢繁忙，仍可稳住控制或失联即停。 |
+
+### 权限单向收紧：超越普通「大小脑」拼接
+
+Ayni 在三平面之间通过公开契约锁死了核心安全不变量：**权力只能逐级向下单向收紧，绝不允许下层扩权或突破包络。**
+
+```text
+平面 3 · 大脑皮层（LLM / ToolLoop）      ──▶ 仅提出不可信意图，无法直控硬件或自行扩权
+            │
+            ▼  [Grant · Scope · Scene · 资源准入]
+平面 2 · 快速内核与反射（core/）         ──▶ 统一拦截全部调用（含 ReflexRule 的 PREEMPT_CALL），
+            │                                仅签发有界 ayni_execution_permit_v1（包络 + 短租约 + 五代际）
+            ▼  [单向收紧，只做减法]
+平面 1 · 小脑控制环（control/）          ──▶ 经 tick_effective() 只能在许可包络内收紧出力：
+                                             斜率/避障降速、软停或硬急停锁存，绝不放大输出或无证自启
+```
+
+1. **大脑（LLM）只能提议**：不能绕过 Core 直接触碰设备，也不能为自己增加权限。
+2. **中枢（Fast Core）守住所有入口，包括脊髓反射**：即便是本地确定性 `ReflexRule` 触发的动作，也必须基于 `MEASURED` 实测数据并通过完整的 `Grant`/`Scope`/`Scene`/`ExecutionBinding` 准入，才能签发带严格数值包络、可续租短租约与五重代际（`kernel_boot`、`authority`、`executor_boot`、`safety`、`calibration`）的 [`ayni_execution_permit_v1`](include/ayni/control.h)。
+3. **小脑（`ControlLoop` + `PermitGate`）只能做减法**：[`ayni_control_session_tick_effective()`](include/ayni/control_session.h) 逐拍校验实际输出保持同号且幅度不增、始终落在许可包络内；它可按障碍物降速、软停或锁存硬急停，绝不能放大速度、延长总期限或无证自启动。
+
+### 按语义分级的执行等级
+
+Ayni 从第一性原理区分**「防崩溃重复派发的数据库 WAL 语义」**与**「实时物理控制安全语义」**：
+
+- **Tier 0（`EPHEMERAL`）**：绑定 `CANCEL_ON_REBOOT` 目标的实时物理与瞬态工具——运行期零 WAL、零 `durable_seq` 阻塞，确认停稳后即刻在 RAM 释放资源（[ADR-0110](docs/adr/0110-ephemeral-execution-tier-and-immediate-resource-release.md)、[ADR-0111](docs/adr/0111-soft-stop-preemption-and-barge-in.md)）。
+- **Tier 1（`SESSION_CHECKPOINT`）**：普通交互回合在回合边界合并落盘，并由 O(1) RAM `AuditRing` 异步记录审计事件（[ADR-0113](docs/adr/0113-coalesced-turn-persistence-and-audit-ring.md)）。
+- **Tier 2（`DURABLE`）**：不可幂等的外部持久副作用，完整保留 `PREPARED`/`DISPATCHING` WAL 提交屏障与独立 `OperationLedger`（`RESULT_UNKNOWN` `QUERY`/`ACK`，[ADR-0115](docs/adr/0115-unknown-operation-history-and-work-retirement.md)）。
+
+> [!NOTE]
+> **适用范围与验证边界：** 纯软件部署仅运行平面 3 与平面 2，不依赖任何执行器或硬件停止栈（[ADR-0083](docs/adr/0083-general-foundation-before-platform-experiments.md)）。上述时间尺度为架构分层定位；当前证据覆盖便携软件/ASan/TSan 回归、主机微基准与 ESP-IDF 固件编译（[ADR-0112](docs/adr/0112-control-session-observation-slot-and-reflex-rules.md)、[ADR-0114](docs/adr/0114-async-ui-streaming-control-and-parameterized-reflex.md)）。`ControlLoop` 提供有界整形与超时保护，不是安全认证功能；板端逐跳实测时延、外接实体测距传感器及独立硬件停止链仍待硬件验收。
 
 ## 核心能力
 
@@ -247,7 +290,7 @@ Native/Sim 运行、固件编译、实机功能与耐久结果均分别记录。
 - **[Native CLI 说明](targets/native_cli/README.md)** — 交互对话、授权、OpenAI 兼容配置、私有记忆、提醒与 `/unresolved` 命令。
 - **[公开 SDK 示例](examples/README.md)** 与 **[独立工程接入](tests/portability/README.md)** — 扩展能力、替换 Provider 与嵌入源码 SDK。
 - **[公开契约](contracts/README.md)** 与 **[测试追踪矩阵](contracts/traceability.md)** — 逐条接口保证与对应测试。
-- **[基础与实验计划](docs/architecture/foundation-and-experiment-plan.md)**、**[完整实施计划](docs/ayni_v1.0.md)** 与 **[ADR 索引](docs/adr/README.md)** — 设计思路、顺序与架构决策记录。
+- **[基础与实验计划](docs/architecture/foundation-and-experiment-plan.md)**、**[低时延实时演进计划](docs/architecture/low-latency-realtime-agentos-plan.md)**、**[完整实施计划](docs/ayni_v1.0.md)** 与 **[ADR 索引](docs/adr/README.md)** — 设计思路、顺序与架构决策记录。
 - **[Logo 资源](docs/assets/ayni-logo.svg)** — [反白 SVG](docs/assets/ayni-logo-inverse.svg) · [不透明 PNG](docs/assets/ayni-logo.png)。
 
 ## 参与与致谢

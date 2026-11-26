@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>Shared systems. Capabilities on demand.</strong><br>
-  A portable multi-agent OS kernel with local authorization, bounded memory, typed capabilities, and crash-safe recovery — from Linux hosts to ESP32-S3 microcontrollers.
+  A portable multi-agent OS kernel with a three-plane real-time architecture, monotonic authority narrowing, bounded memory, typed capabilities, and crash-safe recovery — from Linux hosts to ESP32-S3 microcontrollers.
 </p>
 
 <p align="center">
@@ -24,6 +24,7 @@
 
 <p align="center">
   <a href="#why-ayni">Why Ayni</a> ·
+  <a href="#three-plane-architecture">Three-Plane Model</a> ·
   <a href="#key-capabilities">Capabilities</a> ·
   <a href="#quick-start">Quick Start</a> ·
   <a href="#architecture">Architecture</a> ·
@@ -52,6 +53,48 @@ Most AI agent frameworks are high-level orchestration scripts where permissions 
 | **Memory & Privacy** | Shared global context & implicit export | Private-by-default agent memory, explicit share/export grants, provenance & deletion lineage |
 | **Footprint & Portability** | Heavy runtime & unbounded heap allocations | Zero-exception, zero-RTTI C++17 Core; caller-owned aligned arena; portable across Linux, Sim & ESP32-S3 |
 | **Capability Contracts** | Unstructured string/JSON tool wrappers | Typed, versioned contracts, permission-filtered catalog discovery, multi-instance bindings, unary/action/subscription lifecycles |
+
+## Three-Plane Architecture
+
+Most robotics and embodied-AI stacks bolt together a two-layer **"big brain / small brain"** split: a slow Python LLM loop sending commands to a fast C++ control loop. That leaves two structural failure modes — a hallucinating LLM can push out-of-bounds parameters down into the controller, or fast local reflex logic can quietly bypass user authorization.
+
+Ayni separates execution by timescale into **three decoupled planes** ([low-latency evolution plan](docs/architecture/low-latency-realtime-agentos-plan.md)), closely analogous to a three-level nervous system (**Cortex · Basal Ganglia & Spinal Reflex · Cerebellum**), so slow operations (LLM inference, networking, Flash I/O) never block fast gating, reflexes, or local control:
+
+| Nervous System Analogy | Ayni Plane & Modules | Architectural Timescale | Role & Data Boundary |
+|---|---|---|---|
+| **Cerebral Cortex**<br>*(Slow Cognition / System 2)* | **Plane 3 — Cognitive & Persistence Plane**<br>[`tool_loop.cpp`](strategies/builtin/tool_loop.cpp) · Model Providers · [`conversation.h`](runtime/conversation/include/ayni/runtime/conversation.h) | Hundreds of ms – seconds *(async)* | Natural language understanding, cross-turn memory, multi-step planning, coalesced turn persistence, and async `AuditRing`. **Zero direct actuator control** — every model output is an untrusted proposal. |
+| **Basal Ganglia + Spinal Reflex**<br>*(Action Gating & Reflex Arc)* | **Plane 2 — Fast Core Governance & Reflex Plane**<br>`core/` (`CallRuntime` · [`resource_admission.cpp`](core/resources/admission/resource_admission.cpp) · [`observation_slots.cpp`](core/kernel/runtime/ingress/observation_slots.cpp) · [`reflex_engine.cpp`](core/kernel/service/reflex/reflex_engine.cpp)) | Sub-ms – ms *(zero sync WAL on fast path)* | **Basal ganglia role:** `Grant`/`Scope`/`Scene` gating, atomic preemption (`PREEMPT`/`SUPERSEDE`), separating durable ledgers (`Tier 2`) from ephemeral actions (`Tier 0`).<br>**Spinal reflex role:** lock-free triple-buffered `ObservationSlot` triggers `ReflexRule` directly (`0 LLM / 0 WAL`) on fresh `MEASURED` sensor events (rejecting `INFERRED` sources) to soft-stop or preempt, notifying upper layers asynchronously. |
+| **Cerebellum + Motor Neurons**<br>*(High-Frequency Coordination)* | **Plane 1 — Real-Time Control & Local Stop Plane** *(optional)*<br>`control/permit_gate/` ([`control_session.h`](include/ayni/control_session.h) · [`loop.cpp`](control/permit_gate/loop.cpp) · [`gate.cpp`](control/permit_gate/gate.cpp)) | µs – 5 ms *(zero heap, zero Flash I/O)* | Runs on an independent high-priority control loop: seamless multi-segment trajectories, slew-rate shaping, continuous sensor-based tightening, and per-cycle lease, watchdog, and interlock checks. Holds safe control or fails closed even if the LLM disconnects or Core is busy. |
+
+### Monotonic Authority Narrowing
+
+Across all three planes, Ayni enforces a single contract invariant: **authority can only tighten as control moves downward — lower layers can never escalate privileges or widen bounds.**
+
+```text
+Plane 3 · Cortex (LLM / ToolLoop)        ──▶ Proposes untrusted intents only; cannot touch hardware or escalate Grants
+            │
+            ▼  [Grant · Scope · Scene · Resource Admission]
+Plane 2 · Fast Core + Reflex (core/)     ──▶ Gates every call — including ReflexRule PREEMPT_CALL —
+            │                                issues bounded ayni_execution_permit_v1 (envelope + short lease + epochs)
+            ▼  [One-Way Tightening Only]
+Plane 1 · Cerebellum (control/)          ──▶ Can only subtract inside the permit via tick_effective():
+                                             slew/sensor derating, soft-stop, or latched hard-stop — never amplify or self-start
+```
+
+1. **The Cortex (LLM) only proposes** — it cannot bypass Core to reach hardware or grant itself permissions.
+2. **Fast Core gates every path, including reflexes** — even deterministic `ReflexRule` actions require `MEASURED` observations and pass full `Grant`/`Scope`/`Scene`/`ExecutionBinding` admission before Core issues an [`ayni_execution_permit_v1`](include/ayni/control.h) bound to strict numeric envelopes, short renewable leases, and five matching epochs (`kernel_boot`, `authority`, `executor_boot`, `safety`, `calibration`).
+3. **The Cerebellum (`ControlLoop` + `PermitGate`) only narrows** — [`ayni_control_session_tick_effective()`](include/ayni/control_session.h) verifies every cycle that the effective output preserves sign and never exceeds the approved magnitude or envelope; it can slow down for obstacles, soft-stop, or latch hard-stop, but can never amplify output, extend total duration, or self-start without a valid permit.
+
+### Semantic Execution Tiers
+
+From first principles, Ayni separates **crash-replay database semantics (WAL)** from **real-time control safety**:
+
+- **Tier 0 (`EPHEMERAL`):** Real-time physical and transient actions scoped to `CANCEL_ON_REBOOT` goals — zero runtime WAL, zero `durable_seq` stalls, and immediate RAM resource release once stop-proof is confirmed ([ADR-0110](docs/adr/0110-ephemeral-execution-tier-and-immediate-resource-release.md), [ADR-0111](docs/adr/0111-soft-stop-preemption-and-barge-in.md)).
+- **Tier 1 (`SESSION_CHECKPOINT`):** Conversational turns persisted at turn boundaries with coalesced storage and an O(1) RAM `AuditRing` ([ADR-0113](docs/adr/0113-coalesced-turn-persistence-and-audit-ring.md)).
+- **Tier 2 (`DURABLE`):** Non-idempotent external side effects retaining full `PREPARED`/`DISPATCHING` WAL commit barriers and the independent `OperationLedger` (`RESULT_UNKNOWN` `QUERY`/`ACK`, [ADR-0115](docs/adr/0115-unknown-operation-history-and-work-retirement.md)).
+
+> [!NOTE]
+> **Scope & Verification Boundary:** Software-only deployments use Planes 3 & 2 without any actuator or hardware stop stack ([ADR-0083](docs/adr/0083-general-foundation-before-platform-experiments.md)). The timescales above are architectural layers; current evidence covers portable software/ASan/TSan suites, host microbenchmarks, and ESP-IDF compilation ([ADR-0112](docs/adr/0112-control-session-observation-slot-and-reflex-rules.md), [ADR-0114](docs/adr/0114-async-ui-streaming-control-and-parameterized-reflex.md)). `ControlLoop` provides bounded shaping and timeout protection rather than safety-certified functionality; on-board hop latency, physical rangefinder integration, and independent hardware stop-chain acceptance remain pending hardware validation.
 
 ## Key Capabilities
 
@@ -247,7 +290,7 @@ Native/Sim runs, firmware compilation, on-board functionality, and endurance res
 - **[Native CLI Guide](targets/native_cli/README.md)** — Interactive chat, Grants, OpenAI-compatible config, private memory, reminders, and `/unresolved` tools.
 - **[Public SDK Examples](examples/README.md)** & **[Independent Integration](tests/portability/README.md)** — Extending capabilities, swapping Providers, and embedding the source SDK.
 - **[Public Contracts](contracts/README.md)** & **[Test Traceability](contracts/traceability.md)** — Clause-level guarantees and mapped tests.
-- **[Foundation & Experiment Plan](docs/architecture/foundation-and-experiment-plan.md)**, **[Full Implementation Plan](docs/ayni_v1.0.md)**, and **[ADR Index](docs/adr/README.md)** — Design rationale, roadmap order, and architectural decisions.
+- **[Foundation & Experiment Plan](docs/architecture/foundation-and-experiment-plan.md)**, **[Low-Latency Real-Time Plan](docs/architecture/low-latency-realtime-agentos-plan.md)**, **[Full Implementation Plan](docs/ayni_v1.0.md)**, and **[ADR Index](docs/adr/README.md)** — Design rationale, roadmap order, and architectural decisions.
 - **[Logo Assets](docs/assets/ayni-logo.svg)** — [Inverse SVG](docs/assets/ayni-logo-inverse.svg) · [Opaque PNG](docs/assets/ayni-logo.png).
 
 *Note: Most detailed internal design documents, contracts, and ADRs are currently written in Chinese.*
