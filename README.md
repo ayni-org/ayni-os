@@ -1,8 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/ayni-logo-inverse.svg">
-    <img src="docs/assets/ayni-logo.svg" alt="Ayni" width="420">
-  </picture>
+  <img src="docs/assets/ayni-logo.png" alt="Ayni" width="420">
 </p>
 
 <p align="center">
