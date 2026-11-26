@@ -747,7 +747,7 @@ ayni/
 ├── reports/{core,hardware,trial,interop}/
 ├── tools/
 ├── docs/{assets,adr,architecture,api,protocol,hardware,testing,privacy}/
-├── README.md / README.en.md            # present: bilingual project overview
+├── README.md / README.zh-CN.md         # present: bilingual project overview (English default)
 └── .github/workflows/
 ```
 
@@ -1040,7 +1040,7 @@ idf.py -p <SERIAL_PORT> flash monitor
 
 | 范围 | 交付件与计划路径 | 验收 |
 |---|---|---|
-| 基础 | `README.md`、`README.en.md`、现行基础计划和能力范围 | 定位、依赖、状态与证据一致，不把某类设备写成必需 |
+| 基础 | `README.md`、`README.zh-CN.md`、现行基础计划和能力范围 | 定位、依赖、状态与证据一致，不把某类设备写成必需 |
 | 基础 | `contracts/`、公开 `include/ayni/`、相关 ADR | 类型、版本、授权、结果、取消、恢复和容量契约一致 |
 | 基础 | Core、Native/Sim、策略/应用示例与 C/C++ SDK | 相关正常功能与既有完整 CI、E1～E4 回归，未验证限制明确 |
 | 基础 | 公开能力/Host/Provider 接入与组合示例 | 软件能力无需设备；更换实现或添加普通能力不修改 Core 业务分支 |

@@ -1,60 +1,85 @@
 <p align="center">
-  <img src="docs/assets/ayni-logo.png" alt="Ayni" width="420">
+  <img src="docs/assets/ayni-logo.png" alt="Ayni AgentOS" width="420">
 </p>
 
+<h3 align="center">General-Purpose Native AgentOS in C++17 &amp; C99</h3>
+
 <p align="center">
-  <strong>Agent 共用系统，能力按需接入。</strong>
+  <strong>Shared systems. Capabilities on demand.</strong><br>
+  A portable multi-agent OS kernel with local authorization, bounded memory, typed capabilities, and crash-safe recovery — from Linux hosts to ESP32-S3 microcontrollers.
 </p>
 
 <p align="center">
   <a href="https://github.com/ayni-org/ayni-os/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ayni-org/ayni-os/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="docs/development.md"><img alt="C++17" src="https://img.shields.io/badge/Core-C%2B%2B17-blue"></a>
-  <a href="include/ayni/ayni.h"><img alt="C99 API" src="https://img.shields.io/badge/API-C99-blue"></a>
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/License-Apache_2.0-blue.svg"></a>
+  <a href="docs/development.md"><img alt="Core: C++17" src="https://img.shields.io/badge/Core-C%2B%2B17-00599C?logo=cplusplus&logoColor=white"></a>
+  <a href="include/ayni/ayni.h"><img alt="API: C99 ABI 0.62" src="https://img.shields.io/badge/API-C99%20ABI%200.62-555555?logo=c&logoColor=white"></a>
+  <a href="contracts/storage/records.md"><img alt="Storage: Schema 12" src="https://img.shields.io/badge/Storage-Schema%2012-2ea44f"></a>
 </p>
 
 <p align="center">
-  <a href="#快速开始">快速开始</a> |
-  <a href="#架构">架构</a> |
-  <a href="#文档">文档</a> |
-  <a href="examples/README.md">示例</a> |
-  <a href="README.en.md">English</a>
+  <strong>English</strong> ·
+  <a href="README.zh-CN.md">简体中文</a>
 </p>
 
-**Ayni** 是通用原生 AgentOS。在宿主操作系统之上，它为多个 Agent 提供共用的任务、授权、资源、调用、记忆与恢复机制，通过公开契约接入软件、模型服务或设备能力。
+<p align="center">
+  <a href="#why-ayni">Why Ayni</a> ·
+  <a href="#key-capabilities">Capabilities</a> ·
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#implementation-and-roadmap">Roadmap</a> ·
+  <a href="#documentation">Docs</a>
+</p>
 
-可移植 C++17 Core 管理系统状态，规则与 ToolLoop 决定如何推进工作，Host 和 Provider 提供异步服务。桌面助理与 ESP32-S3 触屏实验复用这套基础；具体应用、模型和外设由部署选择。
+---
 
-> **当前状态：** 通用基础与独立源码 SDK 已交付，Native/Sim 软件验证见[基础报告](reports/core/foundation-acceptance.md)和[独立接入报告](reports/core/independent-consumption.md)。当前分支实验性 C ABI 为 **0.62**，Core storage schema 为 **12**（独立未决操作账本、QUERY/ACK 与落盘后审计见[ADR-0115](docs/adr/0115-unknown-operation-history-and-work-retirement.md)；异步界面、通用独立操作及参数反射见[ADR-0114](docs/adr/0114-async-ui-streaming-control-and-parameterized-reflex.md)）。ESP32 触屏 Wi-Fi/语音实验独立推进；完整硬件停止链与耐久验收仍未完成。
+**Ayni** is a **general-purpose native AgentOS** built for running multiple AI agents safely and deterministically on a shared host. Running above the host operating system, Ayni provides a portable, zero-exception, zero-RTTI **C++17 Core** behind a **C99 ABI** and **C++17 SDK** that owns agent lifecycle, goals, tasks, authorization grants, resource admission, private memory, and durable crash recovery.
 
-公开仓库保留原项目的提交历史。报告中指向 `RobotSe7en/ayni` 的历史 PR 和 CI 证据仍保存在原私有仓库，访问需要相应权限；它们未随 Git 推送迁移，见 [ADR-0116](docs/adr/0116-apache-license-and-public-copy.md)。
+Instead of letting prompts or cloud LLM services own tasks, memory, or hardware execution, **models only propose actions — the local Ayni Kernel governs, admits, commits, and recovers.** Capabilities (software jobs, model APIs, event streams, or optional physical devices) plug in through versioned, typed public contracts. The same portable Core powers both software-only Native Linux deployments and constrained embedded experiments such as ESP32-S3.
 
-## 核心理念
+> [!NOTE]
+> **Current Baseline (ABI 0.62 / Core Storage Schema 12):** The general capability foundation and standalone source SDK are delivered with Native/Sim software validation in the [foundation acceptance report](reports/core/foundation-acceptance.md) and [independent integration report](reports/core/independent-consumption.md). Recent work adds an independent unresolved-operation ledger with `QUERY`/`ACK` reconciliation and post-durability audit ([ADR-0115](docs/adr/0115-unknown-operation-history-and-work-retirement.md)), plus decoupled async UI, streaming control sessions, and parameterized reflex rules ([ADR-0114](docs/adr/0114-async-ui-streaming-control-and-parameterized-reflex.md)). The ESP32-S3 touchscreen Wi-Fi/voice setup runs as an independent experiment; full hardware stop-chain and endurance acceptance remain incomplete.
 
-**1. 多个 Agent，共用一套系统机制。**
-Kernel 统一持有 Agent、Goal、Task、授权、资源和恢复状态，由单一逻辑所有者通过有界 `step` 推进。模型、网络、存储和设备 I/O 在异步边界执行。
+## Why Ayni?
 
-**2. 能力具有可校验的契约。**
-能力声明类型化输入、结构结果、版本及执行属性。可信配置注册能力，Task 按权限发现和查看目录，通过 Binding 选择具体实现；发现能力不会自动获得执行权限。
+Most AI agent frameworks are high-level orchestration scripts where permissions live in system prompts, state lives in ad-hoc memory, and crashes cause blind retries or lost side effects. Ayni treats multi-agent execution as a **systems engineering problem**:
 
-**3. 执行权由本机治理。**
-模型提出调用建议，Kernel 检查主体、Grant、参数与资源。记忆默认私有，共享与外发须明确授权。当前权限保证覆盖可信内置代码使用的受管理入口，任意原生代码的强隔离仍属后续工作。
+| Dimension | Typical Agent Frameworks | Ayni AgentOS |
+|---|---|---|
+| **Execution Model** | Ad-hoc loops blocking on LLM & tool I/O | Single-owner Kernel with bounded `step()` execution and asynchronous Host/Provider I/O |
+| **Authority & Safety** | Prompt-level guardrails; tools exposed globally | Local-first principal, Grant, and Scope enforcement; human-in-the-loop approval & instant revocation |
+| **Side Effects & Recovery** | Blind retries or duplicated actions on failure | Durable commit barriers, idempotent commands, `RESULT_UNKNOWN` ledger (`QUERY` / `ACK`), no blind replay |
+| **Memory & Privacy** | Shared global context & implicit export | Private-by-default agent memory, explicit share/export grants, provenance & deletion lineage |
+| **Footprint & Portability** | Heavy runtime & unbounded heap allocations | Zero-exception, zero-RTTI C++17 Core; caller-owned aligned arena; portable across Linux, Sim & ESP32-S3 |
+| **Capability Contracts** | Unstructured string/JSON tool wrappers | Typed, versioned contracts, permission-filtered catalog discovery, multi-instance bindings, unary/action/subscription lifecycles |
 
-**4. 持久接受与副作用有明确边界。**
-持久接受回复与副作用派发受到提交屏障约束；结果不确定进入 `RESULT_UNKNOWN`，通过权威查询或人工处理。恢复重建状态，不盲目重演旧动作。
+## Key Capabilities
 
-**5. 容量与生命周期显式管理。**
-队列、任务、上下文和存储都有容量约束；调用支持 unary、action、subscription，明确取消、超时、背压与释放。长期目标和单次任务分别管理。
+- **Single-Owner Portable Kernel (`core/`)**
+  One logical owner advances Agent, Goal, Task, Grant, Resource, Memory, and Recovery state through bounded `step` calls. Core never allocates heap memory on its own (`ayni_kernel_memory_requirements`), keeps all network, model, storage, and device I/O across asynchronous boundaries, and compiles cleanly with `-fno-exceptions -fno-rtti`.
 
-**6. 同一 Core，按部署组合能力。**
-C99 API、C++17 封装和源码 SDK 支持独立工程接入，`runtime/` 选择并装配 Host、Provider 与应用。纯软件部署即可运行；启用物理执行能力时，另须满足许可、联锁与独立停止契约。
+- **Verifiable Typed Capabilities & Scoped Discovery**
+  Capabilities declare bounded typed inputs, structured results, units, versions, and execution semantics. Trusted configuration registers capabilities at startup; Tasks discover and inspect only the catalog entries permitted to them and resolve implementations via explicit Bindings with per-instance resource mapping. **Discovering a capability never grants execution authority.**
 
-## 快速开始
+- **Local-First Governance & Private Memory**
+  Models propose tool calls and long-lived goals; the local Kernel enforces principals, Grants, argument scopes, runtime limits, and resource quotas. Missing authority cleanly parks work (`PROPOSED`) for explicit approval rather than failing silently. Memory is private by default with separate grants for reading, sharing, and remote export, plus deletion lineage. *(Current enforcement covers trusted built-in code through managed entry points; strong OS/hardware sandboxing of arbitrary native code remains future work.)*
 
-以下使用 Linux Native 开发环境与 Mock 模型，无需 API Key。已验证工具链、依赖版本及其他构建方式见[开发指南](docs/development.md)。
+- **Commit Barriers, Crash Recovery & Unresolved-Operation Ledger**
+  Durable-acceptance replies and external side effects are gated by WAL commit barriers and dual-slot snapshots. Uncertain side effects enter `RESULT_UNKNOWN` and move into an independent `OperationLedger` when their Task retires — preventing unresolved external history from exhausting active work capacity — until resolved via read-only `QUERY` reconciliation or explicit human `ACK`. Recovery rebuilds consistent state without blindly replaying old actions.
 
-### 构建并启动
+- **Explicit Lifecycles, Streaming Control & Optional Physical Safety**
+  Supports `unary` calls, cancellable long-running `action`s, and lease-renewed `subscription`s with bounded queues, deadlines, and backpressure. Persistent Goals and individual Tasks are managed independently. Software-only deployments require no hardware stack; when physical execution capabilities are enabled, local permit gates (`control/permit_gate/`), envelopes, interlocks, streaming `ControlLoop` shaping, parameterized reflex rules, and an independent local stop path govern execution.
 
-准备 C++17 工具链、CMake、Ninja、Python、libcurl 和 SQLite 开发包：
+- **Standalone Source SDK & OpenAI-Compatible Models**
+  Embed Ayni via the C99 ABI (`include/ayni/ayni.h`) or the zero-exception C++17 facade (`include/ayni/ayni.hpp`). Includes a shared `ToolLoop`, an OpenAI-compatible Chat/Responses model Provider, and a portable source SDK verified in isolated read-only builds.
+
+## Quick Start
+
+Try Ayni locally on Linux with the built-in **Mock model** — **no API key or hardware required**. See the [development guide](docs/development.md) for verified toolchains, dependency versions, offline configuration, and sanitizer presets.
+
+### 1. Build and launch the Native CLI
+
+Install a C++17 compiler, CMake (≥ 3.22), Ninja, Python 3, libcurl, and SQLite development headers:
 
 ```sh
 sudo apt-get install -y build-essential cmake ninja-build python3 git \
@@ -63,7 +88,7 @@ sudo apt-get install -y build-essential cmake ninja-build python3 git \
 git clone https://github.com/ayni-org/ayni-os.git
 cd ayni-os
 
-# 先检查可用内存、swap、CPU 和其他任务，再按资源预算调整并行度。
+# Inspect available memory, swap, CPU, and active jobs before choosing parallelism.
 export CMAKE_BUILD_PARALLEL_LEVEL=2
 export CTEST_PARALLEL_LEVEL=2
 
@@ -72,26 +97,49 @@ cmake --build --preset native-debug --target ayni
 ./build/native/targets/native_cli/ayni --mock
 ```
 
-首次配置会下载锁定版本的依赖；离线配置方法见开发指南。CLI 默认使用用户私有配置和数据目录。
+The first configure downloads pinned dependencies (GoogleTest, yyjson; see [offline setup](docs/development.md#离线配置-googletest)). The CLI stores state in private per-user XDG directories (`~/.config/ayni`, `~/.local/share/ayni`).
 
-### 完成一次对话
+### 2. Run a governed conversation
 
-首次运行尚无授权。在 CLI 中为 Mock 对话授予模型与摘要权限，再输入文字：
+A fresh installation starts with **zero Grants** (default-deny). In the CLI, explicitly grant model and summary authority for the Mock conversation, then chat:
 
 ```text
 /grant model
 /wait
 /grant summary
 /wait
-你好
+Hello
 /wait
 /conversation
 /quit
 ```
 
-`/wait` 等待当前可推进的工作与保存完成，`/quit` 正常关闭。真实模型通过 OpenAI-compatible Provider 接入；配置文件、环境变量密钥、权限和其他命令见 [CLI 说明](targets/native_cli/README.md)。
+`/wait` waits for actionable work and durable saves to finish; `/quit` performs a clean shutdown. You can also send a message first, inspect pending approvals with `/goals`, and authorize them with `/approve <goal-id>`.
 
-### 运行公开示例
+<details>
+<summary><strong>Connect a real OpenAI-compatible model (optional)</strong></summary>
+
+Create `~/.config/ayni/config` (secrets are never stored in config files — pass only the environment variable name):
+
+```ini
+provider=openai
+base_url=https://api.deepseek.com
+model=deepseek-chat
+key_environment=AYNI_LLM_API_KEY
+```
+
+Export your key and launch without `--mock`:
+
+```sh
+export AYNI_LLM_API_KEY="your-api-key"
+./build/native/targets/native_cli/ayni
+```
+
+See the [Native CLI guide](targets/native_cli/README.md) for context-window limits, timezone rules, memory commands (`/memory`), reminders (`/remind`), deterministic `/stop`, and `/unresolved` ledger commands.
+
+</details>
+
+### 3. Run the public SDK examples
 
 ```sh
 cmake --build --preset native-debug --target \
@@ -101,75 +149,121 @@ cmake --build --preset native-debug --target \
 ctest --preset native-debug -R '^Examples\.'
 ```
 
-示例覆盖模拟硬件接入、loopback 模型服务、新策略、组合工作流和受管长操作；均无需真实模型凭据或设备。完整说明见[公开 SDK 与接入示例](examples/README.md)。
+All five examples use only public headers in `include/ayni/` and require no external credentials or physical devices:
 
-## 架构
-
-![Ayni 架构](docs/assets/ayni-architecture.svg)
-
-图中包含规划中的扩展；实现与验证范围以公开契约和交付报告为准。
-
-| 层级 | 职责 |
+| Example Target | What It Demonstrates |
 |---|---|
-| 应用与策略 | 助理、软件工作流、目标类型、规则与 ToolLoop，定义业务行为和工作推进方式 |
-| C API / C++ SDK | 提交类型化命令、查询快照、注册能力，保持统一的权限、错误和生命周期语义 |
-| 共享 Kernel | `kernel`、`work`、`authority`、`resources`、`knowledge`、`catalog`、`durability`、`foundation`，各自持有对应不变量 |
-| Host 与 Provider | Host 提供时钟、存储和生命周期等平台服务；Provider 实现模型、软件作业、事件流或设备调用 |
-| 本地控制与停止 | 为启用的物理执行能力校验许可、限值与联锁，提供独立停止路径；实际停止保证须有硬件证据 |
-| 宿主 OS 与驱动 | 负责线程调度、系统 I/O 和具体硬件访问 |
+| `ayni_example_new_hardware` | Simulated tactile-button `SubscriptionProvider` + rule (start ACK, samples, lease renew/cancel, stop confirmation) |
+| `ayni_example_new_model` | Second OpenAI-compatible model over local loopback HTTP with independent Binding, destination, and explicit Grant |
+| `ayni_example_new_strategy` | Custom `LocalInput` rule strategy completing a durable Task without modifying Core |
+| `ayni_example_composite_workflow` | End-to-end capture → model → stop → presentation workflow with provenance checks |
+| `ayni_example_managed_operations` | Concurrent cancellable chunked-sum `action` and I64 event `subscription` on the same Task across Sim & Native storage |
 
-`runtime/` 是组合根，选择部署并装配具体组件。Core 保持平台无关；业务策略、网络、模型 SDK 和驱动留在边界。Skill 表达可复用工作流，Capability 声明执行契约，Provider 实现能力，Driver 访问硬件。
+<details>
+<summary><strong>Run the simulator and standalone SDK portability check</strong></summary>
 
-ABI、管理/设备协议与存储 schema 独立演进。0.x ABI 次版本须完全匹配；当前存储拒绝不支持的旧 schema 并保留原目录，迁移与回退边界见[开发指南](docs/development.md)。
+```sh
+# Build and run the lifecycle simulator
+cmake --build --preset native-debug --target ayni-sim
+./build/native/targets/simulator/ayni-sim
 
-## 项目结构
-
-```text
-core/              可移植 Kernel，按状态与不变量属主拆分
-include/ayni/      公开 C API、C++ 封装与草案接口
-contracts/         版本化契约与测试追踪矩阵
-strategies/        规则、ToolLoop 等工作推进策略
-applications/      助理、软件工作流和验证应用
-hosts/             Native、Sim、ESP-IDF 平台服务与共用存储
-providers/         模型、软件作业、Shell、呈现等能力实现
-runtime/           部署选择、组件装配与共同运行时
-control/, safety/  受许可执行与独立停止机制
-targets/           Native CLI、模拟器和固件入口
-experiments/       独立平台与应用实验
-examples/          公开 SDK 接入示例
-tests/             单元、契约、集成与独立消费者验证
-docs/, reports/    设计、ADR、开发说明与验证证据
+# Run the isolated read-only source SDK consumer (no SQLite/libcurl required)
+python3 tests/portability/run_native.py --source . --source-revision "$(git rev-parse HEAD)"
 ```
 
-## 实现与路线
+See [public SDK examples](examples/README.md) and [independent integration guide](tests/portability/README.md) for details.
 
-| 范围 | 状态与证据 |
+</details>
+
+## Architecture
+
+![Ayni architecture](docs/assets/ayni-architecture.svg)
+
+*The diagram includes planned extensions; public contracts and delivery reports define the current implementation and validation scope.*
+
+### Layer Responsibilities
+
+| Layer | Responsibility |
 |---|---|
-| Native Core、模拟器、C/C++ SDK | 已交付；历史 E1～E4 验证见 [Core Alpha Native 报告](reports/core/m1-core-alpha.md) |
-| 通用能力基础 | 类型化输入/结果、发现与绑定、多实例资源映射、长操作与订阅已交付，见[基础报告](reports/core/foundation-acceptance.md) |
-| 独立源码 SDK 与共同应用 | 已交付；只读隔离导入、Native 共同程序及最小正常重开通过，ESP32-S3 独立编译/链接通过，见[独立接入报告](reports/core/independent-consumption.md) |
-| ESP32 触屏 Wi-Fi/语音 | 独立实验已实施；完整 128K 上下文峰值、60 秒电机动作与通用硬件停止链仍未验收，见[实验说明](experiments/esp32_wifi_chat/README.md) |
-| 后续平台与扩展 | Linux 系统集成、视觉、OTA、MCP/ROS/MHS、跨节点及完整 MA-038 按独立条件安排，见[实施计划](docs/ayni_v1.0.md) |
+| **Applications & Strategies** | Assistants, software workflows, goal types, rules, and `ToolLoop` define product behavior and advance work |
+| **C99 API / C++17 SDK** | Submit typed commands, query snapshots, and register capabilities with unified authorization, error, and lifecycle semantics |
+| **Shared Kernel (`core/`)** | Eight invariant-owning modules with strict acyclic dependency direction (see below) |
+| **Hosts & Providers** | Hosts supply platform services (clock, durable storage, lifecycle); Providers implement models, software jobs, event streams, or device calls |
+| **Local Control & Stopping** | Validates permits, limits, and interlocks for enabled physical capabilities with an independent stop path (physical guarantees require hardware evidence) |
+| **Host OS & Drivers** | Handles thread scheduling, system I/O, and concrete hardware access |
 
-Native/Sim、固件编译、实机功能与耐久结果分别记录。各平台按所需能力独立实验；Linux 不依赖 ESP32 或 ROS。最新交接入口见 [M1 进度](reports/core/m1-progress.md)。
+### Core Dependency Direction
 
-## 文档
+Core stays completely platform-independent and enforces strict acyclic dependencies via `tools/check_deps.py` and CMake layer checks (`tools/architecture.json`):
 
-- [开发指南](docs/development.md)：工具链、依赖、构建、测试与 CI。
-- [Native CLI](targets/native_cli/README.md)：对话、权限、模型、记忆与提醒。
-- [公开示例](examples/README.md)与[独立工程接入](tests/portability/README.md)：扩展能力、替换实现和复用 SDK。
-- [公开契约](contracts/README.md)与[测试追踪](contracts/traceability.md)：接口保证及验证范围。
-- [基础与实验计划](docs/architecture/foundation-and-experiment-plan.md)、[完整实施计划](docs/ayni_v1.0.md)与 [ADR](docs/adr/README.md)：设计、顺序和决策依据。
-- [Logo 资源](docs/assets/ayni-logo.svg)：[反白 SVG](docs/assets/ayni-logo-inverse.svg) · [原始 PNG](docs/assets/ayni-logo.png)。
+```text
+kernel ──▶ work ──▶ { authority, resources, knowledge } ──▶ catalog ──▶ durability ──▶ foundation
+```
 
-## 参与与致谢
+- **`runtime/` is the sole composition root:** it selects deployment profiles and wires concrete Hosts, Providers, strategies, and applications. Business logic, network stacks, model SDKs, and hardware drivers stay strictly outside Core.
+- **Clear abstraction roles:** a **Skill** expresses a reusable workflow, a **Capability** declares an execution contract, a **Provider** implements capabilities, and a **Driver** talks to hardware.
+- **Independent versioning:** C ABI (`0.62`), wire/management protocols, and Core storage schema (`12`) evolve independently. ABI `0.x` minor versions require an exact match; storage rejects unsupported older schemas while preserving existing directories (see [development guide](docs/development.md)).
 
-贡献前请阅读 [AGENTS.md](AGENTS.md) 与[开发流程](docs/workflow.md)。契约或兼容语义变化应同步相关 ADR、测试与文档；凭据通过运行时配置。
+## Project Layout
 
-README 的组织参考 [dagent](https://github.com/RobotSe7en/dagent)。架构图的视觉表达参考 [AIOS](https://github.com/agiresearch/AIOS)，组件和契约依据 Ayni 自身设计；更多研究资料见实施计划附录。引用表示研究与致谢，不代表集成、兼容或上游背书。
+```text
+core/              Portable C++17 Kernel, split into 8 invariant-owning modules
+include/ayni/      Public C99 ABI headers, C++17 lifecycle wrapper, and draft headers
+contracts/         Versioned domain/host/wire/storage contracts and traceability matrix
+strategies/        Rules, ToolLoop, and work-advancement policies
+applications/      Assistant coordinator, software workflows, and fixture applications
+hosts/             Native, Sim, and ESP-IDF platform services plus shared storage engine
+providers/         OpenAI-compatible model, software jobs, Shell, presentation, and mocks
+runtime/           Composition root: deployment selection, shared conversation & operation sessions
+control/           Permit-checked local execution gate (control/permit_gate; safety/ planned)
+targets/           Native CLI (ayni), simulator (ayni-sim), and ESP32 diagnostic entry points
+experiments/       Independent platform and application experiments (e.g. ESP32-S3 Wi-Fi/voice)
+examples/          Five standalone public SDK integration examples
+tests/             Unit, contract, integration, fault-injection, and portability tests
+docs/, reports/    Architecture plans, ADRs, development guides, and validation evidence
+```
 
-## 许可证
+## Implementation and Roadmap
+
+Ayni follows a **foundation-first** roadmap ([ADR-0083](docs/adr/0083-general-foundation-before-platform-experiments.md)): complete and validate the general-purpose AgentOS foundation before platform-specific experiments. Platform experiments are independent — Linux system integration does not depend on ESP32 or ROS.
+
+| Scope | Status & Validation Evidence |
+|---|---|
+| **Native Core, Simulator & C/C++ SDK** | **Delivered** — Historical E1–E4 Native/Sim fault-injection & recovery evidence in [Core Alpha Native report](reports/core/m1-core-alpha.md) |
+| **General Capability Foundation** | **Delivered** — Typed inputs/results, scoped discovery, multi-instance resource bindings, managed long operations & subscriptions; see [foundation report](reports/core/foundation-acceptance.md) |
+| **Standalone Source SDK & Shared App** | **Delivered** — Read-only isolated import, shared Native program & minimal normal reopen pass; ESP32-S3 standalone compilation/linking pass; see [independent integration report](reports/core/independent-consumption.md) |
+| **Low-Latency Control & Unresolved Ledger** | **Implemented (ABI 0.62 / Schema 12)** — Independent `OperationLedger` (`QUERY`/`ACK`/post-durability audit), async UI, streaming `ControlLoop` & parameterized reflex rules; portable software checks & ESP firmware build pass ([ADR-0114](docs/adr/0114-async-ui-streaming-control-and-parameterized-reflex.md), [ADR-0115](docs/adr/0115-unknown-operation-history-and-work-retirement.md)) |
+| **ESP32-S3 Touchscreen Wi-Fi/Voice** | **Independent Experiment** — Implemented in `experiments/esp32_wifi_chat/`; full 128K context peak, 60-second motor action, on-board latency & general hardware stop-chain/endurance remain unaccepted ([experiment guide](experiments/esp32_wifi_chat/README.md)) |
+| **Further Platforms & Extensions** | **Planned** — Linux OS service integration, vision, production OTA, MCP / ROS 2 / MHS adapters, peer multi-node (`MA-038`); each gated on its own entry criteria ([implementation plan](docs/ayni_v1.0.md)) |
+
+Native/Sim runs, firmware compilation, on-board functionality, and endurance results are always reported separately. See [M1 progress & handoff](reports/core/m1-progress.md) for the latest detailed status.
+
+> [!IMPORTANT]
+> **Public Repository History Note ([ADR-0116](docs/adr/0116-apache-license-and-public-copy.md)):** This public repository (`ayni-org/ayni-os`) preserves the original project's complete Git commit history. Historical PR and CI links pointing to `RobotSe7en/ayni` remain in the original private repository and require access to it; those platform records were not transferred by the Git push.
+
+## Documentation
+
+- **[Development Guide](docs/development.md)** — Verified toolchains, pinned dependencies, CMake presets, sanitizers, and CI setup.
+- **[Native CLI Guide](targets/native_cli/README.md)** — Interactive chat, Grants, OpenAI-compatible config, private memory, reminders, and `/unresolved` tools.
+- **[Public SDK Examples](examples/README.md)** & **[Independent Integration](tests/portability/README.md)** — Extending capabilities, swapping Providers, and embedding the source SDK.
+- **[Public Contracts](contracts/README.md)** & **[Test Traceability](contracts/traceability.md)** — Clause-level guarantees and mapped tests.
+- **[Foundation & Experiment Plan](docs/architecture/foundation-and-experiment-plan.md)**, **[Full Implementation Plan](docs/ayni_v1.0.md)**, and **[ADR Index](docs/adr/README.md)** — Design rationale, roadmap order, and architectural decisions.
+- **[Logo Assets](docs/assets/ayni-logo.svg)** — [Inverse SVG](docs/assets/ayni-logo-inverse.svg) · [Opaque PNG](docs/assets/ayni-logo.png).
+
+*Note: Most detailed internal design documents, contracts, and ADRs are currently written in Chinese.*
+
+## Contributing and Acknowledgements
+
+Before contributing, please read **[AGENTS.md](AGENTS.md)** and the **[development workflow](docs/workflow.md)**.
+
+- Contract, ABI, or compatibility changes must update the corresponding ADRs, tests, and documentation.
+- Never commit credentials, API keys, or private media; supply secrets via runtime configuration.
+- Run `git diff --check`, `python3 tools/check_deps.py`, and `python3 tools/check_contracts.py` before opening a pull request.
+
+README structure was inspired by [dagent](https://github.com/RobotSe7en/dagent). The architecture diagram's layered visual presentation references [AIOS](https://github.com/agiresearch/AIOS), while all components, invariants, and contracts follow Ayni's own design. Additional research references appear in the implementation plan appendix. Citations acknowledge prior research without implying integration, compatibility, or upstream endorsement.
+
+## License
 
 Copyright 2026 Ayni contributors.
 
-除另有声明的第三方组件与资源外，本项目的代码和文档采用 [Apache License 2.0](LICENSE)，版权声明见 [NOTICE](NOTICE)。第三方许可证及来源见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+Except for third-party components and assets with their own notices, this project's code and documentation are licensed under the **[Apache License 2.0](LICENSE)**. See [NOTICE](NOTICE) and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for attribution and third-party license details.
