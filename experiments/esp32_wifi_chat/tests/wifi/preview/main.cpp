@@ -29,15 +29,17 @@ int main(int argc, char **argv) {
     } else if (mode == "voice") {
         draw_voice_preferences(*canvas, true, "重启后保留");
     } else if (mode == "network") {
-        const PreferenceRow rows[]{{"Wi-Fi 网络", "Home Wi-Fi"}, {"密码", "已设置"}};
+        const PreferenceRow rows[]{{"Wi-Fi 网络", "Home Wi-Fi"},
+                                   {"密码", "已设置"},
+                                   {"ASR API", "http://192.168.31.162:8000"},
+                                   {"TTS API", "http://192.168.31.221:8080"}};
         draw_endpoint_preferences(*canvas, "网络", rows, std::size(rows), false, false,
                                   "http://192.168.31.130");
     } else if (mode == "model") {
         const PreferenceRow rows[]{{"模型 API", "https://api.example.com"},
                                    {"API 密钥", "已设置"},
-                                   {"模型名称", "example-model"},
-                                   {"语音 API", "http://host:8000"}};
-        draw_endpoint_preferences(*canvas, "模型与语音", rows, std::size(rows), false, true, {});
+                                   {"模型名称", "example-model"}};
+        draw_endpoint_preferences(*canvas, "模型", rows, std::size(rows), false, true, {});
     } else if (mode == "options") {
         const PreferenceRow rows[]{{"接口", "Chat Completions"},
                                    {"流式预览", "开启"},

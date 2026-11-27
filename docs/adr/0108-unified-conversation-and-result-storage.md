@@ -15,7 +15,7 @@
 3. 原始结果统一保留规范值、域、证明和Call事实的小视图；普通/受管工具和Native/ESP共用实现，展示可另附摘要。删除HistoryPort、ArchivedResult、archive/result_chunk及预执行大小分叉。已执行长结果的分块摘要复用一个临时投影，每次决定仍查询当前Core来源；不能靠重新执行获得结果。
 4. 临时投影在现有有界Turn槽中保留，仅覆盖当前大结果，结束/失效/缓存退休即释放；避免每块重新加载/解码完整结果。它与已解码提议共用一个私有、检查分配的同步所有权容器，保证DEFER工作副本不深拷贝。取舍是摘要期间持有一份完整投影；上限来自已准入结果及协议编码，不宣称ESP实测峰值下降。
 5. FileBodies必须显式正数预算，删除无限模式：Native16 MiB，ESP/portable2 MiB；保留有限descriptor/owner及4 KiB在途块。SQLite5只存state(owner,object,generation,body)，两个排队元数据槽、一个worker，同优先级FIFO、普通值优先后台正文。DELETE+EXTRA提交和secure_delete保持文件端口及隐私保证（[SQLite同步说明](https://www.sqlite.org/pragma.html#pragma_synchronous)）；设置不替代掉电证据。
-6. ABI0.56/Core schema10/ATC3/ConversationRecord6保持，私有turn8/ANRV2/SQLite5直接升级。Wi-Fi设置仅接受当前v2，删除v1 reader；不迁移或启动擦除。不兼容目录保留并明确拒绝，回退保留原目录与匹配旧二进制。消费者、契约和测试一起更新。
+6. ABI0.56/Core schema10/ATC3/ConversationRecord6保持，私有turn8/ANRV2/SQLite5直接升级。Wi-Fi设置仅接受当前v2，删除v1 reader；不迁移或启动擦除。不兼容目录保留并明确拒绝，回退保留原目录与匹配旧二进制。消费者、契约和测试一起更新。（2026-11-27实验设置v3及已知v2读取由[ADR-0117](0117-ming3-tts-gateway.md)补充；v1仍拒绝。）
 
 ## 后果与备选方案
 

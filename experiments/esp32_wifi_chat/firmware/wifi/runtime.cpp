@@ -33,10 +33,10 @@ namespace wifichat::wifi {
 namespace {
 constexpr int64_t redraw_us = 300000;
 constexpr size_t recent_stages = 3;
-constexpr size_t network_fields[]{0, 1}, model_fields[]{3, 4, 5, 2};
+constexpr size_t network_fields[]{0, 1, 2, 9}, model_fields[]{3, 4, 5};
 constexpr int remote_candidates_top = 90, remote_candidate_pitch = 46;
-constexpr const char *labels[] = {"Wi-Fi 网络", "密码", "语音 API", "模型 API", "API 密钥",
-                                  "模型名称",   "接口", "流式预览", "输出字段"};
+constexpr const char *labels[] = {"Wi-Fi 网络", "密码", "ASR API",  "模型 API", "API 密钥",
+                                  "模型名称",   "接口", "流式预览", "输出字段", "TTS API"};
 std::string_view keyboard_keys(bool symbols) {
     return symbols ? "!@#$%^&*()_+-=[]{}:<>?~`|\\\"' ABCDEFGHIJK"
                    : "qwertyuiopasdfghjkl;zxcvbnm,./0123456789";
@@ -1362,7 +1362,7 @@ void Runtime::draw_settings() {
     const auto url = WebConfig::address();
     draw_endpoint_preferences(canvas_,
                               settings_view_ == SettingsView::network ? "网络"
-                              : settings_view_ == SettingsView::model ? "模型与语音"
+                              : settings_view_ == SettingsView::model ? "模型"
                                                                       : "模型选项",
                               rows.data(), count, settings_view_ == SettingsView::options,
                               settings_view_ == SettingsView::model, url.data());

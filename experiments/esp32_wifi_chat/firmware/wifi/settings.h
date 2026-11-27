@@ -11,16 +11,17 @@ std::string_view normalized_api_root(std::string_view url);
 // One boot's endpoint selection. Settings edits take effect after an explicit
 // restart; an in-flight request can never change destination or credentials.
 struct Settings {
-    static constexpr size_t field_count = 9;
+    static constexpr size_t field_count = 10;
     std::array<char, 33> ssid{};
     std::array<char, 65> password{};
-    std::array<char, 192> speech_url{};
+    std::array<char, 192> speech_url{}; // ASR root; retains the saved speech_url field.
     std::array<char, 192> model_url{};
     std::array<char, 192> model_key{};
     std::array<char, 64> model{};
     std::array<char, 17> api_type{"chat_completions"};
     std::array<char, 6> stream{"false"};
     std::array<char, 22> output_limit{"max_tokens"};
+    std::array<char, 192> tts_url{"http://192.168.31.221:8080"}; // Ming3 gateway, not the ASR root.
     bool model_options_valid() const;
     // Explicit mapping of validated persisted options, shared by measure and transport.
     ayni::providers::model_protocol::Api model_api() const;

@@ -18,8 +18,11 @@ constexpr size_t record_header = 8;
 constexpr size_t record_bytes =
     record_header + layout.ssid.size() + layout.password.size() + layout.speech_url.size() +
     layout.model_url.size() + layout.model_key.size() + layout.model.size() +
-    layout.api_type.size() + layout.stream.size() + layout.output_limit.size() + sizeof(uint32_t);
-constexpr uint32_t record_magic = 0x41594331, record_version = 2;
+    layout.api_type.size() + layout.stream.size() + layout.output_limit.size() +
+    layout.tts_url.size() + sizeof(uint32_t);
+constexpr uint32_t record_magic = 0x41594331, record_version = 3, shared_speech_version = 2;
+constexpr size_t shared_speech_bytes = record_bytes - layout.tts_url.size();
+constexpr size_t shared_speech_fields = Settings::field_count - 1;
 } // namespace
 char *Settings::field(size_t index) {
     switch (index) {
@@ -39,14 +42,16 @@ char *Settings::field(size_t index) {
         return api_type.data();
     case 7:
         return stream.data();
-    default:
+    case 8:
         return output_limit.data();
+    default:
+        return tts_url.data();
     }
 }
 size_t Settings::capacity(size_t index) const {
-    const size_t sizes[] = {ssid.size(),      password.size(),  speech_url.size(),
-                            model_url.size(), model_key.size(), model.size(),
-                            api_type.size(),  stream.size(),    output_limit.size()};
+    const size_t sizes[] = {
+        ssid.size(),  password.size(), speech_url.size(), model_url.size(),    model_key.size(),
+        model.size(), api_type.size(), stream.size(),     output_limit.size(), tts_url.size()};
     return index < std::size(sizes) ? sizes[index] : 0;
 }
 ayni::providers::model_protocol::Api Settings::model_api() const {
@@ -84,10 +89,12 @@ bool Settings::valid() const {
         const char *authority = std::strstr(s, "://");
         return authority && authority[3] && authority[3] != '/' && authority[3] != ':';
     };
-    return model_options_valid() && network_valid() && clean(speech_url.data()) &&
-           clean(model_url.data()) &&
-           (std::strncmp(speech_url.data(), "http://", 7) == 0 ||
-            std::strncmp(speech_url.data(), "https://", 8) == 0) &&
+    const auto speech_root = [&](const char *url) {
+        return clean(url) &&
+               (std::strncmp(url, "http://", 7) == 0 || std::strncmp(url, "https://", 8) == 0);
+    };
+    return model_options_valid() && network_valid() && speech_root(speech_url.data()) &&
+           speech_root(tts_url.data()) && clean(model_url.data()) &&
            std::strncmp(model_url.data(), "https://", 8) == 0 && *model_key.data() &&
            std::all_of(model_key.data(), model_key.data() + std::strlen(model_key.data()),
                        [](unsigned char c) { return c > 32 && c < 127; }) &&
@@ -117,15 +124,19 @@ bool Settings::load() {
         return true;
     }
     const auto version = get32(record.data() + sizeof(uint32_t));
-    if (rc != ESP_OK || (size != record.size() || version != record_version) ||
+    const bool shared_speech = version == shared_speech_version && size == shared_speech_bytes;
+    if (rc != ESP_OK || (!shared_speech && (size != record.size() || version != record_version)) ||
         get32(record.data()) != record_magic ||
         get32(record.data() + size - sizeof(uint32_t)) !=
             checksum(record.data(), size - sizeof(uint32_t))) {
         return false;
     }
+    // The known v2 prefix keeps ASR, credentials and model options unchanged.
+    // Only the new TTS field takes its deployment default; load never rewrites NVS.
     Settings candidate{};
     size_t at = record_header;
-    for (size_t i = 0; i < field_count; ++i) {
+    const auto fields = shared_speech ? shared_speech_fields : field_count;
+    for (size_t i = 0; i < fields; ++i) {
         const auto bytes = capacity(i);
         if (!std::memchr(record.data() + at, 0, bytes)) {
             return false;
@@ -152,9 +163,9 @@ bool Settings::save() const {
     std::array<uint8_t, record_bytes> record{};
     put32(record.data(), record_magic);
     put32(record.data() + 4, record_version);
-    const char *values[] = {ssid.data(),      password.data(),  speech_url.data(),
-                            model_url.data(), model_key.data(), model.data(),
-                            api_type.data(),  stream.data(),    output_limit.data()};
+    const char *values[] = {
+        ssid.data(),  password.data(), speech_url.data(), model_url.data(),    model_key.data(),
+        model.data(), api_type.data(), stream.data(),     output_limit.data(), tts_url.data()};
     size_t at = record_header;
     for (size_t i = 0; i < field_count; ++i) {
         std::memcpy(record.data() + at, values[i], std::strlen(values[i]) + 1);
