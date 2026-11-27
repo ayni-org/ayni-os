@@ -1,8 +1,8 @@
 name: ci
 
-# Ordinary code PRs run checks and ASan/UBSan in one cached container.
+# Ordinary code PRs run checks and ASan/UBSan in one tool container.
 # Extra native configurations (one job each) and ESP-IDF run only
-# periodically or via ci:full/manual; two runners take them in parallel.
+# periodically or via ci:full/manual on separate hosted runners.
 # Weekly/manual runs cover every configuration; main pushes run checks only.
 on:
   push:
@@ -35,21 +35,17 @@ env:
   GIT_CONFIG_COUNT: 1
   GIT_CONFIG_KEY_0: safe.directory
   GIT_CONFIG_VALUE_0: '*'
-  # Two runners share one 32-CPU machine with about 7 GiB of memory; each
-  # native container gets 12 CPUs and 3 GiB (tools/ci/run_tools.sh). Peaks
-  # measured with four jobs: about 1 GiB to build native-asan, 0.7 GiB to
-  # build the firmware and 0.2 GiB to run the sanitizer tests. Compiling
-  # takes the memory, so builds use 6 jobs; tests mostly wait on process
-  # start and use 12.
-  CMAKE_BUILD_PARALLEL_LEVEL: 6
-  CTEST_PARALLEL_LEVEL: 12
+  # Standard public Ubuntu runners have four vCPUs. Keep build and test
+  # parallelism bounded even on cold runners.
+  CMAKE_BUILD_PARALLEL_LEVEL: 4
+  CTEST_PARALLEL_LEVEL: 4
   IDF_PY_BUILD_JOBS: 4
 
 jobs:
   checks:
     name: checks and ASan
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
       native_presets: ${{ steps.scope.outputs.native_presets }}
@@ -59,6 +55,7 @@ jobs:
         with:
           # Compare the complete PR merge result with its base, not its last commit.
           fetch-depth: 2
+          persist-credentials: false
       - name: Runner resources
         run: |
           echo "CPUs: $(nproc)"
@@ -82,7 +79,7 @@ jobs:
           RUN_ASAN: ${{ steps.scope.outputs.asan }}
         run: tools/ci/run_tools.sh run bash tools/ci/checks.sh "$RUN_ASAN"
 
-  # One job per configuration, so that both runners build at once.
+  # One hosted job per configuration.
   native:
     name: periodic or requested native configurations
     needs: checks
@@ -91,16 +88,22 @@ jobs:
       fail-fast: false
       matrix:
         preset: ${{ fromJSON(needs.checks.outputs.native_presets) }}
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Prepare cached native tools
         run: tools/ci/run_tools.sh prepare
-      - name: Check ASLR for ThreadSanitizer
+      - name: Configure ASLR for ThreadSanitizer on the hosted runner
         if: matrix.preset == 'native-tsan'
         run: |
           bits=$(tools/ci/run_tools.sh mmap-bits)
+          if [ "$bits" -gt 28 ]; then
+            sudo sysctl -w vm.mmap_rnd_bits=28
+            bits=$(tools/ci/run_tools.sh mmap-bits)
+          fi
           if [ "$bits" -gt 28 ]; then
             echo "::error::vm.mmap_rnd_bits is $bits; ThreadSanitizer needs 28"
             exit 1
@@ -113,11 +116,13 @@ jobs:
   clang-tidy:
     name: clang-tidy (advisory)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: [self-hosted, linux]
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Prepare cached native tools
         run: tools/ci/run_tools.sh prepare
       # Without the precompiled header, so that this weekly build also checks
@@ -133,8 +138,8 @@ jobs:
     name: ESP32-S3 independent normal program (ESP-IDF v6.0.3)
     needs: checks
     if: needs.checks.outputs.esp_idf == 'true'
-    runs-on: [self-hosted, linux]
-    # The first run on a machine also pulls the 5.5 GB image.
+    runs-on: ubuntu-24.04
+    # Each hosted runner starts fresh; allow for the firmware image pull.
     timeout-minutes: 40
     env:
       CMAKE_BUILD_PARALLEL_LEVEL: 4
@@ -143,11 +148,13 @@ jobs:
     # Ubuntu's, and the firmware needs a smaller limit.
     container:
       image: espressif/idf:v6.0.3
-      options: --cpus 6 --memory 3g --memory-swap 3g
+      options: --cpus 4 --memory 3g --memory-swap 3g
       volumes:
         - ayni-ccache-esp-idf:/ccache
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Build
         shell: bash
         run: |
