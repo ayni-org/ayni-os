@@ -8,10 +8,12 @@ base_image=ubuntu:24.04
 recipe_key=$({ printf '%s\n' "$base_image"; cat "$recipe"; } | sha256sum | cut -d ' ' -f 1)
 image="ayni-ci-tools:$recipe_key"
 container_workspace=/__w/ayni/ayni
-# Two runners share one 32-CPU machine with about 7 GiB of memory, so each
-# container may use 12 CPUs and 3 GiB without swap (docs/development.md).
+# Stay within the Docker host CPU budget on small runners (four vCPUs in
+# public CI), while preserving the original ceiling on larger machines.
+host_cpus=$(nproc)
+container_cpus=$((host_cpus < 12 ? host_cpus : 12))
 # Init forwards cancellation signals to the command and reaps child processes.
-container_options=(--cpus=12 --memory=3g --memory-swap=3g --init)
+container_options=(--cpus="$container_cpus" --memory=3g --memory-swap=3g --init)
 bootstrap_container=
 cleanup() {
     if [ -n "$bootstrap_container" ]; then
