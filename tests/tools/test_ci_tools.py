@@ -20,6 +20,10 @@ class CiToolsTest(unittest.TestCase):
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
         self.bin = self.root / "bin"
         self.bin.mkdir()
+        nproc = self.bin / "nproc"
+        nproc.write_text('#!/usr/bin/env bash\n'
+                         'printf "%s\\n" "${FAKE_HOST_CPUS:-32}"\n')
+        nproc.chmod(0o755)
         self.log = self.root / "calls.jsonl"
         docker = self.bin / "docker"
         docker.write_text('''#!/usr/bin/env python3
@@ -107,6 +111,17 @@ elif args[0] == "run":
         self.assertIn("--pull=never", call)
         self.assertIn("--init", call)
         self.assertFalse(any(c[0] == "create" for c in self.calls()))
+
+    def test_four_cpu_host_caps_bootstrap_and_execution(self):
+        prepare = self.run_script("prepare", FAKE_HOST_CPUS="4")
+        self.assertEqual(prepare.returncode, 0, prepare.stderr)
+        command = self.run_script("run", "true", FAKE_HOST_CPUS="4")
+        self.assertEqual(command.returncode, 0, command.stderr)
+        capped = [call for call in self.calls() if call[0] in {"create", "run"}]
+        self.assertEqual([call[0] for call in capped], ["create", "run", "run"])
+        for call in capped:
+            self.assertIn("--cpus=4", call)
+            self.assertNotIn("--cpus=12", call)
 
     def test_prepare_adopts_root_caches_but_not_those_of_another_user(self):
         # Two runners share the Docker daemon and its caches: taking a cache
