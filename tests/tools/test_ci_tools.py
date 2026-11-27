@@ -21,10 +21,8 @@ class CiToolsTest(unittest.TestCase):
         self.bin = self.root / "bin"
         self.bin.mkdir()
         nproc = self.bin / "nproc"
-        nproc.write_text('#!/usr/bin/env bash
-'
-                         'printf "%s\n" "${FAKE_HOST_CPUS:-32}"
-')
+        nproc.write_text('#!/usr/bin/env bash\n'
+                         'printf "%s\\n" "${FAKE_HOST_CPUS:-32}"\n')
         nproc.chmod(0o755)
         self.log = self.root / "calls.jsonl"
         docker = self.bin / "docker"
