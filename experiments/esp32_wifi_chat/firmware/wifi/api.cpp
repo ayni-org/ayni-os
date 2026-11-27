@@ -6,6 +6,7 @@
 #include "model_delivery.h"
 #include "network_time.h"
 #include "response_limit.h"
+#include "speech_request.h"
 #include "speech_stream.h"
 #include <algorithm>
 #include <ayni/model_messages.hpp>
@@ -561,8 +562,9 @@ void Api::perform(Job &job) {
         return;
     }
     std::array<char, 256> url{};
-    const char *root =
-        job.request == Request::model ? settings_.model_url.data() : settings_.speech_url.data();
+    const char *root = job.request == Request::model    ? settings_.model_url.data()
+                       : job.request == Request::speech ? settings_.tts_url.data()
+                                                        : settings_.speech_url.data();
     const char *path = job.request == Request::model
                            ? ayni::providers::model_protocol::path(settings_.model_api()).data()
                        : job.request == Request::speech    ? "/v1/audio/speech/stream"
@@ -582,10 +584,25 @@ void Api::perform(Job &job) {
     case Request::recognize:
         recognize(job, url.data());
         break;
-    case Request::health:
+    case Request::health: {
+        job.ok = http(job, url.data(), "application/json", nullptr, 0, nullptr, 0, nullptr, 0,
+                      json_limit);
+        if (!job.ok) {
+            break;
+        }
+        // Both services must answer; the existing deadline includes both probes.
+        erase_free(job.response, job.response_bytes);
+        job.response = nullptr;
+        job.response_bytes = 0;
+        if (!endpoint(settings_.tts_url.data(), "/health", url.data(), url.size())) {
+            job.ok = false;
+            std::snprintf(job.error.data(), job.error.size(), "TTS API 地址超限");
+            break;
+        }
         job.ok = http(job, url.data(), "application/json", nullptr, 0, nullptr, 0, nullptr, 0,
                       json_limit);
         break;
+    }
     case Request::capacity:
     case Request::template_capture:
         break; // Handled before endpoint selection; this job never sends HTTP.
@@ -829,12 +846,8 @@ void Api::capacity(Job &job) {
 void Api::speech(Job &job, const char *url) {
     const std::string_view input(reinterpret_cast<const char *>(job.input.body.data()),
                                  job.input.size);
-    ayni::json::Writer out(request_body_.data(), request_body_.size());
-    out.raw("{\"model\":\"qwen3-tts\",\"input\":");
-    out.string(input);
-    out.raw(",\"response_format\":\"pcm\",\"sample_rate\":24000}");
     size_t size = 0;
-    if (!out.finish(size)) {
+    if (!encode_speech_request(input, request_body_.data(), request_body_.size(), size)) {
         std::snprintf(job.error.data(), job.error.size(), "朗读请求超限");
         return;
     }

@@ -20,8 +20,8 @@ extern const char firmware_page_data[] asm("_binary_firmware_html_start");
 namespace wifichat::wifi {
 namespace {
 constexpr size_t request_bytes = 2048;
-constexpr const char *names[] = {"ssid",  "password", "speech_url", "model_url",   "model_key",
-                                 "model", "api_type", "stream",     "output_limit"};
+constexpr const char *names[] = {"ssid",  "password", "speech_url", "model_url",    "model_key",
+                                 "model", "api_type", "stream",     "output_limit", "tts_url"};
 } // namespace
 std::array<char, 40> WebConfig::address() {
     std::array<char, 40> result{};

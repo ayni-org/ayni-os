@@ -180,3 +180,4 @@
 
 | [0115](0115-unknown-operation-history-and-work-retirement.md) | 四层生命周期、独立未决账本与落盘后结案审计 | 已实施；正常软件与OTA启动自确认通过 | ABI0.62/schema12、QUERY/ACK、双端16槽、Tier0朗读 |
 | [0116](0116-apache-license-and-public-copy.md) | Apache-2.0 许可证与保留历史的公开副本 | 已接受，用户选定 | 原创代码/文档许可、第三方声明、公开 main；原仓库保留 |
+| [0117](0117-ming3-tts-gateway.md) | 独立 Ming3 TTS 网关与语音端点配置 | 已接入；正常OTA与启动确认通过 | 实验设置v3、保留已知v2设置、AYTS/1 |

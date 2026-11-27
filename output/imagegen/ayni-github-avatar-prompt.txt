@@ -1,0 +1,11 @@
+Tool: built-in image_gen.imagegen (edit mode).
+Input: user-supplied ayni wordmark.
+Delivery: square PNG, exported to 500 x 500 with macOS sips.
+
+Final generation prompt:
+Use case: precise-object-edit.
+Asset type: GitHub profile avatar, one square 1024 × 1024 image ready for upload.
+Input image 1 is the edit target: the original black lowercase 'ayni' wordmark on warm ivory.
+Primary request: adapt this exact logo into a polished square avatar by changing ONLY the canvas, scale and positioning. Preserve the original four custom glyphs and their spacing, stroke shapes, distinctive clipped lower right terminals, round i dot, and curved y descender. Text verbatim: 'ayni'. Do not redesign, retype or replace the wordmark.
+Composition: use a uniform warm off-white background matching the reference. Place the intact horizontal wordmark centrally, with optical vertical centering of the entire mark including dot and descender. Wordmark should occupy approximately 78–80% of the square width, with generous top and bottom whitespace. Keep every part inside a centered circular crop safe area, leaving a little additional breathing room. The output itself must be a filled square, with no drawn circle and no rounded corners. Crisp deep near-black solid letterforms, high contrast, flat professional brand asset. Remove subtle background paper texture and dark letter texture for a clean small-size avatar.
+Avoid: extra objects, icons, borders, decorations, shadows, gradients, 3D, watermarks, additional text, changing 'ayni' into a single-letter monogram, cutting off any original letters. Return only the square avatar artwork.

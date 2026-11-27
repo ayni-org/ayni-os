@@ -212,6 +212,7 @@ TEST(WifiSettings, CompleteConfigurationUsesOneVersionedSnapshot) {
     ASSERT_TRUE(first.load());
     std::strcpy(first.ssid.data(), "example");
     std::strcpy(first.speech_url.data(), "http://192.168.1.5:8000");
+    std::strcpy(first.tts_url.data(), "http://192.168.1.6:8080/");
     std::strcpy(first.model_key.data(), "test-key");
     ASSERT_TRUE(first.valid());
     ASSERT_TRUE(first.save());
@@ -219,6 +220,7 @@ TEST(WifiSettings, CompleteConfigurationUsesOneVersionedSnapshot) {
     ASSERT_TRUE(reopened.load());
     EXPECT_TRUE(reopened.valid());
     EXPECT_STREQ(reopened.speech_url.data(), first.speech_url.data());
+    EXPECT_STREQ(reopened.tts_url.data(), first.tts_url.data());
     EXPECT_STREQ(reopened.model_key.data(), first.model_key.data());
 }
 TEST(WifiSettings, EndpointAndCredentialSyntaxRejectsHiddenAuthorities) {
@@ -445,7 +447,7 @@ TEST(WifiSettings, ApiAndStreamingOptionsPersistWithoutChangingSavedSecrets) {
     EXPECT_TRUE(parse_settings_patch(R"({"api_type":"responses","stream":"true"})", patch));
 }
 TEST(WifiSettings, UnsupportedSettingsAreRefusedWithoutRewritingCredentials) {
-    // ADR-0108: only settings/v2 is supported; refusal preserves the stored blob.
+    // ADR-0108: unsupported settings/v1 remains refused without rewriting the blob.
     reset_nvs();
     Settings first;
     std::strcpy(first.ssid.data(), "fixture-network");

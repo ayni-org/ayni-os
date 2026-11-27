@@ -1,12 +1,12 @@
 # Ayni：通用原生 AgentOS 基础能力与实验实施计划
 
 > **文档性质**：工程实施计划与待实现契约，不代表已有软件能力。\
-> **文档版本**：v1.132 · 2026-11-26；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
+> **文档版本**：v1.133 · 2026-11-27；保留文件名 `ayni_v1.0.md`。文档版本与产品 v0.1 / v0.2 分开；本版并入的设计决策见 `docs/adr/`。\
 > **产品定位**：跨平台、跨设备的通用原生 AgentOS；宿主与扩展决定提供哪些设备或软件能力，统一助理只是应用示例。\
 > **架构路线**：按 Ayni 的共享 Agent 状态、授权、资源及恢复需求设计原生 Core，复用宿主 OS，模型优先通过外部 API 获得；架构图仅参考 AIOS 的分层分组表达样式。\
 > **实施顺序**：先完成基础通用能力，再开展 ESP32-S3、Linux 系统等实验；设备与能力组合按实验目标选取，不要求宿主具备语音、视觉、运动或特定外设。\
 > **基准投入**：单人全职；阶段周期是相对工作量估算，不是开工日期或交付日期承诺。\
-> **当前状态**：通用基础与独立源码SDK已交付，Native/Sim基线见[基础报告](../reports/core/foundation-acceptance.md)。本分支ABI0.62/schema12，独立OperationLedger将持久未决操作与活跃Call及工作容量分离，提供QUERY/人工ACK和落盘后结案审计；朗读采用Tier0并保持停稳与借用归还规则，见[ADR-0115](adr/0115-unknown-operation-history-and-work-retirement.md)。相关正常便携回归、Native消费者编译、独立审查及最终ESP固件编译与分区检查通过。设备已正常OTA到`motor-coast-fix`/ABI0.62/schema12并完成启动自确认；本次保留会话卷与配置，分段切零修复及验证见[实验记录](../experiments/esp32_wifi_chat/WIFI.md#2026-11-26-分段动作切零修复)。板端时延、新格式异常恢复、完整128K峰值、实体停止链与耐久仍待对应证据。
+> **当前状态**：通用基础与独立源码SDK已交付，Native/Sim基线见[基础报告](../reports/core/foundation-acceptance.md)。本分支ABI0.62/schema12，独立OperationLedger将持久未决操作与活跃Call及工作容量分离，提供QUERY/人工ACK和落盘后结案审计；朗读采用Tier0并保持停稳与借用归还规则，见[ADR-0115](adr/0115-unknown-operation-history-and-work-retirement.md)。相关正常便携回归、Native消费者编译、独立审查及最终ESP固件编译与分区检查通过。设备已正常OTA到`ming3-tts-20261127`/ABI0.62/schema12并完成启动自确认，ASR/TTS健康检查成功；保留会话卷与配置，Ming3实际播放待验证，见[ADR-0117](adr/0117-ming3-tts-gateway.md)。分段切零修复及历史验证见[实验记录](../experiments/esp32_wifi_chat/WIFI.md#2026-11-26-分段动作切零修复)。板端时延、新格式异常恢复、完整128K峰值、实体停止链与耐久仍待对应证据。
 
 > **本轮范围**：用户2026-10-31要求实施[独立工程接入与验收计划](architecture/independent-consumption-plan.md)：通用源码SDK、低栈工作区、Native/ESP存储及Host、共同应用和验收。平台适配保持独立目录，必要接口直接升级，正常存储和最小重开获授权；实机操作、付费模型及其他新专项不启动。
 
@@ -1098,7 +1098,9 @@ idf.py -p <SERIAL_PORT> flash monitor
 
 ### 14.1 已接受的实施默认值
 
-本次修订（v1.132，2026-11-26）：用户确定原创代码与文档采用Apache-2.0，保留第三方各自许可；以RobotSe7en向ayni-org/ayni-os复制main及完整祖先历史，原私有仓库保留，历史PR/CI引用仍需原仓库权限。根目录加入LICENSE、NOTICE和第三方许可入口；不改变功能、ABI/schema或硬件验收结论，见[ADR-0116](adr/0116-apache-license-and-public-copy.md)。
+本次修订（v1.133，2026-11-27）：按用户指定将独立ESP实验的TTS接入Ming3网关，ASR保持原地址；追加独立TTS配置及固定灵小柔音色，继续AYTS/1。实验设置v3只读支持已知v2并保留原配置，保存才升级；Core/ABI/schema保持不变。随后用户授权正常OTA并完成启动自确认、原配置保留及语音服务健康检查，板端实际播放待验证，见[ADR-0117](adr/0117-ming3-tts-gateway.md)。
+
+上一修订（v1.132，2026-11-26）：用户确定原创代码与文档采用Apache-2.0，保留第三方各自许可；以RobotSe7en向ayni-org/ayni-os复制main及完整祖先历史，原私有仓库保留，历史PR/CI引用仍需原仓库权限。根目录加入LICENSE、NOTICE和第三方许可入口；不改变功能、ABI/schema或硬件验收结论，见[ADR-0116](adr/0116-apache-license-and-public-copy.md)。
 
 上一修订（v1.131，2026-11-26）：用户要求OTA并授权清理旧数据，44278a8/ABI0.62/schema12正常升级和启动自确认通过，旧聊天、任务及未决记录已放弃，配置/密钥/配对/偏好分区保留；一次性过渡逻辑不进入产品、不授权未来自动擦除。异常恢复和硬件验收边界不变，见[ADR-0115](adr/0115-unknown-operation-history-and-work-retirement.md)。
 
